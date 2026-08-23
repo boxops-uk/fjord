@@ -896,9 +896,10 @@ with Reach : { from : src.Decl, to : src.Decl } =
   src.SearchByName {name = "encode", to = Seed}; Reach {from = Seed, to = D}
 ```
 
-**Status: amended over six rounds of adversarial review, and the sixth ends the design loop**
+**Status: amended over seven rounds of adversarial review; the sixth ended the design loop and
+the seventh read it against the code**
 ([`docs/recursion-plan-adversarial-review.md`](docs/recursion-plan-adversarial-review.md)).
-The architecture survived all six; the boundaries around it did not. **Movement 0 exists because
+The architecture survived all seven; the boundaries around it did not. **Movement 0 exists because
 of that review**, and after the second round it gates *selectively* rather than wholesale:
 **Movement 1's routing, snapshot and allocation work is unblocked and should start**, because it
 depends on predicate routing and the owned-scan representation and on nothing the compiler
@@ -963,6 +964,29 @@ because the copy guards permit a segmented relation that moves the quadratic cos
 the world stamp goes into the plain `Cursor` **first**, which deletes the transitional token
 format and repairs three live non-recursive defects before recursion is built on them.
 
+**The seventh round read the plan against the code rather than against itself, and found the proof
+boundary right in shape and incomplete in two ways.** Neither is an architecture finding: nothing
+below moves the `Program`, the overlay, or the claim that the executor does not change. The first
+is that five statements a guard would have to be written *against* are ambiguous in the plan
+itself, so a guard could be written green over the wrong reading — the accumulated snapshot's
+relationship to the delta (item 5b, where the omission decides between a correct fixpoint and one
+that never terminates), whether a stratum is one condensed SCC or several (the `Program` shape,
+where the loose reading answers a legal forward reference with an empty relation), whether a local
+relation has a value side at all (item 4, which three other items had already assumed the answer
+to), what canonical rank does when it meets `MAX_FACT_SEQUENCE` (item 3), and that the termination
+rule is complete only because `ExprKind::Arith` is today's one value-inventing expression
+(Movement 2). The second is that eight assertions were owned by nobody, unprovable as stated, or
+provable only of a placeholder: item 5's work bound had no subject in the movement that marks it
+green, item 6's "every charge site" is a universal claim with no mechanism behind it, Movement 2
+never differentiates its own naive evaluator against the independent model three later movements
+lean on, and item 14's blanket impl dissolves I8's structural proof two movements before the
+replacement arrives. **Two findings land on work already in flight and are recorded rather than
+fixed** — the composite world stamp must length-prefix its variable-length field before a listing
+digest is concatenated onto it, and an empty stamp comparing equal to itself is fail-open (item
+13). **And Movement 0 is split into four parts**, because as specified it is one diff spanning a
+cursor layout, a protocol change, a published type parameter and four pure models, which is the
+shape the contract's one-sitting rule exists to forbid.
+
 **What was challenged and rejected is recorded beside the item that provoked it, so a later round
 does not re-derive it:** the claim that a versioned cursor layout and a database stamp are
 *incompatible* (item 13 — they are sequenced, not simultaneous), the claim that both branches must
@@ -1007,17 +1031,27 @@ derivation.
 ```rust
 struct Program {
     relations: Box<[RelationDecl]>,   // local identity + declared physical key layout
-    strata:    Box<[Stratum]>,        // topological order
+    strata:    Box<[Stratum]>,        // one condensed SCC each, in topological order
     answer:    Plan,                  // streamed, exactly as today
 }
 
 enum Stratum {
-    Once(Box<[Rule]>),                            // no recursion: run each plan once
+    Once(Box<[Rule]>),                            // one non-recursive SCC: run each rule once
     Fixpoint { seed: Box<[Rule]>, step: Box<[Rule]> },
 }
 
 struct Rule { plan: Plan, into: LocalPredicate, project: Materialise }
 ```
+
+**A `Stratum` is exactly one condensed SCC — not a set of them, and the difference is a wrong
+answer rather than a scheduling preference.** `Once(Box<[Rule]>)` reads naturally as "the
+non-recursive rules, run each once", and gathering several independent SCCs into one stratum is the
+obvious implementation of that reading. It is unsound the moment a forward reference exists, which
+item 1 declares legal: rules run in source order, a relation declared later in the text has not
+been derived when a rule reads it, and the read answers **empty**. One condensed node per stratum
+makes that unrepresentable — every edge between predicates is then an edge between strata, and the
+topological order over `strata` is the whole of the scheduling rule. It also fixes what item 3's
+"finalised at the end of its stratum" means, since a `Once` stratum is then exactly one relation.
 
 **Every phase is "run an ordinary `Plan`, materialise its rows".** A rule's sink is a consumer
 of the existing iteratee seam — the `step` callback that already exists — so the fixpoint
@@ -1053,7 +1087,8 @@ to become falsifiable. Most items still resolve to a decision plus a guard that 
 resolve to code that must be *green* before anything recursive is built on it (items 12 and 13's
 world stamp, the fetch digest, and the terminal-`ERROR` client contract), and one resolves to a
 representation change (item 15). What each item owes, and when, is the proof-boundary table at the
-end of this section rather than a sentence per item. **Do not fix the relation representation,
+end of this section rather than a sentence per item, and the movement itself lands in **four
+parts** (0a–0d), for the reason recorded with them. **Do not fix the relation representation,
 the id scheme or the grammar before items 1, 2, 4 and 5 are closed** — each of the others depends on
 what they decide. **Items 9, 10 and 11 gate Movement 3, not Movement 1**: clause rewriting
 needs a program of rules and a settled answer to what a rule *is*, and the relation store needs
@@ -1130,6 +1165,16 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    are tested the same way. That leaves **one** refusal needing front-end work:
    `Project::FactRef` of a local row, which is what `X where Reach X` spells.
 
+   **`Project::Value` is a fifth construct that reads a local row's own id, and what makes it
+   unreachable is item 4's key-only rule rather than any refusal here.** A value-side field is
+   fetched with `point` on the *register's own* `fact_id`, not on a referent's — so a local
+   relation with a value side would route a local identity into `point` on the ordinary projection
+   path with all four refusals above still passing. Nothing observable escapes even then, but the
+   list stops being exhaustive and `Relation::point` becomes a reachable path with no stated
+   contract. Item 4 removes the case at its source: a local relation is key-only, so flatten emits
+   no `Project::Value` against one, and the fifth construct is refused by what a local relation
+   *is* rather than by a check somebody has to remember to write.
+
    Stated as a limitation rather than discovered as one: a derived tuple cannot reference
    another derived tuple, so path reconstruction is out of the first cut. That is the price of
    internal-only identity, and it is what buys delta-as-a-second-relation in item 5. A fetch
@@ -1159,7 +1204,13 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    one: the answer plan scans only finalised relations, and a suspend mid-fixpoint is not
    representable (Movement 4), so a finalised rank is the only derived identity a cursor can ever
    hold. Rank counts from **one**, because sequence 0 is reserved and `FactId::new` refuses it,
-   and the relation's cardinality is bounded by `MAX_FACT_SEQUENCE` like any other predicate's. Versioning the assignment algorithm
+   and the relation's cardinality is bounded by `MAX_FACT_SEQUENCE` like any other predicate's —
+   **enforced by clamping item 6's retained-facts limit to it at configuration, not by a diagnostic
+   at finalisation.** `FactId::new` is fallible and refuses a sequence past the maximum, so the
+   alternative is an error variant on a path with no query left to blame, reachable only when an
+   operator sets a limit higher than the id space. Clamping refuses earlier, by name, through a
+   limit that already exists, and leaves finalisation with no failure to report — which is also
+   what stops an `unwrap` being written there on a data path. Versioning the assignment algorithm
    into the envelope is the fallback if canonical assignment turns out to cost too much — it
    makes upgrades refuse cleanly instead of failing obscurely, which is strictly worse than not
    needing to.
@@ -1230,6 +1281,18 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    (`reject/non-record-relation`); scalar and union heads are a later cut that owes the projection
    its own definition, and Movement 7's census asserts the refusal so the restriction cannot pass
    silently for the full grammar.
+
+   **And a local relation is *key-only*: the whole declared record is the key, and there is no
+   value side.** `Predicate` carries `value: Option<PredicateTy>` and nothing said which a
+   `RelationDecl` gets, while three other items had already assumed an answer. Item 3's canonical
+   identity is a rank in **encoded-key** order, which is a function of the tuple only if the key
+   *is* the tuple; item 5b's `Δ = candidates - A` is a set difference over those same bytes; and a
+   value side is read through the row's own id, which is the fifth identity construct item 3 now
+   records. Two tuples agreeing on their key and differing in a value would be one tuple to the
+   deduplicator, one rank to the allocator, and two rows to a scan — three subsystems disagreeing
+   about how many facts there are. The cost is that a derived relation cannot carry a payload
+   outside its index, which is cheap here because a local relation is re-derived per chunk rather
+   than stored. Structural, not validated: a `RelationDecl` has no value field to set.
 5. **The owned-scan representation is settled and costed.** `FactStore::Scan` is an owned
    associated type with no lifetime, so a `BTreeMap::range` iterator cannot be returned from
    `scan(&self)` — `MemStore` copes by cloning the matching range into a `Vec`. Doing that for
@@ -1274,6 +1337,16 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    compacts, or bounds its segment count, passes it; only the one-segment-per-round implementation
    fails, and that is the implementation the present criteria permit.
 
+   **What is green in Movement 0 is the criterion, not a representation, and saying so is what
+   keeps this row honest.** Movement 1 builds the relation; a work bound measured before it exists
+   can only be measured against a placeholder, which this section's own classification calls
+   evidence of nothing. So Movement 0 lands the bound as a **trait-level harness** — parameterised
+   over the relation seam and green against a deliberately obvious reference implementation, a
+   sorted `Vec` rebuilt per round — and that proves the harness and its oracle and nothing about
+   the shipped representation. **The four measurements then belong to Movement 1's acceptance
+   list**, where the subject exists. Leaving them here alone is precisely how the
+   one-segment-per-round implementation would ship green.
+
    **The overlay half of this is already answered and should not be re-litigated.**
    `Catalogued<S>` declares `type Scan = Scan<S::Scan>` — an enum sum over the wrapped store's
    scan and its own — so `Overlay<S>` is choosing the *relation* side of a sum whose shape
@@ -1287,12 +1360,28 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    below defines minimum BFS depth as the round of first derivation**, so an order-dependent
    round number would quietly cost that feature. The transition to write down:
 
+   0. `A_1 = Δ_1 = dedup(seed output)`, and **`A_r` contains `Δ_r` at every round** — accumulated
+      is everything derived through round `r`, delta is the part of it that is new. Stated first
+      because it is the clause the other seven are unsound without, and because "delta and
+      accumulated are distinct relations" invites the opposite reading;
    1. every rule in the SCC reads the same accumulated snapshot `A_r` and delta snapshot `Δ_r`;
    2. a rule with `k` recursive occurrences contributes one delta variant per occurrence;
    3. the selected occurrence reads `Δ_r`; every non-selected recursive occurrence reads `A_r`;
-   4. candidates for every predicate in the SCC stream into one shared deduplicator;
-   5. `Δ_(r+1) = candidates - A_r`, visible to every rule only at the next round; and
-   6. the SCC converges when every predicate's next delta is empty.
+   4. candidates for every predicate in the SCC stream into one shared deduplicator, which compares
+      **encoded keys and never identities** — an id minted during a fixpoint is arbitrary (item 3),
+      so one tuple wears two of them and an id-keyed set would never converge;
+   5. `Δ_(r+1) = candidates - A_r`, visible to every rule only at the next round;
+   6. `A_(r+1) = A_r ∪ Δ_(r+1)`; and
+   7. the SCC converges when every predicate's next delta is empty.
+
+   **Step 0 fails in two directions at once when it is left implicit, which is why it is a step and
+   not a footnote.** Read `A_r` as *excluding* `Δ_r` and step 3 is incomplete — a rule with two
+   recursive occurrences never sees both atoms drawn from round `r`, because neither variant offers
+   the selected occurrence its round-`r` partner — while step 5 stops terminating, since a tuple
+   already in `Δ_r` survives a subtraction that does not contain it and reappears in every later
+   delta. Both are silent: the first answers short, the second runs until the round backstop. The
+   containment was inferable from one sentence in Movement 3 about a tuple holding two `FactId`s,
+   and nowhere else in this section.
 
    **Step 3 is the rectangular expansion, and that is a choice, not an oversight.** It is
    complete, and it re-derives any tuple whose derivation matches `Δ_r` at two or more atoms —
@@ -1358,6 +1447,19 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    relation or rule is allocated. Candidates stream through deduplication and the limit check for
    the same reason — an unbounded per-rule candidate buffer is the materialised-result-set
    anti-pattern under another name, and the anti-pattern list is right to call it one.
+
+   **A budget nothing can bypass, rather than a budget every site is asked to remember.** The
+   deferred half of this item read "mechanical proof that every driver and compiler charge site
+   uses it", and there is no mechanism by which that is mechanical: a state machine proven correct
+   in isolation plus an audit of its callers is the arrangement that fails silently on the
+   eleventh site somebody adds. So the budget is a **chokepoint**. Retaining a tuple, allocating a
+   generated relation or rule, and copying between round snapshots are reachable only through an
+   API that charges, and the types the driver and the generator hold offer no other way to obtain
+   one — which is item 15's argument applied a second time, an illegal state that cannot be
+   constructed beating one that is rejected, and which turns a coverage claim no test can make
+   into a structural one the compiler enforces. The same shape settles the one limit with a hard
+   ceiling above it: **retained facts is clamped to `MAX_FACT_SEQUENCE` at configuration** (item
+   3), so canonical-id finalisation has no failure to report.
 
    **Charging per derivation and resetting per chunk is what resume needs**: every chunk
    re-derives the same fixpoint from the same frozen base, so every chunk reaches the same limit
@@ -1499,6 +1601,16 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    *transformed* SCC membership. Source stratification metadata is insufficient before the
    negation question is even asked.
 
+   **And step 7 is the soundness gate for magic over negation, not only the fallback's trigger.**
+   Demand for a negated subgoal is derived from the body of the rule that *contains* the negation,
+   so the magic predicate depends on that rule's prefix while the rule depends negatively on the
+   predicate the demand is for — the standard route by which a rewrite of a perfectly stratified
+   program acquires a negative cycle. Item 11's adornment rule is sound *because* step 7 catches
+   that case and discards the candidate; without it the transformed program would be evaluated
+   under a stratification that was never valid, and the negation would consult a relation that is
+   not total. Recorded here because a step described as bookkeeping is a step a later optimisation
+   deletes.
+
    **The two stratifications differ in what a failure means, which is the whole reason they are
    separate steps.** Step 4 runs over the user's program and a negative cycle there is
    `reject/unstratified`, naming a cycle in the user's own dependency graph. Step 7 runs over a
@@ -1628,9 +1740,17 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     still not propagated is demand *through* the negated subgoal into a nested body, which cannot
     arise because a negated group is itself refused.
 
-    The stated retreat, for any negatively-reached IDB whose demand is not proven to cover what
-    the negation consults: evaluate it unadorned. It is sound and it computes the closure magic
-    exists to avoid, so it is the fallback and not the design.
+    **The retreat is stated as a trigger or it is not stated at all, and a draft of this item
+    failed that test.** It read: "for any negatively-reached IDB whose demand is not proven to
+    cover what the negation consults, evaluate it unadorned" — a side condition with no decidable
+    test behind it, which an implementer settles by never taking it or always taking it, and either
+    way the plan has said nothing. There is also nothing left for it to catch. Demand at the
+    occurrence's own adornment covers exactly what the negation consults, and the one way the
+    rewrite can go wrong — a negative cycle the transformation invented — is caught structurally at
+    step 7 of item 9's phase order, which discards the whole candidate. So the retreat is
+    **deleted**, and the fallback it was reaching for is the unmagicked one item 7 already defines.
+    Recorded rather than removed silently, because "evaluate it unadorned" is a reasonable-sounding
+    sentence somebody will propose again.
 12. **A virtual predicate is not a frozen base, and stateless resume assumes one.** Movement 4
     rests on the fixpoint being a pure function of a frozen base. True of a Complete database;
     **false of `fjord.db.*`**. `run_query` re-prepares on every request, paged ones included, and
@@ -1758,6 +1878,33 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     wrapper the executor cannot see past, so the layer that materialised the listing is the only
     one that can digest it.
 
+    **The composite is one value, so its encoding owes what a concatenation does not.** The base
+    half's Writable form ends in a variable-length instance id; append a listing digest to that and
+    two different worlds can encode identically by moving bytes across the boundary between them —
+    and an instance id is a directory name, so the input is user-supplied rather than adversarial
+    only in theory. Every variable-length field is length-prefixed, or every one but the last is,
+    and the guard is the base half's own extended to the composite: changing one field must move
+    the bytes, **and so must shifting a field boundary while keeping the bytes the same**. A
+    per-half round-trip cannot see this, because each half is unambiguous on its own.
+
+    **An absent stamp must not be the value that matches everything.** An empty stamp comparing
+    equal to itself is what lets the plain path keep working while the database-owning layer is
+    built, and it is fail-open: a caller that stamps at neither end is indistinguishable from one
+    that stamps correctly, and no test can tell them apart. `resume` taking the stamp as a required
+    argument is half the fix; the other half is that the value is a `WorldStamp` with an explicit
+    *unstamped* case rather than an empty byte string, so running without one is a keystroke
+    somebody made instead of a line nobody wrote. The engine still compares bytes and still knows
+    nothing about worlds.
+
+    **What it costs at run time belongs with the fix
+    ([the cursor defect](#a-defect-not-a-gap--a-cursor-does-not-name-the-world-it-was-made-in)),
+    with one consequence to add there: on a database being ingested into, "a read a write crosses"
+    is the common case and not the corner.** A fresh reader per chunk means every streaming query
+    and every count against a busy Writable database can now end mid-stream in a named refusal,
+    where today it silently answers a hybrid. It is the right answer and it is still a shipped
+    behaviour change: whoever lands it owes the release note, and an embedder wanting continuity
+    across an ingest owes itself a `finish` first.
+
     **A review once read "the cursor is left alone" and "the cursor names its world" as
     incompatible.** They were never incompatible, only ordered, and the order has now been
     reversed on its merits: the cursor gains the world stamp and gains no *program* knowledge, and
@@ -1776,6 +1923,17 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     whichever is chosen, the consequence is the same and has to be written down: I8's structural
     guarantee moves from `Executor` to the program driver.** Dropping an `Executor<&S>` drops a
     reference; the driver becomes the owner, and I8 stops being free.
+
+    **So it is a sealed, engine-private wrapper rather than a blanket impl, and the reason is
+    *when* the replacement arrives.** A blanket impl is public and unconditional: from the moment
+    it lands, any code anywhere can build an `Executor<&S>`, and `enumerate` consuming `self` —
+    which the registry names as I8's proof — stops implying the snapshot was released. The driver
+    that restores the guarantee, and the exit-path drop probes that demonstrate it, are Movements 2
+    and 4. That is two movements in which a load-bearing invariant holds by convention, entered by
+    a change whose own acceptance criterion tests the delegation and not the ownership discipline
+    it dissolves. A wrapper the engine owns, constructible only by the driver, buys the same
+    monomorphisation with none of that: the seam is widened for nobody else, and the window closes
+    because it never opens.
 
     It is a correctness requirement and not only resource hygiene. "The fixpoint is a function of
     a frozen base" *means* one snapshot for every rule and every round — and with item 12 it
@@ -1906,16 +2064,71 @@ read on it would wait on a stream whose server-side task had already returned. `
 third, terminal `Errored` state; `Connection::recv_stream_frame` releases a claimed stream on its
 own `ERROR`, including before a `Rows` exists and on count, while `recv_row_frame` also marks an
 open bookmark errored. The originating stream is retained so a session-level error on stream zero
-cannot recycle a still-live query id. Guarded by
+cannot recycle a still-live claimed stream id. Guarded by
 `a_mid_stream_error_ends_the_stream_the_way_complete_does` and
 `a_cancel_racing_a_terminal_error_leaves_the_connection_working`
 (`crates/fjord-client/tests/against_a_server.rs`) for the two post-description positions,
-`a_session_error_does_not_recycle_a_query_stream_that_is_still_running` for the stream-zero
-distinction, plus
+`a_session_error_does_not_recycle_a_query_stream_that_is_still_running` and
+`a_session_error_does_not_recycle_a_fetch_stream_that_is_still_running` for the stream-zero
+distinction — the latter delays the first positional `FETCHED` reply until after a second fetch,
+so recycling the live id is observed as the wrong fact rather than only in bookkeeping — plus
 `the_server_ceiling_stops_queries_and_counts_without_leaking_their_streams`: a real server under
 an injected deployment ceiling of three, proving both server charge sites and the pre-`Rows`
-count path. Each proves release rather than assuming it by checking that later work on the same
-connection **reuses** the errored stream's id. The world stamp and the fetch digest are still open.
+count path. The terminal-stream guards prove release rather than assuming it by checking that later
+work on the same connection **reuses** the errored stream's id; the stream-zero guards prove the
+opposite boundary by forcing concurrent work onto another id. The world stamp's base half is done,
+below; its listing half and the fetch digest are still open.
+
+**The plain cursor's base identity — done, second of the three, and the world stamp's `base` half
+in full.** `Cursor` gains an opaque `world: Box<[u8]>` — bytes the database-owning layer computes
+and the engine only compares, never interprets, which is what "opaque to the engine" in item 13
+above meant literally: `fjord_store_fjall::world::BaseIdentity` is the typed value, `to_bytes`
+its wire form, and neither name reaches `fjord-engine`. `Executor::build_cursor` and
+`Executor::resume` both gained a `world` parameter (a builder, `with_world_stamp`, for the former,
+since a fresh run has nothing to validate against); `resume` checks it third, after the version and
+the plan fingerprint and before the empty-cursor shortcut, for the reason the plan fingerprint's own
+check already gives — restarting is still an answer to whichever world asked. `CURSOR_VERSION` moved
+1 → 2.
+
+Two `BaseIdentity` cases, matching the two-vs-three-field split item 13 settled on:
+**`Complete { fingerprint }`** is the content fingerprint `finish` already computed, read off
+`Database` once (`Database::mark_complete`, called alongside `seal`) and re-read for free on every
+later chunk, since it cannot move. **`Writable { instance, incarnation, visible_seqno }`** is a live
+handle's write position, bracket-read around the snapshot a chunk's reader takes
+(`FjallDb::reader_stamped`, reading `Database::visible_seqno` — `#[doc(hidden)]`, pinned by the same
+fjall version this section already named — before and after `snapshot()` and keeping the reading
+only once the two agree), plus a nonce minted fresh by every `FjallDb::open` and held only in
+memory. The nonce is what turns "a sequence number recovered from what a crash left durable can be
+lower than a live cursor's stamp" from a case to reason about into a case that cannot arise: every
+reopen is a new incarnation, so every cursor from a previous one is refused, full stop — proved by a
+plain clean reopen (`store::reopening_mints_a_new_incarnation`), not a simulated crash, because the
+guarantee does not depend on anything having been lost.
+
+**What is not yet built:** the `listing: Option<ListingDigest>` half item 13 also names. `Cursor`
+carries one opaque `world` field today, not the `{ base, listing }` pair — a plain query against a
+Complete or Writable database has no need of it, and building it now would be encoding a digest this
+movement's own item 12 has not designed yet. When item 12 lands, `BaseIdentity`'s encoding (or a
+wrapper around it) gains the listing digest; `CURSOR_VERSION` moves again, and every guard below
+keeps passing unchanged, since none of them reads a virtual predicate. **Whichever way it goes, the
+encoding owes a length prefix at that moment**: `Writable`'s instance id is variable-length and
+last, which is unambiguous only while nothing follows it — see item 13.
+
+Proved server-level, over a real socket and a real `FjallDb`, because a generated `(plan, store)`
+pair in the engine's own battery holds one store for the whole property and cannot express a store
+that changes mid-resume:
+`against_a_server::a_write_between_two_pages_of_a_writable_database_is_refused` — seed, page,
+write a new fact into the same still-Writable database, resume, and the resumed page errors rather
+than silently answering from the state that existed when the second page was requested — with
+`paging_a_writable_database_with_no_intervening_write_still_works` as the negative control a
+too-broad refusal would otherwise still pass. `fjord-store-fjall` adds
+`store::visible_seqno_moves_after_a_write_and_the_snapshot_agrees`, proving the bracket names the
+snapshot it pairs with, and `world::*` proves the encoding: identical inputs encode identically,
+every `Writable` field alone moves the bytes, and `Complete` and `Writable` can never collide.
+`fjord-engine` adds `iter::an_empty_cursor_from_another_world_is_refused`, the world-stamp sibling of
+`an_empty_cursor_from_another_plan_is_refused`, and `fixtures::run_with_suspends` — the shared I4
+runner every corpus and proptest resume case already goes through — now stamps every run with a
+fixed non-empty world, so the whole existing battery exercises the new field for free rather than
+leaving it permanently at its untested default.
 
 | item | green before Movement 0 closes | deferred, and to whom |
 |---|---|---|
@@ -1923,14 +2136,14 @@ connection **reuses** the errored stream's id. The world stamp and the fetch dig
 | **2** | the schema-first catalogue property against a **dense-array model**, virtual augmentation, deterministic tags, the exact-last and one-past bounds, base-only plans and fingerprints unchanged | generated magic and delta namespace exhaustion — Movement 6 |
 | **3** | the four identity-observability refusals over hand-built IR; the canonical-id allocator mapping encoded-key rank to a sequence from one; the permutation property; the virtual fetch and cache repair | driver-level canonicality across rule scheduling and expansion strategy — Movement 3 |
 | **4** | the projection property against an independent **string-name model**; non-lexical order; same-typed reversed fields; missing, extra and duplicate fields; scalar and union heads refused by name | the full source corpus — Movement 7 |
-| **5** | the representation contract *concretely*, plus the history-sensitive work bound above | the relation implementation and simultaneous-SCC visibility — Movements 1–3 |
-| **6** | a **pure budget state machine**: overflow-safe, monotone, no overshoot, reserve/release peak accounting, exact boundaries, a named outcome per limit | mechanical proof that every driver and compiler charge site uses it — Movements 2 and 6 |
+| **5** | the key-only rule; the representation contract and the history-sensitive work bound as a **trait-level harness**, green against a deliberately obvious reference relation — evidence about the harness, not about the shipped one | the four read measurements against the real representation — **Movement 1's acceptance list**; the implementation and simultaneous-SCC visibility — Movements 1–3 |
+| **6** | a **pure budget state machine**: overflow-safe, monotone, no overshoot, reserve/release peak accounting, exact boundaries, a named outcome per limit; the retained-facts clamp to `MAX_FACT_SEQUENCE` | that charging is a **chokepoint** and not a convention — structural, discharged by the types the driver and generator hold rather than by a coverage claim — Movements 2 and 6 |
 | **7** | the pipeline and fallback obligations registered | fault injection at every transformed-candidate phase — Movement 6 |
 | **8** | the plain-path dispatch contract registered | the executable, server and inspection proof — Movement 8 |
 | **10** | the DNF product checked against an independent **truth-table evaluator**; deterministic lexicographic product order; 2×2 and deeper | the scan-amplification witness — Movement 3 |
 | **11** | negative-only and partially-bound cases registered | the magic-versus-unmagicked model property — Movement 6 |
-| **12, 13** | **all green**: the plain cursor's world stamp, mutable-catalogue paging, Writable chunking and count, the fetch digest, a malformed token, the version, and terminal-`ERROR` client behaviour | the program fingerprint and envelope, and `reads_virtual` over generated rules — Movements 4 and 8 |
-| **14** | `FactStore for &S` passes the seam battery; reference ownership introduces no hidden clone and extends no snapshot lifetime | the one-snapshot driver and every exit-path drop probe — Movements 2 and 4 |
+| **12, 13** | **all green**: the plain cursor's world stamp — as a `WorldStamp` with an explicit unstamped case, encoded so a shifted field boundary moves the bytes — mutable-catalogue paging, Writable chunking and count, the **cross-request `fjord.db.Interning` refusal**, the fetch digest, a malformed token, the version, and terminal-`ERROR` client behaviour | the program fingerprint and envelope, and `reads_virtual` over generated rules — Movements 4 and 8 |
+| **14** | the sealed reference wrapper passes the seam battery; reference ownership introduces no hidden clone and extends no snapshot lifetime; and the wrapper is **constructible only by the driver**, so I8 stays structural across the two movements before its probes exist | the one-snapshot driver and every exit-path drop probe — Movements 2 and 4 |
 | **15** | the representation selected (above); nested local names and the cross-tier collision property green; persisted-schema and protocol non-regression green | **none — this closes here** |
 
 **Where a model is named, it must be simpler than the thing it checks and share no code with it.**
@@ -1954,6 +2167,14 @@ this proof boundary exists to break. So Movement 0 writes it — compiling, igno
 Movement 3 — and the registry's line changes from "no guard is `#[ignore]`d" to naming it and its
 owner. The same treatment for every other deferred row above.
 
+**And the ledger needs a marker before it can be read as one.** `cargo test -- --ignored --list`
+already names four tests that are not guards — three child processes and a fingerprint printer —
+so "the ledger contains exactly the documented obligations" is a sentence nothing can check. A
+pending guard is written `#[ignore = "guard: <claim>, owned by Movement N"]`, and a script
+partitions the list on that prefix; a guard with no owner named, or an owner naming a movement
+that has closed, fails the same way a red test does. Without it the criterion below can be
+asserted forever and checked never, which is the habit this section exists to break.
+
 **Movement 0 closes when, and only when:**
 
 - item 15 has one selected representation and no remaining "either" or "whichever";
@@ -1966,9 +2187,36 @@ owner. The same treatment for every other deferred row above.
   unchanged, and cursor behaviour is unchanged **except** for the intentional versioned world
   stamp;
 - the ignored-test ledger contains exactly the documented downstream obligations — no more, and
-  no fewer; and
+  no fewer — **checked through the guard marker above**, not read by eye; and
 - the plain cursor's world stamp, the virtual fetch digest and the terminal-`ERROR` client
   contract are green **before** any recursive resume work begins.
+
+**And it closes in four parts, because as one it is the diff this repository's contract exists to
+forbid.** As specified this movement spans a `Cursor` layout change and a `CURSOR_VERSION` bump,
+server world-stamp plumbing, a `FETCH` protocol change, a client `Rows` state machine, a name-tier
+type parameter threaded through a published crate, a predicate catalogue, four pure models and
+ten-odd ignored guards. "Keep diffs reviewable in one sitting" is not a style rule here — the
+dominant failure mode is a large, mostly-correct diff whose wrong tenth is expensive to find — and
+this is the movement where that costs most, because every later movement is built on it. The split
+is along proof lines, and each part is green before the next starts:
+
+- **0a — the three live defects.** The plain cursor's world stamp, the virtual fetch digest and the
+  terminal-`ERROR` client contract, with the server-level I4 arms that prove them, and
+  non-regression everywhere else. In flight; the terminal-`ERROR` half is done.
+- **0b — item 15's name tier.** `PredicateTy<N>`, the nested local-name and cross-tier collision
+  properties, and the full non-regression set. It touches the most files and proves the narrowest
+  thing, which is exactly why it travels alone.
+- **0c — the pure models.** The budget state machine and its chokepoint, the canonical-id
+  allocator, the DNF product against a truth-table evaluator, the materialisation projection
+  against a string-name model, and the catalogue against a dense-array model with its tag bound.
+  Every one is a pure function with an independent oracle, and none needs the executor.
+- **0d — the seam and the ledger.** The sealed reference wrapper against the seam battery, the
+  guard marker and its script, the registry's amendments (I8's second witness, I9's third escape
+  boundary, I11's virtual carve-out), and the deferred guards themselves.
+
+The order is a dependency order rather than a preference: 0a repairs what recursion would
+otherwise be built on, 0b decides what a signature may contain, 0c is what 0b's decisions are
+checked with, and 0d is the only part that widens a seam.
 
 **Gating is about *completion*, not about starting, and an earlier draft of this paragraph
 conflated them.** A movement can be prototyped against hand-authored inputs long before the items
@@ -2030,6 +2278,13 @@ no field name, and clause rewriting needs none of it.
       cannot see (item 5): a chain-shaped fixture deriving one tuple per round, measuring bytes
       copied and allocated over the whole run rather than per open. A contiguous rebuild per round
       passes every other guard in this movement while dominating the runtime.
+- [ ] **And the history-sensitive work bound, against *this* movement's representation** (item 5).
+      Movement 0's harness measures a reference relation and therefore says nothing about this one:
+      build identical final contents twice — once in a single batch, once over N one-tuple rounds —
+      and compare an empty-range seek, a narrow seek, a point lookup and a full scan between them.
+      The batch-built relation is the oracle; the N-round one may cost a bounded factor more and
+      may not grow with N. The copy guards above cannot stand in for it, because a segmented
+      representation copies nothing and moves the same cost into reading.
 - [ ] Scan, point **and reference-follow** routing are guarded independently, including a query
       whose catalogue carries virtual predicates, a program reaching the exact last usable tag,
       and one past it.
@@ -2071,6 +2326,18 @@ is not an oracle.
 **Acceptance:**
 - [ ] Hand-built `Program`s in `fixtures` evaluate transitive closure, mutual recursion, and a
       non-recursive stratum.
+- [ ] **The naive evaluator agrees with the independent tuple-set model over generated
+      `(program, store)` pairs**, with the generator's population asserted. This is the criterion
+      the movement was missing, and it is the load-bearing one: everything downstream is
+      differentiated *against* the naive evaluator — semi-naive in Movement 3, magic in Movement 6
+      — so proving it by worked examples alone and leaving the model unused until Movement 7 rests
+      three movements of differentials on an oracle nothing has checked. Both artifacts are built
+      here; only the comparison between them was absent.
+- [ ] **A stratum is exactly one condensed SCC, demonstrated by the case that fails if it is
+      not**: two non-recursive local relations where the reader is declared *before* the relation
+      it reads, answering identically to the same program written in dependency order. Item 1 makes
+      the forward reference legal and the loose reading of `Once(Box<[Rule]>)` answers it empty, so
+      this is a wrong answer no other criterion in this movement or the next reaches.
 - [ ] Every limit from Movement 0 item 6 has a named terminal error and a test that provokes it.
       Never a silent truncation.
 - [ ] Non-termination is refused by a **decidable static rule**, not by a semantic aspiration.
@@ -2092,6 +2359,14 @@ is not an oracle.
       and base-only computations stay legal. It rejects exactly the hand-written `depth : int`
       recurrence the [deferred closure operator](#deferred-the-closure-operator-as-sugar-over-this)
       already names as a trap. The round and fact limits remain the backstop, not the rule.
+
+      **And it is complete only because `ExprKind::Arith` is the one expression that invents a
+      value** — `Lit`, `Var`, `Wildcard`, `Prefix`, `Record`, `Access`, `Select`, `Disjunction`,
+      `Subquery` and `Fact` all draw from the active domain, so a head field built from them ranges
+      over a finite set and the fixpoint terminates. That is a fact about today's grammar, not a
+      property of the design. So the checker matches `ExprKind` **exhaustively, with no wildcard
+      arm**: the day a value-producing construct is added, this rule fails to compile until
+      somebody classifies it, rather than silently admitting a second way not to terminate.
 - [ ] The local-reference-cycle case needs no analysis, because Movement 0 item 3 forbids a local
       relation as a local relation's field type — a positive test that the *declaration* is
       refused, not a graph validator.
@@ -2119,7 +2394,10 @@ this feature does not need.
       another rule's same-round output, are both caught by tests built to make them.
 - [ ] Focused properties for two recursive occurrences in one rule, mutual recursion with
       cross-rule output, one tuple derived through two clauses, and a **permutation of source
-      declaration order** answering identically in the same number of rounds.
+      declaration order** answering identically in the same number of rounds. The two-occurrence
+      case is built so that **both atoms must be satisfied from the same round** — the derivation
+      that is lost when the accumulated snapshot excludes its own delta (item 5b, step 0), and the
+      only shape that tells the two readings of `A_r` apart.
 - [ ] **The census requires mixed disjunctive levels**, or item 10's hole stays open under a
       green differential: a level mixing a recursive alternative with a base one, a level with
       two recursive alternatives, and either followed by sibling conjuncts. A generator that
@@ -2206,7 +2484,18 @@ rather than by a second proof.
       the failure the mutation table exists to catch. Plus a rebuild in a fresh process yielding
       the same fingerprint, proving identity allocation is stable.
 - [ ] `resume_equals_uninterrupted` extended to `Program`s, with the generated interruption
-      schedule — suspend at every boundary, in every combination.
+      schedule — suspend at every boundary, in every combination — **and with every limit set
+      unreachable, stated in the property rather than left to the fixture.** Limits reset per chunk
+      (item 6), so the interruption schedule *is* a budget multiplier: a suspend-everywhere run is
+      entitled to many times the work of a suspend-never one, and a generated fixture anywhere near
+      a ceiling makes the property disagree for a reason that is not a resume defect. Unstated,
+      that arrives later as a flake and is repaired by turning limits off — which deletes the
+      coverage quietly, in the property that matters most.
+- [ ] **Limits crossed with resume are their own criterion, at a *fixed* schedule**: one
+      interruption point, a limit placed to fire before it and a limit placed to fire after it,
+      each producing the same named refusal the uninterrupted run produces, and never a short
+      answer. That is the honest statement of what per-chunk charging buys, and it is what the
+      criterion above stops trying to say at the same time.
 - [ ] **I4 has server-level arms for every mutable source** (items 12 and 13). The catalogue is
       mutated between two `query_page` calls; a cursor is replayed against a *different*
       same-schema database with overlapping fact ids and keys; and ingest lands between two chunks
@@ -2417,10 +2706,12 @@ part most likely to be re-cut once the machine is real. Shape follows Movement 0
       between two evaluators that share a lowering bug.
 - [ ] End-to-end property: source compilation plus execution equals Movement 2's independent
       tuple-set model, over a canonical source generator whose census asserts recursion, mutual
-      recursion, multiple clauses, stratified negation, **non-lexical signature order**, and
-      multiple adornments — **plus a scalar and a union top-level signature, each refused by
-      name** (item 4). A census that never emits one lets a record-only implementation pass as an
-      implementation of the full type grammar, which is the shape of the gap that was found.
+      recursion, multiple clauses, stratified negation, **non-lexical signature order**, a
+      **forward reference between two non-recursive local relations** — legal by item 1, and
+      answered empty by the loose reading of a `Once` stratum — and multiple adornments — **plus a
+      scalar and a union top-level signature, each refused by name** (item 4). A census that
+      never emits one lets a record-only implementation pass as an implementation of the full
+      type grammar, which is the shape of the gap that was found.
 - [ ] Corpus entries classify every new construct, and every new diagnostic code is reachable or
       excused.
 - [ ] Query disjunction still means one multi-source level — **and so does a disjunction inside a
@@ -2472,11 +2763,11 @@ than unions, bigger than the browser build. Revised upward after review.
 
 | Cost | Detail |
 |---|---|
-| **Movement 0** | Fourteen settled decisions before any implementation: four gating representation, three gating Movement 3, one gating Movement 2, two gating Movement 4 — one of them filed as a defect besides. The first draft of this section assumed all fourteen |
+| **Movement 0** | Fifteen settled decisions before any implementation: five gating representation, three gating Movement 3, one gating Movement 2, two gating Movement 4 — one of them filed as a defect besides. The first draft of this section assumed all of them, and the sixth round turned them into a proof boundary. It lands in **four parts** (0a–0d), because as one diff it is not reviewable in a sitting |
 | **A prerequisite outside the feature** | A **rows-examined ceiling**, because every limit this feature adds is output-side and a recursive rule that scans a huge base and produces nothing evades all of them. **Built** — `Executor::with_examined_ceiling`, counted in the existing per-row tick. It was the only item here that was missing code rather than a missing decision; its scope is one executor, so the driver still owes the aggregation (item 14) |
 | **Two defects it inherits** | A cursor names a plan and nothing else about the world it read — not the database, not the listing. Both are live [I4](website/content/invariants.md#i4) holes today, both are recorded in [operational gaps](#operational-gaps), and recursion cannot be correct until they are fixed *there* rather than inside an envelope |
 | **A published type that cannot say what a local field is called** | `PredicateTy` carries raw `Spur`s and the codec resolves them as schema symbols unconditionally (item 15). Either that type gains `Symbol` — a workspace-wide change to a published crate — or local signatures are restricted. Not a movement's parenthetical; it decides what a signature may contain |
-| **A seam that has to move** | `Executor` owns its store and `enumerate` consumes it, which *is* I8's structural proof. A fixpoint runs many plans, so ownership moves to the driver and I8 stops being free — see item 14 |
+| **A seam that has to move** | `Executor` owns its store and `enumerate` consumes it, which *is* I8's structural proof. A fixpoint runs many plans, so ownership moves to the driver and I8 stops being free. Through a **sealed engine-private wrapper**, not a blanket `impl FactStore for &S`: a public one lets anything build an `Executor<&S>` from the moment it lands, two movements before the drop probes that replace the guarantee — see item 14 |
 | **A predicate catalogue** | Threaded through `lower`, `ty`, `flatten`, diagnostics and inspection — everywhere `Schema::get` and `Schema::find_position` are reached today. Not a module, a seam |
 | **New modules in `fjord-engine`** | `relation`, `program`, `stratify`, `magic`, plus a fixpoint driver. `flatten`/`reorder`/`compile` are *reused per rule*, not rewritten |
 | **Grammar work in two places, now larger** | The signature is a schema-style type, and the type grammar lives in `fjord-schema::syntax` while the query grammar lives in `fjord-engine`. Clause union lands on the same seam. Sharing the type grammar across two `lelwel` grammars is its own task, not a parenthetical; duplicating it is a second source of truth for what a type is |
