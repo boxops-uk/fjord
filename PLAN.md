@@ -24,6 +24,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 | [The read-path benchmark](#the-read-path-benchmark-against-glean) | planned, with predictions | a quiet machine and the indexed corpus |
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
 | [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
+| [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not | [Movement 0](#movement-0--semantics-and-seams): eight semantics-and-seams decisions, four of them gating representation |
 | [Operational gaps](#operational-gaps) | each named with the seam that keeps it cheap | — |
 | [Language backlog](#language-backlog) | additive; none reshapes the machine | — |
 
@@ -711,7 +712,8 @@ Each is a *specified* absence with the seam that keeps it cheap — none is an o
 | `db verify` | Recomputing the content fingerprint is cheap and specified; the two structural at-rest checks to add are I1 and I12 after a crash-and-recover |
 | Per-predicate stats, and `:stat` | An **exact** O(1) count per predicate exists unread — per-predicate keyspaces plus insert-only make fjall's `approximate_len()` reliable. Surface as a virtual predicate (the `fjord.db.List` shape); record at `finish` into the versioned sidecar. Spend it on pruning, not join ordering |
 | Server-side reference expansion | A **flag on the query message, not a fourth query kind** — expansion stays orthogonal to paging, profiling, counting. Collapses depth-many round trips into one, which is what makes `--expand` usable over TCP; the predicate allowlist is the better dial than depth. The client-side path stays (it is what makes `:expand` retroactive) |
-| A deadline on the cancellation stride, and a byte budget in the chunk accumulator | The cost model charges one budget (rows per page); a pathological query can only be stopped by whoever holds the token, which on a shared server is an availability hole. A coarse monotonic read every 4096 rows is free at our row costs |
+| A **wall-clock deadline** on the cancellation stride, and a byte budget in the chunk accumulator | What is left of this row after the rows-examined ceiling landed. A coarse monotonic read every 4096 rows is free at our row costs, and it is what would bound a *slow* chunk rather than a *large* one — the two differ once a store is remote or a disk is degraded. The byte budget is the other half: a chunk is bounded in rows and not in bytes, so a page of very wide rows is unbounded in memory |
+| ~~Rows examined~~ **— done** | Kept visible because its absence shaped the recursion plan. `Executor::with_examined_ceiling`, set by the server per executor: the engine's only limit on *input*, where every other budget counts output and a query whose residuals reject every row produces nothing while reading everything. One executor is one chunk only while a chunk is one plan — a fixpoint driver owes the aggregation |
 | Per-stream flow-control windows | Bounded per-stream queues + connection backpressure in the meantime |
 | Retention | `db rm` exists and the filesystem is the catalog, so a policy is a caller, not a mechanism. "Keep the newest *n* Complete instances" is the shape |
 | Provenance / freeform properties | The sidecar format is versioned; both are descriptive-only under `ops-I4` |
@@ -720,7 +722,1782 @@ Each is a *specified* absence with the seam that keeps it cheap — none is an o
 | fjall keyspace tuning | **Measure, do not assume.** Options are fixed at creation, so a comparison builds a database per setting; needs a real-scale corpus. Until then fjall's defaults are the answer |
 | `hasRefs` precomputed per predicate | Consulted before walking a fact's references; prerequisite for cheap expansion, not an alternative to it |
 
+### A defect, not a gap — a cursor does not name the world it was made in
+
+Everything above is a *specified* absence. What follows is not: two live
+[I4](website/content/invariants.md#i4) violations in shipped code, recorded here because they
+were found while reviewing recursion and must not be fixed only inside that feature. They are one
+defect wearing two faces — **a resume token identifies a plan and nothing else about the world it
+read.**
+
+#### The base database
+
+`Executor::resume` checks the cursor's version, its plan fingerprint and its level count. None of
+those says *which database*, and the executor says so itself: a test is not re-run on restore
+partly because the base is frozen, "against a different database, which is a case the token cannot
+detect at all". So a cursor can be replayed against another Complete database with the same schema
+and overlapping keys, and the per-level `fact_id` check is all that stands between that and a
+wrong answer — a check that passes whenever the saved key exists there too.
+
+**And "the base is frozen" is conditional, which the rest of this plan reads as though it were
+not.** `ops-I2` is established by refusing a *write-mode* open of a Complete database; a **read**
+session against a **Writable** one is supported, and every chunk takes a fresh `reader()`. So
+ingest between two pages changes what the next page sees, and the result is not a refusal but a
+hybrid: page 1 from one state, page 2 from another. Recursion makes this worse rather than
+different — re-derivation recomputes the whole fixpoint from the changed base.
+
+The fix is the same shape as below and belongs in the same place: **the database's content
+fingerprint or instance identity becomes a general cursor stamp**, not a recursion envelope field.
+For a Writable database that is not enough, because the identity does not move as facts arrive:
+`meta` records a fingerprint at `finish` and holds none at all while the database is Writable —
+"absent rather than zero", by deliberate choice, because a fact count on a Writable database would
+be a claim rather than a fact.
+
+**A draft of this section answered that by refusing resumable reads until the database is
+Complete. That answer is withdrawn, because "resumable" is much larger than it looks.** Resume is
+not a paging feature in this server. `run_query` streams *every* result in `CHUNK_ROWS` chunks,
+and each chunk takes a **fresh `reader()`** — a fresh snapshot — through `run_chunk`; the `count`
+path does the same. So an ordinary unpaged `where`, and a bare `count`, already suspend and resume
+internally against a new view of the database each time. Refusing resumable reads on a Writable
+database therefore does not refuse paging: it refuses **every server query and every count against
+a database that is still being ingested**, before a row description is ever sent. That is most of
+what a Writable database is for, and the paragraph proposing it had not noticed it was proposing
+it.
+
+**So the generation gets built, and it costs far less than the dismissal assumed.** That dismissal
+— "a counter on a live write path is a great deal of machinery" — priced a counter this project
+would have to maintain. It does not have to: `FjallStore` holds a `fjall::Snapshot`, which *is* a
+position in a sequence, and `Database::visible_seqno` reads the very counter that stamped it. A
+reader capture that reads the visible seqno, opens the snapshot, reads it again and keeps the
+value only if the two agree names that snapshot exactly, and adds one atomic load to a path that
+already takes a lock. It is monotone by construction and coordinates with ingest not at all. The
+real cost is a **dependency on a pinned version's internals** — and a draft of this paragraph got
+that dependency wrong, claiming only `Snapshot::seqno` was `doc(hidden)`. Both are:
+`Snapshot::seqno` and `Database::visible_seqno` alike carry `#[doc(hidden)]` in
+`fjall = "=3.1.8"`, so the bracketed
+reading buys a *stable* value, not a supported API, and there is no third option that avoids the
+internals. The pin is what makes it tolerable, and a fjall bump owes this a check either way.
+
+**A seqno alone is not a world identity, because it does not survive a reopen — and cursors
+explicitly do.** `fjall` reconstructs its sequence on open by taking `get_highest_seqno() + 1` over
+what it *recovered*, and a Writable database's writes are not necessarily fsynced: `persist` is an
+explicit act that `finish` calls, so a crash can lose committed-but-unsynced tail writes. The
+recovered sequence is then **lower** than a live cursor's stamp, subsequent ingest reissues those
+numbers over different content, and the instance directory is unchanged because a Writable database
+carries no identity to change. A stamp of `{ instance, seqno }` matches, and the I4 hole is back —
+now behind a crash, which is where the expensive bugs live.
+
+**So the Writable stamp carries an incarnation: `{ instance, incarnation, visible_seqno }`.** The
+incarnation is a nonce minted when the handle is opened and held in memory beside it — nothing
+persisted, because persisting it is what a crash is allowed to lose. Every reopen therefore mints a
+new one and **every Writable cursor from a previous incarnation is refused**, which is
+conservative, correct, and free of any reasoning about what the recovery kept. A Complete database
+needs none of this: its stamp is the content identity `finish` computed after `persist`, which is
+restart-stable by construction, so the common case of a cursor outliving the process keeps working
+exactly as it does today. The seqno is still needed *within* an incarnation, where it is the only
+thing that moves; the incarnation is needed *across* one, where the seqno can move backwards.
+
+**The rule is then uniform and small: a chunk boundary revalidates the stamp exactly as a page
+boundary does.** On a Complete database the stamp cannot move, so nothing is ever refused and
+today's behaviour is untouched — which is the common case and the one performance matters in. On a
+Writable one, a read that no write crosses completes normally, and a read a write *does* cross is
+refused by name, mid-stream, instead of returning a hybrid of two states. Refusing mid-result is
+unpleasant; it is strictly better than the current behaviour, which is to return the hybrid and
+call it an answer. Holding a single snapshot across the whole request is the obvious alternative
+and it is rejected deliberately: releasing at every chunk *is*
+[I8](website/content/invariants.md#i8), and pinning a snapshot for the lifetime of a slow client's
+stream is the thing that rule exists to prevent.
+
+Its guards: a resume against a *different* same-schema database with overlapping fact ids and
+keys; ingest between two `query_page` calls; and — the arm a paged-only framing misses — ingest
+between two internal **chunks** of an unpaged streaming query, and between two chunks of a
+`count`, each refused by name rather than answered from two states. A recursive program adds a
+fourth: re-derivation between count chunks, where the two partial counts come from different
+fixpoints.
+
+And a fifth, which only the incarnation catches: **a cursor taken, the handle reopened with the
+recovered sequence rewound, and the same sequence numbers reissued over different content** —
+refused on the incarnation, with the negative that a Complete database's cursor survives the same
+reopen. A test can build this directly by reopening a Writable database whose tail writes were
+never `persist`ed, which is the honest reproduction rather than a simulated one.
+
+#### The virtual predicates
+
+The second face, and the one that needs no second database at all.
+`catalogue`'s charter says the rows are materialised once per query and shared by every chunk, so
+"a `create` between two pages is invisible to the result in flight". That is true of the path it
+was written against — the shell's `\more` drains one already-open stream — and **false of
+`Connection::page`**, the stateless path a web tier uses. There, each page is a *new request*:
+`run_query` re-prepares the query and `prepare` rebuilds the listing from the registry. So a
+`create`, `rm` or an interning counter moving between two pages renumbers the listing under a
+cursor that is a *position* in it, and the resumed read silently skips or repeats rows. Cursor
+validation cannot catch it: the query text and schema are unchanged, so the plan fingerprint
+matches.
+
+**The fix is the cursor, not the catalogue.** Carry the listing's generation in the cursor and
+refuse a resume across a change, by name — the same shape as every other thing a cursor already
+refuses to resume into. Freezing the listing across unrelated requests is the wrong trade: it
+would make the server hold state for a path whose whole purpose is not to.
+
+Its guard is a server-level test that mutates the catalogue between two `query_page` calls, for
+both an ordinary scan and — once recursion lands — a `Program`. The reason this survived is worth
+recording: the differential and the resume property both run over a frozen `MemStore`, where a
+mutable source cannot be expressed, so neither could ever have failed.
+
+#### The fetch round trip
+
+A third face, and the one a cursor cannot reach at all. `FETCH` is its own request: it
+rematerialises the catalogue from the registry, then resolves each asked-for id against **that**
+listing. So a query can return a virtual id from listing L1, the catalogue can change, and a fetch
+with an empty cache resolves the id against L2 and answers for a different database. No cursor is
+involved, so no cursor stamp can catch it, and clearing a client cache cannot either — the
+first-ever resolution is already wrong.
+
+**This is documented behaviour rather than a discovery, and that is exactly why it is written down
+here.** `session::fetch`'s own comment says a catalogue row's id "is its position in the listing
+that produced it, so a database created or removed between a query and a fetch can move it", and
+concludes: "It is a handle into a view, not an identity." A design that says so out loud is not a
+bug; a *plan* that then claims item 12's listing digest makes stale virtual ids detectable is
+wrong, and it said so until this round. The digest travels in a cursor. A fetch carries no cursor.
+
+**The mechanism, selected rather than listed: the listing digest travels with the rows and comes
+back on the fetch.** A result containing virtual ids reports the digest of the listing that minted
+them, the client returns it in `FETCH`, and the server refuses by name when the current listing
+digests differently. It keeps the property that makes this path worth having — the server holds no
+per-result state between requests — where tying fetch to a server-held result would trade exactly
+that away, and refusing virtual whole-row references outright would delete `fjord query --expand`
+over `fjord.db.List`, a shipped feature, to fix a race in it.
+
+**It does not gate recursion, and the reason is not scheduling convenience.** A plain
+`where fjord.db.List {..}` with `--expand` has this race today, in full. Recursion adds no new
+surface to it: item 3 refuses `Project::FactRef` of a *local* row, so the only virtual ids a
+program can put on the wire are the ones a base scan would have put there anyway. There is no
+recursion-shaped half to fix early — unlike the base-database stamp, where a program genuinely
+cannot be correct without one — so this is fixed once, for both, in the protocol.
+
+Its guard is the one the cursor tests cannot express: mutate the catalogue between a query
+returning a virtual id and the **first** fetch of it, with an expander that has cached nothing, and
+require a named refusal rather than a row from the wrong database.
+
 ---
+
+## Recursion — query-local relations, magic sets, stratified negation
+
+**Goal.** A query may define named relations in its own text, those relations may refer to
+themselves and to each other, and negation over them stays sound. The worked example is the
+one five features in [`docs/gitnexus.md`](docs/gitnexus.md) are blocked on:
+
+```sigla
+with Reach : { from : src.Decl, to : src.Decl } =
+    ( {from = A, to = B} where src.Calls {from = A, to = B} )
+  | ( {from = A, to = B} where Reach {from = A, to = M}; src.Calls {from = M, to = B} )
+
+{name = D.name, file = D.module.file} where
+  src.SearchByName {name = "encode", to = Seed}; Reach {from = Seed, to = D}
+```
+
+**Status: amended over six rounds of adversarial review, and the sixth ends the design loop**
+([`docs/recursion-plan-adversarial-review.md`](docs/recursion-plan-adversarial-review.md)).
+The architecture survived all six; the boundaries around it did not. **Movement 0 exists because
+of that review**, and after the second round it gates *selectively* rather than wholesale:
+**Movement 1's routing, snapshot and allocation work is unblocked and should start**, because it
+depends on predicate routing and the owned-scan representation and on nothing the compiler
+findings touch — but it **must not freeze `RelationDecl`'s field-name representation**, which is
+item 15's and is the one representation question the movement touches without owning. What gates
+**Movement 3** is item 9 — a program of named rules, which semi-naive and magic both rewrite and
+neither can be tested without.
+
+Three findings were outright errors rather than omissions — a wrong invariant citation, an
+acceptance criterion written against a wall-clock deadline this project does not have, and a
+claim that this engine has no logical rule IR when `syntax::Ast` is one — and all three are
+corrected in place rather than footnoted. The second round also found four gaps the first
+missed, and the last of them is not about recursion at all: **ephemeral fact ids already escape
+to the wire today**, so item 3's rationale describes an existing contract rather than a new
+risk, and is written that way below.
+
+**The third round found one uncovered region, three internal contradictions and one missing
+generalisation.** The uncovered region is the only one of the five that blocks building:
+cancellation is polled in exactly one place, `Deadline::tick`, per row, inside `advance` — so
+candidate deduplication, cross-round snapshot merging and canonical-id finalisation observe no
+token and no budget at all, and item 14 now owes work units of its own. The contradictions were
+item 10's phase order, Movement 4's purity claim and item 4's materialisation contract; the
+generalisation was item 7's fallback trigger.
+
+**The fourth round found that three amendments had been scoped to recursion when the defect they
+answered was general, and it overturned one of the third round's rejections.** The scoping
+failures share a shape — a fix written into the part of the system that noticed the problem — and
+each is now widened at the item that made it: item 13's world stamp covers plain cursors and not
+only program envelopes; item 7's magic-versus-fallback selection moves to after flattening,
+because the failures that force the fallback are produced by semi-naive expansion rather than by
+magic generation; and the refusal of resumable reads on a Writable database is withdrawn, because
+every server query already resumes internally per chunk and the refusal would have taken the
+whole feature. Item 3's open "either" is closed with a selected contract, for the same reason a
+plan does not ship a branch nobody owns.
+
+**The fifth round found that two of the fourth round's own amendments were unsound as written, and
+one missing compiler phase.** The unsound pair are the two places where a fix reached for the
+nearest available value: `visible_seqno` is not a world identity across a reopen, because `fjall`
+recovers its sequence from what survived and a Writable database's tail writes need not have been
+`persist`ed — so the stamp gains an **incarnation**; and scoping a virtual `FactId` to its listing
+does not make `FETCH` sound, because a fetch is its own request that rematerialises the catalogue
+and resolves positions against it, which no cursor stamp is present to catch. The missing phase is
+**re-stratification of the magic candidate**: magic and supplementary relations change the
+dependency graph, and both the unstratifiability fallback Movement 6 promises and semi-naive's own
+notion of which occurrences are recursive were reading the *source* program's SCCs. Two narrower
+corrections landed with them: the `fjord.db.Interning` refusal is narrowed to cross-request
+resume — it had acquired the same over-broad phrasing the Writable refusal was withdrawn for —
+and a mid-stream refusal is now owed as a *client* contract, because `next_row` releases a stream
+only on `COMPLETE`.
+
+**The sixth round stopped reviewing the design and reviewed the *evidence*, which is what closed
+it.** Its finding was that Movement 0 recorded decisions without converting them into anything
+falsifiable: fourteen of fifteen items could be satisfied by prose, one item still offered a
+choice, and the ledger and this plan each described an intended guard as though it existed. So
+Movement 0's acceptance is now a **proof boundary** — every assertion classified green-here,
+owned by exactly one named ignored guard, or explicitly evidence of nothing — with a per-item
+table, independent models for the three properties that need them, barriers rather than sleeps for
+the two concurrency guards, and a completion checklist. Three substantive changes came with it:
+item 15 selects a representation (a name-tier type parameter, so a persisted schema *cannot*
+hold a local name rather than being validated not to); item 5 gains a history-sensitive work bound,
+because the copy guards permit a segmented relation that moves the quadratic cost into reading; and
+the world stamp goes into the plain `Cursor` **first**, which deletes the transitional token
+format and repairs three live non-recursive defects before recursion is built on them.
+
+**What was challenged and rejected is recorded beside the item that provoked it, so a later round
+does not re-derive it:** the claim that a versioned cursor layout and a database stamp are
+*incompatible* (item 13 — they are sequenced, not simultaneous), the claim that both branches must
+be compiled through every phase eagerly (item 7 — retaining the rule set buys the same guarantee
+without paying on every successful compile), and the claim that item 15 blocks Movement 1 outright
+(the acceptance note below — it blocks one field of one struct), and the claim that the `FETCH`
+race blocks recursion (the [fetch round trip](#the-fetch-round-trip) — a plain `--expand` over
+`fjord.db.List` has it in full today, and item 3's refusal of `Project::FactRef` on a local row
+means a program can put no virtual id on the wire that a base scan would not have). **One earlier
+rejection is withdrawn rather than defended**: the third round's ruling that DNF expansion leaves
+scan work unchanged was wrong. It counted the innermost level, where the cross product really is
+identical, and missed that every *prefix* level is re-entered once per clause. Item 10 now carries
+the arithmetic and Movement 3 owes a guard measuring it.
+
+**Query-local rather than schema-declared, decided.** The two forms need the same three
+things — a name, a signature, a body — so they differ in *where the declaration lives*, not in
+power. Query-local wins the first round because it enters no **database schema** fingerprint,
+forces no re-index, and lets an ad-hoc question be asked without a schema change. It still
+enters the **program fingerprint** in full, and the distinction is load-bearing: the first
+governs what a client and a database must agree about, the second governs what a cursor may
+resume into. The cost it accepts is that a query-local relation can never become `stored`, so
+it is re-derived per query and **demand seeding is load-bearing rather than an optimisation** —
+which is why magic sets are in the first implementation and not deferred behind it.
+
+### The mechanism we cannot copy
+
+Glean's fixpoint writes facts *into the database* mid-query and loops while `firstFreeId`
+grows (`Codegen.hs:1412-1465`). That is structurally unavailable here and the reasons are all
+load-bearing: `FactStore` is `scan` + `point` with no write, a queried database is sealed, and
+`fjord-engine` depends on the seam and never on a backend. Glean also rejects SCCs larger than
+one predicate, so mutual recursion is out on that side too — this design goes further than the
+reference implementation rather than after it.
+
+### The shape: a `Program` of plans, and an executor that does not change
+
+The seam is the extension point. A derived relation is an in-memory relation the engine owns,
+addressed by an engine-local predicate identity, and the executor reads an overlay of frozen
+base ∪ derived. Because the two identity spaces are disjoint, the overlay **dispatches** rather
+than merges — the same prefix-disjointness argument `ops-I8` already makes for stored
+derivation.
+
+```rust
+struct Program {
+    relations: Box<[RelationDecl]>,   // local identity + declared physical key layout
+    strata:    Box<[Stratum]>,        // topological order
+    answer:    Plan,                  // streamed, exactly as today
+}
+
+enum Stratum {
+    Once(Box<[Rule]>),                            // no recursion: run each plan once
+    Fixpoint { seed: Box<[Rule]>, step: Box<[Rule]> },
+}
+
+struct Rule { plan: Plan, into: LocalPredicate, project: Materialise }
+```
+
+**Every phase is "run an ordinary `Plan`, materialise its rows".** A rule's sink is a consumer
+of the existing iteratee seam — the `step` callback that already exists — so the fixpoint
+driver sits *above* `enumerate` and nothing inside `advance` changes. Three consequences, and
+they are the reason this shape was chosen over any other:
+
+- **`Step` keeps its three variants.** The architectural rule holds: no new case in the driver,
+  no new case in the cursor, no new obligation on resume per construct.
+- **A query with no `with` block compiles to today's `Plan` and runs on today's
+  `Executor<S>`**, monomorphised as it is now. It never constructs an overlay and pays nothing.
+- **Semi-naive's delta/accumulated distinction is two local relations**, not an `Access`
+  change — so a Δ-rule is an ordinary plan and the seek path is untouched.
+
+**What that claim does *not* cover, corrected after review.** "The executor does not change" is
+true and remains the reason for this shape. It is not the same as "recursion is cheap to
+build". A recursive query additionally needs a predicate catalogue threaded through lowering,
+typecheck and flatten; a snapshot discipline for relations that satisfies an *owned* scan seam;
+and an explicit materialisation projection. None of those is in the executor, and all of them
+are real work — see [what it costs](#what-it-costs).
+
+**The relation store lives in `fjord-engine`, not in `fjord-store-mem`.** Reusing `MemStore`
+would grow the `fjord-engine → fjord-store` edge into a backend, which `dependency_closure`
+exists to fail — and it would make the engine depend on the differential oracle its own
+batteries are judged against.
+
+### Movement 0 — semantics and seams
+
+**The gate, and what it does *not* gate.** Every item below is a decision the rest of the plan
+silently assumed and that the code does not currently support. **An earlier draft said "none is
+implementation; all are settled-decision work", and that is what stopped this movement being a
+proof boundary** — a written answer is a claim, and this section is where the claims are supposed
+to become falsifiable. Most items still resolve to a decision plus a guard that fails first; three
+resolve to code that must be *green* before anything recursive is built on it (items 12 and 13's
+world stamp, the fetch digest, and the terminal-`ERROR` client contract), and one resolves to a
+representation change (item 15). What each item owes, and when, is the proof-boundary table at the
+end of this section rather than a sentence per item. **Do not fix the relation representation,
+the id scheme or the grammar before items 1, 2, 4 and 5 are closed** — each of the others depends on
+what they decide. **Items 9, 10 and 11 gate Movement 3, not Movement 1**: clause rewriting
+needs a program of rules and a settled answer to what a rule *is*, and the relation store needs
+none of it. **Item 14 gates Movement 2**, because a driver that cannot run two plans over one
+snapshot cannot run a fixpoint at all. The one prerequisite outside this list — a rows-examined
+ceiling, without which every limit in item 6 is output-side and blind — **is built**.
+
+1. **Clause union has a surface, an AST and a semantics.** The recursive definition is a union
+   of whole rules, each with its own head and conjunctive body — which is *not* what `|` means
+   today, where a disjunction is one level with alternative `Source`s that deliberately does not
+   distribute over sibling conjuncts. That meaning must not change. The worked example above is
+   written in a spelling that **appears to parse under the current grammar** — a disjunction of
+   subqueries, `sum '|' sum` with each branch reaching `'(' pattern 'where' stmt_list ')'` — so
+   the delta may be semantic rather than syntactic; confirming that is this item's first task,
+   and inventing bracket syntax before confirming it is the failure mode. **The confirmation has
+   a head start:** a disjunction branch must today be a *fact pattern* — anything else, a
+   subquery included, is `nyi/disjunction` — so the worked example parses and is then diagnosed,
+   which is evidence for the semantic reading rather than the syntactic one.
+
+   **The four sub-questions, answered rather than listed.** They are not cosmetic: a duplicate
+   clause is a no-op for the *answer* and for nothing else. It becomes a second generated rule,
+   so it moves the generated rule count, the rule-output-attempt tally, the profile, and — because
+   generated rules are fingerprinted — the program fingerprint itself, which decides whether a
+   cursor resumes.
+
+   - **Two declarations of one name: reject** (`reject/duplicate-relation`). Schema-first
+     resolution gives one name one signature; two declarations have no agreed signature, and
+     merging them silently is how a typo becomes a union.
+   - **Duplicate clauses within one declaration: retained, never deduplicated.** Dedup is a
+     semantic no-op that hides a user error and inserts a normalisation step between the source
+     and its fingerprint. Retaining them means the limits and the profile report what actually
+     ran.
+   - **Canonical order is source order.** Deterministic, a function of the text, and already what
+     `Placement::Written` respects.
+   - **Forward references and mutual recursion are both legal**, which the rest of this section
+     assumes and which nothing in the pipeline needs to be told twice.
+2. **A predicate catalogue exists, and `Schema` is left alone.** `PredicateId` is a predicate's
+   **position in a dense array** (`schema.rs`: "`predicates` is in id order"), so the reserved
+   high band this section first proposed would require a multi-million-element sparse prefix and
+   is withdrawn. What replaces it: an engine-side catalogue presenting base and local
+   declarations uniformly, consumed by `lower`, `ty`, `flatten`, diagnostics and inspection
+   wherever predicate metadata is needed today, leaving the published dense `Schema` and the
+   fingerprint embedded in a database untouched. **There are two identity spaces and they must
+   not be conflated:** the catalogue's resolution space, and the `FactId` tag space that
+   `FactId::new` bounds at `MAX_TAGGABLE_PREDICATE`. If item 3 lands as internal-only, the tag
+   space can be reused per query and needs no band at all — but **reused per query is a claim
+   about queries, and disjointness still has to hold *within* one.** The bound to check before
+   any executable or relation is built, with overflow-safe arithmetic and a named diagnostic:
+
+   ```text
+   augmented_predicate_count + generated_local_count <= MAX_TAGGABLE_PREDICATE + 1
+   ```
+
+   **`augmented`, not the database's own count.** `fjord-server` appends its catalogue schema
+   to every database's, and reserved names sort last so appending moves no stored id — which
+   means a server-compiled query sees *more* predicates than the database declares, and local
+   tags starting above the stored count would land on `fjord.db.*`. Allocation is deterministic
+   and dense within the query; the guards are a catalogue with virtual predicates present, the
+   exact last usable tag, and one past it.
+3. **Local identities are refused inside compilation, not stopped at the wire.** A local row
+   still has a `FactId` — `FactStore::Scan` yields one per row and there is no way not to mint
+   it — and semi-naive gives one tuple two of them, one in the accumulated relation and one in
+   the delta relation. So "internal-only, enforced at every output boundary" is the wrong
+   boundary: a local identity can decide another *derived* key long before any row reaches a
+   wire. **Enforced where identity becomes observable instead**, which is four constructs and no
+   others: `Project::FactRef`, `SeekKeyPart::RegisterFactId`, `ResidualOp::EqRegisterFactId`,
+   and `Source::Fetch` onto a local target.
+
+   **One declaration rule makes three of the four unreachable by construction.** A local
+   relation's signature may not name another local relation as a field type. All three
+   register-identity forms compare against or follow a *fact-typed field*, and a base schema can
+   never name a query-local predicate — so with that rule they arrive only on a hand-built plan,
+   which is exactly how `Source::Fetch`'s own cross-predicate check is already treated, and they
+   are tested the same way. That leaves **one** refusal needing front-end work:
+   `Project::FactRef` of a local row, which is what `X where Reach X` spells.
+
+   Stated as a limitation rather than discovered as one: a derived tuple cannot reference
+   another derived tuple, so path reconstruction is out of the first cut. That is the price of
+   internal-only identity, and it is what buys delta-as-a-second-relation in item 5. A fetch
+   *through* a local row's field stays legal when that field's declared referent is a base
+   predicate — which is the worked `Reach` case exactly, since its fields hold `src.Decl` ids
+   and the `Reach` row's own identity is never read.
+
+   **Identities are assigned canonically, in encoded-key order — not in the order tuples
+   arrived.** This is not a tidiness preference: `Executor::resume` **hard-compares** the saved
+   `fact_id` against the re-derived row's and answers `BadResumeKey` when they differ, and item
+   3's refusals do not help, because that check is inside the executor and applies to every
+   register whatever the language can observe. So derived identity stability is already a
+   requirement of resume, with a badly-named error waiting behind it.
+
+   Assign by insertion order and every one of these becomes a resume-compatibility surface: rule
+   scheduling, rectangular versus triangular expansion (item 5b), and the snapshot representation
+   (item 5). Assign in encoded-key order and a derived id is a function of *content*, so all
+   three become invisible to a cursor and none of them has to be pinned in a fingerprint to stay
+   safe. A sorted snapshot has that order to hand already.
+
+   **When it is assigned is not a detail, and the naive reading does not work.** A tuple's rank in
+   encoded-key order *changes* as later rounds insert tuples before it, so "assign by rank" cannot
+   mean assign at derivation. It means: **the ids of a relation are minted when that relation is
+   finalised** — at convergence for an accumulated relation, at the end of its stratum for a
+   `Once` one — and every id a rule sees *during* the fixpoint is arbitrary and unobservable,
+   which item 3's four refusals are what make safe. That is sound because nothing else can reach
+   one: the answer plan scans only finalised relations, and a suspend mid-fixpoint is not
+   representable (Movement 4), so a finalised rank is the only derived identity a cursor can ever
+   hold. Rank counts from **one**, because sequence 0 is reserved and `FactId::new` refuses it,
+   and the relation's cardinality is bounded by `MAX_FACT_SEQUENCE` like any other predicate's. Versioning the assignment algorithm
+   into the envelope is the fallback if canonical assignment turns out to cost too much — it
+   makes upgrades refuse cleanly instead of failing obscurely, which is strictly worse than not
+   needing to.
+
+   **The rationale must not claim this is a new risk, because it is not.** `Catalogued` already
+   mints ordinary `FactId`s for virtual rows, a whole-row `Project::FactRef` over one is
+   accepted, `fjord-server::rows` writes the id straight to the wire, and
+   `fjord_client::expand::Expander` caches by `FactId` alone for the life of a **shell session**
+   — resting, in its own comment, on I11's promise that an id is never reused. But a catalogue
+   id is a *position in a listing*, and a new query relists. So: list databases, create one that
+   sorts earlier, list again in the same session, and a cached entry answers for the wrong
+   database. That is a live identity-scope hole in a shipped feature, not a hypothetical one
+   recursion introduces.
+
+   **The choice is made here rather than left as an "either", because an open branch inside a
+   settled movement is a decision nobody owns.** The two candidates were: give a virtual id a
+   documented lifetime and scope every cache to it, or make virtual identity content-derived so an
+   id survives a relisting. **The lifetime wins, and the alternative is not merely less
+   convenient — it does not fit.** A `FactId` is a snowflake: a 24-bit predicate tag over a 40-bit
+   sequence, minted through `FactId::new`, which reserves sequence 0. Content-derived would mean an
+   injective map from a database name into 40 bits with nowhere to keep an allocation table — the
+   catalogue materialises its listing per request from a directory walk and persists nothing. A
+   hash instead of a map collides, and two databases sharing an id is the same wrong answer by a
+   longer route.
+
+   **The selected contract: a virtual `FactId` is valid only within the listing that minted it,
+   and nothing may cache one across requests.** `Catalogue::of` assigns the sequence from
+   `rows.into_iter().enumerate()` — the id *is* the row's position — so this states what the id has
+   always meant rather than restricting it. Three consequences follow, all owed here rather than by
+   recursion: [I11](website/content/invariants.md#i11) gains an explicit carve-out, because "an id
+   is never reused" is a promise about stored facts that virtual rows do not keep and `Expander`'s
+   comment currently cites in its general form; `Expander` drops its cached entries for virtual
+   predicates at every request boundary, which needs no new index because a `FactId` carries its
+   predicate in its high three bytes; and the *first* resolution of a virtual id needs a mechanism
+   of its own, because cache scoping cannot reach it.
+
+   **That third consequence corrects a claim this plan made and could not support.** An earlier
+   draft said item 12's listing digest makes a stale virtual id detectable. It does not, outside a
+   cursor resume: `FETCH` is a separate request that rematerialises the catalogue and resolves
+   positions against the listing it just built, so an expander with an empty cache resolves a
+   correctly-scoped id against the wrong listing and no digest is anywhere near the exchange. The
+   scoping rule above is still right and still necessary — it is what makes caching *across*
+   requests illegal — but it is not sufficient, and the sufficient part is
+   [the fetch round trip](#the-fetch-round-trip), which is a protocol change and not a recursion
+   one.
+
+   Proved by a test that changes the catalogue between requests while an expander is alive, so the
+   aliasing is *observed* rather than reasoned about — and by its negative, a cached entry for an
+   ordinary stored fact surviving the same boundary, since clearing everything would be a
+   correctness fix that quietly deletes the cache's reason to exist.
+4. **Rule heads are reconciled with declared key order.** A local signature's declaration order
+   is physical key order; a query's head record is **sorted by name at lowering**
+   (`lower.rs:465`). Encoding a projected record straight into a `RelationDecl` therefore puts
+   values under the wrong physical fields, and same-typed fields make it silent while the
+   relation still scans and decodes consistently — answering reversed edges. The answer is an
+   explicit name-to-declared-position materialisation projection, requiring exactly the declared
+   field set, rejecting missing, extra and duplicate fields at the declaration's contract layer.
+
+   **Record-only in the first cut, stated as a restriction rather than left to be discovered.**
+   `Predicate` holds `key: PredicateTy` — a **bare** type, not a record wrapper — so `int` and a
+   union are both legal top-level predicate keys today, and "a local relation reuses the schema
+   type grammar in full" therefore promises `with Count : int` and `with T : <A | B>` heads that
+   the projection above does not define: a scalar head has no field set to reconcile, and a union
+   head needs the head expression to carry a discriminant, which nothing here says how to produce.
+   The gap is not academic — left open it admits either an undocumented record-only
+   implementation of a wider promise, or an invented wrapper encoding at the head of a relation.
+   **So a local relation's top-level type must be a record**, refused by name
+   (`reject/non-record-relation`); scalar and union heads are a later cut that owes the projection
+   its own definition, and Movement 7's census asserts the refusal so the restriction cannot pass
+   silently for the full grammar.
+5. **The owned-scan representation is settled and costed.** `FactStore::Scan` is an owned
+   associated type with no lifetime, so a `BTreeMap::range` iterator cannot be returned from
+   `scan(&self)` — `MemStore` copes by cloning the matching range into a `Vec`. Doing that for
+   an accumulated relation means a relation-sized clone **per scan open**, and semi-naive opens
+   the accumulated and delta relations once per rule per round, with magic adding more. The
+   shape to reach for is an immutable `Arc`-backed sorted snapshot per round, which also
+   supplies 5b. If the answer is instead a GAT on `FactStore`, that is a workspace-wide seam
+   change and gets priced as one rather than assumed.
+
+   **The naive reading of "a snapshot per round" is quadratic, and no limit in item 6 can see
+   it.** Rebuild a contiguous accumulated snapshot each round and a chain deriving one tuple per
+   round copies 1 + 2 + … + N. Retained bytes measures peak *live* memory, attempts measures rule
+   outputs, and Movement 1's allocation guard forbids a relation-sized clone per scan or per open
+   — so all three stay green while snapshot construction dominates the runtime.
+
+   **So the representation is persistent or segmented, and a round shares its predecessor's
+   storage. The budgeted-rebuild alternative is withdrawn.** A budget bounds the blast radius and
+   not the complexity: a contiguous rebuild is still quadratic right up to the point it refuses,
+   and refusing is the wrong answer to a legitimately deep chain. Leaving both options open also
+   left Movement 1's categorical guard with nothing consistent to guard. That guard is
+   chain-shaped, measuring bytes copied **across rounds** rather than per open.
+
+   **And the copy guards do not close the hole they look like they close: a segmented
+   implementation can move the quadratic cost from building to *reading*.** Keep one segment per
+   round and construction is O(1) per round, opening a scan allocates nothing, and no relation-
+   sized clone happens anywhere — every guard above stays green — while `next`, a narrow seek and
+   a point lookup each consult an unbounded number of historical segments. The relation becomes
+   *history-sensitive*: its read cost depends on how many rounds produced it rather than on what
+   it holds, which is the same asymptotic defect wearing the other face. Nothing in the copy
+   guards can see it, because nothing is copied.
+
+   **So the criterion is representation-independent and stated over work, not over layout:** a
+   relation's read cost is bounded by its **final size**, not by the number of rounds that built
+   it. The test builds identical final contents twice — once inserted in a single batch, once
+   over N one-tuple rounds — and compares four measurements between them through a counter the
+   representation increments: an empty-range seek, a narrow seek, a point lookup, and a full
+   scan. The batch-built relation is the oracle; the N-round one may cost a bounded factor more
+   and may not grow with N. Retained-byte accounting includes **segment and index metadata**, or
+   a segmented representation reports the tuples and hides its own bookkeeping.
+
+   This is deliberately not a vote for persistent over segmented. A segmented representation that
+   compacts, or bounds its segment count, passes it; only the one-segment-per-round implementation
+   fails, and that is the implementation the present criteria permit.
+
+   **The overlay half of this is already answered and should not be re-litigated.**
+   `Catalogued<S>` declares `type Scan = Scan<S::Scan>` — an enum sum over the wrapped store's
+   scan and its own — so `Overlay<S>` is choosing the *relation* side of a sum whose shape
+   ships. What is genuinely open is only the relation's own snapshot.
+
+   **5b. Round visibility is a simultaneous SCC transition, not a per-rule freeze.** "A rule
+   must not observe its own insertions" is necessary and not sufficient: freezing per rule lets
+   a later rule see an earlier rule's same-round output, which still reaches the least fixpoint
+   for positive Datalog but makes round numbers, work limits and profile counts artefacts of
+   declaration order. That matters here for a specific reason — **the deferred closure operator
+   below defines minimum BFS depth as the round of first derivation**, so an order-dependent
+   round number would quietly cost that feature. The transition to write down:
+
+   1. every rule in the SCC reads the same accumulated snapshot `A_r` and delta snapshot `Δ_r`;
+   2. a rule with `k` recursive occurrences contributes one delta variant per occurrence;
+   3. the selected occurrence reads `Δ_r`; every non-selected recursive occurrence reads `A_r`;
+   4. candidates for every predicate in the SCC stream into one shared deduplicator;
+   5. `Δ_(r+1) = candidates - A_r`, visible to every rule only at the next round; and
+   6. the SCC converges when every predicate's next delta is empty.
+
+   **Step 3 is the rectangular expansion, and that is a choice, not an oversight.** It is
+   complete, and it re-derives any tuple whose derivation matches `Δ_r` at two or more atoms —
+   wasted work that step 5 deduplicates away, never a wrong answer. The triangular form (`A_r`
+   before the selected occurrence, `A_(r-1)` after) removes those duplicates and is deliberately
+   *not* taken first. Writing that down is the point: otherwise it lands later as a "bug fix"
+   while silently moving the rule-output-attempt counts item 6 budgets and the profile numbers
+   5b exists to keep stable.
+6. **Resource limits cover work and bytes, not just cardinality — and none of them is
+   semantics.** Named, separate limits for retained facts, retained encoded bytes, rows examined,
+   rule-output attempts, fixpoint rounds as a defensive backstop, and generated program size
+   (adorned, magic and supplementary relations are produced at compile time and are themselves
+   unbounded).
+
+   | Limit | Charged over | Scope | Reset | Outcome |
+   |---|---|---|---|---|
+   | Retained facts | every relation live in the program | one fixpoint derivation | per chunk | `limit/retained-facts` |
+   | Retained encoded bytes | the same, **peak live** | one fixpoint derivation | per chunk | `limit/retained-bytes` |
+   | Rule-output attempts | every rule of the executable | one fixpoint derivation | per chunk | `limit/rule-attempts` |
+   | Fixpoint rounds (backstop) | each SCC | one fixpoint derivation | per chunk | `limit/rounds` |
+   | Generated program size | the executable, **incrementally** | one compilation | per compilation | terminal for *mandatory* expansion; **falls back** for the magic rewrite — see item 7 |
+   | Rows examined | **one executor** | see below | per executor | `FjordError::ExaminedCeiling` |
+
+   **The classification is performed here rather than promised, and the answer is uniform: all of
+   them are deployment policy. None is semantics, none enters the program fingerprint.** An
+   earlier draft split them — some semantic and fingerprinted, some policy — and then tried to
+   keep the semantic ones optimiser-independent by charging them over the *logical* program. That
+   does not work, and the reason is worth keeping because it is the shape of the whole question:
+   **magic deliberately derives fewer tuples of the user's own relations.** `P^bf` holds the
+   demanded subset of `P`, so "retained facts of the logical program" is a different number
+   depending on whether magic ran; attempts and rounds are worse, since defining them
+   independently of the optimiser would mean evaluating the unmagicked computation, which is
+   precisely what magic exists to avoid.
+
+   So the contradiction is resolved by giving it up. **A limit refuses; it does not change an
+   answer**, and a reproducibility claim is about answers. Two consequences follow directly and
+   both are improvements:
+
+   - **Magic's guarantee narrows to *static* validity** — parse, typecheck, safety, stratification
+     — which is what it should always have said. An optimiser changing whether a query hits a
+     resource ceiling is ordinary and unremarkable; an index that makes a query fit a timeout is
+     the same phenomenon and nobody calls it a semantic change. An optimiser changing which
+     programs are *well-formed* is the thing worth forbidding, and item 7 still forbids it.
+   - **What overflows decides whether there is a fallback at all.** Mandatory expansion — the
+     semi-naive variants, and item 10's disjunction normalisation — has nothing to fall back
+     *to*, so overflowing it is terminal. The magic rewrite is optional by definition, so
+     overflowing it falls back to the unmagicked executable that was already in hand.
+   - **Nothing falls back at runtime.** A limit reached during derivation is simply a refusal, so
+     fallback stays a compile-time decision — which is what keeps the selected executable a pure
+     function of source, schema and engine build, and therefore what lets item 13 validate a
+     cursor cheaply, before a row description, instead of after a fixpoint.
+
+   The consequence to state rather than hide, the same one rows examined already carries: **a
+   resumed request can be refused by a limit its first page was never measured against**, because
+   policy can change between two pages and no cursor pins it.
+
+   **Two things a cardinality limit does not bound.** First, *peak live representation*:
+   accumulated and delta indexes, per-round snapshot state, candidate-dedup state, magic and
+   supplementary relations and their metadata are all live at once, so "retained encoded bytes"
+   must either charge the peak or declare and mechanically guard a strict multiplier from logical
+   payload to it. Second, *generation itself*: a generated-program limit checked after adornment
+   does not stop adornment exhausting memory, so it is enforced incrementally, before each adorned
+   relation or rule is allocated. Candidates stream through deduplication and the limit check for
+   the same reason — an unbounded per-rule candidate buffer is the materialised-result-set
+   anti-pattern under another name, and the anti-pattern list is right to call it one.
+
+   **Charging per derivation and resetting per chunk is what resume needs**: every chunk
+   re-derives the same fixpoint from the same frozen base, so every chunk reaches the same limit
+   at the same point, and a resumed read behaves like an uninterrupted one. A ceiling on total
+   work **across a paged read is therefore not listed at all**, and its absence is deliberate:
+   each page is a new request and the cursor is client-held, so a cumulative counter has nowhere
+   to live that a client cannot reset. It is not a policy dial that has yet to be built — it is
+   unavailable in a stateless model, and it returns only with a portal, as portal state.
+
+   **The rows-examined row is the one to read twice, and it is the only one already built.**
+   It was a prerequisite rather than a decision: **every other limit above is output-side**, so a
+   recursive rule that scans an arbitrarily large base and produces zero candidates leaves
+   retained facts, bytes, attempts and rounds all reading zero while the work is unbounded. Until
+   it existed, such a rule was stoppable only by whoever held the cancellation token.
+
+   It ships as `Executor::with_examined_ceiling`, counted in the tick that already runs per row
+   for the cancellation stride and the profile, and set by the server from
+   `session::EXAMINED_CEILING` — chosen from the measured ~400 ns/row floor so that a chunk is
+   bounded at roughly 25 seconds of scanning and still sits about seven times above the largest
+   predicate in the published corpus. Default is unlimited, because an embedded caller reading
+   its own database is entitled to no ceiling at all.
+
+   **Its scope is one executor, and "per chunk" is true only while a chunk is one plan.** The
+   tally is private state on the `Executor`, and a fixpoint builds a new one per rule per round —
+   so N rules would each be entitled to the whole ceiling, and a program could examine N times
+   what the server thinks it capped. Nothing is wrong in the shipped code, because there is no
+   driver yet to aggregate across; what is wrong is any claim that the ceiling is per chunk for a
+   `Program`. **The driver owns one remaining budget** (item 14), seeds each rule's executor from
+   it, and decrements it by work actually done — and the acceptance criterion is the aggregate
+   one: several rules, each individually under the ceiling, exceeding it only together.
+
+   The mechanical note for whoever builds it: `enumerate` consumes `self`, so there is no
+   read-back. `Profile` is the natural carrier — it is already threaded through every chunk and
+   already *added into* rather than replaced, so a scalar examined total on it gives the driver
+   its decrement and gives `--profile` the per-program figure Movement 8 wants anyway.
+
+   **Checked per row, not on the cancellation stride**, and that is not a preference: the
+   `step` path rebuilds its deadline per call, so `since_poll` restarts at zero and a
+   stride-checked ceiling would never fire for a caller driving the machine by hand. Polling a
+   token earns its stride; a `u64` compare does not need one. **Neither it nor the cancellation
+   token reaches the driver's own work**, which is why item 14 now owes work units of its own
+   rather than only a budget to hand down.
+
+7. **Magic failure falls back; it never changes what the language accepts *statically*.** The
+   qualifier is load-bearing and was added after the limits in item 6 turned out to be policy:
+   magic guarantees that a program which parses, typechecks, passes safety and stratifies keeps
+   doing so — and guarantees nothing about whether it exhausts a resource, because resource
+   exhaustion is not a property of the language. Fallback is therefore **compile-time only**: an
+   unstratifiable transformed program, or a rewrite that overflows the generated-program limit
+   while the unmagicked executable fits. See Movement 6.
+
+   **The trigger is structural, not a list of error kinds — and a list is what a draft of this
+   item wrote.** Enumerating "unstratifiable, or generated-program overflow" leaves every other
+   compile-time failure of the transformation outside the guarantee, and one is already reachable:
+   **execution-tag exhaustion**. Generated magic and supplementary relations consume the same
+   bounded namespace item 2 bounds, so near `MAX_TAGGABLE_PREDICATE` a program whose unmagicked
+   form fits can be rejected outright for relations that were optional by definition. That is
+   magic deciding what the language accepts, which is the one thing this item forbids.
+
+   So the pipeline is ordered rather than the errors classified: **the unmagicked rules are
+   retained, the magic form is carried through every downstream phase, and only a candidate that
+   finishes compiling is selected.** Item 6 already calls the fallback "the unmagicked executable
+   that was already in hand" — this makes that literal.
+
+   **The selection point is after flattening, not after magic generation, and putting it earlier
+   was a hole rather than a wording slip.** Step 6 of item 9's phase order generates magic rules;
+   steps 7, 8 and 9 re-analyse the candidate, generate semi-naive variants and flatten. Select at
+   step 6 and every failure this item exists to catch lands *after* the decision has been taken: it
+   is a supplementary relation's **delta variants** that exhaust the tag namespace, semi-naive
+   expansion that pushes a rewrite past the generated-program limit, and the *transformed*
+   dependency graph that turns out to hold a negative cycle — none of the three is visible when
+   magic generation returns. So the branch is not chosen until step 9 has succeeded for it, and any
+   failure at 6 through 9 unique to the magic branch discards the candidate and runs steps 7 to 9
+   over the retained unmagicked rules instead.
+
+   **Unstratifiability of the candidate is a member of that set, not a case beside it.** Movement 6
+   named it first and treats it as the fallback's motivating example, which is how it came to be
+   written as though it were the *only* structural trigger. It is one, and it is caught the same
+   way as the resource ones: step 7 fails, the candidate is discarded, no diagnostic is emitted,
+   and the unmagicked rules carry on. That is the point of stating the trigger as a pipeline order.
+
+   **What is retained is the rule set, not a second compiled executable.** Compiling both branches
+   all the way through 7 and 8 eagerly, as a review proposed, buys exactly the same guarantee and
+   pays for it on every *successful* magic compile — which is the case the transformation exists
+   for. The unmagicked rules are in hand at step 5 already and cost nothing to keep, and their SCCs
+   are step 4's, already computed and unaffected by a rewrite that was discarded; the baseline is
+   re-analysed and flattened only if the fallback is actually taken.
+
+   **And "a mandatory failure is terminal" means mandatory in the *baseline* branch.** A failure
+   the unmagicked rules produce too — a program that overflows the limit or exhausts the tags with
+   no magic in it — is terminal, because there is nothing to fall back to and nothing optional
+   caused it. Only a failure unique to the transformed branch falls back. The guarantee then
+   follows from the shape of the pipeline, and no compile-time failure mode invented later can
+   leak out of a list nobody remembered to extend.
+8. **The executable seam is specified**: a `PreparedQuery`/`Executable` sum preserving the exact
+   no-`with` fast path, the program fingerprint's coverage, the program profile model, the
+   server paging and count path, `reads_virtual` over every rule rather than one plan, and the
+   recursive `I8` guard. The token that carries the fingerprint is item 13; the snapshot the
+   guard is about is item 14. See Movements 4 and 8.
+9. **A program of named rules exists, over the AST this engine already has.** Adornment and
+   semi-naive variant generation are *clause* rewrites: they need head arguments, ordered body
+   atoms, polarity, variables and spans. `Plan` has erased all of that. **What they do not need
+   is a second query IR** — `syntax::Ast` already retains every one of them (`ExprKind::Var`,
+   `ExprKind::Fact`, `QueryStmt::Negation`, node ids carrying spans), and inventing a parallel
+   logical IR would be a second source of truth for what a query is, the same objection this
+   plan already makes to duplicating the type grammar. What is missing is the *program*: several
+   named `Query<NodeId>` rules over one syntax store, **plus the answer goal as a distinguished
+   rule** — see Movement 6, which cannot seed anything without it.
+
+   **The SIPS seam exists too, and it is `collect`, not `Plan`.** `flatten::Collected` holds the
+   statements, `Deps` and head reads, and is built *before* an order is chosen; `Deps` is
+   symbol-level `captures`/`reads` with no plan structure in it. So the refactor is to make
+   collection runnable over an arbitrary rule body independently of plan emission — after which
+   adornment reads the collected statements plus `reorder`'s frontier order, and reconstructs
+   nothing. The phase order that falls out:
+
+   1. lower declarations into a program of named rules over the existing syntax tree;
+   2. resolve and typecheck the program;
+   3. run `collect` per rule for its statements and symbol dependencies;
+   4. validate recursive safety (Movement 2's termination rule) and stratify the source program;
+   5. **normalise the bodies of the rules about to be rewritten** — item 10, which needs step 4's
+      answer and is exactly why it is not step 1;
+   6. generate magic rules;
+   7. **re-collect, re-SCC and re-stratify the transformed candidate** — its own dependency graph,
+      not the source program's;
+   8. generate semi-naive variants; then
+   9. flatten each executable rule to an ordinary `Plan` — with 6 through 9 run over the magic
+      candidate first and **the transformed-versus-unmagicked selection made only once step 9 has
+      succeeded for it**, because the failures that force the fallback are produced at 7, 8 and 9
+      rather than at 6 (item 7).
+
+   **Step 7 is not bookkeeping, and its absence was a hole rather than an omission.** Magic and
+   supplementary relations are new predicates with new edges, so the transformed program's SCCs are
+   *not* the source program's: Movement 6 states outright that the rewrite can unstratify a
+   stratified program, and nothing downstream of step 6 was in a position to notice. Semi-naive
+   needs the answer for a second reason that has nothing to do with negation — a delta variant is
+   generated per recursive occurrence, and which occurrences are recursive is a fact about the
+   *transformed* SCC membership. Source stratification metadata is insufficient before the
+   negation question is even asked.
+
+   **The two stratifications differ in what a failure means, which is the whole reason they are
+   separate steps.** Step 4 runs over the user's program and a negative cycle there is
+   `reject/unstratified`, naming a cycle in the user's own dependency graph. Step 7 runs over a
+   program the compiler wrote, and a negative cycle there **emits no diagnostic at all**: it
+   discards the candidate and takes the unmagicked fallback, because reporting a cycle the
+   optimiser invented as though the user had written one is precisely what Movement 6 forbids. A
+   single stratification pass reused for both is how that distinction gets lost.
+
+   Every static refusal in this section is checked at step 4 or earlier, which is what lets a
+   diagnostic name a source variable and a span. A language rule checked after step 9 would be
+   a language rule living downstream of an optimiser — and normalisation sitting at step 5 means
+   no refusal is ever stated over a body the compiler rewrote.
+10. **A rule body is normalised to disjunction-free form; a query body is not.** A disjunction
+    is one level with one alternative per branch (`flatten.rs`, and every branch must be a fact
+    pattern today). Semi-naive is defined "per recursive occurrence", and a level mixing a
+    recursive alternative with a base one belongs to neither half of the seed/step split:
+
+    ```sigla
+    with P : { x : int } = ( {x = X} where P {x = X} | base.Seed {x = X} )
+    ```
+
+    Classified as a step rule, it has no seed, so Δ starts empty and the fixpoint terminates at
+    zero. Retain the base alternative inside every delta variant instead and it re-runs every
+    round, so a variant produces output without consuming its selected delta — which inflates
+    round counts, attempt limits and profiles, and can reach a resource limit the naive
+    evaluator never approaches.
+
+    **The rule: a body normalises to the *product* of its disjunctive statements**, before
+    adornment and before delta generation. Not one rule per branch: a body is a conjunction, so
+    `(A | B); (C | D)` is the four clauses `AC`, `AD`, `BC`, `BD`, and
+    anything less answers differently. `conjoined_disjunctions_do_not_multiply` already writes
+    the arithmetic down from the other side — "three two-branch disjunctions in conjunction are
+    2³ = 8 clauses if the alternation is distributed over the conjunction, and 3 levels of 2
+    sources if it is not".
+
+    **When, and to which rules — a draft said "every rule body, at step 1", and that contradicted
+    this item's own carve-out.** SCC membership is not known until step 4 of item 9's phase order,
+    so a step-1 expansion cannot honour the promise below that non-recursive strata keep today's
+    multi-source levels — while retaining everything breaks the seed/step classification this item
+    exists to fix. So normalisation is **step 5, after stratification**. The reorder is free, and
+    that is the part worth writing down rather than re-deriving: dependency edges are drawn per
+    body *occurrence* and a disjunction's branches are occurrences either way, so the SCCs computed
+    over the original bodies are the ones expansion would have produced, and expanding afterwards
+    adds and removes no occurrence — stratification cannot move underneath it.
+
+    **The expansion set is the rules about to be rewritten, which is *not* the recursive ones.**
+    Adornment is a clause rewrite over ordered body atoms, so a magicked *non-recursive* IDB rule
+    needs a disjunction-free body exactly as a delta variant does. The set is therefore **every
+    rule that is adorned or delta-generated**; "recursive rules only" is the narrower rule that
+    would hand a disjunctive body to adornment and rediscover this at step 6.
+
+    **Expansion does cost scan work. The third round of this plan recorded a rejection saying it
+    did not; that rejection is withdrawn here rather than quietly deleted.** The reasoning behind
+    it was that a multi-source level already enumerates the full cross product — level 0
+    concatenates `A` then `B`, level 1 concatenates `C` then `D` per row of it, and
+    `AC + AD + BC + BD` is the same four combinations the four clauses run. True of the
+    *combinations*, and false of the *scans*, because it counts only the innermost level. Level 0
+    is entered once by the multi-source plan and once per clause containing its branch by the
+    expanded one:
+
+    | level | multi-source | four clauses |
+    |---|---|---|
+    | 0 | `a + b` | `2a + 2b` |
+    | 1 | `(a+b)(c+d)` | `(a+b)(c+d)` |
+
+    The deepest level is unchanged; every prefix level is multiplied. With `d` two-branch
+    disjunctions the factor at depth `k` is `2^(d-k-1)`, so the outermost scan is repeated
+    `2^(d-1)` times — bounded by the generated-program limit, since the factor is just the clause
+    count, but exponential *within* that bound. And it bites hardest in exactly the case the
+    cross-product argument looks safest in: when a later level is empty or highly selective the
+    prefix is the whole cost, so the amplification is the query's cost rather than a rounding
+    error on it.
+
+    **That makes it a resource consequence, not a bookkeeping one, and it is therefore measured.**
+    Rows examined, the examined ceiling, cancellation timing and refusal behaviour all move with
+    it: a rewritten rule can reach `EXAMINED_CEILING` where the same rule unexpanded would not, so
+    expansion can change a query's *answer* from rows to a refusal. Movement 3 owes a store-spy or
+    profile guard over a rule with two disjunctions and an empty third level, asserting the
+    measured amplification is the predicted `2^(d-k-1)` and no worse — a number, so a regression
+    reports itself instead of appearing as a timeout. Movement 3 rather than 6 because delta
+    generation is the first thing that expands a body, so an expanded rule exists there before
+    magic does. What expansion moves *besides* scans stands
+    as first written: the rule count, the rule-output-attempt tally, the profile and the program
+    fingerprint.
+
+    **And this is DNF expansion — at the rule level — which is worth admitting rather than
+    defining away.** An earlier draft said it was not, on the grounds that the anti-pattern is
+    about the executor's level shape. That distinction is true and it hides the cost: the
+    combinatorics are identical, and calling it something else makes the generated-program limit
+    look like caution rather than the necessity it is. The anti-pattern stays satisfied because
+    a *query* still compiles to levels of sources and no plan is ever DNF-expanded; what expands
+    is a rule, into more rules, and the limit in item 6 is what bounds it.
+
+    **Two carve-outs, without which this fix breaks something else.** This is *rule-body*
+    normalisation and it reaches only the rules named above: the answer plan, and every rule
+    neither adorned nor delta-generated, keep the one-multi-source-level meaning — so Movement 7's
+    "query disjunction still means one multi-source level" holds unchanged. And the answer goal,
+    now a distinguished rule, is normalised **only to generate demand**: the plan that actually
+    streams keeps its disjunctive shape, or `|` would quietly mean something else in exactly the
+    query a person wrote.
+
+    The guard belongs on both sides of that line, and today only one side has one: a disjunction
+    inside a **non-recursive, unmagicked local relation** must still compile to one multi-source
+    level, which `a_disjunction_is_one_level_with_a_source_per_branch` asserts for a query alone.
+    Movement 7 owes the local-relation arm.
+11. **A predicate reached only through negation still gets demand.** Magic keeps the rules
+    demand reaches. A local recursive relation whose only use is a ground `!Blocked {x = X}` in
+    a higher stratum therefore derives nothing, and the negation passes for everything — while
+    the transformed program stays perfectly stratified, so Movement 6's unstratifiable-fallback
+    never fires. Answer equality against a small fixture will not find it either.
+
+    **A negated occurrence is not ground, and a draft of this item claimed it was.** The claim
+    was that `reject/unbound-variable` makes every negated occurrence fully bound, so its demand
+    is a single tuple. That rule constrains **variables**, and `_` is not one: an omitted field
+    *is* a wildcard (`ty.rs` — "an omitted field is a wildcard, so `test.Edge {from = 1}` is any
+    edge from 1"), and a wildcard inside a negation is legal and tested
+    (`!test.Edge {from = X, to = _}`). So `!Blocked {from = X, to = _}` adorns `bf`, not `bb`,
+    and a rewrite that seeds one ground tuple derives an incomplete `Blocked` and lets the
+    negation admit rows it should reject.
+
+    **The rule, stated over adornment instead.** Demand for a negated occurrence carries **that
+    occurrence's own adornment**, partially bound included, and propagates into the callee's
+    defining rules exactly as a positive call of the same adornment does. `magic_Blocked^bf(X)`
+    computes precisely the `Blocked` tuples with `from = X`, which is exactly the set the
+    negation must consult — sound for a stratified program, and no machinery adornment does not
+    already need. Groundness was never what made this work; the adornment string was. What is
+    still not propagated is demand *through* the negated subgoal into a nested body, which cannot
+    arise because a negated group is itself refused.
+
+    The stated retreat, for any negatively-reached IDB whose demand is not proven to cover what
+    the negation consults: evaluate it unadorned. It is sound and it computes the closure magic
+    exists to avoid, so it is the fallback and not the design.
+12. **A virtual predicate is not a frozen base, and stateless resume assumes one.** Movement 4
+    rests on the fixpoint being a pure function of a frozen base. True of a Complete database;
+    **false of `fjord.db.*`**. `run_query` re-prepares on every request, paged ones included, and
+    `prepare` rebuilds the listing from the registry — so between two `query_page` calls the
+    catalogue can change, the program fingerprint still validates, and the fixpoint is re-derived
+    from different facts. Item 3's identity scoping does not help: stable ids do not freeze
+    contents, and a local relation may legally hold a *virtual* reference, since item 3 forbids
+    only local-to-local.
+
+    **This is not recursion's defect and must not be fixed only here.** A positional cursor into
+    a renumbered listing already skips or repeats rows for an ordinary query — see
+    [the cursor defect](#a-defect-not-a-gap--a-cursor-does-not-name-the-world-it-was-made-in).
+    Recursion inherits the fix and makes the consequence worse, because re-derivation recomputes
+    everything from the changed facts rather than mis-ordering one page.
+
+    The decision: **carry a digest of the materialised listing into the cursor** — as half of the
+    composite world stamp item 13 puts in the plain `Cursor`, before any recursion work depends on
+    it — **and refuse on mismatch.** A *counter* cannot do this job:
+    `Catalog::list()` walks the live directory tree with no snapshot and no registry lock, and
+    create, remove and finish each become visible in more than one step, so a counter can stamp a
+    listing captured mid-mutation with the same number as a later, different one. A digest over the
+    encoded rows the catalogue already builds is self-consistent by construction, needs no
+    coordination with the lifecycle at all, and fails in the safe direction: a torn capture hashes
+    to something no consistent listing matches, so the resume refuses rather than proceeding on a
+    state that never existed. It turns a silent wrong answer into a named refusal and matches what a
+    cursor already claims: that it names the world it was made in. Refusing recursive paging over
+    virtual predicates outright costs more than the problem is worth. Proven by a **server-level**
+    test that mutates the catalogue between `query_page` calls; a generated frozen `MemStore` cannot
+    reach this, which is why it has survived. The mutation-between-pages test is necessary and not
+    sufficient: it says nothing about whether the listing and its stamp were captured consistently,
+    so create, remove and **finish** each need a case *during* capture — `finish` especially, since
+    it moves status, facts and bytes at once.
+
+    **The two virtual predicates are not alike, and one of them has no snapshot to number.**
+    `materialise` builds the listing and the interning counters together, but the counters are
+    read by taking every interning stripe's lock in turn — so that capture is not point-in-time
+    even as it happens, and the values move with every write. A generation makes `fjord.db.List`
+    resumable; nothing can make `fjord.db.Interning` resumable, because there is no stable thing
+    to number. So they split: a generation for the listing, and **`fjord.db.Interning` refused by
+    name in a resume that crosses requests**. Numbering a value that thrashes on every ingest
+    would produce a cursor that is always stale, which is a refusal with extra steps. Guards for
+    counter movement and for mutation *during* capture, not only for a changed listing.
+
+    **"Crosses requests" is the whole of the refusal, and a draft wrote "any resumable or recursive
+    read", which is much larger and would have taken the predicate off every execution path.** Every
+    server query resumes internally, so read literally that phrasing refuses `fjord.db.Interning` to
+    plain `where` and to `count` as well — the same over-broad consequence that got the Writable
+    refusal withdrawn one section above, arrived at by the same route.
+
+    **The catalogue and the base database are asymmetric here, and the asymmetry is the reason the
+    narrowing is safe rather than a concession.** A chunk boundary takes a fresh `reader()`, so the
+    *base* genuinely moves under an unpaged stream and its stamp must be revalidated per chunk. The
+    catalogue does not: `prepare` materialises the listing and the counters once, and `run_query`
+    clones that same `Arc` into every chunk of the result. Within one request the counters are
+    therefore fixed, a fixpoint over them is well defined, and there is nothing to refuse. What is
+    genuinely unsafe is stateless paging — `query_page`, where each page is an independently
+    prepared request that rematerialises the counters — and that is where the refusal lands, beside
+    the listing digest, which travels in a cursor for exactly the same reason.
+
+    **A virtual predicate read only by a rule reads as empty, silently.** `catalogue::reads`
+    walks **one plan's** body, and `prepare` asks it about the answer plan alone. In a `Program`
+    the answer may read only a local relation while a seed or recursive rule reads `fjord.db.*`
+    — no `Catalogue` is built, the bare store is passed, the scan routes to fjall, which has no
+    such keyspace, and the relation is *empty*. A wrong answer, not an error. So
+    `Executable::reads_virtual` traverses the answer plan **and every generated rule**, and
+    Movement 8 owes a program whose virtual predicate appears exclusively in a derivation rule.
+
+13. **The resume token is an envelope; the executor's `Cursor` is left alone.** Item 12 and
+    Movement 4 require a cursor to carry a *program* fingerprint and a virtual-snapshot
+    generation. A cursor today is `{ version, plan: PlanFingerprint, entries }`;
+    `build_cursor` writes the **answer plan's** fingerprint and `resume` validates against that
+    same plan. Both ways out of that are wrong on their own: keep the answer-plan fingerprint and
+    two programs with byte-identical answer plans but different rules — or different
+    magic-versus-fallback selections — accept each other's cursors, which is an
+    [I4](website/content/invariants.md#i4) violation with a wrong answer at the end of it;
+    substitute the program fingerprint and the unchanged executor rejects every cursor it is
+    handed.
+
+    **So neither: wrap it.** A program's token is
+    `{ version, program_fingerprint, inner: Cursor }`, validated at the `Executable` layer before
+    `Executor::resume` sees the inner bytes. The executor's `Cursor` gains no *program* field, so
+    I4's existing proof stands unaltered; program-level validation lands where program-level
+    knowledge already lives, beside the server's existing pre-row-description fingerprint check;
+    and a query with no `with` block emits a plain `Cursor`, which is the fast path item 8 exists
+    to preserve. The trust model is unchanged — every field is compared against a freshly computed
+    value, so an envelope field is no more forgeable than the one inside it.
+
+    **The envelope carries its own version, for the reason `CURSOR_VERSION` exists.** A token is
+    client-held and outlives the process that made it. Unversioned, the next build reads the old
+    layout as the new one and validates fields that mean something else, which is the failure
+    `CURSOR_VERSION` documents itself as preventing. It is separate from the inner cursor's
+    version because the two move for different reasons: one says what a program's token is, the
+    other what an entry is.
+
+    **The world stamp goes into the plain `Cursor` first, before any of this — and two earlier
+    drafts of this item had it the other way round.** `Cursor` becomes
+    `{ version, plan, world: WorldStamp, entries }`, where
+    `WorldStamp = { base: BaseIdentity, listing: Option<ListingDigest> }` is `None`-listed for a
+    query that reads no virtual predicate, compared whole and refused whole. One value because the
+    two halves answer one question — *which world was this token made in* — and because two
+    independently validated fields is precisely how a path ends up carrying one of them and not
+    the other.
+
+    **Sequencing it through the envelope was the mistake, and naming the mistake is what keeps it
+    from coming back.** The reasoning was that recursion should not disturb the plain path, so the
+    stamp would ride in the program envelope now and lift into `Cursor` when the underlying defect
+    was fixed. Both halves of that were wrong. The defect is *not* recursion's — a plain
+    `where fjord.db.List {..}` paged across a `create` returns a silently short or repeated page
+    today, and a cursor replayed against a different same-schema database has always been
+    undetectable — so recursion would have been carrying a correct stamp past a broken path in
+    order to avoid touching it. And the sequencing buys a **transitional token format that is pure
+    cost**: one layout with the stamp in the envelope, a second with it in the cursor, two
+    validation paths, two versions to reason about, and a migration between them whose only
+    purpose is that the first one existed. Doing it in the other order deletes all of that. The
+    envelope then never holds a world field at all, and ends up with exactly the one thing that is
+    genuinely Program-specific: a program fingerprint, because a plain plan has no program to
+    fingerprint.
+
+    **This changes the engine's resume signature, and that is the price, paid once.** `FactStore`
+    is `scan` + `point` and exposes neither an identity nor a listing, so a `Cursor` holding a
+    world stamp holds a value the engine cannot recompute in order to compare it.
+    `Executor::resume` therefore takes a **caller-supplied world stamp**, and `CURSOR_VERSION`
+    bumps — validation happening in the database-owning layer, which is the only layer that can
+    compute either half. It is also why the stamp is opaque to the engine: `Catalogued` is a store
+    wrapper the executor cannot see past, so the layer that materialised the listing is the only
+    one that can digest it.
+
+    **A review once read "the cursor is left alone" and "the cursor names its world" as
+    incompatible.** They were never incompatible, only ordered, and the order has now been
+    reversed on its merits: the cursor gains the world stamp and gains no *program* knowledge, and
+    "the executor's `Cursor` is left alone" narrows to what it always meant — the executor learns
+    nothing about programs. Recorded so a later round does not restore the envelope-first
+    sequencing by analogy with the paragraph it replaced.
+14. **One base snapshot, owned by the driver, for every rule and every round.** A fixpoint runs
+    many ordinary plans, and `FactStore` offers neither `Clone` nor a reader factory while
+    `Executor<S>` **owns** its store and `enumerate` takes `self` by value. That signature is not
+    incidental: it is [I8](website/content/invariants.md#i8)'s *structural* proof, and its own
+    doc says so — every exit path drops the frame stack and the store handle, so no caller can
+    park a live iterator across a suspend.
+
+    The smallest resolution is a blanket `impl FactStore for &S` delegating `scan` and `point`,
+    letting each rule run as `Executor<&S>` with no seam change and no new trait method. **But
+    whichever is chosen, the consequence is the same and has to be written down: I8's structural
+    guarantee moves from `Executor` to the program driver.** Dropping an `Executor<&S>` drops a
+    reference; the driver becomes the owner, and I8 stops being free.
+
+    It is a correctness requirement and not only resource hygiene. "The fixpoint is a function of
+    a frozen base" *means* one snapshot for every rule and every round — and with item 12 it
+    means one `Catalogued` snapshot for the whole program, not one per rule. So the guard is
+    three obligations, not one: one base snapshot observed by every rule and round (not one per
+    rule, which would multiply fjall's open-snapshot count), the relation snapshots of Movement
+    4, and *that* owner released on every exit path — done, suspend, cancel, limit, unwind.
+
+    **The driver inherits the rows-examined budget for the same reason.** The ceiling is private
+    state on an `Executor`, and the driver is about to create one per rule per round, so what is
+    a chunk's budget today would silently become a budget *each*. One remaining count lives with
+    the snapshot, is seeded into every rule and into the answer plan, and is decremented by work
+    actually done — see item 6.
+
+    **And the driver owes work units of its own, because a row budget cannot cover it.**
+    Cancellation is polled in exactly one place — `Deadline::tick`, on the examined-rows stride,
+    inside `advance` — so *every* mechanism this plan has for stopping is coupled to pulling
+    another row from a store. The driver's largest phases pull none: candidate deduplication,
+    persistent or segmented snapshot merging across rounds, relation indexing, and **canonical-id
+    finalisation**, which is O(|relation|) over an already-derived relation with no executor in it
+    at all (item 3). Seeding each child executor from one remaining row budget bounds the scanning
+    and leaves all of that untouched, so a large derivation can ignore a cancelled token for the
+    whole of it — and the "cancellation mid-fixpoint" criterion in Movement 4 passes green while
+    exercising only executor scans.
+
+    So the driver defines and counts its own units — **candidates deduplicated, tuples finalised,
+    and bytes copied between round snapshots** — polls the token on the same stride discipline the
+    executor uses, and charges item 6's retained-facts and retained-bytes limits at those points.
+    None of it is new machinery: `Profile` already carries the executor's examined total across
+    chunks, and these are scalars beside it. The arms that discharge it cancel *during*
+    deduplication, *during* a snapshot merge and *during* final canonical-id assignment, each with
+    no executor live, and each must observe the token within one stride.
+
+15. **A local signature's field names have no representation, and the failure is silent.** The
+    plan promises a local relation reuses the schema type grammar in full. It cannot today.
+    `PredicateTy::Record` holds `Arc<[(Spur, PredicateTy)]>` and `Alternative::name` is a `Spur`
+    — raw interner indices with no tier — while `decode_key` resolves them with
+    `Symbol::Schema(*name)`, **unconditionally**. Query-local names live in the per-query
+    `Rodeo`, a separate space with its own numbering. So a local signature whose nested record or
+    union field names are local either raises `UnknownSymbol` or, worse, resolves to whatever
+    schema string happens to share that index and answers with the wrong field name.
+
+    `Symbol` exists for exactly this two-tier problem; `PredicateTy` predates its use. **The
+    representation is selected here, and this item no longer offers a choice** — an open
+    alternative in the one item that decides what a signature may contain is the last thing a
+    foundation should ship with.
+
+    **Selected: the name tier becomes a type parameter.** `PredicateTy<N = Spur>` and
+    `Alternative<N = Spur>`, with a persisted schema holding `PredicateTy<Spur>` — today's type,
+    byte for byte — and a local relation's signature holding `PredicateTy<Symbol>`. The ten-odd
+    sites that today write `Symbol::Schema(*name)` unconditionally become generic over
+    `N: Copy + Into<Symbol>`, with `impl From<Spur> for Symbol` supplying `Symbol::Schema`, so
+    every existing call site keeps its exact present behaviour and the tier assertion moves to the
+    one conversion.
+
+    **The reason it is the parameter and not simply `Symbol` everywhere: an illegal state that
+    cannot be constructed beats one that is rejected.** `Schema::new` is infallible and is
+    constructed all over the tests and fixtures; make its field type `PredicateTy<Symbol>` and it
+    becomes *capable* of holding `Symbol::Local`, at which point the fingerprint walk and
+    `decode_key` can misresolve a name again and the only thing standing between them and a wrong
+    answer is a validation nobody is obliged to call. With the parameter, a local type cannot be
+    stored in a `Schema` without an explicit fallible conversion, and there is no path that
+    forgets. The rejected alternative — `Symbol` everywhere plus a fallible `Schema::new` — is
+    recorded because it is the one a later reader will propose: it is a smaller diff and a weaker
+    guarantee.
+
+    **The restriction alternative is rejected outright**, as this item's earlier draft nearly
+    conceded: "a nested field name must already exist in the schema" is not a rule a person can
+    hold, and a promise that a local relation reuses the type grammar *in full* cannot be kept by
+    a grammar that silently excludes half the names.
+
+    **It carries a new invariant, stated because the type parameter enforces only three of its
+    four clauses.** A persisted `Schema` type contains schema-tier names only — structural. A
+    local relation's type may contain local-tier names — structural. Two numerically equal `Spur`s
+    drawn from the schema and local interners never alias — structural, since the tier travels
+    with the name. And **every existing artifact is unchanged**: schema canonical forms,
+    fingerprints, stored bytes, wire descriptors and base-query plan fingerprints. That last one
+    is not structural, it is a non-regression obligation, and it is the clause a `N = Spur` default
+    makes plausible rather than proven.
+
+    Guards, all owed by Movement 0: **local-only names in a nested record and in a union**, each
+    resolving to the local text; the adversarial case where a schema `Spur` and a local `Spur`
+    hold the **same numeric value over different text**, which is the case that silently answers
+    with the wrong field name today and the one a same-interner corpus can never provoke; and the
+    full non-regression set for the fourth clause — every corpus entry's schema fingerprint,
+    canonical form, stored bytes, descriptor and base plan fingerprint identical across the
+    change. The worked example's `from` and `to` are schema names, so they resolve to *something*
+    and a corpus built around it stays green over the defect; that is why the census asserts the
+    local-only case rather than assuming a generator reaches it.
+
+**Acceptance is a proof boundary, not a reading.** The previous version of this paragraph asked
+for "a written answer for each of the fifteen, and a failing test first for items 1 and 4". That
+is a documentation gate wearing acceptance criteria: fourteen of the fifteen could be satisfied by
+prose, in a repository whose contract is property-first, and the movement whose entire job is to
+be the foundation would be the one movement that proves least. Replaced by three classifications
+and a table, on the principle that **an ignored test records an obligation and does not
+demonstrate a property**:
+
+- **Green here** — implemented and mechanically demonstrated *within this movement*. A claim in
+  this class is one the suite would fail without.
+- **Deferred, owned** — a compiling, named `#[ignore]`d guard, filed against one later movement
+  that unignores it. The obligation is in the ledger, not in a paragraph; it is never described as
+  proven.
+- **Decided** — a written answer with no code yet. Legitimate, and it is *evidence of nothing*.
+  An item may not sit here alone unless the table says so.
+
+Items 1, 2, 4, 5 and **15** gate representation — 15 hardest of all, since a type model that
+cannot name a local field decides what a signature may contain. **Items 9, 10 and 11 gate
+Movement 3**, because each decides what a rule *is* before anything rewrites one; **item 14 gates
+Movement 2**; items 12 and 13 gate Movement 4, and both are filed as defects against the existing
+cursor besides. The rest gate the movement that names them. The rows-examined ceiling in item 6
+was never a Movement 0 decision — it was missing code, and it has been written; what it still owes
+is item 14's aggregation and its driver-side work units.
+
+**Three of these are live defects in shipped, non-recursive behaviour, and they are repaired
+*first* rather than alongside.** The plain cursor's world stamp, the virtual `FETCH` digest and
+the terminal-`ERROR` client contract are all reachable today with no `with` block anywhere near
+them — the ceiling in item 6 already produces an error *after* rows, which is exactly the frame
+`Connection::next_row` mishandles. Building recursive resume on top of them means every later I4
+failure has two candidate causes. Fixing them first also deletes the transitional token format
+item 13 used to describe, which is the concrete payoff rather than a tidiness argument.
+
+**The terminal-`ERROR` client contract — done, first of the three.** `Connection::recv_on` was
+already turning an error frame into `Err` before `next_row` or `cancel` ever inspected a `kind`,
+so the mishandling was never about the frame — it was that returning that `Err` skipped the same
+release `COMPLETE` gets: the stream stayed in `self.open`, `Rows` stayed `Streaming`, and a second
+read on it would wait on a stream whose server-side task had already returned. `Rows` gains a
+third, terminal `Errored` state; `Connection::recv_row_frame` wraps `recv_on` for both places that
+read an open query stream (`next_row`, `cancel`) and releases the stream and marks `Rows` errored
+on the way out, exactly as the `COMPLETE` arm already does. Guarded by
+`a_mid_stream_error_ends_the_stream_the_way_complete_does` and
+`a_cancel_racing_a_terminal_error_leaves_the_connection_working`
+(`crates/fjord-client/tests/against_a_server.rs`) — a fake server standing in for the ceiling,
+since provoking it for real needs a scan too large for a unit test; each proves release rather than
+assuming it, by checking that a second query on the same connection **reuses** the errored stream's
+id. The world stamp and the fetch digest are still open.
+
+| item | green before Movement 0 closes | deferred, and to whom |
+|---|---|---|
+| **1, 9** | a hand-built `Program` AST preserves clause multiplicity and source order; duplicate declarations refuse; forward and mutual references resolve; per-rule `collect` equals today's single-query collection | source spelling and corpus execution — Movement 7 |
+| **2** | the schema-first catalogue property against a **dense-array model**, virtual augmentation, deterministic tags, the exact-last and one-past bounds, base-only plans and fingerprints unchanged | generated magic and delta namespace exhaustion — Movement 6 |
+| **3** | the four identity-observability refusals over hand-built IR; the canonical-id allocator mapping encoded-key rank to a sequence from one; the permutation property; the virtual fetch and cache repair | driver-level canonicality across rule scheduling and expansion strategy — Movement 3 |
+| **4** | the projection property against an independent **string-name model**; non-lexical order; same-typed reversed fields; missing, extra and duplicate fields; scalar and union heads refused by name | the full source corpus — Movement 7 |
+| **5** | the representation contract *concretely*, plus the history-sensitive work bound above | the relation implementation and simultaneous-SCC visibility — Movements 1–3 |
+| **6** | a **pure budget state machine**: overflow-safe, monotone, no overshoot, reserve/release peak accounting, exact boundaries, a named outcome per limit | mechanical proof that every driver and compiler charge site uses it — Movements 2 and 6 |
+| **7** | the pipeline and fallback obligations registered | fault injection at every transformed-candidate phase — Movement 6 |
+| **8** | the plain-path dispatch contract registered | the executable, server and inspection proof — Movement 8 |
+| **10** | the DNF product checked against an independent **truth-table evaluator**; deterministic lexicographic product order; 2×2 and deeper | the scan-amplification witness — Movement 3 |
+| **11** | negative-only and partially-bound cases registered | the magic-versus-unmagicked model property — Movement 6 |
+| **12, 13** | **all green**: the plain cursor's world stamp, mutable-catalogue paging, Writable chunking and count, the fetch digest, a malformed token, the version, and terminal-`ERROR` client behaviour | the program fingerprint and envelope, and `reads_virtual` over generated rules — Movements 4 and 8 |
+| **14** | `FactStore for &S` passes the seam battery; reference ownership introduces no hidden clone and extends no snapshot lifetime | the one-snapshot driver and every exit-path drop probe — Movements 2 and 4 |
+| **15** | the representation selected (above); nested local names and the cross-tier collision property green; persisted-schema and protocol non-regression green | **none — this closes here** |
+
+**Where a model is named, it must be simpler than the thing it checks and share no code with it.**
+The dense-array tag model, the string-name projection model and the truth-table DNF evaluator are
+each written to be obviously correct and slow; a "model" that reuses the implementation's own
+allocator, interner or normaliser proves that the code agrees with itself. New generated domains
+get canonical `program::proptest` and `relation::proptest` strategies with population censuses,
+following `plan::proptest` — the census being the part that stops a generator quietly degenerating
+to the trivial case.
+
+**The concurrency guards need barriers, not sleeps.** Listing capture during a `create`, `rm` or
+`finish`, and the Writable stamp's bracketed seqno reading, are both interleaving properties. A
+timing-based test for either is a test that passes on a fast machine and is deleted after it
+flakes twice, so both get deterministic barriers or injected probes at the interleaving point.
+
+**The ledger has to say what is true, and today it does not.** The invariant registry states that
+no guard is `#[ignore]`d and names I9's recursive-materialisation guard as the next entry; this
+plan states that the guard "is written `#[ignore]`d before the path exists". No such guard is in
+the source. Both are describing an intention as though it were a fact, which is the precise habit
+this proof boundary exists to break. So Movement 0 writes it — compiling, ignored, owned by
+Movement 3 — and the registry's line changes from "no guard is `#[ignore]`d" to naming it and its
+owner. The same treatment for every other deferred row above.
+
+**Movement 0 closes when, and only when:**
+
+- item 15 has one selected representation and no remaining "either" or "whichever";
+- every assertion in items 1–15 is classified green-here or owned by **exactly one** named
+  `#[ignore]`d guard in a named later movement — none is left as prose alone;
+- every green guard passes, with its population census and its positive controls;
+- every new error variant is mechanically reachable, and no variant is added ahead of the path
+  that provokes it;
+- base-only corpus diagnostics, plan fingerprints, storage bytes and schema fingerprints are
+  unchanged, and cursor behaviour is unchanged **except** for the intentional versioned world
+  stamp;
+- the ignored-test ledger contains exactly the documented downstream obligations — no more, and
+  no fewer; and
+- the plain cursor's world stamp, the virtual fetch digest and the terminal-`ERROR` client
+  contract are green **before** any recursive resume work begins.
+
+**Gating is about *completion*, not about starting, and an earlier draft of this paragraph
+conflated them.** A movement can be prototyped against hand-authored inputs long before the items
+it names are closed; what it cannot do is meet its own acceptance criteria. Two cases where the
+difference is material, and where a review was right to call the graph as written false:
+
+- **Movement 2** can build the driver and evaluate hand-built `Program`s under item 14 alone. It
+  cannot *complete*: its termination rule is stated over the **AST**, at step 4 of item 9's phase
+  order, and the single-query AST cannot represent a multi-rule program at all. So item 14 gates
+  Movement 2's start and item 9 gates its acceptance.
+- **Movement 1** is unblocked for everything its acceptance criteria measure — routing, snapshot
+  construction cost, allocation, fingerprint non-regression, module size — none of which decodes a
+  field name. The same review read item 15 as blocking the movement outright; it blocks one field
+  of one struct. What Movement 1 must not do is *settle* `RelationDecl`'s field-name
+  representation by accident, and saying it that way is what keeps the movement startable.
+
+**Diagnostics this section adds, named here so the corpus gate is not discovered at the end.**
+Every new refusal owes a `Code` variant, a corpus entry, and reachability — a variant no test can
+provoke is a variant to delete. At least: `Project::FactRef` of a local row (item 3), a local
+relation named as a local relation's field type (item 3), execution-tag exhaustion (item 2),
+`reject/duplicate-relation` (item 1), the computed-value recurrence (Movement 2),
+`reject/unstratified` (Movement 5), a cursor whose program fingerprint or world stamp has moved
+(items 12 and 13), a **cross-request** resume naming `fjord.db.Interning` (item 12),
+`reject/non-record-relation` (item 4), and one per limit in item 6's table — noting
+that the generated-program limit and execution-tag exhaustion are the two entries that sometimes
+have no diagnostic at all, because **any** compile-time failure attributable to the magic attempt
+falls back (item 7) while the same failure in a mandatory expansion does not.
+
+### Movement 1 — the relation store and the overlay
+
+De-risking first: prove the machine before building a surface for it. Representation follows
+Movement 0 items 2 and 5 and is not chosen here — and `RelationDecl`'s **field-name**
+representation follows item 15, which this movement must leave open rather than settle by
+accident. **Everything this movement's criteria measure is unblocked by the compiler findings**
+and it should start first: routing, snapshot construction cost, allocation and module size decode
+no field name, and clause rewriting needs none of it.
+
+- `relation::Relation` owes the `FactStore` contract with an **owned** scan over a stable
+  snapshot; `relation::Overlay<S>` dispatches by the identity in a seek key's leading
+  `PREDICATE_ID_SIZE` bytes.
+- **The dispatch is not a new design; it ships.** `Catalogued<S>` already routes `scan` on the
+  key's predicate prefix and `point` on `id.predicate()`, mints ordinary predicate-tagged
+  `FactId`s for rows that were never stored, and declares `type Scan = Scan<S::Scan>` — the enum
+  sum `Overlay` needs. Follow it rather than re-deriving it, and the novelty reduces to the
+  relation's own snapshot.
+- Guards on **both** sides of the identity namespace: no predicate visible to compilation may
+  land in the local space, and no generated program may exhaust it — the item 2 bound over the
+  **augmented** count, with a named diagnostic if it does.
+
+**Acceptance:**
+- [ ] `Overlay` and `Relation` satisfy the seam's contract **per implementation, not
+      differentially** — two stores that leak identically satisfy a differential and are both
+      wrong.
+- [ ] A scan of a base predicate through an `Overlay` touches the relation store zero times
+      (a spy, not an assertion about the code).
+- [ ] **No relation-sized clone per seek or per open**, measured — the allocation guard's shape
+      (N versus 2N) applied to *derived* scans, not only to base ones.
+- [ ] **And no quadratic snapshot construction across rounds**, which the per-open guard above
+      cannot see (item 5): a chain-shaped fixture deriving one tuple per round, measuring bytes
+      copied and allocated over the whole run rather than per open. A contiguous rebuild per round
+      passes every other guard in this movement while dominating the runtime.
+- [ ] Scan, point **and reference-follow** routing are guarded independently, including a query
+      whose catalogue carries virtual predicates, a program reaching the exact last usable tag,
+      and one past it.
+- [ ] **Non-regression, mechanical:** every corpus entry's plan fingerprint is unchanged, and
+      `scan_is_alloc_free_per_row` is unchanged, with this movement merged.
+- [ ] The WASM module's size is measured before and after, because `Overlay<S>` is a second
+      monomorphisation of the executor — see [what it costs](#what-it-costs).
+
+### Movement 2 — `Program`, the naive driver, and two oracles
+
+Naive before semi-naive, because the naive evaluator is what the rest of this work is
+differentiated against.
+
+**The dependency graph and positive SCC construction land here, not in Movement 5.** The phase
+order in item 9 puts recursive-safety validation and stratification *before* magic and semi-naive
+generation — and this movement's own termination rule is stated over "a predicate in a recursive
+SCC", while Movement 3 needs SCC membership to know which occurrences are recursive at all. A
+plan that defers all of it to Movement 5 contradicts itself and invites an interim classifier
+that is then thrown away. So the split is by *what the analysis is about*: predicates as nodes,
+an edge per body occurrence, Tarjan, condense, toposort — here. The **negative** edge rule,
+`reject/unstratified` and its corpus entry stay in Movement 5, where they belong with the
+diagnostic; full stratification is needed before *magic*, which is Movement 6, so it still lands
+in time.
+
+**One consequence for Movement 5's shape, from the phase order's step 7: stratification is run
+twice and only one of the two runs owns the diagnostic.** Over the user's program it emits
+`reject/unstratified` against a cycle the user wrote; over the magic candidate it emits nothing and
+discards the candidate. So what Movement 5 builds is a *reusable* analysis over an arbitrary rule
+set, with the diagnostic wired in by its caller rather than baked into the checker — the same
+shape this movement's SCC construction already needs for the same reason.
+
+**Two oracles, not one.** A naive evaluator sharing the same `Plan` executor, `Overlay`,
+relation encoder and identity allocator cannot catch a bug *in* those — both sides would misread
+a local key identically and agree. So the naive program evaluator stays, for semi-naive and
+magic differentials, and an **obviously-correct tuple-set model that uses none of that
+machinery** is written beside it. That is the method's own rule: an oracle is independent or it
+is not an oracle.
+
+**Acceptance:**
+- [ ] Hand-built `Program`s in `fixtures` evaluate transitive closure, mutual recursion, and a
+      non-recursive stratum.
+- [ ] Every limit from Movement 0 item 6 has a named terminal error and a test that provokes it.
+      Never a silent truncation.
+- [ ] Non-termination is refused by a **decidable static rule**, not by a semantic aspiration.
+      "No rule may invent values outside a finite domain drawn from the base" is not checkable —
+      it leaves query literals (finite, not from the base), finite images of base-bound
+      computations, and wrapping `i64` arithmetic all undefined, so a compiler written against it
+      either refuses useful programs inconsistently or falls through to the limits for programs
+      this plan promises to *diagnose*. The language does not need a general finite-domain
+      analysis, because recursive value invention has exactly one entrance: an arithmetic head
+      leaf. Declared signatures fix record shape, so construction cannot grow in depth. The rule:
+
+      > A head field of a predicate in a recursive SCC may not be an arithmetic expression whose
+      > transitive variable inputs include a variable bound by a recursive occurrence in that SCC.
+
+      Stated over the **AST**, at step 4 of item 9's phase order — `ExprKind::Arith`, plus any
+      variable bound by an arithmetic `QueryStmt::Bind`, walked transitively through bind chains
+      and nested record fields. Stating it over `Project::Computed` and `Computed::Register`
+      would put a language rule downstream of flatten and cost the diagnostic its span. Literals
+      and base-only computations stay legal. It rejects exactly the hand-written `depth : int`
+      recurrence the [deferred closure operator](#deferred-the-closure-operator-as-sugar-over-this)
+      already names as a trap. The round and fact limits remain the backstop, not the rule.
+- [ ] The local-reference-cycle case needs no analysis, because Movement 0 item 3 forbids a local
+      relation as a local relation's field type — a positive test that the *declaration* is
+      refused, not a graph validator.
+
+### Movement 3 — semi-naive
+
+Δ-rules per recursive occurrence, delta and accumulated as distinct local relations, convergence
+when Δ is empty. **Gated on Movement 0 item 9**: a delta variant is a clause rewrite, so this
+movement cannot be honestly built or tested against hand-built `Program`s alone.
+
+**Delta as a second relation is sound because item 3 made identity unobservable, and for no
+other reason.** One tuple held in both the accumulated and the delta relation has two `FactId`s
+— different predicate tags, so `point` routes them apart and a reference-follow check rejects
+one against the other's declared referent. Nothing in the language may see that, which is what
+item 3's four refusals buy. Without them, the alternative is a delta *view* returning the
+accumulated relation's canonical id, which fights the overlay's prefix dispatch for a capability
+this feature does not need.
+
+**Acceptance:**
+- [ ] Model-based: semi-naive answers **exactly** what the naive evaluator answers, over
+      generated `(program, store)` pairs. Tier 3, and the generator's population is asserted — a
+      strategy that degenerates to non-recursive programs leaves this green and vacuous.
+- [ ] The simultaneous SCC transition (Movement 0 item 5b) is asserted, not assumed, and not
+      only its weaker half: a rule that observes its own insertions, *and* a rule that observes
+      another rule's same-round output, are both caught by tests built to make them.
+- [ ] Focused properties for two recursive occurrences in one rule, mutual recursion with
+      cross-rule output, one tuple derived through two clauses, and a **permutation of source
+      declaration order** answering identically in the same number of rounds.
+- [ ] **The census requires mixed disjunctive levels**, or item 10's hole stays open under a
+      green differential: a level mixing a recursive alternative with a base one, a level with
+      two recursive alternatives, and either followed by sibling conjuncts. A generator that
+      never emits one leaves semi-naive ≡ naive true and vacuous exactly where it matters.
+- [ ] **And two or more disjunctive statements in one body**, which is the case that decides
+      whether normalisation is a product or a sum: `(A | B); (C | D)` must answer as four clauses.
+      One disjunctive statement cannot tell the two readings apart, so a census that stops there
+      certifies the wrong rule.
+- [ ] **Expansion's scan amplification is measured rather than assumed** (item 10). A store spy or
+      profile over a rule with two disjunctions and an empty final level shows the prefix scans
+      repeated the predicted `2^(d-k-1)` times at depth `k` and no more, with the innermost level
+      unchanged. Answer equality cannot see this — the expanded and unexpanded forms return the
+      same rows while examining different numbers of them — and the number is what says whether a
+      rewritten rule can reach `EXAMINED_CEILING` where the same rule unexpanded would not.
+- [ ] The four identity refusals of item 3 are tested as refusals — the one that is reachable
+      from source (`Project::FactRef` of a local row) at its diagnostic, the three that item 3's
+      declaration rule makes unreachable on a hand-built plan.
+- [ ] Determinism: the same `(program, frozen base)` derives the same tuples **with the same
+      identities**, twice — including that no rewrite collection is traversed in hash or interner
+      order. This is what Movement 4 rests on.
+- [ ] **Identities are canonical, not merely reproducible** (item 3): a finalised relation's ids
+      are assigned by rank in encoded-key order, so permuting rule order, switching rectangular
+      for triangular expansion, or changing the snapshot representation leaves every id unchanged.
+      Determinism covers the ids a run *observes*; canonicality covers the finalised ones, which
+      are the only kind a cursor can hold. `Executor::resume`
+      hard-compares a saved `fact_id`, so anything less makes each of those a cursor-compatibility
+      surface — and a same-build, fresh-process test does not reach that boundary.
+
+### Movement 4 — resume, and I4 re-proved over a `Program`
+
+**Re-derivation is the semantics; a portal is a cache.** The fixpoint is a pure function of the
+frozen base — *provided the base is actually frozen*, which item 12 is about and which is not
+true of `fjord.db.*` on the `query_page` path. Given that, the executor chapter's recompute rule
+already covers it: *anything determined by
+the bindings and the frozen base may be recomputed on restore instead of saved.* A recursive
+query's cursor therefore stays bytes-only — resume re-derives the strata, then replays the saved
+rows against the answer plan.
+
+The cost is honest and stated: O(fixpoint) per page, **paid on every chunk**, not only on every
+client-visible page. When the portal lands with ranking, a recursive cursor may name a session
+holding the materialised strata — and **a portal miss must never be an error**, only a
+re-derivation. That is what keeps a stateless `?page=7` web tier possible for every query, and it
+means I4 is proven once, against re-derivation, with the portal validated by a differential
+rather than by a second proof.
+
+**Acceptance:**
+- [ ] The program fingerprint covers **all** of: the answer plan, every relation declaration and
+      its physical layout, its **materialisation projection**, every rule's target and order,
+      every generated magic, supplementary, accumulated and delta relation, stratum kind and
+      order, the deterministic execution-tag allocation, every operator tag — and **which of the
+      transformed or unmagicked-fallback executables was selected**. That last one is the
+      load-bearing addition: Movement 6's fallback means one source program can produce two
+      executables that differ in what they materialise and where they stop, and a cursor from one
+      must not resume into the other. **No limit value appears**, because after item 6 none of
+      them is semantics — with the consequence stated there, that a structurally valid cursor can
+      still be refused by a policy that moved. Deterministic identities alone are not sufficient.
+- [ ] **The selected executable is a pure function of source, schema, engine build and compiler
+      policy**, which is what makes the criterion above satisfiable at all: fallback is
+      compile-time only (item 7), so a resumed request recompiles to the same selection and the
+      comparison can happen before a row description rather than after a fixpoint. A runtime
+      fallback would make the selection unknowable until the derivation had run, and the three
+      ways out of that are all wrong — reject valid fallback cursors, trust an untrusted token to
+      pick the expensive path, or make an invalid cursor cost O(fixpoint).
+
+      **Compiler policy is the fourth input, and a draft of this criterion omitted it — which
+      made the claim false rather than incomplete.** The generated-program cap is deployment
+      policy by item 6 and enters no fingerprint, yet crossing it is exactly what selects magic
+      versus fallback, so one build compiles one query into two different executables under two
+      settings. Naming policy as an input is the fix; freezing the cap into the build is not,
+      because the cap is a real memory dial and an operator is entitled to it. The consequence is
+      one item 6 already accepts: **a policy change refuses a cursor by name**, since the
+      selection is fingerprinted, rather than silently resuming into the other executable. Both
+      behaviours here are named refusals and neither is a wrong answer, which is why this is a
+      wording defect and not a design change.
+- [ ] **The fingerprint travels in item 13's envelope, and a cross-program rejection proves it:**
+      two programs whose answer plans are byte-identical but whose seed or step rules differ — or
+      which differ only in taking magic versus the fallback — must refuse each other's cursors.
+      Left on the answer plan's fingerprint alone, they accept them.
+- [ ] The fingerprint is **extended the way this repository already does it** — the hand-written
+      walk, paired with the single-element mutation table of
+      `every_part_of_a_plan_reaches_its_fingerprint`, one mutation per component above, each
+      required to produce a distinct value. Not a new canonical serialization of the executable:
+      that would be a second artifact to keep in sync with the thing execution consumes, which is
+      the failure the mutation table exists to catch. Plus a rebuild in a fresh process yielding
+      the same fingerprint, proving identity allocation is stable.
+- [ ] `resume_equals_uninterrupted` extended to `Program`s, with the generated interruption
+      schedule — suspend at every boundary, in every combination.
+- [ ] **I4 has server-level arms for every mutable source** (items 12 and 13). The catalogue is
+      mutated between two `query_page` calls; a cursor is replayed against a *different*
+      same-schema database with overlapping fact ids and keys; and ingest lands between two chunks
+      of a read on a **Writable** database. Each either answers as an uninterrupted run would or
+      is refused by name — never silently short, long, reordered, or hybrid. A frozen `MemStore`
+      cannot express any of these, which is why the existing property has never failed.
+- [ ] **Every one of those arms runs twice: once for a plain query and once for a `Program`.**
+      The plain arm is the criterion, not the courtesy — it is what forces the composite world
+      stamp of item 13 into the `Cursor` rather than leaving it in a program envelope, and a suite
+      that passes for `Program`s alone has fixed catalogue paging for the rare case and left it
+      broken for `where fjord.db.List {..}`.
+- [ ] **The Writable arms cover internal chunk boundaries, not only client-visible pages.**
+      `run_query` and `count` both take a fresh `reader()` per `CHUNK_ROWS` chunk, so an unpaged
+      streaming query and a bare count already resume across snapshots. Arms: ingest between two
+      chunks of an unpaged stream; ingest between two chunks of a `count`; and, for a `Program`,
+      ingest between two count chunks where the two partial counts would otherwise come from
+      different fixpoints. Each refused by name mid-stream. Plus the negative that keeps the
+      feature alive: the same reads against a Writable database with **no** interleaved write
+      complete normally, and against a Complete one take the refusal path zero times.
+- [ ] **A mid-stream refusal is a contract, not just a server behaviour, and the client does not
+      implement it yet.** The Writable stamp makes "rows, then an error" an *expected* outcome
+      rather than an exceptional one, and `Connection::next_row` releases the stream only on
+      `COMPLETE`: an `ERROR` frame is raised by `raise_if_error` and propagated with `?`, so the
+      stream id stays in `open`, `Rows` stays `Streaming`, and `check_open` lets a caller retry into
+      a `recv_on` that waits for a server task which has already ended. Repeated refusals leak
+      stream ids, since none is ever returned to `free`. **Movement 0 owes the contract** — it is
+      reachable today through the examined ceiling, which errors after rows — and this movement
+      re-proves it over a `Program`; in both the Rust client and the external one:
+      **`ERROR` is terminal even after a `DATA_ROW`**; the
+      stream id is released and reclaimable; `Rows` moves to an ended state that reports the
+      refusal rather than looking resumable; the connection stays usable and the next query reuses
+      the id; and `count` releases its stream on the same refusal. Tested by driving a refusal
+      mid-result and then running another query on the same connection.
+- [ ] **A virtual `FactId` does not outlive its listing** (item 3). The catalogue changes between
+      two requests while a `fjord_client::expand::Expander` is alive, and no cached entry answers
+      for the wrong database; with the negative, that a cached entry for an ordinary stored fact
+      survives the same boundary.
+- [ ] **I8** — the immutable snapshot is released at suspend — holds for a recursive page
+      suspend and for cancellation or error *during* a fixpoint. (`ops-I8` is phased derivation
+      and is a different rule; the first draft of this section cited it here by mistake.)
+- [ ] **One base snapshot for the whole program** (item 14), asserted rather than assumed: every
+      rule of every round observes the same snapshot — not one per rule, which would multiply
+      fjall's open-snapshot count — and the driver, which now owns it in the executor's place,
+      releases it on every exit path.
+- [ ] **I8 needs two further witnesses, because fjall's count cannot see a derived relation.** A local
+      relation is an engine-side `Arc` with no storage-engine counterpart, so a suspended program
+      could retain every derived tuple while the open-snapshot cross-check reports zero and
+      passes. Keep that count for the base reader and add a drop probe around the relation
+      snapshot, following `fjord_store::fixtures`' existing `DropProbe`. Both at zero after an
+      answer-page suspend, a cancellation mid-fixpoint, a materialisation or limit error, and
+      normal completion — with positive controls showing **both** live during execution. The
+      registry now says this under [I8](website/content/invariants.md#i8).
+- [ ] A suspend mid-fixpoint is not representable, and the refusal is written in terms of the
+      mechanism that exists: the cancellation token polled on the examined-rows stride. **There
+      is no wall-clock deadline in this executor** — it is still an entry in
+      [operational gaps](#operational-gaps), and any criterion here that wants one makes that
+      gap a prerequisite rather than assuming it.
+- [ ] **Cancellation is observed in the driver's own phases, not only in a scan** (item 14).
+      Three arms with no executor live: cancel during candidate deduplication, during a
+      cross-round snapshot merge, and during final canonical-id assignment. Each observes the
+      token within one stride, and each charges the driver's work units. Without them every
+      cancellation criterion in this list is discharged by `Deadline::tick` alone — the one path
+      that was never in doubt.
+
+### Movement 5 — stratification
+
+The graph, the SCCs and the toposort are Movement 2's — its termination rule and Movement 3's
+occurrence selection both need them, and the phase order puts them before any rewrite. What is
+*this* movement's is the half that is about negation: an edge marked negative under `!`, and the
+rule that a negative edge **within** an SCC is unstratifiable and draws `reject/unstratified`
+naming the cycle, while between components it is fine.
+
+This is what preserves the property the language currently gets for free — *every negation is
+evaluated against a relation that is already total* — and it is shared work: stored derivation's
+"derived-on-derived via sealed rounds" needs the same topological sort over the same graph.
+Stratification metadata is computed early enough for the naive driver to classify seed and
+recursive rules.
+
+**Acceptance:**
+- [ ] Property: the analysis agrees with an independently written checker over generated
+      dependency graphs, including the negative-edge-in-cycle case.
+- [ ] `reject/unstratified` is reachable, names a cycle **in the user's dependency graph**, and
+      has a corpus entry.
+- [ ] A stratified program evaluates each stratum only after every stratum it negates through is
+      complete — asserted mechanically, not by construction.
+
+### Movement 6 — magic sets
+
+The demand transformation, because an unseeded `Reach` computes the closure of the whole call
+graph for a question about one symbol.
+
+**The demand has no producer until the answer goal is a rule, and that is the difference between
+this working and being decorative.** The worked query does not call `Reach` with a literal: `Seed`
+comes out of `src.SearchByName`, and `Program` derives every stratum *before* it streams the
+answer plan — so at the moment `Reach`'s fixpoint must be seeded, `Seed` does not exist. Standard
+magic rewriting answers this by treating the query goal as a distinguished rule and generating
+seed rules from its bound prefix, which is why Movement 0 item 9 requires the answer goal in the
+program. The first cut generates the non-recursive rule
+
+```text
+magic_Reach^bf(Seed) :- src.SearchByName {name = "encode", to = Seed}
+```
+
+into a `Stratum::Once`, and the answer plan re-runs that base prefix — a seek. Retaining the
+prefix as a supplementary relation is an optimisation and does not belong in the first cut; if it
+is ever taken, it is charged to the same memory budget as every other local relation.
+
+- **Adornment.** Each occurrence gets a `b`/`f` string, propagated from the query's use site.
+  **The SIPS is already built:** `reorder`'s runnable frontier is a sideways-information-passing
+  strategy, and it is greedy-complete for the reason that module documents — reads are
+  structural, `bound` only grows. Reuse it rather than inventing a second notion of what is bound
+  when.
+- **Magic and supplementary magic.** `magic_p^a` holds the demanded bindings; each adorned rule
+  gains a magic literal at the front; `sup_i` names shared body prefixes so they are not
+  recomputed per magic rule.
+- **The rewrite may not change what the language accepts *statically*.** The transformation can unstratify a
+  stratified program, and the first draft of this section answered that by refusing the query —
+  which makes an internal performance optimisation part of language validity, and reports a
+  cycle the *optimiser* invented as though the user had written one. Corrected: **if the
+  transformed program is unstratifiable, fall back to evaluating the original stratified
+  program**, subject to the Movement 0 limits. Demand seeding may be load-bearing for useful
+  performance without being allowed to redefine correctness.
+- **Demand is generated for a negated occurrence at that occurrence's adornment, and is not
+  propagated through it.** Two claims, and the first draft made only the second — which reads as
+  though a negatively-used predicate gets no demand at all, and that is unsound: it derives
+  nothing, the negation passes for everything, and the transformed program stays stratified so
+  the fallback never fires (item 11). The correction that matters is *which* demand: a negated
+  occurrence is **not** ground, because an omitted field is a wildcard and a wildcard inside a
+  negation is legal, so `!Blocked {from = X, to = _}` is `bf`. Seed it at its own adornment and
+  propagate into the callee's rules as for a positive call. What is not propagated is demand
+  through the negated subgoal into a nested body, which cannot arise, because a negated *group*
+  is itself still refused.
+
+**Acceptance:**
+- [ ] **Static validity preservation, not just answer equality:** every original program that
+      parses, typechecks, passes safety and stratifies still does so after the rewrite, and either
+      answers identically through magic or takes the defined unmagicked fallback. *Resource*
+      outcomes are deliberately outside this claim — magic derives less, so it can succeed where
+      the unmagicked program would exhaust a limit, and that is an optimiser doing its job.
+      Answer equality alone goes vacuous exactly on the cases the rewrite breaks, because a
+      rejected program has no answers to compare.
+- [ ] The generator's census asserts mutual recursion, multiple adornments of one predicate,
+      multiple answer use sites, the fallback path being taken, and — specifically, because
+      "ground negation" is satisfied by a base predicate and proves nothing — **a recursive local
+      relation reached only negatively, with an omitted or wildcard position in that negated
+      occurrence**. Without the wildcard the census tests the case that was already right.
+- [ ] Fallback is exercised by a program the rewrite is known to break, **by a program whose
+      rewrite overflows the generated-program limit while its unmagicked executable fits**
+      (item 6), **and by a program whose magic and supplementary relations exhaust the
+      execution-tag space while the unmagicked form fits under `MAX_TAGGABLE_PREDICATE`** — the
+      magic-enabled counterpart to Movement 1's exact-last-tag guard. Neither of the last two has
+      an unstratifiability to trigger it, so nothing else in this list reaches them, and a
+      terminal error at either would be magic deciding what the language accepts. **All are
+      compile-time**: a limit reached during *derivation* is a refusal, not a fallback, because
+      magic guarantees static validity only (item 7). The third arm is why item 7 states its
+      trigger as a pipeline order rather than a list of error kinds — a list is exactly what left
+      it uncovered.
+- [ ] **The last two arms fail *downstream* of magic generation, and a fixture that overflows at
+      generation does not test them.** Construct each so the magic candidate's rules are produced
+      successfully and the failure appears in step 8 or 9 of item 9's phase order — supplementary
+      relations whose *delta variants* cross `MAX_TAGGABLE_PREDICATE`, and a rewrite whose
+      semi-naive expansion crosses the generated-program limit its unexpanded form fits under.
+      That is the shape that proves the selection point is after flattening rather than after
+      generation, which is the whole content of item 7's ordering; a fallback suite that only ever
+      fails at step 6 passes against the pipeline item 7 rejects.
+- [ ] **A source-stratified program whose transformed candidate holds a negative cycle**, which is
+      the arm that proves step 7 of the phase order exists. It must fall back with **no
+      `reject/unstratified` emitted** — the diagnostic belongs to the user's dependency graph and
+      this cycle is the optimiser's — and no transformed SCC or stratum metadata may reach
+      execution, since the delta variants generated from it would be generated from a stratification
+      that was never valid. Assert both halves: the answer equals the unmagicked program's, and the
+      diagnostic stream is empty.
+- [ ] **And a mandatory failure stays terminal**: an *unmagicked* program that overflows the
+      generated-program limit or exhausts the tag space is refused by name, with no fallback
+      attempted, because nothing optional caused it.
+- [ ] Seeding is visible in the profile: `Reach` from one symbol examines rows proportional to
+      the reachable set, not to the predicate — a guard in the shape of
+      `no_page_reads_a_predicate_whole`.
+- [ ] **A store spy proves the seed is doing the work**, over a fixture where the seed comes from
+      a multi-level base join and unrelated graph components dominate the database: those
+      components are never scanned. Result equality on a small fixture cannot discharge this — an
+      accidentally unseeded implementation computes the whole closure and still returns exactly
+      the right rows.
+- [ ] A use site that binds nothing still works — unseeded evaluation is the fallback, not an
+      error.
+
+### Movement 7 — the surface
+
+Last, because everything above is testable against hand-built `Program`s and the grammar is the
+part most likely to be re-cut once the machine is real. Shape follows Movement 0 item 1.
+
+- `with Name : <type> = <clauses>` before the head, one or more. The **top-level** type is a
+  record in the first cut, refused by name otherwise — item 4, which owes scalar and union heads a
+  materialisation contract they do not have.
+- **The signature is not optional.** A query's record fields are sorted by name at lowering while
+  a schema's are declaration order — and declaration order *is* key order. A local relation
+  inferred from a sorted head record would have its index design decided alphabetically, and the
+  backward relation a bidirectional search needs would be unspellable. The signature also gives
+  the typechecker the recursive occurrence's type without a two-pass inference.
+- **An unqualified capitalised name in applied position is free.** `Reach {from = X}` is
+  unparseable today — juxtaposition is reserved for `QualifiedName branch` — so the position can
+  be taken without touching the lexer, and schema-first resolution already forbids shadowing a
+  schema name.
+
+**Acceptance:**
+- [ ] **The worked example at the top of this section parses, compiles and runs, from source
+      text.** Hand-built `Program`s do not discharge this, and neither does a differential
+      between two evaluators that share a lowering bug.
+- [ ] End-to-end property: source compilation plus execution equals Movement 2's independent
+      tuple-set model, over a canonical source generator whose census asserts recursion, mutual
+      recursion, multiple clauses, stratified negation, **non-lexical signature order**, and
+      multiple adornments — **plus a scalar and a union top-level signature, each refused by
+      name** (item 4). A census that never emits one lets a record-only implementation pass as an
+      implementation of the full type grammar, which is the shape of the gap that was found.
+- [ ] Corpus entries classify every new construct, and every new diagnostic code is reachable or
+      excused.
+- [ ] Query disjunction still means one multi-source level — **and so does a disjunction inside a
+      non-recursive, unmagicked local relation**, which is the arm item 10's normalisation could
+      erode without any query changing. A test says so for both, because clause union landing
+      next to it is exactly how that would erode.
+
+### Movement 8 — the executable seam, and inspection
+
+The consumers, which the first draft under-counted: the server validates a page cursor against
+`prepared.plan.fingerprint()`, sizes a `Profile` from one plan, asks catalogue routing whether
+one plan reads a virtual predicate, and builds a fresh `Executor` per chunk (`session.rs`). The
+shell, count queries, paging refusal before row description, inspection and the WASM demo path
+are all `Plan`-shaped too.
+
+- A `PreparedQuery`/`Executable` sum, preserving the **exact** no-`with` fast path and giving
+  every consumer one explicit dispatch point.
+- A program profile model: stable rule and stratum identities, aggregated across rounds, and
+  **re-derivation counted on every chunk**, because it is work actually performed. A feature
+  whose most expensive work is invisible to `--profile` contradicts the reason `--profile`
+  exists.
+- `:plan` over a `Program` shows strata, rules and the magic relations; `fjord-inspect` gains the
+  view models; the workbench renders them.
+
+**Acceptance:**
+- [ ] Early cursor validation in the server checks the **program** fingerprint — item 13's
+      envelope, including the base identity and the listing digest — before any row description
+      is sent, and without deriving anything (item 13).
+- [ ] `reads_virtual` traverses the answer plan **and every generated rule**, proven by a program
+      whose virtual predicate appears *only* in a derivation rule. On today's one-plan test that
+      program builds no `Catalogue`, routes to fjall, and answers empty without erroring.
+- [ ] A recursive query's profile reports the fixpoint's work, per rule and per stratum, and a
+      chunked read reports more total work than an unchunked one — which is the truth, and the
+      opposite of the rule for `Plan` resumes.
+- [ ] **The count path has criteria of its own, because it is not the row path.** `counting`
+      builds its own `Executor`, suspends on the chunk stride and resumes — so a recursive
+      executable re-derives the entire fixpoint per chunk to produce one number. Required: a
+      recursive count equals the cardinality of full enumeration; every count chunk validates the
+      **program** fingerprint before counting; each chunk charges and reports its re-derivation
+      work; cancellation and every limit release both the base and the relation snapshot; and a
+      multi-chunk count carries a guard documenting the repeated-fixpoint cost, so a later
+      optimisation cannot quietly change resume or accounting semantics.
+- [ ] The no-`with` path is unchanged, asserted the same mechanical way Movement 1 asserts it.
+
+### What it costs
+
+Stated plainly, because this is the largest single feature in the project's history — bigger
+than unions, bigger than the browser build. Revised upward after review.
+
+| Cost | Detail |
+|---|---|
+| **Movement 0** | Fourteen settled decisions before any implementation: four gating representation, three gating Movement 3, one gating Movement 2, two gating Movement 4 — one of them filed as a defect besides. The first draft of this section assumed all fourteen |
+| **A prerequisite outside the feature** | A **rows-examined ceiling**, because every limit this feature adds is output-side and a recursive rule that scans a huge base and produces nothing evades all of them. **Built** — `Executor::with_examined_ceiling`, counted in the existing per-row tick. It was the only item here that was missing code rather than a missing decision; its scope is one executor, so the driver still owes the aggregation (item 14) |
+| **Two defects it inherits** | A cursor names a plan and nothing else about the world it read — not the database, not the listing. Both are live [I4](website/content/invariants.md#i4) holes today, both are recorded in [operational gaps](#operational-gaps), and recursion cannot be correct until they are fixed *there* rather than inside an envelope |
+| **A published type that cannot say what a local field is called** | `PredicateTy` carries raw `Spur`s and the codec resolves them as schema symbols unconditionally (item 15). Either that type gains `Symbol` — a workspace-wide change to a published crate — or local signatures are restricted. Not a movement's parenthetical; it decides what a signature may contain |
+| **A seam that has to move** | `Executor` owns its store and `enumerate` consumes it, which *is* I8's structural proof. A fixpoint runs many plans, so ownership moves to the driver and I8 stops being free — see item 14 |
+| **A predicate catalogue** | Threaded through `lower`, `ty`, `flatten`, diagnostics and inspection — everywhere `Schema::get` and `Schema::find_position` are reached today. Not a module, a seam |
+| **New modules in `fjord-engine`** | `relation`, `program`, `stratify`, `magic`, plus a fixpoint driver. `flatten`/`reorder`/`compile` are *reused per rule*, not rewritten |
+| **Grammar work in two places, now larger** | The signature is a schema-style type, and the type grammar lives in `fjord-schema::syntax` while the query grammar lives in `fjord-engine`. Clause union lands on the same seam. Sharing the type grammar across two `lelwel` grammars is its own task, not a parenthetical; duplicating it is a second source of truth for what a type is |
+| **A snapshot discipline** | An owned scan seam means relations are frozen per round rather than read live — the naive reading is a relation-sized clone per scan open, inside semi-naive's inner loop |
+| **Consumer blast radius** | Server paging and count, shell, inspection, WASM, and any public function returning `Plan`. Count is the one that looks free and is not: it chunks and resumes, so it re-derives per chunk for a single number |
+| **A second executor monomorphisation** | `Executor<S: FactStore>` is monomorphised, and the server already instantiates it for the stored reader *and* `Catalogued<Reader>`. `Overlay<S>` adds an instantiation per store shape, and the browser adds the `MemStore` one — compile time, native code size, and the **WASM bundle**, which is a stated product constraint. This is not an argument for dynamic dispatch: the per-row virtual call and the allocation it implies are what the current design deliberately avoids. It is an argument for measuring the module before and after, which Movement 1 now owes |
+| **Invariants re-proved** | I4 over `Program`s (the expensive one). **I8** for a suspend or an error mid-fixpoint, and it needs a *second witness* — fjall's open-snapshot count cannot see an engine-side relation snapshot. I7 holds because the fixpoint is above `enumerate`. **I9 does not hold for free**: re-scoping its guard to put the fixpoint outside the path it measures would define the problem away, because a materialisation callback runs per rule-output attempt and a duplicate-heavy join would allocate per attempt with the scan-only guard still green. The registry now names a retained derived tuple as a third escape boundary and owes three measurements; **Movement 0 writes the guard `#[ignore]`d and the registry names it and its owner** — today the registry says nothing is ignored and this table said the guard exists, and neither was true |
+| **A new accumulation** | The anti-pattern list forbids materialising a *result set*; a relation is not one, but the distinction has to be written down and budgeted across facts, bytes, work and generated program size, or the next reader is right to call it a violation |
+| **Test burden** | **Two** oracles — a naive program evaluator and an independent tuple-set model that shares none of the new machinery; four tier-3 properties (semi-naive ≡ naive, magic ≡ unmagicked-or-fallback, source ≡ model, resume ≡ uninterrupted); a stratification checker written twice; determinism of identities; and non-regression guards on fingerprint and allocation for base *and* derived scans |
+| **What it does not cost** | The executor: no `Step`, no frame kind, no cursor entry, no branch in `advance`, no change to the seek path. That is still the reason for this shape — and it is a claim about the machine, **not** a claim that the feature is small |
+
+### Deferred: the closure operator, as sugar over this
+
+`(src.Calls | src.Member)+{1,5} {from = Seed, to = B, depth = N}` is the narrow construct that
+answers most of what recursion is wanted for, and once the general form exists it is **sugar** —
+it desugars to a local relation. Two things it can offer that the general form cannot, which is
+why it stays on the list rather than being dismissed:
+
+- **Min-depth is free and inexpressible.** The round at which a tuple is first derived *is* its
+  BFS depth. Written by hand as a `depth : int` field it is a trap: `(a,b,1)` and `(a,b,2)` are
+  distinct tuples, so the fixpoint **never converges on a cyclic call graph**, and bounding the
+  depth to restore termination changes the relation from reachable-nodes to paths — exponential
+  where the answer is small. `impact`'s depth grouping should come from the driver.
+- **Stratification becomes structural.** A closure expression is total at its point of use, so
+  negation over it is stratified by construction and there is no unstratifiable program to
+  reject.
 
 ## Language backlog
 
@@ -729,8 +2506,10 @@ construct may add a `Source`, a `Test`, a residual op or a `Computed` arm — ne
 **Additive is not the same as small**: anything that touches the resume token or freezes
 bytes on disk gets acceptance criteria, not a bullet.
 
-- **Recursion / transitive closure.** The largest capability gap against Glean; today it is a
-  client-side loop of round trips. The read-path benchmark prices it.
+- **Recursion / transitive closure.** Promoted out of this list — it has a design and a
+  movement plan of its own
+  ([above](#recursion--query-local-relations-magic-sets-stratified-negation)), and it is the
+  one item here that was never additive.
 - **Aggregation.** `count` exists as a query kind (`--count`) without entering the language;
   aggregation proper materialises, which is the one thing that cannot be made suspend-free.
 - **`distinct` via adjacency.** Deduplicating on the witness tuple is provably a no-op;

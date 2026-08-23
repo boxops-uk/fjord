@@ -136,6 +136,9 @@ them page for page.
 
 - [`docs/glean.md`](docs/glean.md) — where every idea came from, and what each system can be
   asked to do, spends, and charges. **Read it before proposing a feature Glean has.**
+- [`docs/gitnexus.md`](docs/gitnexus.md) — the same engine measured against a code-intelligence
+  *product* rather than another database: seventeen features, one verdict each, and the three
+  gaps that account for almost all of the partial ones.
 - [`bench/FINDINGS.md`](bench/FINDINGS.md) — the measurement register, one entry per thing
   measured; [`bench/glean-read-path.md`](bench/glean-read-path.md) is the comparison still to
   run.

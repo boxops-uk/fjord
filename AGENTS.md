@@ -14,6 +14,7 @@ book, not here.
 | **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | Where we stand against Glean — read **before proposing a feature Glean has** | [`docs/glean.md`](docs/glean.md) |
+| What a code-intelligence product could ship on this — read **before claiming a question is or is not answerable** | [`docs/gitnexus.md`](docs/gitnexus.md) |
 | What has been measured, and the method | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](website/content/performance.md) |
 
 ## Module map — a workspace, bottom to top

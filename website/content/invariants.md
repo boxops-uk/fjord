@@ -48,7 +48,9 @@ the only one that can see both implementations of it.
 | [I15](#i15) | A database says which format wrote it; an unreadable one is refused | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | green |
 
 No guard is `#[ignore]`d: the coverage ledger (`cargo test -- --ignored --list`) lists
-nothing pending. I10's was the last, and unions made it live.
+nothing pending. I10's was the last, and unions made it live. The next entry is already
+named — [I9](#i9)'s recursive-materialisation guard, which the recursion work owes *before*
+the materialisation path it measures exists, not after.
 
 <a id="i1"></a>
 
@@ -102,6 +104,16 @@ real one, where the two must also agree row for row and id for id;
 matter; and over **compiled** plans it is `flatten::resume_of_a_compiled_plan_equals_the_query`,
 which draws its loop order rather than taking the identity.
 
+**What every arm of that guard shares is a base that cannot change, and that is the shape of what
+it misses.** The generators produce one store and hold it, so no case in the battery can express a
+resume against a *different* database, a database still being written to, or a virtual predicate
+rematerialised between requests — and the cursor carries nothing that would detect any of them: it
+names a plan, a layout version and a level count, and no part of the world it read. Two of those
+three are live holes today rather than hypotheses, recorded with their fixes in
+[the roadmap](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#a-defect-not-a-gap--a-cursor-does-not-name-the-world-it-was-made-in).
+A property whose oracle and subject share an assumption cannot fail on it; closing these means a
+**server-level** arm, not a stronger generator.
+
 [Executor → the cursor](executor.html#the-cursor-bytes-and-nothing-else)
 
 <a id="i5"></a>
@@ -149,17 +161,58 @@ paused query that leaves an iterator alive is as much a leak as a suspended one.
 *Guard:* cross-checks a drop probe against the storage engine's own count of open snapshots,
 because "we dropped our handle" and "the engine considers it closed" are two different claims.
 
+**Where the guarantee is *structural* is about to move, and that is the part to watch.** Today
+`Executor` owns its store and `enumerate` takes `self` by value, so every exit path — done,
+suspend, cancel, unwind — drops the store handle and no caller can park a live iterator. That
+signature is the proof. A fixpoint runs many plans over one snapshot, so the executor can no
+longer be the owner, and ownership moves to the program driver: dropping an executor then drops
+a borrow, not the snapshot. The obligation becomes one the driver owes explicitly — **one base
+snapshot observed by every rule and every round**, not one per rule, which would multiply the
+count below; and that owner released on every exit path. It is also a correctness rule, not only
+resource hygiene: "a fixpoint is a function of a frozen base" *means* one snapshot.
+
+**A derived relation is a second kind of snapshot, and the fjall count cannot see it.** A
+query-local relation is an engine-side `Arc` with no storage-engine counterpart, so a suspended
+recursive program could retain every derived tuple while the existing cross-check reports zero
+open snapshots and passes. The two witnesses establish different halves of this invariant and
+neither substitutes for the other: keep the fjall count for the base reader, and add a drop probe
+around the relation snapshot, with positive controls showing **both** live during execution and
+both at zero after an answer-page suspend, a cancellation mid-fixpoint, a materialisation or limit
+error, and normal completion.
+
 <a id="i9"></a>
 
 ### I9 — The hot path is allocation-free per row
 
 Reused scratch buffers; refcount-bump clones; inline field-offset caches that never spill. Copy
-out only at escape boundaries — a suspend, and a string or bytes projection.
+out only at escape boundaries — a suspend, a string or bytes projection, and **a tuple retained
+into a derived relation**.
 
 *Guard:* a counting global allocator asserts that scanning N and 2N rows allocates the same count
 **and** bytes, with a positive control proving the allocator is linked. The caveat the project
 records: the guard runs a single-level plan, and opening a level allocates — so a join allocates
 once per outer row, and no guard covers that.
+
+**The third escape boundary is named rather than excluded, and that distinction is the whole
+point.** Recursion's fixpoint driver sits above `enumerate`, so nothing inside `advance` changes
+— but a rule's materialisation callback runs *per rule-output attempt*, and must encode,
+deduplicate and sometimes retain that output. That is a hot path in every operational sense, and
+re-scoping this invariant to say the fixpoint is outside the path it measures would leave a
+duplicate-heavy join allocating per attempt while `scan_is_alloc_free_per_row` stayed green.
+So the rule is stated positively instead: **allocation may scale with bytes actually retained,
+under the declared byte budget, and with nothing else** — not with rejected attempts, not with
+duplicates, not with rounds.
+
+Its guard does not exist yet because the relation store does not
+([PLAN.md](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#recursion--query-local-relations-magic-sets-stratified-negation)
+owes it before recursive materialisation lands, `#[ignore]`d up front like every other). It is
+three measurements, not one, because the single-level caveat above multiplies here — a fixpoint
+opens a level per rule per round:
+
+- N versus 2N **duplicate** output attempts, retained tuples held constant: equal counts and bytes;
+- N versus 2N **distinct retained** tuples: bytes scale with the retained payload and the count
+  does not scale with attempts;
+- repeated level opening across rounds, with the same positive allocator control.
 
 <a id="i10"></a>
 
