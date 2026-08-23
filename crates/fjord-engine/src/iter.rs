@@ -430,6 +430,24 @@ fn get_field_span(
 
 pub const CANCELLATION_STRIDE: usize = 4096;
 
+/// **How much scanning a run may do, and how much it has done.**
+///
+/// A ceiling is the only limit this engine has on *input*. Everything else it can be
+/// asked to stop for is counted at the output — rows produced, a page's budget — and
+/// a query whose residuals reject every row produces nothing while reading
+/// everything. Such a query is stoppable today only by whoever holds the
+/// cancellation token, which on a shared server is somebody else's availability.
+///
+/// `None` is unlimited and is the default, because a ceiling is **deployment
+/// policy**: it is not a property of the query, it must not reach a plan
+/// fingerprint, and an embedded caller reading its own database is entitled to
+/// decide there is no ceiling at all. The server sets one; `Executor::new` does not.
+#[derive(Debug, Clone, Copy, Default)]
+struct Examined {
+    count: u64,
+    ceiling: Option<u64>,
+}
+
 /// Polls the cancellation token every [`CANCELLATION_STRIDE`] rows examined.
 ///
 /// **Rows examined, not rows produced.** The two shapes fail differently: a
@@ -443,6 +461,8 @@ pub const CANCELLATION_STRIDE: usize = 4096;
 struct Deadline<'a> {
     token: &'a CancellationToken,
     since_poll: usize,
+    /// What this run has examined, and the most it may — see [`Examined`].
+    examined: Examined,
     /// Where the tally goes. See [`Profile`].
     profile: &'a mut Profile,
     /// Who is watching, if anybody is — see [`Trace`].
@@ -531,10 +551,17 @@ pub trait Trace {
 }
 
 impl<'a> Deadline<'a> {
-    fn new(token: &'a CancellationToken, profile: &'a mut Profile) -> Self {
+    /// A deadline for one run, carrying what that run may examine.
+    ///
+    /// `examined` is a parameter rather than always starting at zero because a
+    /// caller driving [`Executor::step`] by hand runs one deadline *per call*: the
+    /// tally has to be handed back in, or a ceiling would be a ceiling per step and
+    /// no ceiling at all.
+    fn new(token: &'a CancellationToken, profile: &'a mut Profile, examined: Examined) -> Self {
         Self {
             token,
             since_poll: 0,
+            examined,
             profile,
             #[cfg(feature = "trace")]
             trace: None,
@@ -587,9 +614,25 @@ impl<'a> Deadline<'a> {
 
     fn tick(&mut self, depth: usize) -> Result<(), FjordError> {
         self.since_poll += 1;
+        self.examined.count += 1;
 
         if let Some(examined) = self.profile.examined.get_mut(depth) {
             *examined += 1;
+        }
+
+        // **Per row, unlike the token poll, and the difference is not a preference.**
+        // A deadline is rebuilt per call on the [`step`](Executor::step) path, so
+        // `since_poll` restarts at zero every step and a stride-checked ceiling
+        // would never fire for a caller driving the machine by hand. Polling a
+        // token is a syscall-shaped cost that earns its stride; this is a `u64`
+        // compare against a value already in a register.
+        if let Some(ceiling) = self.examined.ceiling {
+            if self.examined.count > ceiling {
+                return Err(FjordError::ExaminedCeiling {
+                    examined: self.examined.count,
+                    ceiling,
+                });
+            }
         }
 
         if self.since_poll >= CANCELLATION_STRIDE {
@@ -1085,6 +1128,13 @@ pub struct Executor<S: FactStore> {
     state: MachineState,
     stack: Box<[StackFrame<S>]>,
     depth: usize,
+    /// What this run has examined and the most it may — see [`Examined`].
+    ///
+    /// On the executor rather than passed to `enumerate`, so that no existing
+    /// caller changes and the default stays unlimited: a ceiling is deployment
+    /// policy, and a policy that arrived as a required argument would have to be
+    /// invented by every caller that does not have one.
+    examined: Examined,
     /// One field-offset cache per register, for projection.
     ///
     /// Owned here rather than made per row: a fresh `Box<[_]>` for each row would
@@ -1360,8 +1410,32 @@ impl<S: FactStore> Executor<S> {
             state,
             stack,
             depth: 0,
+            examined: Examined::default(),
             projection_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
         }
+    }
+
+    /// **The most rows this run may examine before it is stopped.**
+    ///
+    /// Examined, not produced: a residual that rejects a million rows does a
+    /// million rows of work and answers nothing, so a cap on output cannot see it.
+    /// Exceeding this is [`FjordError::ExaminedCeiling`], never a short answer —
+    /// truncating would be a wrong answer wearing a right one's shape.
+    ///
+    /// **Deployment policy, deliberately.** It does not enter a plan fingerprint,
+    /// so it cannot make a cursor refuse to resume; the consequence, which is the
+    /// intended one, is that a resumed request can be refused by a ceiling its
+    /// first page was never measured against. Scope is this executor — the server
+    /// builds one per chunk, so the ceiling is per chunk, and a ceiling on a whole
+    /// paged read is not expressible here and is not meant to be.
+    ///
+    /// Checked per row, not on [`CANCELLATION_STRIDE`]: a deadline is rebuilt per
+    /// call on the [`step`](Self::step) path, so a stride-checked ceiling would
+    /// never fire for a caller driving the machine by hand.
+    #[must_use]
+    pub fn with_examined_ceiling(mut self, ceiling: u64) -> Self {
+        self.examined.ceiling = Some(ceiling);
+        self
     }
 
     /// The bytes-only resume point: one detached row per **level**, stamped with
@@ -1459,7 +1533,12 @@ impl<S: FactStore> Executor<S> {
         // resume replays to rebuild its registers do not show up as work the query
         // did. See [`Profile`].
         let mut replay = Profile::default();
-        let mut deadline = Deadline::new(&cancel, &mut replay);
+
+        // No ceiling, for the same reason the profile is unsized: replaying a cursor
+        // is not work the query did. Charging it would let a resumed page be refused
+        // for rows an uninterrupted run never counted, which is
+        // [I4](../../../website/content/invariants.md#i4) failing by way of a limit.
+        let mut deadline = Deadline::new(&cancel, &mut replay, Examined::default());
 
         // One forward walk over the steps, which is the design's sentence made
         // literal: **re-bind the fact-slots, recompute the value-slots**. A scan
@@ -1576,8 +1655,9 @@ impl<S: FactStore> Executor<S> {
         profile: &mut Profile,
     ) -> Result<Iteratee<A>, FjordError> {
         // One deadline for the whole run: the poll interval is a property of the
-        // run, not of any single level's scan.
-        let mut deadline = Deadline::new(cancellation_token, profile);
+        // run, not of any single level's scan — and so is the ceiling, which is why
+        // the tally rides along in it rather than being restarted per level.
+        let mut deadline = Deadline::new(cancellation_token, profile, self.examined);
         let mut acc = init;
 
         loop {
@@ -1658,8 +1738,14 @@ impl<S: FactStore> Executor<S> {
         // A deadline per call rather than per run: the stride it carries is a
         // cancellation optimisation, and a caller stepping by hand is not the
         // hot path the stride exists for.
-        let mut deadline = Deadline::new(cancellation_token, profile);
-        self.advance(&mut deadline)
+        //
+        // **The tally is carried in and back out, and it has to be.** A ceiling
+        // scoped to one `step` would be no ceiling: every call would start at zero,
+        // and a caller stepping a runaway plan would never reach it.
+        let mut deadline = Deadline::new(cancellation_token, profile, self.examined);
+        let transition = self.advance(&mut deadline);
+        self.examined = deadline.examined;
+        transition
     }
 
     /// [`step`](Self::step), with somebody watching the rows a residual drops.
@@ -1679,8 +1765,11 @@ impl<S: FactStore> Executor<S> {
         profile: &mut Profile,
         trace: &mut dyn Trace,
     ) -> Result<Transition, FjordError> {
-        let mut deadline = Deadline::new(cancellation_token, profile).watching(trace);
-        self.advance(&mut deadline)
+        let mut deadline =
+            Deadline::new(cancellation_token, profile, self.examined).watching(trace);
+        let transition = self.advance(&mut deadline);
+        self.examined = deadline.examined;
+        transition
     }
 
     /// How deep the machine is standing — an index into the plan's body, and
@@ -5952,6 +6041,163 @@ mod tests {
             calls.load(Ordering::Relaxed),
             0,
             "a negation probe fetched a value (I6)"
+        );
+    }
+
+    // ---- the rows-examined ceiling -----------------------------------------
+    //
+    // The one limit this engine has on *input*. Everything else it stops for is
+    // counted at the output, and the query that most needs stopping — a scan whose
+    // residuals reject every row — produces nothing at all.
+
+    /// A scan of `rows` rows of one predicate, binding register 0.
+    fn ceiling_store(rows: u64) -> FrozenStore {
+        FrozenStore::from_keys(PredicateId(0), (1..=rows).map(|i| (i64_field(i as i64), i)))
+    }
+
+    fn ceiling_plan(residuals: Box<[Residual]>) -> Plan {
+        Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level::seek(
+                Access {
+                    predicate_id: PredicateId(0),
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                residuals,
+            ))]),
+            head: Project::FactRef(Address::new(0)),
+        }
+    }
+
+    /// **A ceiling stops a run, and stopping is an error rather than a short
+    /// answer.** Truncating would be a wrong answer wearing a right one's shape:
+    /// the caller cannot tell "these are the rows" from "these are some of them".
+    #[test]
+    fn a_ceiling_stops_a_run_that_reads_past_it() {
+        let store = ceiling_store(CANCELLATION_STRIDE as u64 * 4);
+        let executor = Executor::new(store, ceiling_plan(Box::new([])))
+            .with_examined_ceiling(CANCELLATION_STRIDE as u64);
+
+        let outcome = executor.enumerate(
+            0usize,
+            |n, _row| Ok(Stream::Continue(n + 1)),
+            &CancellationToken::new(),
+        );
+
+        match outcome.err().expect("the ceiling stops it") {
+            FjordError::ExaminedCeiling { examined, ceiling } => {
+                assert_eq!(ceiling, CANCELLATION_STRIDE as u64);
+                // Exactly one row past it. A guard that only asserted the variant
+                // would pass for a ceiling checked once at the end, after all the
+                // work it exists to prevent.
+                assert_eq!(
+                    examined,
+                    ceiling + 1,
+                    "the ceiling is checked per row, so it stops one row past itself"
+                );
+            }
+            other => panic!("wrong error: {other}"),
+        }
+    }
+
+    /// **The ceiling counts rows examined, not rows answered** — which is the whole
+    /// reason it exists. This plan's residual rejects every row, so it produces
+    /// nothing and every output-side limit reads zero while it reads the predicate.
+    #[test]
+    fn a_ceiling_counts_examined_rows_not_answered_ones() {
+        let matches_nothing = || {
+            Box::new([Residual {
+                path: FieldPath::field(0),
+                op: ResidualOp::EqConst(i64_field(-1).into_boxed_slice()),
+            }]) as Box<[Residual]>
+        };
+
+        // The control: with no ceiling this plan answers zero rows and completes,
+        // so what the ceiling below catches is invisible to any count of output.
+        let answered = count_rows(
+            ceiling_store(CANCELLATION_STRIDE as u64 * 4),
+            ceiling_plan(matches_nothing()),
+        )
+        .expect("no ceiling, so it finishes");
+        assert_eq!(answered, 0, "the residual is supposed to reject everything");
+
+        let executor = Executor::new(
+            ceiling_store(CANCELLATION_STRIDE as u64 * 4),
+            ceiling_plan(matches_nothing()),
+        )
+        .with_examined_ceiling(CANCELLATION_STRIDE as u64);
+
+        assert!(
+            matches!(
+                executor.enumerate(
+                    0usize,
+                    |n, _row| Ok(Stream::Continue(n + 1)),
+                    &CancellationToken::new()
+                ),
+                Err(FjordError::ExaminedCeiling { .. })
+            ),
+            "a run that answers nothing still examined everything"
+        );
+    }
+
+    /// A run inside its ceiling answers exactly what it would with none — and the
+    /// default is none, which is what keeps every existing caller unchanged.
+    #[test]
+    fn a_run_under_its_ceiling_answers_what_an_unlimited_one_does() {
+        let rows = CANCELLATION_STRIDE as u64 * 2;
+
+        let unlimited = count_rows(ceiling_store(rows), ceiling_plan(Box::new([])))
+            .expect("the default is no ceiling");
+        assert_eq!(unlimited as u64, rows);
+
+        let limited = Executor::new(ceiling_store(rows), ceiling_plan(Box::new([])))
+            .with_examined_ceiling(rows + 1)
+            .enumerate(
+                0usize,
+                |n, _row| Ok(Stream::Continue(n + 1)),
+                &CancellationToken::new(),
+            )
+            .expect("inside its ceiling");
+
+        match limited {
+            Iteratee::Done(n) => assert_eq!(n as u64, rows),
+            Iteratee::Suspended(..) => panic!("nothing asked it to suspend"),
+        }
+    }
+
+    /// **A ceiling holds across `step`, which runs a deadline per call.** The tally
+    /// has to be carried in and back out, or every call would start at zero and a
+    /// caller stepping a runaway plan would never reach the ceiling at all.
+    #[test]
+    fn a_ceiling_holds_across_stepping_by_hand() {
+        let mut executor = Executor::new(
+            ceiling_store(CANCELLATION_STRIDE as u64 * 4),
+            ceiling_plan(Box::new([])),
+        )
+        .with_examined_ceiling(CANCELLATION_STRIDE as u64);
+
+        let token = CancellationToken::new();
+        let mut profile = Profile::default();
+
+        let error = loop {
+            if executor.row().is_some() {
+                if !executor.resume_after_row() {
+                    panic!("the plan drained before the ceiling stopped it");
+                }
+                continue;
+            }
+
+            match executor.step(&token, &mut profile) {
+                Ok(Transition::Stepped) => continue,
+                Ok(Transition::Done) => panic!("the plan drained before the ceiling stopped it"),
+                Err(error) => break error,
+            }
+        };
+
+        assert!(
+            matches!(error, FjordError::ExaminedCeiling { .. }),
+            "wrong error: {error}"
         );
     }
 

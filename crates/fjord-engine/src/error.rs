@@ -124,6 +124,21 @@ pub enum FjordError {
     #[error("operation cancelled")]
     Cancelled,
 
+    /// A run that examined more rows than its ceiling allows.
+    ///
+    /// **Examined, not produced**, which is the whole reason this exists: every
+    /// other limit in this engine counts output, and a scan whose residuals reject
+    /// every row produces nothing while doing all the work. A ceiling that counted
+    /// rows *answered* would read zero on exactly the query it needs to stop.
+    ///
+    /// Checked per row rather than on the cancellation stride, so `examined` is
+    /// always `ceiling + 1`: a stride-checked ceiling could never fire for a caller
+    /// driving the machine one transition at a time, since that path rebuilds its
+    /// deadline — and its stride counter — on every call. Both numbers are carried
+    /// anyway, because an error that says only "too many" cannot be acted on.
+    #[error("examined {examined} rows, over this run's ceiling of {ceiling}")]
+    ExaminedCeiling { examined: u64, ceiling: u64 },
+
     #[error("store error: {0}")]
     Store(#[from] StoreError),
 }

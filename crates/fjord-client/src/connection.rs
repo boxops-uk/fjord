@@ -732,7 +732,7 @@ impl Connection {
 
         self.check_open(rows)?;
 
-        let (kind, payload) = self.recv_on(rows.stream())?;
+        let (kind, payload) = self.recv_row_frame(rows)?;
 
         // Sent once, just before the result ends. Taken here rather than in a
         // separate call so a caller that only pulls rows still ends up holding it.
@@ -831,7 +831,7 @@ impl Connection {
         self.send(kinds::CANCEL, rows.stream(), &[])?;
 
         loop {
-            let (kind, payload) = self.recv_on(rows.stream())?;
+            let (kind, payload) = self.recv_row_frame(rows)?;
 
             match kind {
                 // Counted rather than merely dropped, so the tally at the end still
@@ -999,6 +999,29 @@ impl Connection {
         encode_frame(&mut out, kind, stream, payload)?;
         self.socket.write_all(&out)?;
         Ok(())
+    }
+
+    /// The next frame for an open **query result**, terminating `rows` if it is an
+    /// error.
+    ///
+    /// [`recv_on`](Self::recv_on) already turns an error frame into `Err` before this
+    /// sees it, and returning that `Err` here would leave [`Rows`] streaming and its
+    /// stream in `self.open` forever — a query stream ends in exactly one frame,
+    /// `COMPLETE` or `ERROR`, and only the first of those was releasing anything. A
+    /// second call on the same `rows` would then wait on a stream whose server-side
+    /// task has already returned: a hang, not a repeat of the error. Releasing here is
+    /// what makes an error terminal in the same sense completion is — the id goes back
+    /// to [`free`](Self::free), and `rows.finished()` is true on the way out, exactly
+    /// as [`next_row`](Self::next_row) already treats `COMPLETE`.
+    fn recv_row_frame(&mut self, rows: &mut Rows) -> Result<(FrameKind, Vec<u8>), ClientError> {
+        match self.recv_on(rows.stream()) {
+            Ok(frame) => Ok(frame),
+            Err(error) => {
+                self.release_stream(rows.stream());
+                rows.mark_errored();
+                Err(error)
+            }
+        }
     }
 
     /// The next frame **for `stream`**, parking anything that arrives for another.

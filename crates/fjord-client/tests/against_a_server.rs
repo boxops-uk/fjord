@@ -1569,3 +1569,322 @@ fn a_server_that_predates_expansion_is_reported_as_unsupported() {
 
     server.join().expect("the fake server exits cleanly");
 }
+
+/// **A server-reported error mid-stream is terminal, exactly as `COMPLETE` is.**
+///
+/// Nothing in this repository's server sends an error after rows today except the
+/// rows-examined ceiling, and provoking that honestly needs a scan too large for a
+/// unit test. The client-side contract does not depend on what produced the error, so
+/// a fake server stands in for one and sends the frame directly — this is the
+/// boundary [`Connection::next_row`] owns, not the executor's.
+///
+/// Before this, an error frame reached [`Connection::next_row`]'s caller via `?`
+/// without releasing the stream: `rows` stayed [`Streaming`](fjord_client::Rows), the
+/// stream id stayed in the connection's open set, and a caller that read it again —
+/// or the connection's own bookkeeping — never learned the server-side task had
+/// already returned. The second query below proves the release rather than assuming
+/// it: it reuses the same stream id only if the errored one was actually freed.
+#[test]
+fn a_mid_stream_error_ends_the_stream_the_way_complete_does() {
+    use fjord_wire::{
+        StreamId,
+        desc::{Desc, encode_desc},
+        frame::{self, FrameKind},
+        protocol::{self, ErrorCode, Ready},
+        value::encode_value,
+    };
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream as RawUnixStream;
+
+    fn send(stream: &mut RawUnixStream, kind: FrameKind, id: StreamId, payload: &[u8]) {
+        let mut out = vec![];
+        frame::encode_frame(&mut out, kind, id, payload).expect("a frame encodes");
+        stream.write_all(&out).expect("the frame is sent");
+    }
+
+    fn read_header(stream: &mut RawUnixStream) -> fjord_wire::FrameHeader {
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).expect("a frame arrives");
+        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+        header
+    }
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("fake.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    // Owned, not borrowed: `row` moves into the `'static` server thread below, so it
+    // must own its schema rather than hold a reference into this function's stack.
+    let row_schema = schema();
+    let row = move |text: &str| {
+        let mut out = vec![];
+        encode_value(
+            &mut out,
+            &row_schema,
+            &PredicateTy::Str,
+            &WireValue::Str(text.to_owned()),
+        )
+        .expect("a string encodes");
+        out
+    };
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+
+        // Handshake: swallow STARTUP, answer READY.
+        let header = read_header(&mut stream);
+        assert_eq!(header.kind, protocol::kinds::STARTUP);
+        let ready = protocol::encode_ready(&Ready {
+            version: protocol::VERSION,
+            schema_fingerprint: 0,
+            predicates: 0,
+        });
+        send(&mut stream, protocol::kinds::READY, header.stream, &ready);
+
+        // First query: one row, then an error instead of `COMPLETE`.
+        let first = read_header(&mut stream);
+        assert_eq!(first.kind, protocol::kinds::QUERY);
+
+        let mut desc = vec![];
+        encode_desc(&mut desc, &Desc::Str);
+        send(&mut stream, FrameKind::ROW_DESCRIPTION, first.stream, &desc);
+        send(
+            &mut stream,
+            FrameKind::DATA_ROW,
+            first.stream,
+            &row("row-one"),
+        );
+        send(
+            &mut stream,
+            FrameKind::ERROR,
+            first.stream,
+            &protocol::encode_error(ErrorCode::Internal, "examined rows past this run's ceiling"),
+        );
+
+        // Second query, on the *same connection*: the stream id it carries is the
+        // proof. Reused only if the errored stream was actually released.
+        let second = read_header(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::QUERY);
+        assert_eq!(
+            second.stream, first.stream,
+            "the errored stream's id was never recycled"
+        );
+
+        send(
+            &mut stream,
+            FrameKind::ROW_DESCRIPTION,
+            second.stream,
+            &desc,
+        );
+        send(
+            &mut stream,
+            FrameKind::DATA_ROW,
+            second.stream,
+            &row("row-two"),
+        );
+        send(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            second.stream,
+            &protocol::encode_complete(1, 0),
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("the stream opens");
+
+    assert_eq!(
+        connection
+            .next_row(&mut rows)
+            .expect("the first row arrives"),
+        Some(WireValue::Str("row-one".to_owned()))
+    );
+
+    let error = connection
+        .next_row(&mut rows)
+        .expect_err("the server's error reaches the caller");
+    assert!(
+        matches!(&error, ClientError::Server { code, .. } if *code == ErrorCode::Internal),
+        "the server's own error, not a protocol complaint about the frame: {error:?}"
+    );
+
+    assert!(
+        rows.finished(),
+        "an error ends the result exactly as COMPLETE does"
+    );
+
+    // Safe to call again only because `finished()` is already true above: this
+    // returns `Ok(None)` without touching the socket rather than waiting on a stream
+    // whose server-side task has already returned.
+    assert_eq!(
+        connection
+            .next_row(&mut rows)
+            .expect("finished is idempotent"),
+        None
+    );
+
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "one stream was ever needed before the second query"
+    );
+
+    let mut second_rows = connection
+        .query("F where src.File F")
+        .expect("it opens again");
+    assert_eq!(
+        connection.drain(&mut second_rows).expect("its row arrives"),
+        vec![WireValue::Str("row-two".to_owned())]
+    );
+
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the second query reused the errored stream's id rather than minting a new one"
+    );
+
+    server.join().expect("the fake server exits cleanly");
+}
+
+/// **A cancel that races a terminal error must not hang, and the connection must
+/// still work afterwards.**
+///
+/// [`Connection::cancel`] reads frames on the same query stream `next_row` does, and
+/// shares its fix: a server can answer `CANCEL` with an error instead of `COMPLETE`
+/// — the query the cancel raced against had already failed — and that stream must be
+/// released exactly as an error mid-`next_row` releases it.
+#[test]
+fn a_cancel_racing_a_terminal_error_leaves_the_connection_working() {
+    use fjord_wire::{
+        StreamId,
+        desc::{Desc, encode_desc},
+        frame::{self, FrameKind},
+        protocol::{self, ErrorCode, Ready},
+        value::encode_value,
+    };
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream as RawUnixStream;
+
+    fn send(stream: &mut RawUnixStream, kind: FrameKind, id: StreamId, payload: &[u8]) {
+        let mut out = vec![];
+        frame::encode_frame(&mut out, kind, id, payload).expect("a frame encodes");
+        stream.write_all(&out).expect("the frame is sent");
+    }
+
+    fn read_header(stream: &mut RawUnixStream) -> fjord_wire::FrameHeader {
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).expect("a frame arrives");
+        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+        header
+    }
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("fake.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    // Owned, not borrowed: it moves into the `'static` server thread below, so it
+    // must own its schema rather than hold a reference into this function's stack.
+    let row_schema = schema();
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+
+        let header = read_header(&mut stream);
+        assert_eq!(header.kind, protocol::kinds::STARTUP);
+        let ready = protocol::encode_ready(&Ready {
+            version: protocol::VERSION,
+            schema_fingerprint: 0,
+            predicates: 0,
+        });
+        send(&mut stream, protocol::kinds::READY, header.stream, &ready);
+
+        let query = read_header(&mut stream);
+        assert_eq!(query.kind, protocol::kinds::QUERY);
+
+        let mut desc = vec![];
+        encode_desc(&mut desc, &Desc::Str);
+        send(&mut stream, FrameKind::ROW_DESCRIPTION, query.stream, &desc);
+
+        // The client cancels before any row arrives — the fake server answers the
+        // `CANCEL` with an error rather than `COMPLETE`.
+        let cancel = read_header(&mut stream);
+        assert_eq!(cancel.kind, protocol::kinds::CANCEL);
+        assert_eq!(cancel.stream, query.stream);
+        send(
+            &mut stream,
+            FrameKind::ERROR,
+            query.stream,
+            &protocol::encode_error(ErrorCode::Internal, "failed before the cancel landed"),
+        );
+
+        // A second query proves the first stream's id was recycled.
+        let second = read_header(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::QUERY);
+        assert_eq!(
+            second.stream, query.stream,
+            "the errored-during-cancel stream's id was never recycled"
+        );
+
+        send(
+            &mut stream,
+            FrameKind::ROW_DESCRIPTION,
+            second.stream,
+            &desc,
+        );
+        let mut row = vec![];
+        encode_value(
+            &mut row,
+            &row_schema,
+            &PredicateTy::Str,
+            &WireValue::Str("still-here".to_owned()),
+        )
+        .expect("a string encodes");
+        send(&mut stream, FrameKind::DATA_ROW, second.stream, &row);
+        send(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            second.stream,
+            &protocol::encode_complete(1, 0),
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("the stream opens");
+
+    let error = connection
+        .cancel(&mut rows)
+        .expect_err("the race's error reaches the caller rather than being swallowed");
+    assert!(
+        matches!(&error, ClientError::Server { code, .. } if *code == ErrorCode::Internal),
+        "wrong error: {error:?}"
+    );
+    assert!(rows.finished(), "the race still ends the result");
+
+    let mut second_rows = connection
+        .query("F where src.File F")
+        .expect("it opens again");
+    assert_eq!(
+        connection.drain(&mut second_rows).expect("its row arrives"),
+        vec![WireValue::Str("still-here".to_owned())]
+    );
+
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the connection is still usable and did not need a second stream id"
+    );
+
+    server.join().expect("the fake server exits cleanly");
+}

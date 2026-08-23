@@ -25,6 +25,12 @@ enum State {
     /// Ended, with the count the server reported — which after a cancel is what it
     /// *sent* rather than what the query would have matched.
     Ended(u64),
+    /// Ended with a server-reported error instead of [`COMPLETE`](fjord_wire::protocol::kinds::COMPLETE).
+    ///
+    /// A stream that fails this way is exactly as over as one that finishes cleanly —
+    /// the server's task has already returned and nothing more will arrive on it —
+    /// so this is terminal in the same sense `Ended` is, not a third kind of open.
+    Errored,
 }
 
 /// One query's rows, and where the reader has got to.
@@ -125,17 +131,22 @@ impl Rows {
         self.seen
     }
 
-    /// Whether the result has ended — exhausted or cancelled.
+    /// Whether the result has ended — exhausted, cancelled, or errored.
     #[must_use]
     pub fn finished(&self) -> bool {
-        matches!(self.state, State::Ended(_))
+        matches!(self.state, State::Ended(_) | State::Errored)
     }
 
     /// What the server said it sent, once the result has ended; `0` before that.
+    ///
+    /// An error ends the result with no `COMPLETE` frame to report a count, so this
+    /// answers with what actually arrived — the same number [`seen`](Rows::seen)
+    /// would give, and the best a client can say about a result that failed.
     #[must_use]
     pub fn sent(&self) -> u64 {
         match self.state {
             State::Ended(sent) => sent,
+            State::Errored => self.seen,
             State::Streaming => 0,
         }
     }
@@ -188,6 +199,16 @@ impl Rows {
 
         self.state = State::Ended(sent);
         Ok(())
+    }
+
+    /// Record that the stream ended with a server-reported error rather than
+    /// `COMPLETE`.
+    ///
+    /// Without this the bookmark stays [`State::Streaming`] after an error reaches
+    /// its caller, and a second read on it waits on a stream whose server-side task
+    /// has already returned — a wait nothing will ever end.
+    pub(crate) fn mark_errored(&mut self) {
+        self.state = State::Errored;
     }
 }
 

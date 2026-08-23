@@ -1273,6 +1273,27 @@ fn predicate_name(schema: &Schema, id: PredicateId) -> String {
 /// hop to the blocking pool — is amortised.
 const CHUNK_ROWS: usize = 256;
 
+/// **The most rows one chunk may examine before it is refused.**
+///
+/// The server's only limit on *input*. [`CHUNK_ROWS`] bounds what a chunk
+/// produces, and a query whose residuals reject every row produces nothing while
+/// reading a whole predicate — so a budget on output cannot see the shape most
+/// worth stopping, and until this existed such a query was stoppable only by the
+/// client that asked for it. That is somebody else's availability on a shared
+/// server.
+///
+/// The number is policy, and it is chosen from measurement rather than taste: the
+/// executor's floor is ~400 ns/row (`bench/FINDINGS.md` §3), so this is roughly 25
+/// seconds of pure scanning, and it is about seven times the largest predicate in
+/// the published 18M-fact corpus. Generous for any legitimate page — a page may
+/// well scan a whole predicate to find its rows — and bounded for a runaway one.
+///
+/// It is **not** in any fingerprint, which is what keeps a cursor from binding
+/// itself to a deployment's configuration. The consequence is the intended one and
+/// is stated rather than hidden: raising or lowering this can refuse a resumed page
+/// whose first page was measured against the old value.
+const EXAMINED_CEILING: u64 = 64_000_000;
+
 /// What compiling a query produced, before any of it has run.
 struct Prepared {
     descriptor: Vec<u8>,
@@ -1426,7 +1447,8 @@ fn counting<S: fjord_store::fact_store::FactStore>(
         Some(cursor) => Executor::resume(store, plan.clone(), cursor),
         None => Ok(Executor::new(store, plan.clone())),
     }
-    .map_err(|error| ServerError::Execution(error.to_string()))?;
+    .map_err(|error| ServerError::Execution(error.to_string()))?
+    .with_examined_ceiling(EXAMINED_CEILING);
 
     // **The row is never built.** `to_value` is what allocates and what decodes; a
     // count needs neither, so the closure looks at nothing and adds one. That is the
@@ -1538,7 +1560,8 @@ fn over<S: fjord_store::fact_store::FactStore>(
         Some(cursor) => Executor::resume(store, (*plan).clone(), cursor),
         None => Ok(Executor::new(store, (*plan).clone())),
     }
-    .map_err(|error| ServerError::Execution(error.to_string()))?;
+    .map_err(|error| ServerError::Execution(error.to_string()))?
+    .with_examined_ceiling(EXAMINED_CEILING);
 
     // `Suspend` at the chunk boundary is what makes `enumerate` hand back a cursor;
     // the executor then drops its snapshot, which is [I8] holding through a portal
