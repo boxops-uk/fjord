@@ -179,6 +179,8 @@ struct Writing {
 /// stream's counters need no lock.
 struct Session {
     registry: Arc<Registry>,
+    /// Deployment policy, applied to every executor this session builds.
+    examined_ceiling: u64,
     /// `None` for a **control session** — one bound to no database at all.
     ///
     /// Which exists because `create` names a database that does not exist yet: a
@@ -195,7 +197,12 @@ struct Session {
 /// Only fatal faults escape: an I/O failure, or a peer whose frames no longer parse.
 /// Everything else is answered with an error frame on the stream that caused it and
 /// the connection carries on.
-pub async fn serve<R, W>(reader: R, writer: W, registry: &Arc<Registry>) -> Result<(), ServerError>
+pub async fn serve<R, W>(
+    reader: R,
+    writer: W,
+    registry: &Arc<Registry>,
+    examined_ceiling: u64,
+) -> Result<(), ServerError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -203,7 +210,7 @@ where
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
-    let session = match handshake(&mut reader, &mut writer, registry).await {
+    let session = match handshake(&mut reader, &mut writer, registry, examined_ceiling).await {
         Ok(session) => session,
         Err(error) => {
             // A failed handshake is answered and then the connection ends: there is
@@ -251,6 +258,7 @@ async fn handshake<R, W>(
     reader: &mut R,
     writer: &mut W,
     registry: &Arc<Registry>,
+    examined_ceiling: u64,
 ) -> Result<Session, ServerError>
 where
     R: AsyncRead + Unpin,
@@ -371,6 +379,7 @@ where
 
     Ok(Session {
         registry: Arc::clone(registry),
+        examined_ceiling,
         database,
         mode: startup.mode,
     })
@@ -928,13 +937,21 @@ impl StreamTask {
             let token = self.cancel.clone();
             let resume = cursor.take();
             let listing = prepared.catalogue.clone();
+            let examined_ceiling = self.session.examined_ceiling;
 
             let counting = {
                 let queued = std::time::Instant::now();
                 let stats = Arc::clone(stats);
                 blocking::run(move || {
                     stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
-                    count_chunk(&database, listing.as_ref(), &plan, resume, &token)
+                    count_chunk(
+                        &database,
+                        listing.as_ref(),
+                        &plan,
+                        resume,
+                        &token,
+                        examined_ceiling,
+                    )
                 })
                 .await
             };
@@ -1049,6 +1066,7 @@ impl StreamTask {
             let token = self.cancel.clone();
             let resume = cursor.take();
             let mut counted = std::mem::take(&mut profile);
+            let examined_ceiling = self.session.examined_ceiling;
 
             // A page smaller than a chunk must not overshoot it: the rows past the
             // limit would be computed, encoded and thrown away, and the token would
@@ -1080,6 +1098,7 @@ impl StreamTask {
                             shape: &shape,
                             budget,
                             cancel: &token,
+                            examined_ceiling,
                         },
                         resume,
                         &mut counted,
@@ -1292,7 +1311,7 @@ const CHUNK_ROWS: usize = 256;
 /// itself to a deployment's configuration. The consequence is the intended one and
 /// is stated rather than hidden: raising or lowering this can refuse a resumed page
 /// whose first page was measured against the old value.
-const EXAMINED_CEILING: u64 = 64_000_000;
+pub(crate) const EXAMINED_CEILING: u64 = 64_000_000;
 
 /// What compiling a query produced, before any of it has run.
 struct Prepared {
@@ -1422,6 +1441,7 @@ fn count_chunk(
     plan: &Plan,
     resume: Option<Cursor>,
     cancel: &CancellationToken,
+    examined_ceiling: u64,
 ) -> Result<(u64, Option<Cursor>), ServerError> {
     let store = database.db.reader();
 
@@ -1431,8 +1451,9 @@ fn count_chunk(
             plan,
             resume,
             cancel,
+            examined_ceiling,
         ),
-        None => counting(store, plan, resume, cancel),
+        None => counting(store, plan, resume, cancel, examined_ceiling),
     }
 }
 
@@ -1442,13 +1463,14 @@ fn counting<S: fjord_store::fact_store::FactStore>(
     plan: &Plan,
     resume: Option<Cursor>,
     cancel: &CancellationToken,
+    examined_ceiling: u64,
 ) -> Result<(u64, Option<Cursor>), ServerError> {
     let executor = match resume {
         Some(cursor) => Executor::resume(store, plan.clone(), cursor),
         None => Ok(Executor::new(store, plan.clone())),
     }
     .map_err(|error| ServerError::Execution(error.to_string()))?
-    .with_examined_ceiling(EXAMINED_CEILING);
+    .with_examined_ceiling(examined_ceiling);
 
     // **The row is never built.** `to_value` is what allocates and what decodes; a
     // count needs neither, so the closure looks at nothing and adds one. That is the
@@ -1486,6 +1508,7 @@ struct Chunking<'a> {
     /// The most rows this turn may produce: [`CHUNK_ROWS`], or what is left of a page.
     budget: usize,
     cancel: &'a CancellationToken,
+    examined_ceiling: u64,
 }
 
 /// The facts a batch of ids names, once the store to read them from is known.
@@ -1554,6 +1577,7 @@ fn over<S: fjord_store::fact_store::FactStore>(
         shape,
         budget,
         cancel,
+        examined_ceiling,
     } = work;
     let budget = *budget;
     let executor = match resume {
@@ -1561,7 +1585,7 @@ fn over<S: fjord_store::fact_store::FactStore>(
         None => Ok(Executor::new(store, (*plan).clone())),
     }
     .map_err(|error| ServerError::Execution(error.to_string()))?
-    .with_examined_ceiling(EXAMINED_CEILING);
+    .with_examined_ceiling(*examined_ceiling);
 
     // `Suspend` at the chunk boundary is what makes `enumerate` hand back a cursor;
     // the executor then drops its snapshot, which is [I8] holding through a portal

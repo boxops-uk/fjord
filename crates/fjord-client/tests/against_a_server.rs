@@ -5,7 +5,13 @@
 //! the conversation — that a page holds its place, that two results can be open at
 //! once, and that a cancel ends one stream and leaves the connection working.
 
-use std::{path::PathBuf, sync::Arc, thread};
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream as RawUnixStream,
+    path::PathBuf,
+    sync::Arc,
+    thread,
+};
 
 use fjord_client::{
     ClientError, Connection, ErrorCode, Expander, FULL_DEPTH, Mode, WireFact, WireRef, WireValue,
@@ -179,6 +185,10 @@ impl Serving {
 }
 
 fn start() -> Serving {
+    start_with_examined_ceiling(None)
+}
+
+fn start_with_examined_ceiling(examined_ceiling: Option<u64>) -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("fjord.sock");
 
@@ -188,7 +198,10 @@ fn start() -> Serving {
 
     let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
     let registry = Arc::new(registry);
-    let listener = Listener::bind(&socket).expect("a socket");
+    let mut listener = Listener::bind(&socket).expect("a socket");
+    if let Some(ceiling) = examined_ceiling {
+        listener = listener.with_examined_ceiling(ceiling);
+    }
 
     let serving = Arc::clone(&registry);
     thread::spawn(move || {
@@ -200,6 +213,59 @@ fn start() -> Serving {
         socket,
         registry,
     }
+}
+
+fn send_frame(
+    stream: &mut RawUnixStream,
+    kind: fjord_wire::FrameKind,
+    id: fjord_wire::StreamId,
+    payload: &[u8],
+) {
+    let mut out = vec![];
+    fjord_wire::frame::encode_frame(&mut out, kind, id, payload).expect("a frame encodes");
+    stream.write_all(&out).expect("the frame is sent");
+}
+
+/// Read exactly one frame without consuming any bytes belonging to the next one.
+fn read_frame(stream: &mut RawUnixStream) -> (fjord_wire::FrameHeader, Vec<u8>) {
+    let mut head = [0u8; fjord_wire::frame::HEADER_LEN];
+    stream
+        .read_exact(&mut head)
+        .expect("a frame header arrives");
+    let header = fjord_wire::frame::decode_header(&head).expect("a frame header");
+    let mut payload = vec![0u8; header.length as usize];
+    stream
+        .read_exact(&mut payload)
+        .expect("the frame payload arrives");
+    (header, payload)
+}
+
+fn ready_fake_server(stream: &mut RawUnixStream) {
+    let (header, _) = read_frame(stream);
+    assert_eq!(header.kind, fjord_wire::protocol::kinds::STARTUP);
+    let ready = fjord_wire::protocol::encode_ready(&fjord_wire::protocol::Ready {
+        version: fjord_wire::protocol::VERSION,
+        schema_fingerprint: 0,
+        predicates: 0,
+    });
+    send_frame(
+        stream,
+        fjord_wire::protocol::kinds::READY,
+        header.stream,
+        &ready,
+    );
+}
+
+fn string_row(text: &str) -> Vec<u8> {
+    let mut out = vec![];
+    fjord_wire::value::encode_value(
+        &mut out,
+        &schema(),
+        &PredicateTy::Str,
+        &WireValue::Str(text.to_owned()),
+    )
+    .expect("a string encodes");
+    out
 }
 
 /// Write `count` files, so a result can be made as long as a test needs.
@@ -654,6 +720,11 @@ fn a_bad_query_fails_its_stream_by_code() {
 
     let mut rows = connection.query("F where src.File F").expect("it compiles");
     assert!(connection.drain(&mut rows).expect("no rows").is_empty());
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the query after the terminal refusal must reuse its stream id"
+    );
 }
 
 /// The lifecycle, through the client: create a database, seal it, and find that
@@ -1235,6 +1306,53 @@ fn a_count_ends_its_stream() {
     );
 }
 
+/// The server's examined ceiling reaches both wire paths as a terminal error, and
+/// each path releases its stream id before the connection carries on.
+#[test]
+fn the_server_ceiling_stops_queries_and_counts_without_leaking_their_streams() {
+    let serving = start_with_examined_ceiling(Some(3));
+    let mut connection = serving.open(Mode::ReadWrite);
+    seed(&mut connection, 5);
+
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("the descriptor arrives before execution");
+    let query_error = connection
+        .next_row(&mut rows)
+        .expect_err("the fourth examined row exceeds the ceiling");
+    assert_eq!(query_error.code(), Some(ErrorCode::Internal));
+    assert!(
+        query_error
+            .to_string()
+            .contains("examined 4 rows, over this run's ceiling of 3"),
+        "the executor's named refusal reaches the client: {query_error}"
+    );
+    assert!(rows.finished(), "the query error is terminal");
+
+    let count_error = connection
+        .count("F where src.File F")
+        .expect_err("count uses the same ceiling");
+    assert_eq!(count_error.code(), Some(ErrorCode::Internal));
+    assert!(
+        count_error
+            .to_string()
+            .contains("examined 4 rows, over this run's ceiling of 3"),
+        "the count path carries the same refusal: {count_error}"
+    );
+
+    assert_eq!(
+        connection
+            .count("F where src.File F; F = \"f00000.py\"")
+            .expect("a seek inside the ceiling still works"),
+        1
+    );
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the write, failed query, failed count, and successful count are sequential and reuse one id"
+    );
+}
+
 /// Remove a database once the server has let go of it.
 ///
 /// See the call site: a client's `drop` and the server's session teardown are
@@ -1509,10 +1627,9 @@ fn a_union_is_written_and_read_back_over_the_wire() {
 #[test]
 fn a_server_that_predates_expansion_is_reported_as_unsupported() {
     use fjord_wire::{
-        frame::{self, FrameKind},
-        protocol::{self, ErrorCode, Ready},
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
     };
-    use std::io::{Read, Write};
 
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("old.sock");
@@ -1520,35 +1637,16 @@ fn a_server_that_predates_expansion_is_reported_as_unsupported() {
 
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("a connection");
-        let mut buf = vec![0u8; 4096];
-
-        // The handshake: swallow STARTUP, answer READY.
-        let n = stream.read(&mut buf).expect("a startup frame");
-        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
-        assert_eq!(header.kind, protocol::kinds::STARTUP);
-
-        let ready = protocol::encode_ready(&Ready {
-            version: protocol::VERSION,
-            schema_fingerprint: 0,
-            predicates: 0,
-        });
-        let mut out = vec![];
-        frame::encode_frame(&mut out, protocol::kinds::READY, header.stream, &ready)
-            .expect("a ready frame");
-        stream.write_all(&out).expect("ready sent");
+        ready_fake_server(&mut stream);
 
         // The next frame is the fetch this server has never heard of.
-        let n = stream.read(&mut buf).expect("a fetch frame");
-        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+        let (header, _) = read_frame(&mut stream);
 
         let refusal = protocol::encode_error(
             ErrorCode::Protocol,
             &format!("no handler for frame kind {:?}", header.kind),
         );
-        let mut out = vec![];
-        frame::encode_frame(&mut out, FrameKind::ERROR, header.stream, &refusal)
-            .expect("an error frame");
-        stream.write_all(&out).expect("error sent");
+        send_frame(&mut stream, FrameKind::ERROR, header.stream, &refusal);
     });
 
     let schema = Arc::new(schema());
@@ -1572,89 +1670,40 @@ fn a_server_that_predates_expansion_is_reported_as_unsupported() {
 
 /// **A server-reported error mid-stream is terminal, exactly as `COMPLETE` is.**
 ///
-/// Nothing in this repository's server sends an error after rows today except the
-/// rows-examined ceiling, and provoking that honestly needs a scan too large for a
-/// unit test. The client-side contract does not depend on what produced the error, so
-/// a fake server stands in for one and sends the frame directly — this is the
-/// boundary [`Connection::next_row`] owns, not the executor's.
-///
-/// Before this, an error frame reached [`Connection::next_row`]'s caller via `?`
-/// without releasing the stream: `rows` stayed [`Streaming`](fjord_client::Rows), the
-/// stream id stayed in the connection's open set, and a caller that read it again —
-/// or the connection's own bookkeeping — never learned the server-side task had
-/// already returned. The second query below proves the release rather than assuming
-/// it: it reuses the same stream id only if the errored one was actually freed.
+/// The real-server ceiling guard fixes an error before a chunk has emitted anything;
+/// this peer fixes the other important position by sending one `DATA_ROW` first. The
+/// second query proves release by reusing the terminal stream's id.
 #[test]
 fn a_mid_stream_error_ends_the_stream_the_way_complete_does() {
     use fjord_wire::{
-        StreamId,
         desc::{Desc, encode_desc},
-        frame::{self, FrameKind},
-        protocol::{self, ErrorCode, Ready},
-        value::encode_value,
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
     };
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream as RawUnixStream;
-
-    fn send(stream: &mut RawUnixStream, kind: FrameKind, id: StreamId, payload: &[u8]) {
-        let mut out = vec![];
-        frame::encode_frame(&mut out, kind, id, payload).expect("a frame encodes");
-        stream.write_all(&out).expect("the frame is sent");
-    }
-
-    fn read_header(stream: &mut RawUnixStream) -> fjord_wire::FrameHeader {
-        let mut buf = vec![0u8; 4096];
-        let n = stream.read(&mut buf).expect("a frame arrives");
-        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
-        header
-    }
 
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("fake.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
 
-    // Owned, not borrowed: `row` moves into the `'static` server thread below, so it
-    // must own its schema rather than hold a reference into this function's stack.
-    let row_schema = schema();
-    let row = move |text: &str| {
-        let mut out = vec![];
-        encode_value(
-            &mut out,
-            &row_schema,
-            &PredicateTy::Str,
-            &WireValue::Str(text.to_owned()),
-        )
-        .expect("a string encodes");
-        out
-    };
-
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("a connection");
 
-        // Handshake: swallow STARTUP, answer READY.
-        let header = read_header(&mut stream);
-        assert_eq!(header.kind, protocol::kinds::STARTUP);
-        let ready = protocol::encode_ready(&Ready {
-            version: protocol::VERSION,
-            schema_fingerprint: 0,
-            predicates: 0,
-        });
-        send(&mut stream, protocol::kinds::READY, header.stream, &ready);
+        ready_fake_server(&mut stream);
 
         // First query: one row, then an error instead of `COMPLETE`.
-        let first = read_header(&mut stream);
+        let (first, _) = read_frame(&mut stream);
         assert_eq!(first.kind, protocol::kinds::QUERY);
 
         let mut desc = vec![];
         encode_desc(&mut desc, &Desc::Str);
-        send(&mut stream, FrameKind::ROW_DESCRIPTION, first.stream, &desc);
-        send(
+        send_frame(&mut stream, FrameKind::ROW_DESCRIPTION, first.stream, &desc);
+        send_frame(
             &mut stream,
             FrameKind::DATA_ROW,
             first.stream,
-            &row("row-one"),
+            &string_row("row-one"),
         );
-        send(
+        send_frame(
             &mut stream,
             FrameKind::ERROR,
             first.stream,
@@ -1663,26 +1712,26 @@ fn a_mid_stream_error_ends_the_stream_the_way_complete_does() {
 
         // Second query, on the *same connection*: the stream id it carries is the
         // proof. Reused only if the errored stream was actually released.
-        let second = read_header(&mut stream);
+        let (second, _) = read_frame(&mut stream);
         assert_eq!(second.kind, protocol::kinds::QUERY);
         assert_eq!(
             second.stream, first.stream,
             "the errored stream's id was never recycled"
         );
 
-        send(
+        send_frame(
             &mut stream,
             FrameKind::ROW_DESCRIPTION,
             second.stream,
             &desc,
         );
-        send(
+        send_frame(
             &mut stream,
             FrameKind::DATA_ROW,
             second.stream,
-            &row("row-two"),
+            &string_row("row-two"),
         );
-        send(
+        send_frame(
             &mut stream,
             protocol::kinds::COMPLETE,
             second.stream,
@@ -1752,6 +1801,102 @@ fn a_mid_stream_error_ends_the_stream_the_way_complete_does() {
     server.join().expect("the fake server exits cleanly");
 }
 
+/// A session-level error may surface while a query is open, but it does not prove
+/// that query's task ended and must not make its stream id available for reuse.
+#[test]
+fn a_session_error_does_not_recycle_a_query_stream_that_is_still_running() {
+    use fjord_wire::{
+        StreamId,
+        desc::{Desc, encode_desc},
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
+    };
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("session-error.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        ready_fake_server(&mut stream);
+
+        let (first, _) = read_frame(&mut stream);
+        assert_eq!(first.kind, protocol::kinds::QUERY);
+
+        let mut desc = vec![];
+        encode_desc(&mut desc, &Desc::Str);
+        send_frame(&mut stream, FrameKind::ROW_DESCRIPTION, first.stream, &desc);
+        send_frame(
+            &mut stream,
+            FrameKind::ERROR,
+            StreamId(0),
+            &protocol::encode_error(ErrorCode::Internal, "the session reported a fault"),
+        );
+
+        // The first query is still live, so concurrent work must claim another id.
+        let (second, _) = read_frame(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::QUERY);
+        assert_ne!(second.stream, first.stream);
+        send_frame(
+            &mut stream,
+            FrameKind::ROW_DESCRIPTION,
+            second.stream,
+            &desc,
+        );
+        send_frame(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            second.stream,
+            &protocol::encode_complete(0, 0),
+        );
+
+        send_frame(
+            &mut stream,
+            FrameKind::DATA_ROW,
+            first.stream,
+            &string_row("first-still-live"),
+        );
+        send_frame(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            first.stream,
+            &protocol::encode_complete(1, 0),
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection = Connection::connect(&socket, "code", schema, Mode::ReadOnly, false)
+        .expect("the handshake completes");
+
+    let mut first = connection.query("F where src.File F").expect("a result");
+    let error = connection
+        .next_row(&mut first)
+        .expect_err("the session error surfaces immediately");
+    assert_eq!(error.code(), Some(ErrorCode::Internal));
+    assert!(!first.finished(), "the query itself has not ended");
+
+    let mut second = connection
+        .query("F where src.File F")
+        .expect("another stream can still be opened");
+    assert!(
+        connection
+            .drain(&mut second)
+            .expect("it completes")
+            .is_empty()
+    );
+    assert_eq!(connection.stream_ids_issued(), 2);
+
+    assert_eq!(
+        connection
+            .next_row(&mut first)
+            .expect("the query carries on"),
+        Some(WireValue::Str("first-still-live".to_owned()))
+    );
+    assert_eq!(connection.next_row(&mut first).expect("it completes"), None);
+
+    server.join().expect("the fake server exits cleanly");
+}
+
 /// **A cancel that races a terminal error must not hang, and the connection must
 /// still work afterwards.**
 ///
@@ -1762,61 +1907,33 @@ fn a_mid_stream_error_ends_the_stream_the_way_complete_does() {
 #[test]
 fn a_cancel_racing_a_terminal_error_leaves_the_connection_working() {
     use fjord_wire::{
-        StreamId,
         desc::{Desc, encode_desc},
-        frame::{self, FrameKind},
-        protocol::{self, ErrorCode, Ready},
-        value::encode_value,
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
     };
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream as RawUnixStream;
-
-    fn send(stream: &mut RawUnixStream, kind: FrameKind, id: StreamId, payload: &[u8]) {
-        let mut out = vec![];
-        frame::encode_frame(&mut out, kind, id, payload).expect("a frame encodes");
-        stream.write_all(&out).expect("the frame is sent");
-    }
-
-    fn read_header(stream: &mut RawUnixStream) -> fjord_wire::FrameHeader {
-        let mut buf = vec![0u8; 4096];
-        let n = stream.read(&mut buf).expect("a frame arrives");
-        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
-        header
-    }
 
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("fake.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
 
-    // Owned, not borrowed: it moves into the `'static` server thread below, so it
-    // must own its schema rather than hold a reference into this function's stack.
-    let row_schema = schema();
-
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("a connection");
 
-        let header = read_header(&mut stream);
-        assert_eq!(header.kind, protocol::kinds::STARTUP);
-        let ready = protocol::encode_ready(&Ready {
-            version: protocol::VERSION,
-            schema_fingerprint: 0,
-            predicates: 0,
-        });
-        send(&mut stream, protocol::kinds::READY, header.stream, &ready);
+        ready_fake_server(&mut stream);
 
-        let query = read_header(&mut stream);
+        let (query, _) = read_frame(&mut stream);
         assert_eq!(query.kind, protocol::kinds::QUERY);
 
         let mut desc = vec![];
         encode_desc(&mut desc, &Desc::Str);
-        send(&mut stream, FrameKind::ROW_DESCRIPTION, query.stream, &desc);
+        send_frame(&mut stream, FrameKind::ROW_DESCRIPTION, query.stream, &desc);
 
         // The client cancels before any row arrives — the fake server answers the
         // `CANCEL` with an error rather than `COMPLETE`.
-        let cancel = read_header(&mut stream);
+        let (cancel, _) = read_frame(&mut stream);
         assert_eq!(cancel.kind, protocol::kinds::CANCEL);
         assert_eq!(cancel.stream, query.stream);
-        send(
+        send_frame(
             &mut stream,
             FrameKind::ERROR,
             query.stream,
@@ -1824,29 +1941,22 @@ fn a_cancel_racing_a_terminal_error_leaves_the_connection_working() {
         );
 
         // A second query proves the first stream's id was recycled.
-        let second = read_header(&mut stream);
+        let (second, _) = read_frame(&mut stream);
         assert_eq!(second.kind, protocol::kinds::QUERY);
         assert_eq!(
             second.stream, query.stream,
             "the errored-during-cancel stream's id was never recycled"
         );
 
-        send(
+        send_frame(
             &mut stream,
             FrameKind::ROW_DESCRIPTION,
             second.stream,
             &desc,
         );
-        let mut row = vec![];
-        encode_value(
-            &mut row,
-            &row_schema,
-            &PredicateTy::Str,
-            &WireValue::Str("still-here".to_owned()),
-        )
-        .expect("a string encodes");
-        send(&mut stream, FrameKind::DATA_ROW, second.stream, &row);
-        send(
+        let row = string_row("still-here");
+        send_frame(&mut stream, FrameKind::DATA_ROW, second.stream, &row);
+        send_frame(
             &mut stream,
             protocol::kinds::COMPLETE,
             second.stream,

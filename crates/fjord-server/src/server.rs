@@ -38,6 +38,7 @@ use crate::{error::ServerError, registry::Registry};
 pub struct Listener {
     listener: StdUnixListener,
     path: PathBuf,
+    examined_ceiling: u64,
 }
 
 impl Listener {
@@ -61,7 +62,22 @@ impl Listener {
         let listener = StdUnixListener::bind(&path)?;
         listener.set_nonblocking(true)?;
 
-        Ok(Listener { listener, path })
+        Ok(Listener {
+            listener,
+            path,
+            examined_ceiling: crate::session::EXAMINED_CEILING,
+        })
+    }
+
+    /// Set the deployment ceiling applied independently to each executor chunk.
+    ///
+    /// The default is intentionally generous; an embedding may tighten it for its
+    /// workload. It is policy rather than query semantics and never enters a plan or
+    /// cursor fingerprint.
+    #[must_use]
+    pub fn with_examined_ceiling(mut self, ceiling: u64) -> Self {
+        self.examined_ceiling = ceiling;
+        self
     }
 
     #[must_use]
@@ -96,13 +112,16 @@ impl Listener {
     /// sending nonsense is not a reason to stop serving the others.
     pub async fn run(self, registry: Arc<Registry>) -> Result<(), ServerError> {
         let listener = UnixListener::from_std(self.listener.try_clone()?)?;
+        let examined_ceiling = self.examined_ceiling;
 
         loop {
             let (stream, _address) = listener.accept().await?;
             let registry = Arc::clone(&registry);
 
             tokio::spawn(async move {
-                if let Err(error) = serve_stream(stream, &registry).await {
+                if let Err(error) =
+                    serve_stream_with_ceiling(stream, &registry, examined_ceiling).await
+                {
                     eprintln!("connection ended: {error}");
                 }
             });
@@ -138,11 +157,19 @@ impl Drop for Listener {
 ///
 /// Whatever [`session::serve`](crate::session::serve) reports as fatal.
 pub async fn serve_stream(stream: UnixStream, registry: &Arc<Registry>) -> Result<(), ServerError> {
+    serve_stream_with_ceiling(stream, registry, crate::session::EXAMINED_CEILING).await
+}
+
+async fn serve_stream_with_ceiling(
+    stream: UnixStream,
+    registry: &Arc<Registry>,
+    examined_ceiling: u64,
+) -> Result<(), ServerError> {
     // Split rather than cloned: the session holds a buffered reader and a buffered
     // writer at once, and `into_split` is what gives it two independently-owned halves
     // of one socket.
     let (reader, writer) = stream.into_split();
-    crate::session::serve(reader, writer, registry).await
+    crate::session::serve(reader, writer, registry, examined_ceiling).await
 }
 
 /// Bind, announce, and serve — the whole of what a `serve` command does, on a runtime
@@ -204,6 +231,7 @@ pub fn serve_on(
     };
 
     let address = address.to_owned();
+    let examined_ceiling = listener.examined_ceiling;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -225,7 +253,9 @@ pub fn serve_on(
 
                 tokio::spawn(async move {
                     let (reader, writer) = stream.into_split();
-                    if let Err(error) = crate::session::serve(reader, writer, &registry).await {
+                    if let Err(error) =
+                        crate::session::serve(reader, writer, &registry, examined_ceiling).await
+                    {
                         eprintln!("connection ended: {error}");
                     }
                 });

@@ -415,7 +415,7 @@ impl Connection {
 
         self.send(kinds::OPEN_WRITE, stream, &[])?;
 
-        let (kind, _) = self.recv_on(stream)?;
+        let (kind, _) = self.recv_stream_frame(stream)?;
         if kind != FrameKind::COPY_IN_RESPONSE {
             self.open.remove(&stream.0);
             return Err(unexpected("a copy-in response", kind));
@@ -429,7 +429,7 @@ impl Connection {
 
         self.send(FrameKind::COPY_DONE, stream, &[])?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::COMPLETE {
@@ -526,7 +526,7 @@ impl Connection {
         let stream = self.claim_stream();
         self.send(kinds::QUERY_COUNT, stream, sigla.as_bytes())?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         if kind != kinds::COUNT {
             self.open.remove(&stream.0);
             return Err(unexpected("a count", kind));
@@ -542,7 +542,7 @@ impl Connection {
 
         // The stream still owes a `COMPLETE`, and reading it here is what lets the
         // id be recycled — a stream left half-read is one that never comes back.
-        let (kind, _) = self.recv_on(stream)?;
+        let (kind, _) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::COMPLETE {
@@ -588,7 +588,7 @@ impl Connection {
         let stream = self.claim_stream();
         self.send(kinds::SCHEMA, stream, &[])?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::SCHEMA_REPLY {
@@ -699,7 +699,7 @@ impl Connection {
         let stream = self.claim_stream();
         self.send(kind, stream, payload)?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         if kind != FrameKind::ROW_DESCRIPTION {
             self.open.remove(&stream.0);
             return Err(unexpected("a row description", kind));
@@ -934,7 +934,7 @@ impl Connection {
             }),
         )?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::CONTROL_REPLY {
@@ -1001,27 +1001,38 @@ impl Connection {
         Ok(())
     }
 
-    /// The next frame for an open **query result**, terminating `rows` if it is an
-    /// error.
+    /// The next frame for an open **query result**, marking `rows` terminal if the
+    /// server ends it with an error.
     ///
-    /// [`recv_on`](Self::recv_on) already turns an error frame into `Err` before this
-    /// sees it, and returning that `Err` here would leave [`Rows`] streaming and its
-    /// stream in `self.open` forever — a query stream ends in exactly one frame,
-    /// `COMPLETE` or `ERROR`, and only the first of those was releasing anything. A
-    /// second call on the same `rows` would then wait on a stream whose server-side
-    /// task has already returned: a hang, not a repeat of the error. Releasing here is
-    /// what makes an error terminal in the same sense completion is — the id goes back
-    /// to [`free`](Self::free), and `rows.finished()` is true on the way out, exactly
-    /// as [`next_row`](Self::next_row) already treats `COMPLETE`.
+    /// The stream release belongs to [`recv_stream_frame`](Self::recv_stream_frame),
+    /// because an error can arrive before a [`Rows`] exists or on a count. This layer
+    /// adds the bookmark transition that only an open row result has.
     fn recv_row_frame(&mut self, rows: &mut Rows) -> Result<(FrameKind, Vec<u8>), ClientError> {
-        match self.recv_on(rows.stream()) {
-            Ok(frame) => Ok(frame),
-            Err(error) => {
-                self.release_stream(rows.stream());
-                rows.mark_errored();
-                Err(error)
-            }
+        let stream = rows.stream();
+        let frame = self.recv_stream_frame(stream);
+        if frame.is_err() && !self.open.contains(&stream.0) {
+            rows.mark_errored();
         }
+        frame
+    }
+
+    /// Receive on one claimed stream, releasing it if the server's terminal frame is
+    /// `ERROR` rather than the success frame its caller expects.
+    ///
+    /// Kept below [`Rows`]: query compilation and cursor validation can fail before a
+    /// bookmark exists, while count never has one. The originating stream is checked:
+    /// a session-level error on stream zero may surface while waiting here and does not
+    /// prove that this stream's task ended.
+    fn recv_stream_frame(&mut self, stream: StreamId) -> Result<(FrameKind, Vec<u8>), ClientError> {
+        let (origin, kind, payload) = self.recv_frame_on(stream)?;
+
+        if kind == FrameKind::ERROR && origin == stream {
+            // The kind is enough to prove this stream ended even if its payload is
+            // malformed and cannot be decoded into `ClientError::Server`.
+            self.release_stream(stream);
+        }
+
+        raise_if_error((kind, payload))
     }
 
     /// The next frame **for `stream`**, parking anything that arrives for another.
@@ -1030,19 +1041,28 @@ impl Connection {
     /// rather than a unit of work, so a fault there is not something to park for a
     /// reader that may never come.
     fn recv_on(&mut self, stream: StreamId) -> Result<(FrameKind, Vec<u8>), ClientError> {
+        let (_, kind, payload) = self.recv_frame_on(stream)?;
+        raise_if_error((kind, payload))
+    }
+
+    /// The next frame relevant to `stream`, retaining which stream actually sent it.
+    fn recv_frame_on(
+        &mut self,
+        stream: StreamId,
+    ) -> Result<(StreamId, FrameKind, Vec<u8>), ClientError> {
         if let Some(frame) = self.parked.get_mut(&stream.0).and_then(VecDeque::pop_front) {
-            return raise_if_error(frame);
+            return Ok((stream, frame.0, frame.1));
         }
 
         loop {
             let (header, payload) = self.recv_any()?;
 
             if header.stream == stream {
-                return raise_if_error((header.kind, payload));
+                return Ok((header.stream, header.kind, payload));
             }
 
             if header.stream == StreamId(0) && header.kind == FrameKind::ERROR {
-                return raise_if_error((header.kind, payload));
+                return Ok((header.stream, header.kind, payload));
             }
 
             self.parked
