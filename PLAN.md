@@ -1374,11 +1374,12 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    it existed, such a rule was stoppable only by whoever held the cancellation token.
 
    It ships as `Executor::with_examined_ceiling`, counted in the tick that already runs per row
-   for the cancellation stride and the profile, and set by the server from
+   for the cancellation stride and the profile. A listener defaults it from
    `session::EXAMINED_CEILING` — chosen from the measured ~400 ns/row floor so that a chunk is
    bounded at roughly 25 seconds of scanning and still sits about seven times above the largest
-   predicate in the published corpus. Default is unlimited, because an embedded caller reading
-   its own database is entitled to no ceiling at all.
+   predicate in the published corpus — and an embedding may set a tighter deployment policy.
+   `Executor::new` remains unlimited, because an embedded caller reading its own database is
+   entitled to no ceiling at all.
 
    **Its scope is one executor, and "per chunk" is true only while a chunk is one plan.** The
    tally is private state on the `Executor`, and a fixpoint builds a new one per rule per round —
@@ -1902,15 +1903,19 @@ already turning an error frame into `Err` before `next_row` or `cancel` ever ins
 so the mishandling was never about the frame — it was that returning that `Err` skipped the same
 release `COMPLETE` gets: the stream stayed in `self.open`, `Rows` stayed `Streaming`, and a second
 read on it would wait on a stream whose server-side task had already returned. `Rows` gains a
-third, terminal `Errored` state; `Connection::recv_row_frame` wraps `recv_on` for both places that
-read an open query stream (`next_row`, `cancel`) and releases the stream and marks `Rows` errored
-on the way out, exactly as the `COMPLETE` arm already does. Guarded by
+third, terminal `Errored` state; `Connection::recv_stream_frame` releases a claimed stream on its
+own `ERROR`, including before a `Rows` exists and on count, while `recv_row_frame` also marks an
+open bookmark errored. The originating stream is retained so a session-level error on stream zero
+cannot recycle a still-live query id. Guarded by
 `a_mid_stream_error_ends_the_stream_the_way_complete_does` and
 `a_cancel_racing_a_terminal_error_leaves_the_connection_working`
-(`crates/fjord-client/tests/against_a_server.rs`) — a fake server standing in for the ceiling,
-since provoking it for real needs a scan too large for a unit test; each proves release rather than
-assuming it, by checking that a second query on the same connection **reuses** the errored stream's
-id. The world stamp and the fetch digest are still open.
+(`crates/fjord-client/tests/against_a_server.rs`) for the two post-description positions,
+`a_session_error_does_not_recycle_a_query_stream_that_is_still_running` for the stream-zero
+distinction, plus
+`the_server_ceiling_stops_queries_and_counts_without_leaking_their_streams`: a real server under
+an injected deployment ceiling of three, proving both server charge sites and the pre-`Rows`
+count path. Each proves release rather than assuming it by checking that later work on the same
+connection **reuses** the errored stream's id. The world stamp and the fetch digest are still open.
 
 | item | green before Movement 0 closes | deferred, and to whom |
 |---|---|---|
