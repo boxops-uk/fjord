@@ -652,8 +652,14 @@ impl Connection {
         let stream = self.claim_stream();
         self.send(kinds::FETCH, stream, &protocol::encode_fetch(ids))?;
 
-        let answer = self.recv_on(stream);
-        self.release_stream(stream);
+        let answer = self.recv_stream_frame(stream);
+        if answer.is_ok() {
+            // `FETCHED` is the successful terminal frame. An error originating on
+            // this stream was already released by `recv_stream_frame`; a session
+            // error on stream zero says nothing about this fetch, so it must leave
+            // the id claimed here.
+            self.release_stream(stream);
+        }
 
         let (kind, payload) = match answer {
             Ok(answer) => answer,

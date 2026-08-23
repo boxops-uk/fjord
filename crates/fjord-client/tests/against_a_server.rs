@@ -1216,6 +1216,99 @@ fn a_resume_token_belongs_to_the_query_that_made_it() {
     assert_eq!(connection.drain(&mut rows).expect("the page").len(), 2);
 }
 
+/// **A write that lands between two pages of a Writable database is refused,
+/// rather than answered as a hybrid of the two states the read passed through.**
+///
+/// A cursor names a plan, a layout version and — since the world stamp landed —
+/// which base it was read against. On a Complete database that base can never
+/// move, so nothing here would fire; a Writable one is read through a fresh
+/// snapshot every chunk, so an ingest between two `query_page` calls is exactly
+/// the case [I4](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i4)
+/// names: "a database still being written to... the cursor carries nothing that
+/// would detect [it]". This is the server-level arm that closes it, and it has to
+/// be server-level — a generated `(plan, store)` pair in the engine's own battery
+/// holds one store for the whole property and cannot express a store that changes
+/// mid-resume.
+#[test]
+fn a_write_between_two_pages_of_a_writable_database_is_refused() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 20);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("F where src.File F", 5, None)
+        .expect("the first page");
+    let first = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(first.len(), 5);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    // The database is still Writable — nothing here finishes it — so the write
+    // below lands squarely inside the case this test exists to cover. A new name,
+    // not `seed`'s own `f00000.py`: seeding again would dedup against the fact
+    // already written and move nothing.
+    let written = writer
+        .write(FILE, &[file("between-the-pages.py")])
+        .expect("the extra fact is written");
+    assert_eq!(written.created, 1, "the write must actually create a fact");
+
+    // `query_page` itself only sends the request and reads the row description,
+    // which is sent before the resumed chunk ever runs — so the refusal, like any
+    // other mid-stream error, surfaces on the read that follows rather than here.
+    let mut second_page = connection
+        .query_page("F where src.File F", 5, Some(&token))
+        .expect("the row description arrives before the resumed chunk runs");
+    let refused = connection.drain(&mut second_page);
+    assert!(
+        refused.is_err(),
+        "a write between two pages of a Writable database was answered rather than refused: {:?}",
+        refused.map(|rows| rows.len())
+    );
+
+    // The refusal ended the stream, not the connection: a fresh page still works,
+    // and — since it is unpaged from here — sees all 21 rows, never a duplicate or
+    // a gap from the page that was refused.
+    let mut whole = connection
+        .query("F where src.File F")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 21);
+}
+
+/// **The negative control for the test above**: paging a Writable database with no
+/// intervening write behaves exactly as it always has. Without this, a bug that
+/// made the world stamp refuse *every* Writable resume — not only one a write
+/// crossed — would still pass every other test in this file, since none of them
+/// distinguish "always refused" from "refused when it should be".
+#[test]
+fn paging_a_writable_database_with_no_intervening_write_still_works() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 20);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("F where src.File F", 5, None)
+        .expect("the first page");
+    let first = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(first.len(), 5);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    let mut rows = connection
+        .query_page("F where src.File F", 5, Some(&token))
+        .expect("the second page, over an unchanged Writable database");
+    let second = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(second.len(), 5);
+
+    let mut whole = connection.query("F where src.File F").expect("a query");
+    let all = strings(&connection.drain(&mut whole).expect("the rows"));
+    assert_eq!(&all[..10], &[first, second].concat()[..]);
+}
+
 /// Garbage is refused rather than half-read.
 #[test]
 fn a_malformed_resume_token_is_refused() {
@@ -1893,6 +1986,98 @@ fn a_session_error_does_not_recycle_a_query_stream_that_is_still_running() {
         Some(WireValue::Str("first-still-live".to_owned()))
     );
     assert_eq!(connection.next_row(&mut first).expect("it completes"), None);
+
+    server.join().expect("the fake server exits cleanly");
+}
+
+/// A fetch has no `Rows` bookmark, but its stream is still live when a session-level
+/// error interrupts the receive. Reusing that id lets its late positional reply answer
+/// a different fetch, silently returning the wrong fact.
+#[test]
+fn a_session_error_does_not_recycle_a_fetch_stream_that_is_still_running() {
+    use fjord_wire::{
+        StreamId,
+        frame::FrameKind,
+        protocol::{self, ErrorCode, Fetched},
+    };
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("fetch-session-error.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+    let first_id = FactId::new(FILE, 1).expect("an id");
+    let second_id = FactId::new(FILE, 2).expect("an id");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        ready_fake_server(&mut stream);
+
+        let (first, _) = read_frame(&mut stream);
+        assert_eq!(first.kind, protocol::kinds::FETCH);
+        send_frame(
+            &mut stream,
+            FrameKind::ERROR,
+            StreamId(0),
+            &protocol::encode_error(ErrorCode::Internal, "the session reported a fault"),
+        );
+
+        let (second, _) = read_frame(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::FETCH);
+
+        // The first reply arrives only after the second request. Since FETCHED is
+        // positional and carries no ids, reusing the stream would make this look like
+        // the answer to `second_id` and return the wrong key without a decode error.
+        let first_reply = protocol::encode_fetched(
+            &schema(),
+            &[Fetched {
+                id: first_id,
+                found: Found::Key(WireValue::Str("first.py".to_owned())),
+            }],
+        )
+        .expect("a reply");
+        send_frame(
+            &mut stream,
+            protocol::kinds::FETCHED,
+            first.stream,
+            &first_reply,
+        );
+
+        let second_reply = protocol::encode_fetched(
+            &schema(),
+            &[Fetched {
+                id: second_id,
+                found: Found::Key(WireValue::Str("second.py".to_owned())),
+            }],
+        )
+        .expect("a reply");
+        send_frame(
+            &mut stream,
+            protocol::kinds::FETCHED,
+            second.stream,
+            &second_reply,
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let error = connection
+        .fetch(&schema, &[first_id])
+        .expect_err("the session error surfaces");
+    assert_eq!(error.code(), Some(ErrorCode::Internal));
+
+    assert_eq!(
+        connection
+            .fetch(&schema, &[second_id])
+            .expect("the second fetch"),
+        vec![Found::Key(WireValue::Str("second.py".to_owned()))]
+    );
+    assert_eq!(
+        connection.stream_ids_issued(),
+        2,
+        "the still-live first fetch keeps its stream id"
+    );
 
     server.join().expect("the fake server exits cleanly");
 }

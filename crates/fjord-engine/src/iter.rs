@@ -1135,6 +1135,18 @@ pub struct Executor<S: FactStore> {
     /// policy, and a policy that arrived as a required argument would have to be
     /// invented by every caller that does not have one.
     examined: Examined,
+    /// **Opaque to the engine.** What the database-owning layer says the base it is
+    /// reading looks like — a content fingerprint for a Complete database, or an
+    /// instance/incarnation/sequence triple for a Writable one — encoded to bytes by
+    /// that layer and compared here byte for byte. `FactStore` is `scan` + `point`
+    /// and exposes neither an identity nor a listing, so the engine cannot compute
+    /// this itself; it can only carry it and compare it
+    /// ([I4](../../../website/content/invariants.md#i4)).
+    ///
+    /// Empty by default — "no world stamp was supplied" — which compares equal to
+    /// itself and so never refuses a resume on its own; a caller that cares sets one
+    /// with [`with_world_stamp`](Self::with_world_stamp).
+    world: Box<[u8]>,
     /// One field-offset cache per register, for projection.
     ///
     /// Owned here rather than made per row: a fresh `Box<[_]>` for each row would
@@ -1169,18 +1181,26 @@ pub struct Entry {
 /// Separate from the [DB format stamp](fjord_store::format): that says what is on
 /// disk and this says what is in flight, they move for different reasons, and a
 /// cursor is checked against the build that reads it rather than against a database.
-pub const CURSOR_VERSION: u16 = 1;
-
-/// The resume token: **one detached row per open level**, and the two fields that
-/// say which run it belongs to.
 ///
-/// The entries are what resume replays; the version and the fingerprint are what
-/// make replaying them safe, since the entries are paired with the plan's levels by
-/// order and are otherwise indistinguishable from another plan's
-/// ([chapter 5](../../../website/content/executor.md)).
+/// **2**: a cursor gained a [world stamp](Cursor::world) — bytes naming the base it
+/// was read against — closing the hole [I4](../../../website/content/invariants.md#i4)
+/// names: a cursor used to carry a plan, a layout version and a level count, and no
+/// part of the world it read.
+pub const CURSOR_VERSION: u16 = 2;
+
+/// The resume token: **one detached row per open level**, and the fields that say
+/// which run — and which world — it belongs to.
+///
+/// The entries are what resume replays; the version, the fingerprint and the world
+/// stamp are what make replaying them safe, since the entries are paired with the
+/// plan's levels by order and are otherwise indistinguishable from another plan's,
+/// or another database's ([chapter 5](../../../website/content/executor.md)).
 pub struct Cursor {
     version: u16,
     plan: PlanFingerprint,
+    /// The base this cursor was read against, opaque to the engine — see
+    /// [`Executor::world`](Executor::with_world_stamp).
+    world: Box<[u8]>,
     entries: Vec<Entry>,
 }
 
@@ -1210,6 +1230,8 @@ impl Cursor {
 
         out.extend_from_slice(&self.version.to_le_bytes());
         out.extend_from_slice(&self.plan.raw().to_le_bytes());
+        out.extend_from_slice(&(self.world.len() as u32).to_le_bytes());
+        out.extend_from_slice(&self.world);
         out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
 
         for entry in &self.entries {
@@ -1246,6 +1268,11 @@ impl Cursor {
 
         let version = u16::from_le_bytes(take(&mut at, 2)?.try_into().map_err(|_| short())?);
         let plan = u64::from_le_bytes(take(&mut at, 8)?.try_into().map_err(|_| short())?);
+
+        let world_len =
+            u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
+        let world = take(&mut at, world_len)?.to_vec().into_boxed_slice();
+
         let count = u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
 
         // Bounded by what is actually here before allocating: a forged count of four
@@ -1276,6 +1303,7 @@ impl Cursor {
         Ok(Cursor {
             version,
             plan: PlanFingerprint::from_raw(plan),
+            world,
             entries,
         })
     }
@@ -1290,6 +1318,13 @@ impl Cursor {
     #[must_use]
     pub fn version(&self) -> u16 {
         self.version
+    }
+
+    /// The base this cursor was read against, as the database-owning layer encoded
+    /// it — opaque to the engine, and empty for a cursor built with no stamp.
+    #[must_use]
+    pub fn world(&self) -> &[u8] {
+        &self.world
     }
 }
 
@@ -1411,8 +1446,20 @@ impl<S: FactStore> Executor<S> {
             stack,
             depth: 0,
             examined: Examined::default(),
+            world: Box::default(),
             projection_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
         }
+    }
+
+    /// **What world this run's cursor should claim to be a resume point of.**
+    ///
+    /// Set by the database-owning layer, never computed here — see [`world`](Self::world).
+    /// A run built with no stamp writes an empty one, which is what an embedded
+    /// caller with no notion of "world" gets by default.
+    #[must_use]
+    pub fn with_world_stamp(mut self, world: impl Into<Box<[u8]>>) -> Self {
+        self.world = world.into();
+        self
     }
 
     /// **The most rows this run may examine before it is stopped.**
@@ -1472,11 +1519,18 @@ impl<S: FactStore> Executor<S> {
         Cursor {
             version: CURSOR_VERSION,
             plan: self.plan.fingerprint(),
+            world: self.world.clone(),
             entries: saved,
         }
     }
 
-    pub fn resume(store: S, plan: Plan, cursor: Cursor) -> Result<Self, FjordError> {
+    pub fn resume(
+        store: S,
+        plan: Plan,
+        cursor: Cursor,
+        world: impl Into<Box<[u8]>>,
+    ) -> Result<Self, FjordError> {
+        let world = world.into();
         let mut ex = Executor::new(store, plan);
 
         // A `Cursor` is bytes-only and rebuilt from the wire, so it is untrusted.
@@ -1504,6 +1558,17 @@ impl<S: FactStore> Executor<S> {
                 plan: fingerprint,
             });
         }
+
+        // Third: is this the world it was read against? An empty cursor still
+        // answers *this* world's answer, exactly as it still has to answer this
+        // plan's — so this comes before the empty-cursor shortcut below, not after
+        // it. Opaque bytes, compared whole: the engine does not know what a
+        // mismatch means, only that the database-owning layer says it is one
+        // (I4).
+        if cursor.world != world {
+            return Err(FjordError::CursorWorld);
+        }
+        ex.world = world;
 
         if cursor.entries.is_empty() {
             return Ok(ex);
@@ -2586,7 +2651,7 @@ mod tests {
         loop {
             let executor = match cursor.take() {
                 Some(cursor) => {
-                    Executor::resume(store(), plan.clone(), cursor).expect("it resumes")
+                    Executor::resume(store(), plan.clone(), cursor, &[][..]).expect("it resumes")
                 }
                 None => Executor::new(store(), plan.clone()),
             };
@@ -2805,7 +2870,7 @@ mod tests {
         let cursor = restamp(cursor, &one_level);
 
         assert!(matches!(
-            Executor::resume(seed(), one_level, cursor),
+            Executor::resume(seed(), one_level, cursor, &[][..]),
             Err(FjordError::CursorPlanMismatch { cursor: 2, plan: 1 })
         ));
     }
@@ -2868,7 +2933,7 @@ mod tests {
 
         assert!(
             matches!(
-                Executor::resume(seed(), no_registers, cursor),
+                Executor::resume(seed(), no_registers, cursor, &[][..]),
                 Err(FjordError::AddressOutOfBounds(address)) if address == Address::new(0)
             ),
             "a level binding outside the register file must report, not panic",
@@ -2892,7 +2957,7 @@ mod tests {
 
         assert!(
             matches!(
-                Executor::resume(seed(), short, cursor),
+                Executor::resume(seed(), short, cursor, &[][..]),
                 Err(FjordError::AddressOutOfBounds(address)) if address == Address::new(1)
             ),
             "a derive binding outside the register file must report, not panic",
@@ -3020,6 +3085,7 @@ mod tests {
         Cursor {
             version: CURSOR_VERSION,
             plan: plan.fingerprint(),
+            world: cursor.world,
             entries: cursor.entries,
         }
     }
@@ -3141,12 +3207,31 @@ mod tests {
             head: Project::FactRef(Address::new(0)),
         };
 
-        let cursor = suspend_after_first_row(store(), plan.clone());
+        const WORLD: &[u8] = b"round-trip-world";
+
+        let out = Executor::new(store(), plan.clone())
+            .with_world_stamp(WORLD)
+            .enumerate(
+                (),
+                |(), _row| Ok(Stream::Suspend(())),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+        let Iteratee::Suspended((), cursor) = out else {
+            panic!("the plan was supposed to suspend");
+        };
+
         let bytes = cursor.to_bytes();
         let back = Cursor::from_bytes(&bytes).expect("it decodes");
 
         assert_eq!(back.version(), cursor.version(), "the layout version");
         assert_eq!(back.plan(), cursor.plan(), "the plan fingerprint");
+        assert_eq!(back.world(), cursor.world(), "the world stamp");
+        assert_eq!(
+            back.world(),
+            WORLD,
+            "the world stamp round-trips its bytes exactly"
+        );
         assert_eq!(
             back.entries().len(),
             cursor.entries().len(),
@@ -3155,7 +3240,7 @@ mod tests {
 
         let interner = interner_with(&[]);
 
-        let direct = Executor::resume(store(), plan.clone(), cursor)
+        let direct = Executor::resume(store(), plan.clone(), cursor, WORLD)
             .expect("resume")
             .enumerate(
                 Vec::new(),
@@ -3167,7 +3252,7 @@ mod tests {
             )
             .expect("run");
 
-        let through_bytes = Executor::resume(store(), plan, back)
+        let through_bytes = Executor::resume(store(), plan, back, WORLD)
             .expect("resume")
             .enumerate(
                 Vec::new(),
@@ -3264,7 +3349,7 @@ mod tests {
         rebuilt.insert(p, i64_field(1), 99);
 
         assert!(matches!(
-            Executor::resume(rebuilt, plan(), cursor),
+            Executor::resume(rebuilt, plan(), cursor, &[][..]),
             Err(FjordError::BadResumeKey)
         ));
     }
@@ -3286,7 +3371,7 @@ mod tests {
         let cursor = suspend_after_first_row(original, plan());
 
         assert!(matches!(
-            Executor::resume(MemStore::new(), plan(), cursor),
+            Executor::resume(MemStore::new(), plan(), cursor, &[][..]),
             Err(FjordError::BadResumeKey)
         ));
     }
@@ -3770,6 +3855,7 @@ mod tests {
         let forged = Cursor {
             version,
             plan: plan_id,
+            world: cursor.world.clone(),
             entries: cursor
                 .entries
                 .into_iter()
@@ -3781,6 +3867,7 @@ mod tests {
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0)])),
             forged,
+            &[][..],
         );
 
         assert!(
@@ -3835,18 +3922,21 @@ mod tests {
         // rejected by the fingerprint now, and would leave this path — a saved
         // position outside its source — with no coverage at all.
         let (version, plan_id) = (cursor.version, cursor.plan);
+        let world = cursor.world.clone();
         let resumed = Executor::resume(
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0), seek_int(p, 20, 0)])),
             Cursor {
                 version,
                 plan: plan_id,
+                world,
                 entries: cursor
                     .entries
                     .into_iter()
                     .map(|entry| Entry { source: 0, ..entry })
                     .collect(),
             },
+            &[][..],
         );
 
         assert!(
@@ -3889,6 +3979,7 @@ mod tests {
             three_int_facts(p),
             plan_b(),
             suspend_after_first_row(three_int_facts(p), plan_a()),
+            &[][..],
         );
 
         assert!(
@@ -3902,7 +3993,7 @@ mod tests {
             suspend_after_first_row(three_int_facts(p), plan_a()),
             &plan_b(),
         );
-        let out = Executor::resume(three_int_facts(p), plan_b(), forged)
+        let out = Executor::resume(three_int_facts(p), plan_b(), forged, &[][..])
             .expect("the fact id agrees, so nothing else objects")
             .enumerate(
                 Vec::new(),
@@ -3937,6 +4028,7 @@ mod tests {
         let elsewhere = Cursor {
             version: CURSOR_VERSION,
             plan: one_level(Box::new([seek_int(p, 10, 0)])).fingerprint(),
+            world: Box::default(),
             entries: Vec::new(),
         };
 
@@ -3944,10 +4036,35 @@ mod tests {
             three_int_facts(p),
             one_level(scan_all(p, 0).sources),
             elsewhere,
+            &[][..],
         );
 
         assert!(
             matches!(resumed, Err(FjordError::CursorPlan { .. })),
+            "an empty cursor is still a cursor, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor"),
+        );
+    }
+
+    /// The world check runs **before** the empty-cursor shortcut too, for the same
+    /// reason the plan check does: restarting is still an answer to whichever world
+    /// asked ([I4](../../../website/content/invariants.md#i4)).
+    #[test]
+    fn an_empty_cursor_from_another_world_is_refused() {
+        let p = PredicateId(0);
+        let plan = one_level(scan_all(p, 0).sources);
+
+        let elsewhere = Cursor {
+            version: CURSOR_VERSION,
+            plan: plan.fingerprint(),
+            world: Box::from(*b"database-a"),
+            entries: Vec::new(),
+        };
+
+        let resumed = Executor::resume(three_int_facts(p), plan, elsewhere, *b"database-b");
+
+        assert!(
+            matches!(resumed, Err(FjordError::CursorWorld)),
             "an empty cursor is still a cursor, got {resumed:?}",
             resumed = resumed.map(|_| "an executor"),
         );
@@ -3977,6 +4094,7 @@ mod tests {
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0)])),
             stale,
+            &[][..],
         );
 
         assert!(
@@ -4809,7 +4927,12 @@ mod tests {
         }
 
         assert!(matches!(
-            Executor::resume(moved, scan_then_fetch(person, refs, head()), cursor),
+            Executor::resume(
+                moved,
+                scan_then_fetch(person, refs, head()),
+                cursor,
+                &[][..]
+            ),
             Err(FjordError::BadResumeKey),
         ));
     }
@@ -5729,7 +5852,7 @@ mod tests {
                 }
 
                 let (store, plan) = spec.build(&interner);
-                ex = Executor::resume(store, plan, cursor).expect("resume");
+                ex = Executor::resume(store, plan, cursor, &[][..]).expect("resume");
             }
         }
 

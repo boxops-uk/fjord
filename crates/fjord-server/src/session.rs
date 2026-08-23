@@ -41,7 +41,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -62,7 +62,12 @@ use fjord_schema::{
     fingerprint::Identity,
     schema::{LocalInterner, PredicateId, PredicateTy, Schema},
 };
-use fjord_store_fjall::{catalog::Listing, meta::Status, store::FjallDb};
+use fjord_store_fjall::{
+    catalog::Listing,
+    meta::Status,
+    store::{FjallDb, FjallStore},
+    world::BaseIdentity,
+};
 use fjord_wire::{
     FrameHeader, FrameKind, StreamId, encode_desc, encode_frame, frame,
     protocol::{self, ErrorCode, Mode, ProfileStep, QueryProfile, Ready, Startup, kinds},
@@ -100,6 +105,19 @@ pub struct Database {
     /// it, which is nothing next to opening a store and everything next to doing it on
     /// every handshake.
     pub identity: Identity,
+    /// The content fingerprint `finish` computed — `finish` calls
+    /// [`mark_complete`](Database::mark_complete), and an already-Complete database
+    /// carries it from open — never seen for a Writable one.
+    ///
+    /// Read at chunk time to build a resume cursor's
+    /// [world stamp](fjord_store_fjall::world::BaseIdentity::Complete): the one
+    /// half of it that a Complete database can answer without touching the store,
+    /// since it cannot move once set.
+    ///
+    /// A `OnceLock` rather than the sidecar's own `Option<u64>` re-read per chunk:
+    /// `finish` computes it once and it is true forever after, so re-reading the
+    /// sidecar would be paying a file read for an answer that cannot change.
+    content_fingerprint: OnceLock<u64>,
     /// **The seal barrier** (`ops-I2`) — and, until 12e, the single writer as well.
     ///
     /// This was a `Mutex` doing two jobs, and only one of them was ever this lock's to
@@ -138,13 +156,21 @@ impl Database {
         db: FjallDb,
         schema: Arc<Schema>,
         status: Status,
+        content_fingerprint: Option<u64>,
     ) -> Database {
+        let fingerprint = OnceLock::new();
+        if let Some(known) = content_fingerprint {
+            // Infallible: freshly constructed and set once, here.
+            let _ = fingerprint.set(known);
+        }
+
         Database {
             name: name.into(),
             instance: instance.into(),
             db: Arc::new(db),
             identity: fjord_schema::fingerprint::identity(&schema),
             schema,
+            content_fingerprint: fingerprint,
             sealing: RwLock::new(()),
             writable: AtomicBool::new(status.is_writable()),
         }
@@ -162,6 +188,27 @@ impl Database {
     /// registry is the only caller that holds it.
     pub(crate) fn seal(&self) {
         self.writable.store(false, Ordering::SeqCst);
+    }
+
+    /// Record the content fingerprint `finish` just computed.
+    ///
+    /// `pub(crate)`, called by the registry alongside [`seal`](Self::seal) — set
+    /// first, in program order, so a reader that observes `writable() == false` is
+    /// as likely as possible to also observe a fingerprint. Not a promise the two
+    /// can be read atomically together: `writable` and this `OnceLock` are
+    /// independent memory locations, and nothing here claims otherwise. A reader
+    /// that lands in the gap between them reads `writable() == false` and no
+    /// fingerprint yet, and [`base_identity`](Database::base_identity) treats that
+    /// as "unknown, refuse" — the same direction every other check in this area
+    /// already fails safe in.
+    pub(crate) fn mark_complete(&self, fingerprint: u64) {
+        let _ = self.content_fingerprint.set(fingerprint);
+    }
+
+    /// The content fingerprint, once `finish` has computed one.
+    #[must_use]
+    pub fn content_fingerprint(&self) -> Option<u64> {
+        self.content_fingerprint.get().copied()
     }
 }
 
@@ -1429,6 +1476,47 @@ fn prepare(
     })
 }
 
+/// A stamp nothing [`stamped_reader`] ever computes from a real database can equal
+/// — see its own doc comment for the narrow race this exists to fail safely
+/// through, rather than by reasoning about timing further.
+const UNKNOWN_WORLD: &[u8] = b"unknown-world";
+
+/// The reader for one chunk, **and the world stamp a resume cursor built from it
+/// should carry** — see [`fjord_store_fjall::world`].
+///
+/// Complete: the content fingerprint, which cannot move once set, so there is no
+/// need to touch the store to read it — `finish` already put it on `Database`
+/// ([`Database::mark_complete`]). Writable: the live handle's own incarnation and
+/// its write position at the exact instant *this* reader's snapshot was taken
+/// ([`FjallDb::reader_stamped`]), which is what lets the *next* chunk notice a
+/// write that landed in between — the defect
+/// [I4](../../../website/content/invariants.md#i4) names, closed here rather than left to a
+/// silent hybrid of two states.
+///
+/// **Fails toward refusal, never toward a wrong accept.** A database observed
+/// `writable() == false` with no fingerprint set yet is the narrow race
+/// `mark_complete`'s own doc comment names; a stamp nothing can ever equal is what
+/// keeps that window a spurious resume refusal rather than a silently answered
+/// hybrid.
+fn stamped_reader(database: &Database) -> (FjallStore, Box<[u8]>) {
+    if database.writable() {
+        let (store, visible_seqno) = database.db.reader_stamped();
+        let identity = BaseIdentity::Writable {
+            instance: database.instance.as_str().into(),
+            incarnation: database.db.incarnation(),
+            visible_seqno,
+        };
+        (store, identity.to_bytes())
+    } else if let Some(fingerprint) = database.content_fingerprint() {
+        (
+            database.db.reader(),
+            BaseIdentity::Complete { fingerprint }.to_bytes(),
+        )
+    } else {
+        (database.db.reader(), Box::from(UNKNOWN_WORLD))
+    }
+}
+
 /// One chunk of a **count**: how many rows, and where to carry on.
 ///
 /// A sibling of [`run_chunk`] rather than a mode of it, and deliberately: the row
@@ -1443,7 +1531,7 @@ fn count_chunk(
     cancel: &CancellationToken,
     examined_ceiling: u64,
 ) -> Result<(u64, Option<Cursor>), ServerError> {
-    let store = database.db.reader();
+    let (store, world) = stamped_reader(database);
 
     match catalogue {
         Some(catalogue) => counting(
@@ -1452,8 +1540,9 @@ fn count_chunk(
             resume,
             cancel,
             examined_ceiling,
+            world,
         ),
-        None => counting(store, plan, resume, cancel, examined_ceiling),
+        None => counting(store, plan, resume, cancel, examined_ceiling, world),
     }
 }
 
@@ -1464,10 +1553,11 @@ fn counting<S: fjord_store::fact_store::FactStore>(
     resume: Option<Cursor>,
     cancel: &CancellationToken,
     examined_ceiling: u64,
+    world: Box<[u8]>,
 ) -> Result<(u64, Option<Cursor>), ServerError> {
     let executor = match resume {
-        Some(cursor) => Executor::resume(store, plan.clone(), cursor),
-        None => Ok(Executor::new(store, plan.clone())),
+        Some(cursor) => Executor::resume(store, plan.clone(), cursor, world),
+        None => Ok(Executor::new(store, plan.clone()).with_world_stamp(world)),
     }
     .map_err(|error| ServerError::Execution(error.to_string()))?
     .with_examined_ceiling(examined_ceiling);
@@ -1550,7 +1640,7 @@ fn run_chunk(
     // Two calls rather than one boxed store, because `FactStore::Scan` is an associated
     // type: a `dyn FactStore` would have to erase the scan too, which costs an
     // allocation and a virtual call **per row** on the hot path, to save one line here.
-    let store = database.db.reader();
+    let (store, world) = stamped_reader(database);
 
     match catalogue {
         Some(catalogue) => over(
@@ -1559,8 +1649,9 @@ fn run_chunk(
             work,
             resume,
             profile,
+            world,
         ),
-        None => over(store, database, work, resume, profile),
+        None => over(store, database, work, resume, profile, world),
     }
 }
 
@@ -1571,6 +1662,7 @@ fn over<S: fjord_store::fact_store::FactStore>(
     work: &Chunking<'_>,
     resume: Option<Cursor>,
     profile: &mut Profile,
+    world: Box<[u8]>,
 ) -> Result<Chunk, ServerError> {
     let Chunking {
         plan,
@@ -1581,8 +1673,8 @@ fn over<S: fjord_store::fact_store::FactStore>(
     } = work;
     let budget = *budget;
     let executor = match resume {
-        Some(cursor) => Executor::resume(store, (*plan).clone(), cursor),
-        None => Ok(Executor::new(store, (*plan).clone())),
+        Some(cursor) => Executor::resume(store, (*plan).clone(), cursor, world),
+        None => Ok(Executor::new(store, (*plan).clone()).with_world_stamp(world)),
     }
     .map_err(|error| ServerError::Execution(error.to_string()))?
     .with_examined_ceiling(*examined_ceiling);

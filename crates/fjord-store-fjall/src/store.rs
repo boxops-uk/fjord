@@ -50,6 +50,7 @@ use byteview::ByteView;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
 
 use crate::lookup_cache::{Hit, LookupCache};
+use crate::world::VisibleSeqno;
 use fjord_schema::{
     id::{FactId, FactIdError, MAX_FACT_SEQUENCE, MAX_TAGGABLE_PREDICATE},
     schema::{PREDICATE_ID_SIZE, PredicateId, Schema},
@@ -153,6 +154,17 @@ pub struct FjallDb {
     intern_reads: InternReads,
     /// How many writers are in it at once — see [`InFlight`].
     in_flight: InFlight,
+    /// A nonce minted fresh by every [`open`](FjallDb::open), never persisted.
+    ///
+    /// What makes a [`BaseIdentity::Writable`](crate::world::BaseIdentity::Writable)
+    /// stamp refuse a cursor from **before a reopen**, unconditionally — see
+    /// [`world`](crate::world). `visible_seqno` alone cannot do this job: fjall
+    /// recovers its counter from whatever survived, which can be lower than a live
+    /// cursor's stamp when the tail was written but never `persist`ed, and a bare
+    /// sequence comparison would then let a stale cursor land on reissued numbers
+    /// over different content. A fresh nonce sidesteps reasoning about what the
+    /// recovery kept: every reopen is a new incarnation, full stop.
+    incarnation: u64,
 }
 
 /// Live LSM point reads the interning path has done, per tree.
@@ -496,7 +508,18 @@ impl FjallDb {
                 .collect(),
             intern_reads: InternReads::default(),
             in_flight: InFlight::default(),
+            incarnation: {
+                let mut bytes = [0u8; 8];
+                getrandom::fill(&mut bytes).expect("the system entropy source");
+                u64::from_le_bytes(bytes)
+            },
         })
+    }
+
+    /// This handle's incarnation — see the field's own doc comment.
+    #[must_use]
+    pub fn incarnation(&self) -> u64 {
+        self.incarnation
     }
 
     /// Check the [format stamp](fjord_store::format), or write it if this
@@ -1315,6 +1338,50 @@ impl FjallDb {
             predicates: Arc::clone(&predicates),
         }
     }
+
+    /// A read view for one query, **and the write position it was taken at** — for
+    /// a [`BaseIdentity::Writable`](crate::world::BaseIdentity::Writable) stamp,
+    /// which is the only caller with a reason to pay for this over
+    /// [`reader`](Self::reader).
+    ///
+    /// # Why the bracket
+    ///
+    /// `Database::visible_seqno` and `Snapshot::seqno` are both reachable but
+    /// `#[doc(hidden)]` — there is no supported API that hands back "the sequence
+    /// this snapshot was taken at" in one call, and the two can move independently
+    /// of one another under a concurrent writer. So the sequence is read, the
+    /// snapshot is opened, and the sequence is read again; the reading is kept only
+    /// once the two agree, which is what makes the pair describe the *same*
+    /// instant rather than two nearby ones. A snapshot never observes a write after
+    /// it was taken, so the second reading can only be greater than or equal to the
+    /// first — never less — which is what makes "equal" the right thing to wait
+    /// for rather than "close enough".
+    ///
+    /// Bounded rather than an unconditional loop: under sustained write pressure
+    /// from another thread this could spin, and the two extra atomic loads per
+    /// attempt are not worth risking that against a caller that is not going to
+    /// retry on our behalf. Exhausting the bound keeps the last reading rather than
+    /// failing — the failure mode is then *at worst* one spurious refusal of a
+    /// resume that happened to be fine, on the same side of "safe" every other
+    /// refusal in this area is deliberately on, never a wrong accept.
+    #[must_use]
+    pub fn reader_stamped(&self) -> (FjallStore, VisibleSeqno) {
+        const ATTEMPTS: usize = 8;
+
+        let mut before = self.db.visible_seqno();
+        let mut store = self.reader();
+
+        for _ in 1..ATTEMPTS {
+            let after = self.db.visible_seqno();
+            if after == before {
+                break;
+            }
+            before = after;
+            store = self.reader();
+        }
+
+        (store, before)
+    }
 }
 
 /// The per-query `FactStore`: one snapshot, one set of keyspace handles.
@@ -1899,6 +1966,77 @@ mod tests {
         let entity = reader.point(written).expect("point").expect("present");
         assert_eq!(entity.key.to_vec(), key);
         assert_eq!(entity.value.to_vec(), vec![9]);
+    }
+
+    /// **Every reopen mints a new incarnation** — the whole of what makes a
+    /// [`world::BaseIdentity::Writable`](crate::world::BaseIdentity::Writable)
+    /// stamp refuse a cursor from before a reopen without reasoning about what the
+    /// reopen actually recovered ([I4](../../../website/content/invariants.md#i4)).
+    ///
+    /// No crash is simulated here, deliberately: the guarantee this test states —
+    /// "a previous incarnation is always refused" — does not depend on anything
+    /// having been lost. It holds on an ordinary, clean reopen exactly as it holds
+    /// after one that lost unsynced tail writes, which is the property that lets
+    /// the fix avoid reasoning about recovery at all.
+    #[test]
+    fn reopening_mints_a_new_incarnation() {
+        let dir = TempDir::new().expect("tempdir");
+
+        let first = FjallDb::open(dir.path()).expect("open").incarnation();
+        let second = FjallDb::open(dir.path()).expect("reopen").incarnation();
+
+        assert_ne!(
+            first, second,
+            "two opens of the same directory minted the same incarnation"
+        );
+    }
+
+    /// Two live handles never share one, either — the source of the nonce is the
+    /// entropy pool, not anything derived from the path, so this is not implied by
+    /// [`reopening_mints_a_new_incarnation`] above.
+    #[test]
+    fn two_open_handles_never_share_an_incarnation() {
+        let a = TempDir::new().expect("tempdir");
+        let b = TempDir::new().expect("tempdir");
+
+        let a = FjallDb::open(a.path()).expect("open a").incarnation();
+        let b = FjallDb::open(b.path()).expect("open b").incarnation();
+
+        assert_ne!(a, b);
+    }
+
+    /// **The bracket in [`FjallDb::reader_stamped`] names the snapshot it pairs
+    /// with**: a write that lands strictly before a snapshot is taken must be
+    /// visible in the sequence number handed back beside it, and the sequence must
+    /// move at all — a stamp that never moved would let a write between two chunks
+    /// go undetected, which is the whole defect this mechanism exists to close.
+    #[test]
+    fn visible_seqno_moves_after_a_write_and_the_snapshot_agrees() {
+        let dir = TempDir::new().expect("tempdir");
+        let db = FjallDb::open(dir.path()).expect("open");
+
+        let (before, seqno_before) = db.reader_stamped();
+        drop(before);
+
+        db.put_fact(PredicateId(0), &[1], &[]).expect("put");
+
+        let (after, seqno_after) = db.reader_stamped();
+
+        assert!(
+            seqno_after > seqno_before,
+            "a write did not move the visible sequence: {seqno_before} then {seqno_after}"
+        );
+
+        // The snapshot itself, not only the number beside it, has to agree: the
+        // fact just written must be visible through `after` and absent from a
+        // reader taken at `seqno_before`'s instant.
+        let key = bound_bytes(0, &[1]);
+        assert!(
+            scan_rows(&after, &key, strinc(&key).as_deref())
+                .into_iter()
+                .any(|(row_key, _)| row_key == key),
+            "the snapshot returned beside the later sequence does not see the write"
+        );
     }
 
     /// [I15](../../../website/content/invariants.md#i15) — a database says which encoding wrote

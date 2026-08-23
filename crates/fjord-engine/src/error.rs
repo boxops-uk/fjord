@@ -79,6 +79,20 @@ pub enum FjordError {
     #[error("resume key not found")]
     BadResumeKey,
 
+    /// A resume cursor whose world stamp does not match the one it is being resumed
+    /// against.
+    ///
+    /// Opaque to this crate by design — a content fingerprint for a Complete
+    /// database, or an instance/incarnation/sequence triple for a Writable one,
+    /// encoded by the database-owning layer, which is the only layer that can
+    /// compute either half. What this refuses is a different database, a
+    /// same-database resume after a reopen, and — on a Writable database — a resume
+    /// after a write has crossed the chunk boundary, which the two of them
+    /// otherwise answer as a silent hybrid of two states
+    /// ([I4](../../../website/content/invariants.md#i4)).
+    #[error("resume cursor was read against a different world")]
+    CursorWorld,
+
     /// A plan stepping *into* a key field that is not a record. The field's own
     /// marker says what it is, so this is a plan disagreeing with the schema the
     /// row was written under — reported rather than read as bytes that happen to

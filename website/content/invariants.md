@@ -107,12 +107,33 @@ which draws its loop order rather than taking the identity.
 **What every arm of that guard shares is a base that cannot change, and that is the shape of what
 it misses.** The generators produce one store and hold it, so no case in the battery can express a
 resume against a *different* database, a database still being written to, or a virtual predicate
-rematerialised between requests — and the cursor carries nothing that would detect any of them: it
-names a plan, a layout version and a level count, and no part of the world it read. Two of those
-three are live holes today rather than hypotheses, recorded with their fixes in
+rematerialised between requests. A property whose oracle and subject share an assumption cannot
+fail on it; closing these means a **server-level** arm, not a stronger generator.
+
+**The first two are closed.** `Cursor` now carries a **world stamp** — opaque bytes the
+database-owning layer computes and the engine only compares, never interprets
+([`FjallDb::reader_stamped`](https://github.com/boxops-uk/fjord/blob/main/crates/fjord-store-fjall/src/store.rs),
+`fjord_store_fjall::world::BaseIdentity`). A Complete database's stamp is the content
+fingerprint `finish` computed, which cannot move; a Writable database's is its live handle's
+incarnation and write position at the instant the chunk's snapshot was taken, so a write that
+lands between two chunks moves it and the next chunk's stamp disagrees — refused as
+`FjordError::CursorWorld` rather than answered as a hybrid of two states. The incarnation, not the
+write position alone, is what makes a cursor from **before a reopen** refused unconditionally: a
+sequence number recovered from what a crash left durable can be lower than a live cursor's stamp,
+and reasoning about what survived is exactly what a fresh nonce per `FjallDb::open` avoids having
+to do. Guards: `store::reopening_mints_a_new_incarnation`,
+`store::visible_seqno_moves_after_a_write_and_the_snapshot_agrees` (`fjord-store-fjall`, unit),
+`iter::an_empty_cursor_from_another_world_is_refused` (`fjord-engine`, unit — the world check runs
+before the empty-cursor shortcut, exactly as the plan fingerprint's does), and the server-level arm
+this note used to say was missing:
+`against_a_server::a_write_between_two_pages_of_a_writable_database_is_refused`, with
+`paging_a_writable_database_with_no_intervening_write_still_works` as its negative control.
+
+**The third is still open.** A virtual predicate (`fjord.db.*`) is rematerialised per request, and
+nothing in the world stamp above says whether that materialisation agrees with a resumed cursor's —
+closing it needs a digest over the materialised listing, not a fact about the base, and is recorded
+with its fix in
 [the roadmap](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#a-defect-not-a-gap--a-cursor-does-not-name-the-world-it-was-made-in).
-A property whose oracle and subject share an assumption cannot fail on it; closing these means a
-**server-level** arm, not a stronger generator.
 
 [Executor → the cursor](executor.html#the-cursor-bytes-and-nothing-else)
 

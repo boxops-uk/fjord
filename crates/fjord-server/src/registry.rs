@@ -268,6 +268,7 @@ impl Registry {
                         db,
                         schema,
                         entry.status(),
+                        entry.meta.content_fingerprint,
                     ))
                 });
 
@@ -491,6 +492,8 @@ impl Registry {
             db,
             schema,
             entry.status(),
+            // Freshly created: Writable, with no content fingerprint to have.
+            None,
         ));
 
         self.write().insert(entry.meta.instance.clone(), database);
@@ -554,6 +557,9 @@ impl Registry {
         })
         .await?;
 
+        // Recorded before the seal, in program order — see `mark_complete`'s own
+        // doc comment for why that ordering is a best effort and not a promise.
+        database.mark_complete(sealed.fingerprint);
         database.seal();
 
         Ok(finished(&sealed))

@@ -527,7 +527,7 @@ fn run_paged(db: &FjallDb, plan: &Plan, limit: u64) -> (Run, Paging) {
             None => Executor::new(store, plan.clone()),
             Some(cursor) => {
                 paging.resumes += 1;
-                Executor::resume(store, plan.clone(), cursor).expect("the cursor resumes")
+                Executor::resume(store, plan.clone(), cursor, &[][..]).expect("the cursor resumes")
             }
         };
         paging.resume += started.elapsed();
