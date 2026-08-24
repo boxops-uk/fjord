@@ -19,13 +19,14 @@
 //!
 //!     ── Q query "X where …"  (stream 2) ───▶
 //!     ◀──────── T row-description[desc] ────
+//!     ◀───── l listing-digest[predicate,n] ─────      only if the query reads a virtual predicate
 //!     ◀──────── D data-row[value] ──────────
 //!     ◀──────── C complete{rows} ───────────      or E error
 //!
 //!     ── L control{op, name}  (stream 3) ───▶
 //!     ◀──────── M control-reply[…] ─────────      or E error
 //!
-//!     ── F fetch{ids}         (stream 4) ───▶
+//!     ── F fetch{ids, digest?}(stream 4) ───▶
 //!     ◀──────── f fetched[keys] ────────────      or E error
 //! ```
 //!
@@ -55,6 +56,26 @@
 //! and it is deliberately **not** a fifth query kind. Expansion is orthogonal to paging,
 //! profiling and counting, so a query kind for it would need one per combination;
 //! asking about the ids in a row after the row arrived composes with all of them.
+//!
+//! # A virtual listing is a view, and a view can move between two requests
+//!
+//! `fjord.db.List`'s rows are materialised from the store root when a query is
+//! prepared, not read out of a keyspace — so an id in one of its rows is a *position*
+//! in that listing rather than a stored identity, and a database created or removed
+//! between the query and a [`kinds::FETCH`] of one of its ids can renumber the
+//! listing under it. That is not the same failure `Found::Unstored` already answers:
+//! a moved position does not go missing, it names a *different* row, and a fetch that
+//! resolved it would answer for the wrong database without either end noticing.
+//!
+//! No cursor is involved — a fetch is its own request, unrelated to any query's resume
+//! token — so the fix travels with the rows themselves: a result that reads a virtual
+//! predicate reports [`kinds::LISTING_DIGEST`] once per non-empty virtual predicate,
+//! right after its row description, and a client asking to expand one of its ids sends
+//! that predicate's number back on the
+//! [`kinds::FETCH`] that names it. The server recomputes the current digest and
+//! refuses the whole request by name when the two disagree, rather than resolving an
+//! id against a listing it was never minted from. A fetch that names no digest — an id
+//! typed by hand, or one read before this existed — is resolved as it always was.
 //!
 //! # Every message is a frame, including the handshake
 //!
@@ -87,12 +108,17 @@ use crate::{
 /// separate axis: one says "we disagree about the protocol", the other "we agree
 /// about the protocol and disagree about the data".
 ///
-/// **2 marks the fingerprint change.** A startup frame's `schema_fingerprint` carries
+/// **3 marks the listing-digest change.** `FETCH` gained its optional digest and a
+/// query over a virtual predicate gained a `LISTING_DIGEST` frame; an older peer
+/// cannot skip either change because one alters an existing payload and the other is
+/// sent without being requested separately.
+///
+/// **2 marked the fingerprint change.** A startup frame's `schema_fingerprint` carries
 /// [the schema identity](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md), computed in
 /// `fjord-schema` over the canonical form. Every number changed, so a client pinned
 /// to the old one is told it speaks a different protocol rather than left to fail a
 /// comparison it cannot interpret.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Frame kinds this protocol assigns, beyond the ones the codec already names.
 pub mod kinds {
@@ -203,6 +229,19 @@ pub mod kinds {
     ///
     /// [settled]: ../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
     pub const FETCH: FrameKind = FrameKind(b'F');
+    /// Server → client: a predicate id and the digest of the listing its result ids
+    /// were minted from, sent once per non-empty virtual predicate right after
+    /// [`ROW_DESCRIPTION`](crate::FrameKind::ROW_DESCRIPTION).
+    ///
+    /// `fjord.db.List`'s rows are a materialised view, not a keyspace
+    /// ([`SCHEMA_REPLY`]'s own doc says so): a database created or removed between a
+    /// query and a [`FETCH`] of one of its ids can renumber the listing, and the id
+    /// can land on a *different* row rather than on none — which
+    /// [`decode_fetched`](super::decode_fetched) cannot notice, because the reply
+    /// looks exactly like a correct one. Carrying this digest with the rows and back
+    /// on the fetch is what
+    /// lets the server refuse that case by name instead of answering it.
+    pub const LISTING_DIGEST: FrameKind = FrameKind(b'l');
     /// Server → client: the facts those ids name, **in the order they were asked
     /// about**.
     ///
@@ -914,9 +953,23 @@ pub enum Found {
 }
 
 /// Encode a request naming the ids to resolve.
+///
+/// `digest` is what [`decode_listing_digest`] read off the result these ids came
+/// out of — `None` when they did not carry one, or when the caller has no result to
+/// name one from. Carried as a presence byte ahead of the ids, so a fetch naming no
+/// digest and a fetch naming one can never be read as the same request.
 #[must_use]
-pub fn encode_fetch(ids: &[FactId]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + ids.len() * 4);
+pub fn encode_fetch(ids: &[FactId], digest: Option<u64>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(10 + 1 + ids.len() * 4);
+
+    match digest {
+        Some(digest) => {
+            out.push(1);
+            varint::put_u64(&mut out, digest);
+        }
+        None => out.push(0),
+    }
+
     varint::put_u64(&mut out, ids.len() as u64);
 
     for id in ids {
@@ -936,11 +989,24 @@ pub fn encode_fetch(ids: &[FactId]) -> Vec<u8> {
 ///
 /// # Errors
 ///
+/// [`WireError::BadDigestFlag`] for a presence byte that is neither 0 nor 1,
 /// [`WireError::BlockTooLarge`] past [`MAX_FETCH`], [`WireError::BadFactId`] for a pair
 /// that is not a fact id — sequence zero is reserved, so a zeroed frame is detectably
 /// not one — or [`WireError::TrailingBytes`] if the frame says more than it counted.
-pub fn decode_fetch(bytes: &[u8]) -> Result<Vec<FactId>, WireError> {
-    let (count, mut at) = varint::get_u64(bytes)?;
+pub fn decode_fetch(bytes: &[u8]) -> Result<(Vec<FactId>, Option<u64>), WireError> {
+    let (&flag, rest) = bytes.split_first().ok_or(WireError::UnexpectedEof)?;
+
+    let (digest, mut at) = match flag {
+        0 => (None, 1),
+        1 => {
+            let (digest, used) = varint::get_u64(rest)?;
+            (Some(digest), 1 + used)
+        }
+        other => return Err(WireError::BadDigestFlag(other)),
+    };
+
+    let (count, used) = varint::get_u64(&bytes[at..])?;
+    at += used;
 
     if count > MAX_FETCH as u64 {
         return Err(WireError::BlockTooLarge {
@@ -978,7 +1044,38 @@ pub fn decode_fetch(bytes: &[u8]) -> Result<Vec<FactId>, WireError> {
         return Err(WireError::TrailingBytes(bytes.len() - at));
     }
 
-    Ok(ids)
+    Ok((ids, digest))
+}
+
+/// Encode the predicate and digest of the listing its result ids were minted from.
+#[must_use]
+pub fn encode_listing_digest(predicate: PredicateId, digest: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(14);
+    varint::put_u64(&mut out, u64::from(predicate.0));
+    varint::put_u64(&mut out, digest);
+    out
+}
+
+/// Decode a [`kinds::LISTING_DIGEST`] frame's payload.
+///
+/// # Errors
+///
+/// Whatever [`varint::get_u64`] reports, [`WireError::BadListingPredicate`] if the
+/// predicate does not fit its physical id, or [`WireError::TrailingBytes`] if bytes
+/// remain after the predicate and digest.
+pub fn decode_listing_digest(bytes: &[u8]) -> Result<(PredicateId, u64), WireError> {
+    let (predicate, predicate_used) = varint::get_u64(bytes)?;
+    let predicate = u32::try_from(predicate)
+        .map(PredicateId)
+        .map_err(|_| WireError::BadListingPredicate(predicate))?;
+    let (digest, digest_used) = varint::get_u64(&bytes[predicate_used..])?;
+    let used = predicate_used + digest_used;
+
+    if used != bytes.len() {
+        return Err(WireError::TrailingBytes(bytes.len() - used));
+    }
+
+    Ok((predicate, digest))
 }
 
 /// Encode the answers, in the order they were asked about.
@@ -1129,6 +1226,14 @@ mod tests {
         );
 
         assert_eq!(decode_complete(&encode_complete(3, 4)), Ok((3, 4)));
+    }
+
+    /// Changing an existing frame's payload is a protocol version, not an additive
+    /// frame: otherwise old and new peers complete the handshake and disagree only
+    /// once the changed request is already in flight.
+    #[test]
+    fn the_fetch_digest_layout_has_its_own_protocol_version() {
+        assert_eq!(VERSION, 3);
     }
 
     #[test]
@@ -1326,8 +1431,8 @@ mod tests {
         let schema = two_predicates();
         let asked = vec![id(0, 1), id(1, 7), id(0, 4_000_000)];
 
-        let request = encode_fetch(&asked);
-        assert_eq!(decode_fetch(&request), Ok(asked.clone()));
+        let request = encode_fetch(&asked, None);
+        assert_eq!(decode_fetch(&request), Ok((asked.clone(), None)));
 
         // **All three answers in one reply**, which is what exercises the presence byte
         // over its whole range — and the second is a *record* key, so a decoder that read
@@ -1389,11 +1494,78 @@ mod tests {
 
         // An empty ask is a well-formed message rather than a special case: a client
         // whose page held no references still has a code path.
-        assert_eq!(decode_fetch(&encode_fetch(&[])), Ok(vec![]));
+        assert_eq!(decode_fetch(&encode_fetch(&[], None)), Ok((vec![], None)));
         assert_eq!(
             decode_fetched(&encode_fetched(&schema, &[]).unwrap(), &schema, &[]),
             Ok(vec![])
         );
+    }
+
+    /// **The presence byte is what makes "no digest" and "digest zero" different
+    /// requests**, which a plain `Option<u64>` encoded as a bare number could not do —
+    /// `0` is a value a real digest can take.
+    #[test]
+    fn a_fetch_carries_its_listing_digest_or_none_at_all() {
+        let asked = vec![id(0, 1)];
+
+        let with_digest = encode_fetch(&asked, Some(0));
+        assert_eq!(
+            decode_fetch(&with_digest),
+            Ok((asked.clone(), Some(0))),
+            "digest zero is a real answer, not an absence"
+        );
+
+        let with_other_digest = encode_fetch(&asked, Some(u64::MAX));
+        assert_eq!(
+            decode_fetch(&with_other_digest),
+            Ok((asked.clone(), Some(u64::MAX)))
+        );
+
+        let without = encode_fetch(&asked, None);
+        assert_eq!(decode_fetch(&without), Ok((asked, None)));
+        assert_ne!(
+            with_digest, without,
+            "the flag byte alone must move the encoding"
+        );
+    }
+
+    /// A presence byte that is neither 0 nor 1 is refused by name rather than read as
+    /// one of them — the same discipline [`Mode::from_byte`] follows.
+    #[test]
+    fn a_bad_presence_flag_is_refused() {
+        assert!(matches!(
+            decode_fetch(&[7]),
+            Err(WireError::BadDigestFlag(7))
+        ));
+    }
+
+    /// The digest frame itself: one number, and nothing past it.
+    #[test]
+    fn the_listing_digest_frame_round_trips() {
+        let predicate = PredicateId(7);
+        assert_eq!(
+            decode_listing_digest(&encode_listing_digest(predicate, 0)),
+            Ok((predicate, 0))
+        );
+        assert_eq!(
+            decode_listing_digest(&encode_listing_digest(predicate, u64::MAX)),
+            Ok((predicate, u64::MAX))
+        );
+
+        let mut over = encode_listing_digest(predicate, 1);
+        over.push(0);
+        assert!(matches!(
+            decode_listing_digest(&over),
+            Err(WireError::TrailingBytes(1))
+        ));
+
+        let mut bad_predicate = vec![];
+        varint::put_u64(&mut bad_predicate, u64::from(u32::MAX) + 1);
+        varint::put_u64(&mut bad_predicate, 0);
+        assert!(matches!(
+            decode_listing_digest(&bad_predicate),
+            Err(WireError::BadListingPredicate(_))
+        ));
     }
 
     /// A cut message is refused rather than defaulted — the rule the handshake and the
@@ -1404,7 +1576,7 @@ mod tests {
         let schema = two_predicates();
         let asked = vec![id(0, 1), id(0, 2)];
 
-        let request = encode_fetch(&asked);
+        let request = encode_fetch(&asked, None);
         for cut in 0..request.len() {
             assert!(decode_fetch(&request[..cut]).is_err(), "cut to {cut}");
         }
@@ -1468,7 +1640,7 @@ mod tests {
     /// sequence is the reserved zero is refused as not being an id at all.
     #[test]
     fn a_fetch_a_peer_should_not_have_sent_is_refused() {
-        let mut huge = vec![];
+        let mut huge = vec![0]; // no digest
         varint::put_u64(&mut huge, MAX_FETCH as u64 + 1);
         assert!(matches!(
             decode_fetch(&huge),
@@ -1480,7 +1652,7 @@ mod tests {
 
         // Sequence zero is reserved (I11), so a zeroed frame is detectably not a fact
         // id rather than an id of fact zero.
-        let mut zeroed = vec![];
+        let mut zeroed = vec![0]; // no digest
         varint::put_u64(&mut zeroed, 1);
         varint::put_u64(&mut zeroed, 0);
         varint::put_u64(&mut zeroed, 0);
@@ -1497,8 +1669,12 @@ mod tests {
     /// it has. Stated as arithmetic rather than as a golden count, so it says why.
     #[test]
     fn an_id_costs_its_halves_rather_than_its_bits() {
-        let low = encode_fetch(&[id(3, 7)]);
-        assert_eq!(low.len(), 1 + 1 + 1, "count, predicate 3, sequence 7");
+        let low = encode_fetch(&[id(3, 7)], None);
+        assert_eq!(
+            low.len(),
+            1 + 1 + 1 + 1,
+            "no digest, count, predicate 3, sequence 7"
+        );
 
         let raw_would_be = {
             let mut out = vec![];

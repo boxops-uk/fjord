@@ -51,6 +51,16 @@
 //! [`unresolved`](Expander::unresolved) counts it rather than hiding it behind a
 //! plausible-looking row.
 //!
+//! # `fjord.db.List` is a view, and a view can move
+//!
+//! Not every reference names a *stored* fact: `X where X = fjord.db.List _` heads a row
+//! whose id is a position in a listing materialised for that query, so a database
+//! created or removed since can renumber it — the id then names a *different* row,
+//! which looks exactly like success rather than like the absence the cache would
+//! otherwise expect. [`expand`](Expander::expand) is handed the digests the row's own
+//! result carried and passes the matching predicate's digest to each fetch, so the server can
+//! refuse that case by name; see [`Connection::fetch`](crate::Connection::fetch).
+//!
 //! [settled]: ../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
 
 use std::{
@@ -169,6 +179,11 @@ impl Expander {
     /// A depth of zero is the row unchanged, which is what "expansion off" costs: no
     /// walk, no round trip, the same value back.
     ///
+    /// `digests` is [`Rows::listing_digests`](crate::rows::Rows::listing_digests) of the
+    /// result `value` was read out of — carried to [`Connection::fetch`] so a virtual
+    /// id in it is checked against the listing it was actually minted from, rather
+    /// than resolved against whatever the catalogue happens to hold right now.
+    ///
     /// # Errors
     ///
     /// Whatever the fetch reports — a server that declines the ids, or a broken
@@ -179,6 +194,7 @@ impl Expander {
         connection: &mut Connection,
         value: &WireValue,
         depth: usize,
+        digests: &[(PredicateId, u64)],
     ) -> Result<WireValue, ClientError> {
         if depth == 0 {
             return Ok(value.clone());
@@ -192,7 +208,7 @@ impl Expander {
             self.cache.clear();
         }
 
-        self.prefetch(connection, value, depth)?;
+        self.prefetch(connection, value, depth, digests)?;
         Ok(self.substitute(value, depth))
     }
 
@@ -208,6 +224,7 @@ impl Expander {
         connection: &mut Connection,
         value: &WireValue,
         depth: usize,
+        digests: &[(PredicateId, u64)],
     ) -> Result<(), ClientError> {
         let mut level: Vec<FactId> = vec![];
         references(value, &mut level);
@@ -242,8 +259,15 @@ impl Expander {
             }
 
             for (predicate, ids) in wanted {
+                let digest = digests
+                    .iter()
+                    .find_map(|(listed, digest)| (*listed == predicate).then_some(*digest));
                 for batch in ids.chunks(fjord_wire::protocol::MAX_FETCH) {
-                    match connection.fetch(&self.schema, batch) {
+                    // The digest belongs to the row this walk started from, and it
+                    // travels unchanged to every level: a virtual id can only ever be
+                    // a *direct* reference in that row, since the catalogue's own
+                    // rows hold no reference fields for a deeper level to find.
+                    match connection.fetch(&self.schema, batch, digest) {
                         Ok(answers) => {
                             for (id, answer) in batch.iter().zip(answers) {
                                 self.fetched += 1;
@@ -272,11 +296,28 @@ impl Expander {
                             }
                         }
 
-                        // **A refusal is about this predicate, not about the row.** The
-                        // rows are still worth printing with the id in them, so it is
-                        // recorded, said once, and never asked again — where propagating
-                        // would lose a page of perfectly good rows to a field nobody could
-                        // have expanded.
+                        // **A listing moving under a fetch is a fact about this moment,
+                        // not about the predicate**, and must not be cached into
+                        // `unexpandable` — doing so would silently stop expanding this
+                        // predicate for the rest of the session over a condition that
+                        // may already be gone by the next row. Only a fetch that
+                        // carried a digest can be refused this way (`fetch` checks one
+                        // only when it is given), so the caller is always in a
+                        // position to ask again with a fresh one.
+                        Err(
+                            error @ ClientError::Server {
+                                code: fjord_wire::ErrorCode::Refused,
+                                ..
+                            },
+                        ) => {
+                            return Err(error);
+                        }
+
+                        // **Every other refusal is about this predicate, not about the
+                        // row.** The rows are still worth printing with the id in them,
+                        // so it is recorded, said once, and never asked again — where
+                        // propagating would lose a page of perfectly good rows to a
+                        // field nobody could have expanded.
                         Err(ClientError::Server { message, .. }) => {
                             self.refuse(predicate, message);
                             break;

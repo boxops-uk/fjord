@@ -624,15 +624,28 @@ impl Connection {
     /// Rows have no such problem: the server sends a descriptor and they decode against
     /// that.
     ///
+    /// # `digest` is what a virtual id's own listing is checked against
+    ///
+    /// The entry in [`Rows::listing_digests`](crate::rows::Rows::listing_digests) for
+    /// the predicate these ids name, or `None` for an id that came from anywhere else — typed
+    /// by hand, say. `fjord.db.List`'s rows are a position in a listing rather than a
+    /// stored identity, so a database created or removed since can renumber it under
+    /// an id that still *resolves*, only to the wrong row. Naming the digest lets the
+    /// server refuse that by name instead of answering it; naming none resolves as it
+    /// always did, which is the only honest answer when there is nothing to check
+    /// against.
+    ///
     /// # Errors
     ///
     /// [`ClientError::Server`] if the server declines — an id naming a predicate it does
-    /// not have, or a virtual one — or [`ClientError::Protocol`] if what comes back is
-    /// not an answer to this question.
+    /// not have, a virtual one whose listing has moved since `digest` was minted, or a
+    /// virtual one asked about with no digest reachable at all — or
+    /// [`ClientError::Protocol`] if what comes back is not an answer to this question.
     pub fn fetch(
         &mut self,
         schema: &Schema,
         ids: &[FactId],
+        digest: Option<u64>,
     ) -> Result<Vec<fjord_wire::protocol::Found>, ClientError> {
         // No round trip for nothing: a row with no references at all is the common case
         // in a query somebody narrowed by hand, and it should cost what it did before
@@ -650,7 +663,7 @@ impl Connection {
         }
 
         let stream = self.claim_stream();
-        self.send(kinds::FETCH, stream, &protocol::encode_fetch(ids))?;
+        self.send(kinds::FETCH, stream, &protocol::encode_fetch(ids, digest))?;
 
         let answer = self.recv_stream_frame(stream);
         if answer.is_ok() {
@@ -744,6 +757,16 @@ impl Connection {
         // separate call so a caller that only pulls rows still ends up holding it.
         if kind == kinds::PROFILE {
             rows.set_profile(protocol::decode_profile(&payload)?);
+            return self.next_row(rows);
+        }
+
+        // Sent once, right after the row description — unlike `PROFILE` and
+        // `RESUME`, before the first row rather than after the last, since a row can
+        // carry a virtual id from the first one. Handled the same way regardless:
+        // transparently, so a caller that only pulls rows never sees the frame.
+        if kind == kinds::LISTING_DIGEST {
+            let (predicate, digest) = protocol::decode_listing_digest(&payload)?;
+            rows.set_listing_digest(predicate, digest)?;
             return self.next_row(rows);
         }
 
@@ -845,6 +868,10 @@ impl Connection {
                 FrameKind::DATA_ROW => rows.skip(),
                 _ if kind == kinds::PROFILE => {
                     rows.set_profile(protocol::decode_profile(&payload)?);
+                }
+                _ if kind == kinds::LISTING_DIGEST => {
+                    let (predicate, digest) = protocol::decode_listing_digest(&payload)?;
+                    rows.set_listing_digest(predicate, digest)?;
                 }
                 _ if kind == kinds::RESUME => rows.set_resume(payload),
                 _ if kind == kinds::COMPLETE => {

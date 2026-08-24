@@ -93,6 +93,11 @@ pub enum FjordError {
     #[error("resume cursor was read against a different world")]
     CursorWorld,
 
+    /// The world-stamp tag or payload in an untrusted cursor is not one this layout
+    /// defines.
+    #[error("resume cursor carries an invalid world stamp")]
+    CursorWorldEncoding,
+
     /// A plan stepping *into* a key field that is not a record. The field's own
     /// marker says what it is, so this is a plan disagreeing with the schema the
     /// row was written under — reported rather than read as bytes that happen to

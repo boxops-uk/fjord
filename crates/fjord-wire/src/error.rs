@@ -114,4 +114,13 @@ pub enum WireError {
         declared: u64,
         max: u64,
     },
+
+    /// A presence flag that is neither 0 nor 1 — a [`FETCH`](crate::protocol::kinds::FETCH)
+    /// request's optional listing digest, malformed before its own varint is even read.
+    #[error("bad presence flag {0} in a fetch request's listing digest")]
+    BadDigestFlag(u8),
+
+    /// A listing-digest frame whose predicate does not fit the schema's physical id.
+    #[error("listing digest names predicate id {0}, which does not fit in 32 bits")]
+    BadListingPredicate(u64),
 }

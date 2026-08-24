@@ -13,7 +13,7 @@
 //! costs the server a suspended query loop and a bytes-only cursor — never a snapshot
 //! ([I8](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i8)).
 
-use fjord_schema::schema::{LocalInterner, PredicateTy, Schema};
+use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema};
 use fjord_wire::{Desc, QueryProfile, StreamId, WireValue, value::decode_value};
 
 use crate::error::ClientError;
@@ -55,6 +55,13 @@ pub struct Rows {
     /// — which is how a caller knows it has seen everything without asking again to
     /// be told nothing.
     resume: Option<Vec<u8>>,
+    /// The digest of each listing this result's virtual ids were minted from, once the
+    /// server has said so.
+    ///
+    /// One entry for every non-empty virtual predicate this query read. Each arrives
+    /// before the first row, since every chunk of one query shares the listing that
+    /// made it.
+    listing_digests: Vec<(PredicateId, u64)>,
 }
 
 impl Rows {
@@ -73,6 +80,7 @@ impl Rows {
             state: State::Streaming,
             profile: None,
             resume: None,
+            listing_digests: Vec::new(),
         }
     }
 
@@ -108,6 +116,36 @@ impl Rows {
 
     pub(crate) fn set_profile(&mut self, profile: QueryProfile) {
         self.profile = Some(profile);
+    }
+
+    /// The predicate-scoped digests to carry back on a fetch of this result's ids — see
+    /// [`Connection::fetch`](crate::Connection::fetch).
+    ///
+    /// Empty for a query that reads no non-empty virtual predicate, and until the
+    /// frames immediately following its row description have been consumed.
+    #[must_use]
+    pub fn listing_digests(&self) -> &[(PredicateId, u64)] {
+        &self.listing_digests
+    }
+
+    pub(crate) fn set_listing_digest(
+        &mut self,
+        predicate: PredicateId,
+        digest: u64,
+    ) -> Result<(), ClientError> {
+        if self
+            .listing_digests
+            .iter()
+            .any(|(known, _)| *known == predicate)
+        {
+            return Err(ClientError::Protocol(format!(
+                "stream {} carries two listing digests for predicate {}",
+                self.stream.0, predicate.0
+            )));
+        }
+
+        self.listing_digests.push((predicate, digest));
+        Ok(())
     }
 
     /// The shape every row has: the query's **head** type, named.

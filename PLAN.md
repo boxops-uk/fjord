@@ -2077,18 +2077,21 @@ an injected deployment ceiling of three, proving both server charge sites and th
 count path. The terminal-stream guards prove release rather than assuming it by checking that later
 work on the same connection **reuses** the errored stream's id; the stream-zero guards prove the
 opposite boundary by forcing concurrent work onto another id. The world stamp's base half is done,
-below; its listing half and the fetch digest are still open.
+below, and the virtual fetch digest is done, after it; only the world stamp's **listing** half — the
+`query_page` case item 13 also names — is still open.
 
 **The plain cursor's base identity — done, second of the three, and the world stamp's `base` half
-in full.** `Cursor` gains an opaque `world: Box<[u8]>` — bytes the database-owning layer computes
-and the engine only compares, never interprets, which is what "opaque to the engine" in item 13
+in full.** `Cursor` gains an explicit `WorldStamp::{Unstamped, Stamped}` — the stamped payload is
+opaque bytes the database-owning layer computes and the engine only compares, never interprets,
+which is what "opaque to the engine" in item 13
 above meant literally: `fjord_store_fjall::world::BaseIdentity` is the typed value, `to_bytes`
 its wire form, and neither name reaches `fjord-engine`. `Executor::build_cursor` and
 `Executor::resume` both gained a `world` parameter (a builder, `with_world_stamp`, for the former,
 since a fresh run has nothing to validate against); `resume` checks it third, after the version and
 the plan fingerprint and before the empty-cursor shortcut, for the reason the plan fingerprint's own
-check already gives — restarting is still an answer to whichever world asked. `CURSOR_VERSION` moved
-1 → 2.
+check already gives — restarting is still an answer to whichever world asked. The explicit
+`Unstamped` tag is distinct from `Stamped([])`, so omitting both ends is a choice in the call rather
+than an empty default indistinguishable from a correctly supplied stamp. `CURSOR_VERSION` is 3.
 
 Two `BaseIdentity` cases, matching the two-vs-three-field split item 13 settled on:
 **`Complete { fingerprint }`** is the content fingerprint `finish` already computed, read off
@@ -2104,14 +2107,59 @@ reopen is a new incarnation, so every cursor from a previous one is refused, ful
 plain clean reopen (`store::reopening_mints_a_new_incarnation`), not a simulated crash, because the
 guarantee does not depend on anything having been lost.
 
-**What is not yet built:** the `listing: Option<ListingDigest>` half item 13 also names. `Cursor`
-carries one opaque `world` field today, not the `{ base, listing }` pair — a plain query against a
-Complete or Writable database has no need of it, and building it now would be encoding a digest this
-movement's own item 12 has not designed yet. When item 12 lands, `BaseIdentity`'s encoding (or a
-wrapper around it) gains the listing digest; `CURSOR_VERSION` moves again, and every guard below
-keeps passing unchanged, since none of them reads a virtual predicate. **Whichever way it goes, the
-encoding owes a length prefix at that moment**: `Writable`'s instance id is variable-length and
-last, which is unambiguous only while nothing follows it — see item 13.
+**The virtual fetch digest — done, third of the three, and [the fetch round
+trip](#the-fetch-round-trip) in full.** No cursor is involved in a `FETCH`, so this is not the world
+stamp: every catalogue table now carries its own `digest: u64` — an FNV-1a hash over its predicate
+id and every row's length-prefixed encoded key, in the key order the catalogue already sorts to,
+computed once at `materialise` — and `kinds::LISTING_DIGEST` (`l`) is a new frame the server sends
+once per non-empty virtual predicate, right after `ROW_DESCRIPTION` and before the first row, exactly
+when the prepared plan reads a virtual
+predicate. `FETCH`'s payload gains a leading presence byte and an optional digest ahead of the ids it
+already carried (`protocol::encode_fetch`/`decode_fetch`, both now `(ids, Option<u64>)`), and the
+server's `fetch` handler refuses the whole request with a new `ServerError::StaleListing`
+(`ErrorCode::Refused`) when a supplied digest disagrees with the listing it just materialised —
+checked before a single id is resolved, never answered partway. The digest frame names its predicate,
+so a query reading both virtual tables and a fetch reading one compares like with like; protocol
+version 3 marks both that frame and the changed `FETCH` payload. `Rows` carries the digests transparently
+(`set_listing_digest`, consumed in `next_row` and `cancel` exactly as `PROFILE` and `RESUME` are, just
+earlier); `Connection::fetch` takes the one predicate's optional digest, while
+`Expander::expand`/`prefetch` select it from `Rows::listing_digests()` for each predicate-grouped batch.
+**One correction the client side
+needed and the design note above did not anticipate:** `Expander`'s existing `unexpandable` cache
+treats every `ClientError::Server` from a fetch as a permanent, predicate-level refusal — right for "no
+such predicate", wrong for "the listing moved", which is a fact about one request and would otherwise
+silently disable expansion of a virtual predicate for the rest of the session the first time a listing
+changed. `ErrorCode::Refused` is unreachable from `fetch` any other way today, so `prefetch` now
+propagates that code as a hard `Err` instead of caching it.
+
+Guarded server-level, over a real socket, mutating the catalogue **between a query's row and the
+first fetch of it** with an expander that has cached nothing —
+`commands::query::surface::a_catalogue_change_between_a_query_and_its_first_fetch_is_refused`
+(`crates/fjord-cli/src/commands/query.rs`) — with
+`a_reference_into_a_virtual_predicate_expands` (unchanged, same file) standing as the positive
+control a too-broad refusal would otherwise still pass, and the session shown still answering an
+ordinary catalogue query afterwards. `fjord-server::catalogue` adds the digest's own properties —
+two materialisations of the same listing agree, a changed listing or a changed interning counter
+moves it, two listings of equal length but different content do not collide, and one table's digest
+is independent of its siblings — while the client/server guards add a query reading both virtual
+predicates and cancellation before the first virtual row. `fjord-wire::protocol` proves the frame,
+its predicate id and the presence byte: digest zero round-trips as a real answer rather than as an
+absence, and a flag byte that is neither 0 nor 1 is refused by name.
+
+**The cursor's listing half — done, and it needed no `{ base, listing }` pair.** `query_page`'s
+`with_listing_digest` (`fjord-server::session`) appends `fjord.db.List`'s digest to the same opaque
+bytes the base identity already occupies, gated on `reads_listing` rather than on `catalogue.is_some()`
+— a query reading only `fjord.db.Interning` still builds a `Catalogue`, from a placeholder empty
+listing whose digest is a constant, and folding that in would make such a query look resumable
+against a value that can never disagree. `Cursor` still carries one typed
+`WorldStamp::{Unstamped, Stamped}` field, not a second one: a moved listing disagrees through the
+same `FjordError::CursorWorld` check the base identity already uses, so no cursor field, no new
+error variant, and every guard proving the base half keeps passing unchanged. `run_chunk` and
+`count_chunk` both build the composite before the executor sees it, so the row path and the count
+path resume under the same rule. `fjord.db.Interning` itself has no stable value to digest — the
+write path's counters move on every write, not only when a listing changes — so a `QUERY_PAGE`
+resuming a query that reads it is refused by name instead, as `ServerError::VolatileResume`, rather
+than validated against a stamp that would always disagree.
 
 Proved server-level, over a real socket and a real `FjallDb`, because a generated `(plan, store)`
 pair in the engine's own battery holds one store for the whole property and cannot express a store
@@ -2200,9 +2248,13 @@ dominant failure mode is a large, mostly-correct diff whose wrong tenth is expen
 this is the movement where that costs most, because every later movement is built on it. The split
 is along proof lines, and each part is green before the next starts:
 
-- **0a — the three live defects.** The plain cursor's world stamp, the virtual fetch digest and the
-  terminal-`ERROR` client contract, with the server-level I4 arms that prove them, and
-  non-regression everywhere else. In flight; the terminal-`ERROR` half is done.
+- **0a — the three live defects. Done.** The plain cursor's world stamp, the virtual fetch digest
+  and the terminal-`ERROR` client contract, with the server-level I4 arms that prove them, and
+  non-regression everywhere else. The world stamp's listing half folds `fjord.db.List`'s digest
+  into the same opaque bytes the base identity already occupies rather than adding a cursor field —
+  the composite refuses through the executor's existing `CursorWorld` check, unchanged —
+  and `fjord.db.Interning`, which has no stable value to digest, is refused by name on a resume
+  that crosses requests instead.
 - **0b — item 15's name tier.** `PredicateTy<N>`, the nested local-name and cross-tier collision
   properties, and the full non-regression set. It touches the most files and proves the narrowest
   thing, which is exactly why it travels alone.

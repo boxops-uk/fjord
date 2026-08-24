@@ -189,6 +189,14 @@ fn start() -> Serving {
 }
 
 fn start_with_examined_ceiling(examined_ceiling: Option<u64>) -> Serving {
+    start_configured(examined_ceiling, "")
+}
+
+fn start_with_catalogue() -> Serving {
+    start_configured(None, fjord_server::catalogue::SOURCE)
+}
+
+fn start_configured(examined_ceiling: Option<u64>, virtual_source: &str) -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("fjord.sock");
 
@@ -196,7 +204,8 @@ fn start_with_examined_ceiling(examined_ceiling: Option<u64>) -> Serving {
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog.create("code", &schema).expect("a database");
 
-    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
+    let (registry, _listing) =
+        Registry::open(catalog, Schemas::new(virtual_source)).expect("a registry");
     let registry = Arc::new(registry);
     let mut listener = Listener::bind(&socket).expect("a socket");
     if let Some(ceiling) = examined_ceiling {
@@ -442,7 +451,7 @@ fn a_reference_expands_into_the_fact_it_names() {
 
     let mut expander = Expander::new(Arc::clone(&schema));
     let expanded = expander
-        .expand(&mut connection, &unexpanded[0], FULL_DEPTH)
+        .expand(&mut connection, &unexpanded[0], FULL_DEPTH, &[])
         .expect("the ids resolve");
 
     // doc → declaration → file, and the file's key is the path the producer nested.
@@ -472,18 +481,18 @@ fn a_reference_expands_into_the_fact_it_names() {
     // declaration in the *same* file, so it costs one read rather than two — and
     // re-expanding the first costs none at all.
     expander
-        .expand(&mut connection, &unexpanded[1], FULL_DEPTH)
+        .expand(&mut connection, &unexpanded[1], FULL_DEPTH, &[])
         .expect("the ids resolve");
     assert_eq!(expander.fetched(), 3, "the file was already known");
 
     expander
-        .expand(&mut connection, &unexpanded[0], FULL_DEPTH)
+        .expand(&mut connection, &unexpanded[0], FULL_DEPTH, &[])
         .expect("the ids resolve");
     assert_eq!(expander.fetched(), 3, "nothing was read twice");
 
     // Depth is hops: one reaches the declaration and leaves its file an id.
     let shallow = expander
-        .expand(&mut connection, &unexpanded[0], 1)
+        .expand(&mut connection, &unexpanded[0], 1, &[])
         .expect("the ids resolve");
     let WireValue::Record(shallow_decl) = &nested(field(&shallow, 0)).key else {
         panic!("a declaration's key is a record");
@@ -515,7 +524,7 @@ fn an_id_that_names_nothing_is_answered_and_one_that_cannot_exist_is_refused() {
     let absent = FactId::new(FILE, 9_999).expect("a well-formed id");
     assert_eq!(
         connection
-            .fetch(&schema, &[absent])
+            .fetch(&schema, &[absent], None)
             .expect("it is answered"),
         vec![Found::Missing],
         "a well-formed id for a fact nobody wrote"
@@ -523,7 +532,7 @@ fn an_id_that_names_nothing_is_answered_and_one_that_cannot_exist_is_refused() {
 
     let nowhere = FactId::new(PredicateId(99), 1).expect("a well-formed id");
     let refused = connection
-        .fetch(&schema, &[nowhere])
+        .fetch(&schema, &[nowhere], None)
         .expect_err("no such predicate");
     assert!(
         matches!(refused, ClientError::Server { .. }),
@@ -554,7 +563,7 @@ fn a_refusal_that_is_not_about_the_frame_is_not_reported_as_an_old_server() {
 
     let id = FactId::new(FILE, 1).expect("a well-formed id");
     let refused = control
-        .fetch(&schema, &[id])
+        .fetch(&schema, &[id], None)
         .expect_err("a control session names no database");
 
     assert!(
@@ -701,6 +710,31 @@ fn a_cancel_ends_one_result_and_leaves_the_connection_working() {
     // Cancelling a finished result is a no-op rather than a second cancel on a stream
     // the server has already closed.
     assert_eq!(connection.cancel(&mut rows).expect("a no-op"), sent);
+}
+
+/// A virtual query announces its listing immediately after the row description.
+/// Cancelling before the first row must consume that transparent frame just as
+/// ordinary row pulling does, rather than mistake it for the query's answer.
+#[test]
+fn cancelling_a_virtual_query_before_its_first_row_consumes_the_listing_digest() {
+    let serving = start_with_catalogue();
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens");
+
+    let sent = connection.cancel(&mut rows).expect("it cancels");
+    assert!(
+        sent <= 1,
+        "the one-row listing sent at most its row: {sent}"
+    );
+    assert!(rows.finished());
+
+    let mut again = connection
+        .query("F where src.File F")
+        .expect("the connection still works");
+    assert!(connection.drain(&mut again).expect("it answers").is_empty());
 }
 
 /// A query that does not compile fails its **stream**, carrying the compiler's own
@@ -1309,6 +1343,184 @@ fn paging_a_writable_database_with_no_intervening_write_still_works() {
     assert_eq!(&all[..10], &[first, second].concat()[..]);
 }
 
+/// **A database created between two pages of `fjord.db.List` renumbers the listing
+/// under a cursor that is a *position* in it — item 12's defect, closed the same way
+/// item 13 closes the base-database one above.** `fjord.db.List`'s rows are a view
+/// materialised per request, not a keyspace: `query_page` re-prepares on every call,
+/// so a `create` between two calls changes what the listing *is* while the cursor
+/// still names the same plan and the same (Writable, in this test unwritten-to) base.
+/// Nothing but the listing's own digest, folded into the world stamp beside the base
+/// identity, can catch that — which is exactly what this proves happens.
+#[test]
+fn a_database_created_between_two_pages_of_a_listing_is_refused() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+
+    // Two databases already, so a page of one leaves a second row for the resumed
+    // page to find — otherwise the first page would already exhaust the listing and
+    // there would be nothing left to disagree about.
+    control
+        .create("second", &source)
+        .expect("a second database");
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, None)
+        .expect("the first page");
+    let first = connection.drain(&mut rows).expect("the page");
+    assert_eq!(first.len(), 1);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    control.create("third", &source).expect("a third database");
+
+    // `query_page` itself only sends the request and reads the row description and
+    // the listing digest — both sent before the resumed chunk ever runs — so, exactly
+    // as the Writable-write case above, the refusal surfaces on the read that follows
+    // rather than here.
+    let mut second_page = connection
+        .query_page("X where X = fjord.db.List _", 1, Some(&token))
+        .expect("the row description arrives before the resumed chunk runs");
+    let refused = connection.drain(&mut second_page);
+    assert!(
+        refused.is_err(),
+        "a database created between two pages of a listing was answered rather than \
+         refused: {:?}",
+        refused.map(|rows| rows.len())
+    );
+
+    // The refusal ended the stream, not the connection: a fresh, unpaged query still
+    // works and sees all three databases.
+    let mut whole = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 3);
+}
+
+/// The other direction of the case above: a `rm` between two pages moves the listing
+/// exactly as a `create` does, and must be caught the same way.
+#[test]
+fn a_database_removed_between_two_pages_of_a_listing_is_refused() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+
+    control
+        .create("second", &source)
+        .expect("a second database");
+    control.create("third", &source).expect("a third database");
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, None)
+        .expect("the first page");
+    let first = connection.drain(&mut rows).expect("the page");
+    assert_eq!(first.len(), 1);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    remove_when_released(&mut control, "third");
+
+    let mut second_page = connection
+        .query_page("X where X = fjord.db.List _", 1, Some(&token))
+        .expect("the row description arrives before the resumed chunk runs");
+    let refused = connection.drain(&mut second_page);
+    assert!(
+        refused.is_err(),
+        "a database removed between two pages of a listing was answered rather than \
+         refused: {:?}",
+        refused.map(|rows| rows.len())
+    );
+
+    let mut whole = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 2);
+}
+
+/// **The negative control for the pair above**: paging a listing with no intervening
+/// `create` or `rm` behaves exactly as it always has. Without this, a bug that made
+/// the listing's digest refuse *every* resume over a virtual predicate — not only one
+/// a mutation crossed — would still pass both tests above, since neither distinguishes
+/// "always refused" from "refused when it should be".
+#[test]
+fn paging_a_listing_with_no_intervening_change_still_works() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+
+    control
+        .create("second", &source)
+        .expect("a second database");
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, None)
+        .expect("the first page");
+    let first = connection.drain(&mut rows).expect("the page");
+    assert_eq!(first.len(), 1);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, Some(&token))
+        .expect("the second page, over an unchanged listing");
+    let second = connection.drain(&mut rows).expect("the page");
+    assert_eq!(second.len(), 1);
+
+    let mut whole = connection
+        .query("X where X = fjord.db.List _")
+        .expect("a query");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 2);
+}
+
+/// **`fjord.db.Interning` has no snapshot to number, so a resume that crosses
+/// requests is refused by name rather than validated against a digest that would
+/// always disagree.** The counters are read by taking every interning stripe's lock
+/// in turn — not a point-in-time capture even as it happens, and thrashing on every
+/// write — so unlike `fjord.db.List` there is no stable value a generation could
+/// name. This is not a race to provoke: the refusal fires on any attempt to resume
+/// such a query across two requests, whether or not the counters actually moved.
+#[test]
+fn resuming_a_query_over_the_interning_counters_is_refused_by_name() {
+    let serving = start_with_catalogue();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 1);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.Interning _", 1, None)
+        .expect("the first page");
+    let _ = connection.drain(&mut rows).expect("the page");
+    let token = rows
+        .resume_token()
+        .expect("a token, whether or not more rows remain")
+        .to_vec();
+
+    let refused = connection.query_page("X where X = fjord.db.Interning _", 1, Some(&token));
+    assert!(
+        refused.is_err(),
+        "a resume across requests over fjord.db.Interning was accepted: {:?}",
+        refused.map(|_| ())
+    );
+    let error = refused.expect_err("checked above");
+    assert_eq!(error.code(), Some(ErrorCode::Refused));
+    assert!(
+        error.to_string().contains("fjord.db.Interning"),
+        "the refusal names the predicate: {error}"
+    );
+
+    // The refusal ended the stream, not the connection.
+    let mut whole = connection
+        .query("F where src.File F")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("its rows").len(), 1);
+}
+
 /// Garbage is refused rather than half-read.
 #[test]
 fn a_malformed_resume_token_is_refused() {
@@ -1749,7 +1961,7 @@ fn a_server_that_predates_expansion_is_reported_as_unsupported() {
 
     let id = FactId::new(FILE, 1).expect("a well-formed id");
     let refused = connection
-        .fetch(&schema, &[id])
+        .fetch(&schema, &[id], None)
         .expect_err("the fake server refuses the frame kind");
 
     assert!(
@@ -2063,13 +2275,13 @@ fn a_session_error_does_not_recycle_a_fetch_stream_that_is_still_running() {
             .expect("the handshake completes");
 
     let error = connection
-        .fetch(&schema, &[first_id])
+        .fetch(&schema, &[first_id], None)
         .expect_err("the session error surfaces");
     assert_eq!(error.code(), Some(ErrorCode::Internal));
 
     assert_eq!(
         connection
-            .fetch(&schema, &[second_id])
+            .fetch(&schema, &[second_id], None)
             .expect("the second fetch"),
         vec![Found::Key(WireValue::Str("second.py".to_owned()))]
     );

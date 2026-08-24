@@ -54,7 +54,7 @@ use tokio::{
 use fjord_encoding::tuple::Value;
 use fjord_engine::{
     compile::Compilation,
-    iter::{Cursor, Executor, Iteratee, Profile, Stream},
+    iter::{Cursor, Executor, Iteratee, Profile, Stream, WorldStamp},
     plan::{Plan, SeekKey, Source, Step, Test},
 };
 use fjord_ingest::{Ingested, intern_block};
@@ -736,7 +736,7 @@ impl StreamTask {
     /// every session may do, and it names no database of its own — the session's is the
     /// one it reads.
     async fn fetch(&mut self, payload: &[u8]) -> Result<(), ServerError> {
-        let ids = protocol::decode_fetch(payload)?;
+        let (ids, client_digest) = protocol::decode_fetch(payload)?;
 
         let database = Arc::clone(self.database()?);
         let working = Arc::clone(&database);
@@ -778,6 +778,40 @@ impl StreamTask {
             } else {
                 None
             };
+
+            // **Refused before a single id is resolved, never answered partway.** A
+            // digest naming a listing this fetch did not read means at least one
+            // virtual id in the batch was minted from a listing that has since moved —
+            // `Found::Unstored` cannot say so, because the id may resolve to a
+            // *different* row rather than to none, which looks exactly like success.
+            // No digest at all — an id typed by hand, or one read before this existed
+            // — is resolved as it always was.
+            if let Some(client_digest) = client_digest {
+                let requested: Vec<PredicateId> = [
+                    wants_listing.then(|| schema.find_position(catalogue::PREDICATE).map(|x| x.0)),
+                    wants_interning
+                        .then(|| schema.find_position(catalogue::INTERNING).map(|x| x.0)),
+                ]
+                .into_iter()
+                .flatten()
+                .flatten()
+                .collect();
+
+                let agrees = match requested.as_slice() {
+                    [] => true,
+                    [predicate] => {
+                        listing
+                            .as_ref()
+                            .and_then(|listing| listing.digest_for(*predicate))
+                            == Some(client_digest)
+                    }
+                    _ => false,
+                };
+
+                if !agrees {
+                    return Err(ServerError::StaleListing);
+                }
+            }
 
             // Two calls rather than one boxed store, for the reason `run_chunk` gives: a
             // `dyn FactStore` would have to erase the scan too.
@@ -984,6 +1018,7 @@ impl StreamTask {
             let token = self.cancel.clone();
             let resume = cursor.take();
             let listing = prepared.catalogue.clone();
+            let reads_listing = prepared.reads_listing;
             let examined_ceiling = self.session.examined_ceiling;
 
             let counting = {
@@ -994,6 +1029,7 @@ impl StreamTask {
                     count_chunk(
                         &database,
                         listing.as_ref(),
+                        reads_listing,
                         &plan,
                         resume,
                         &token,
@@ -1090,6 +1126,20 @@ impl StreamTask {
             _ => None,
         };
 
+        // **`fjord.db.Interning` has no snapshot across two requests to name — item
+        // 12's other half.** Within one request the counters are fixed (`prepare`
+        // materialises them once, and every chunk shares the same `Arc`), so a plain
+        // query or an unpaged `count` never sees them move. A resumed `QUERY_PAGE`
+        // is a fresh request, though, and a fresh `registry.interning()` thrashes on
+        // every write in between — there is no stable value a generation could name,
+        // unlike the listing, so this is refused by name rather than validated
+        // against a digest that would always disagree.
+        if cursor.is_some() && prepared.reads_interning {
+            return Err(ServerError::VolatileResume {
+                predicate: catalogue::INTERNING.to_owned(),
+            });
+        }
+
         self.outbound
             .send(
                 FrameKind::ROW_DESCRIPTION,
@@ -1097,6 +1147,26 @@ impl StreamTask {
                 &prepared.descriptor,
             )
             .await?;
+
+        // **Only when this query actually reads a virtual predicate.** A row it
+        // yields may then carry a `FactId` that is a position in a listing rather
+        // than a stored identity, and a database created or removed before a later
+        // `FETCH` of one can renumber it — this is what lets the client carry the
+        // digest back and the server refuse the fetch by name instead of silently
+        // answering for the wrong row. Sent once, before the first row, since every
+        // chunk of this query shares the same materialised `Arc` and therefore the
+        // same digest.
+        if let Some(catalogue) = &prepared.catalogue {
+            for (predicate, digest) in catalogue.digests() {
+                self.outbound
+                    .send(
+                        kinds::LISTING_DIGEST,
+                        self.stream,
+                        &protocol::encode_listing_digest(predicate, digest),
+                    )
+                    .await?;
+            }
+        }
 
         let limit = page.map_or(0, |page| page.limit);
         let mut sent: u64 = 0;
@@ -1128,6 +1198,7 @@ impl StreamTask {
             // re-reading the store root, so a database created between two pages is
             // invisible to the result in flight.
             let listing = prepared.catalogue.clone();
+            let reads_listing = prepared.reads_listing;
 
             let chunk = {
                 // Timed from *here* rather than inside: what this measures is how long
@@ -1146,6 +1217,7 @@ impl StreamTask {
                             budget,
                             cancel: &token,
                             examined_ceiling,
+                            reads_listing,
                         },
                         resume,
                         &mut counted,
@@ -1373,6 +1445,15 @@ struct Prepared {
     /// keyspace is. `None` for every query that does not name it, which is nearly all
     /// of them, because building it walks the store root.
     catalogue: Option<Arc<Catalogue>>,
+    /// Whether this plan reads `fjord.db.List` — the half of the catalogue with a
+    /// stable snapshot a generation can number. See
+    /// [`with_listing_digest`](with_listing_digest).
+    reads_listing: bool,
+    /// Whether this plan reads `fjord.db.Interning` — the half with no stable
+    /// snapshot to number, since the counters are read by locking every interning
+    /// stripe in turn. A resume that crosses requests is refused by name instead
+    /// (item 12 — see [`ServerError::VolatileResume`]).
+    reads_interning: bool,
 }
 
 /// The type rows are encoded against, and the interner that resolves its names.
@@ -1436,33 +1517,31 @@ fn prepare(
     // too much to do on every query about `src.File`; the counters take every interning
     // stripe's lock in turn, which is a report standing briefly in front of the write
     // path it reports on. Neither is paid for by a query that did not name it.
-    let catalogue = {
-        let reads = |name: &str| {
-            database
-                .schema
-                .find_position(name)
-                .is_some_and(|(id, _)| catalogue::reads(&plan, id))
+    let reads = |name: &str| {
+        database
+            .schema
+            .find_position(name)
+            .is_some_and(|(id, _)| catalogue::reads(&plan, id))
+    };
+    let (reads_listing, reads_interning) =
+        (reads(catalogue::PREDICATE), reads(catalogue::INTERNING));
+
+    let catalogue = if reads_listing || reads_interning {
+        let listing = if reads_listing {
+            registry.catalog().list()?
+        } else {
+            Listing::default()
         };
 
-        let (listing, interning) = (reads(catalogue::PREDICATE), reads(catalogue::INTERNING));
-
-        if listing || interning {
-            let listing = if listing {
-                registry.catalog().list()?
-            } else {
-                Listing::default()
-            };
-
-            let interning = if interning {
-                registry.interning()
-            } else {
-                Vec::new()
-            };
-
-            Catalogue::materialise(&database.schema, &listing, &interning)?.map(Arc::new)
+        let interning = if reads_interning {
+            registry.interning()
         } else {
-            None
-        }
+            Vec::new()
+        };
+
+        Catalogue::materialise(&database.schema, &listing, &interning)?.map(Arc::new)
+    } else {
+        None
     };
 
     Ok(Prepared {
@@ -1473,6 +1552,8 @@ fn prepare(
             interner: Arc::new(interner),
         },
         catalogue,
+        reads_listing,
+        reads_interning,
     })
 }
 
@@ -1517,6 +1598,51 @@ fn stamped_reader(database: &Database) -> (FjallStore, Box<[u8]>) {
     }
 }
 
+/// Extend a base world stamp with `fjord.db.List`'s digest, for a query that reads it.
+///
+/// **Item 12's fix, and it needs no new cursor field.** `WorldStamp` is opaque bytes
+/// the engine only compares, so a query whose plan reads the listing gets a world
+/// stamp that names it: a `create`, `rm` or `finish` between two `query_page` calls
+/// moves the digest, the composite stops matching the one the resumed cursor carries,
+/// and `Executor::resume` refuses it exactly as it already refuses a base that moved —
+/// [`FjordError::CursorWorld`](fjord_engine::error::FjordError::CursorWorld), no new
+/// variant, no new check.
+///
+/// `reads_listing` gates this rather than `catalogue.is_some()`: a query reading only
+/// `fjord.db.Interning` still has a `Catalogue` (see `prepare`), built from a
+/// *placeholder* empty listing — its digest is a constant, not a signal that the real
+/// listing moved, and folding it in would silently make every such query "resumable"
+/// against a value that never disagrees.
+///
+/// The base half is already length-prefixed
+/// ([`BaseIdentity::to_bytes`]) precisely so this concatenation cannot let two
+/// different worlds encode identically by moving a byte across the boundary between
+/// them.
+fn with_listing_digest(
+    world: Box<[u8]>,
+    catalogue: Option<&Catalogue>,
+    reads_listing: bool,
+    schema: &Schema,
+) -> Box<[u8]> {
+    let digest = reads_listing
+        .then(|| {
+            let (predicate, _) = schema.find_position(catalogue::PREDICATE)?;
+            catalogue?.digest_for(predicate)
+        })
+        .flatten();
+
+    let mut out = Vec::with_capacity(world.len() + 9);
+    out.extend_from_slice(&world);
+    match digest {
+        Some(digest) => {
+            out.push(1);
+            out.extend_from_slice(&digest.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+    out.into_boxed_slice()
+}
+
 /// One chunk of a **count**: how many rows, and where to carry on.
 ///
 /// A sibling of [`run_chunk`] rather than a mode of it, and deliberately: the row
@@ -1526,12 +1652,19 @@ fn stamped_reader(database: &Database) -> (FjallStore, Box<[u8]>) {
 fn count_chunk(
     database: &Database,
     catalogue: Option<&Arc<Catalogue>>,
+    reads_listing: bool,
     plan: &Plan,
     resume: Option<Cursor>,
     cancel: &CancellationToken,
     examined_ceiling: u64,
 ) -> Result<(u64, Option<Cursor>), ServerError> {
     let (store, world) = stamped_reader(database);
+    let world = with_listing_digest(
+        world,
+        catalogue.map(Arc::as_ref),
+        reads_listing,
+        &database.schema,
+    );
 
     match catalogue {
         Some(catalogue) => counting(
@@ -1555,6 +1688,7 @@ fn counting<S: fjord_store::fact_store::FactStore>(
     examined_ceiling: u64,
     world: Box<[u8]>,
 ) -> Result<(u64, Option<Cursor>), ServerError> {
+    let world = WorldStamp::stamped(world);
     let executor = match resume {
         Some(cursor) => Executor::resume(store, plan.clone(), cursor, world),
         None => Ok(Executor::new(store, plan.clone()).with_world_stamp(world)),
@@ -1599,6 +1733,8 @@ struct Chunking<'a> {
     budget: usize,
     cancel: &'a CancellationToken,
     examined_ceiling: u64,
+    /// Whether this query reads `fjord.db.List` — see [`with_listing_digest`].
+    reads_listing: bool,
 }
 
 /// The facts a batch of ids names, once the store to read them from is known.
@@ -1641,6 +1777,12 @@ fn run_chunk(
     // type: a `dyn FactStore` would have to erase the scan too, which costs an
     // allocation and a virtual call **per row** on the hot path, to save one line here.
     let (store, world) = stamped_reader(database);
+    let world = with_listing_digest(
+        world,
+        catalogue.map(Arc::as_ref),
+        work.reads_listing,
+        &database.schema,
+    );
 
     match catalogue {
         Some(catalogue) => over(
@@ -1670,8 +1812,10 @@ fn over<S: fjord_store::fact_store::FactStore>(
         budget,
         cancel,
         examined_ceiling,
+        reads_listing: _,
     } = work;
     let budget = *budget;
+    let world = WorldStamp::stamped(world);
     let executor = match resume {
         Some(cursor) => Executor::resume(store, (*plan).clone(), cursor, world),
         None => Ok(Executor::new(store, (*plan).clone()).with_world_stamp(world)),

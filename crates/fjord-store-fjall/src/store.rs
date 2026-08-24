@@ -499,6 +499,11 @@ impl FjallDb {
             predicates.insert(id, Arc::new(Self::open_predicate(&db, &meta, predicate)?));
         }
 
+        let mut incarnation = [0u8; 8];
+        getrandom::fill(&mut incarnation)
+            .map_err(|error| StoreError::backend(std::io::Error::other(error.to_string())))?;
+        let incarnation = u64::from_le_bytes(incarnation);
+
         Ok(Self {
             db,
             meta,
@@ -508,11 +513,7 @@ impl FjallDb {
                 .collect(),
             intern_reads: InternReads::default(),
             in_flight: InFlight::default(),
-            incarnation: {
-                let mut bytes = [0u8; 8];
-                getrandom::fill(&mut bytes).expect("the system entropy source");
-                u64::from_le_bytes(bytes)
-            },
+            incarnation,
         })
     }
 

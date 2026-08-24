@@ -1143,10 +1143,10 @@ pub struct Executor<S: FactStore> {
     /// this itself; it can only carry it and compare it
     /// ([I4](../../../website/content/invariants.md#i4)).
     ///
-    /// Empty by default — "no world stamp was supplied" — which compares equal to
-    /// itself and so never refuses a resume on its own; a caller that cares sets one
-    /// with [`with_world_stamp`](Self::with_world_stamp).
-    world: Box<[u8]>,
+    /// Explicitly [`WorldStamp::Unstamped`] by default. A resume must name that case
+    /// again or supply a stamped value; it cannot accidentally use an empty byte string
+    /// for both meanings.
+    world: WorldStamp,
     /// One field-offset cache per register, for projection.
     ///
     /// Owned here rather than made per row: a fresh `Box<[_]>` for each row would
@@ -1182,11 +1182,40 @@ pub struct Entry {
 /// disk and this says what is in flight, they move for different reasons, and a
 /// cursor is checked against the build that reads it rather than against a database.
 ///
+/// **3**: an omitted world stamp became an explicit [`WorldStamp::Unstamped`] tag,
+/// distinct from a caller deliberately supplying an empty stamped value.
+///
 /// **2**: a cursor gained a [world stamp](Cursor::world) — bytes naming the base it
 /// was read against — closing the hole [I4](../../../website/content/invariants.md#i4)
 /// names: a cursor used to carry a plan, a layout version and a level count, and no
 /// part of the world it read.
-pub const CURSOR_VERSION: u16 = 2;
+pub const CURSOR_VERSION: u16 = 3;
+
+/// What the database-owning layer says about the world an executor reads.
+///
+/// `Unstamped` is deliberately a real variant rather than an empty byte string: an
+/// embedded caller may choose not to identify its store, but it must make that choice
+/// explicitly when it resumes. `Stamped` remains opaque to the engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorldStamp {
+    Unstamped,
+    Stamped(Box<[u8]>),
+}
+
+impl WorldStamp {
+    #[must_use]
+    pub fn stamped(bytes: impl Into<Box<[u8]>>) -> WorldStamp {
+        WorldStamp::Stamped(bytes.into())
+    }
+
+    #[must_use]
+    pub fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            WorldStamp::Unstamped => None,
+            WorldStamp::Stamped(bytes) => Some(bytes),
+        }
+    }
+}
 
 /// The resume token: **one detached row per open level**, and the fields that say
 /// which run — and which world — it belongs to.
@@ -1200,7 +1229,7 @@ pub struct Cursor {
     plan: PlanFingerprint,
     /// The base this cursor was read against, opaque to the engine — see
     /// [`Executor::world`](Executor::with_world_stamp).
-    world: Box<[u8]>,
+    world: WorldStamp,
     entries: Vec<Entry>,
 }
 
@@ -1230,8 +1259,17 @@ impl Cursor {
 
         out.extend_from_slice(&self.version.to_le_bytes());
         out.extend_from_slice(&self.plan.raw().to_le_bytes());
-        out.extend_from_slice(&(self.world.len() as u32).to_le_bytes());
-        out.extend_from_slice(&self.world);
+        match &self.world {
+            WorldStamp::Unstamped => {
+                out.push(0);
+                out.extend_from_slice(&0u32.to_le_bytes());
+            }
+            WorldStamp::Stamped(world) => {
+                out.push(1);
+                out.extend_from_slice(&(world.len() as u32).to_le_bytes());
+                out.extend_from_slice(world);
+            }
+        }
         out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
 
         for entry in &self.entries {
@@ -1269,9 +1307,15 @@ impl Cursor {
         let version = u16::from_le_bytes(take(&mut at, 2)?.try_into().map_err(|_| short())?);
         let plan = u64::from_le_bytes(take(&mut at, 8)?.try_into().map_err(|_| short())?);
 
+        let world_tag = take(&mut at, 1)?[0];
         let world_len =
             u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
-        let world = take(&mut at, world_len)?.to_vec().into_boxed_slice();
+        let world_bytes = take(&mut at, world_len)?.to_vec().into_boxed_slice();
+        let world = match (world_tag, world_len) {
+            (0, 0) => WorldStamp::Unstamped,
+            (1, _) => WorldStamp::Stamped(world_bytes),
+            _ => return Err(FjordError::CursorWorldEncoding),
+        };
 
         let count = u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
 
@@ -1320,10 +1364,9 @@ impl Cursor {
         self.version
     }
 
-    /// The base this cursor was read against, as the database-owning layer encoded
-    /// it — opaque to the engine, and empty for a cursor built with no stamp.
+    /// The base this cursor was read against, as the database-owning layer encoded it.
     #[must_use]
-    pub fn world(&self) -> &[u8] {
+    pub fn world(&self) -> &WorldStamp {
         &self.world
     }
 }
@@ -1446,19 +1489,19 @@ impl<S: FactStore> Executor<S> {
             stack,
             depth: 0,
             examined: Examined::default(),
-            world: Box::default(),
+            world: WorldStamp::Unstamped,
             projection_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
         }
     }
 
     /// **What world this run's cursor should claim to be a resume point of.**
     ///
-    /// Set by the database-owning layer, never computed here — see [`world`](Self::world).
-    /// A run built with no stamp writes an empty one, which is what an embedded
-    /// caller with no notion of "world" gets by default.
+    /// Set by the database-owning layer, never computed here. An embedded caller with
+    /// no notion of world keeps [`WorldStamp::Unstamped`]; one that has an identity
+    /// supplies [`WorldStamp::Stamped`].
     #[must_use]
-    pub fn with_world_stamp(mut self, world: impl Into<Box<[u8]>>) -> Self {
-        self.world = world.into();
+    pub fn with_world_stamp(mut self, world: WorldStamp) -> Self {
+        self.world = world;
         self
     }
 
@@ -1528,9 +1571,8 @@ impl<S: FactStore> Executor<S> {
         store: S,
         plan: Plan,
         cursor: Cursor,
-        world: impl Into<Box<[u8]>>,
+        world: WorldStamp,
     ) -> Result<Self, FjordError> {
-        let world = world.into();
         let mut ex = Executor::new(store, plan);
 
         // A `Cursor` is bytes-only and rebuilt from the wire, so it is untrusted.
@@ -2651,7 +2693,8 @@ mod tests {
         loop {
             let executor = match cursor.take() {
                 Some(cursor) => {
-                    Executor::resume(store(), plan.clone(), cursor, &[][..]).expect("it resumes")
+                    Executor::resume(store(), plan.clone(), cursor, WorldStamp::Unstamped)
+                        .expect("it resumes")
                 }
                 None => Executor::new(store(), plan.clone()),
             };
@@ -2870,7 +2913,7 @@ mod tests {
         let cursor = restamp(cursor, &one_level);
 
         assert!(matches!(
-            Executor::resume(seed(), one_level, cursor, &[][..]),
+            Executor::resume(seed(), one_level, cursor, WorldStamp::Unstamped),
             Err(FjordError::CursorPlanMismatch { cursor: 2, plan: 1 })
         ));
     }
@@ -2933,7 +2976,7 @@ mod tests {
 
         assert!(
             matches!(
-                Executor::resume(seed(), no_registers, cursor, &[][..]),
+                Executor::resume(seed(), no_registers, cursor, WorldStamp::Unstamped),
                 Err(FjordError::AddressOutOfBounds(address)) if address == Address::new(0)
             ),
             "a level binding outside the register file must report, not panic",
@@ -2957,7 +3000,7 @@ mod tests {
 
         assert!(
             matches!(
-                Executor::resume(seed(), short, cursor, &[][..]),
+                Executor::resume(seed(), short, cursor, WorldStamp::Unstamped),
                 Err(FjordError::AddressOutOfBounds(address)) if address == Address::new(1)
             ),
             "a derive binding outside the register file must report, not panic",
@@ -3189,6 +3232,39 @@ mod tests {
         ));
     }
 
+    /// The explicit world tag is untrusted cursor input: unknown tags and an
+    /// `Unstamped` tag carrying bytes are refused by name.
+    #[test]
+    fn a_malformed_world_stamp_is_refused() {
+        let p = PredicateId(0);
+        let plan = one_level(scan_all(p, 0).sources);
+        let out = Executor::new(three_int_facts(p), plan)
+            .with_world_stamp(WorldStamp::stamped(b"world".as_slice()))
+            .enumerate(
+                (),
+                |(), _row| Ok(Stream::Suspend(())),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+        let Iteratee::Suspended((), cursor) = out else {
+            panic!("the plan was supposed to suspend");
+        };
+
+        let mut unknown = cursor.to_bytes();
+        unknown[10] = 7;
+        assert!(matches!(
+            Cursor::from_bytes(&unknown),
+            Err(FjordError::CursorWorldEncoding)
+        ));
+
+        let mut unstamped_with_bytes = cursor.to_bytes();
+        unstamped_with_bytes[10] = 0;
+        assert!(matches!(
+            Cursor::from_bytes(&unstamped_with_bytes),
+            Err(FjordError::CursorWorldEncoding)
+        ));
+    }
+
     #[test]
     fn a_cursor_round_trips_through_bytes() {
         let p = PredicateId(0);
@@ -3210,7 +3286,7 @@ mod tests {
         const WORLD: &[u8] = b"round-trip-world";
 
         let out = Executor::new(store(), plan.clone())
-            .with_world_stamp(WORLD)
+            .with_world_stamp(WorldStamp::stamped(WORLD))
             .enumerate(
                 (),
                 |(), _row| Ok(Stream::Suspend(())),
@@ -3228,8 +3304,8 @@ mod tests {
         assert_eq!(back.plan(), cursor.plan(), "the plan fingerprint");
         assert_eq!(back.world(), cursor.world(), "the world stamp");
         assert_eq!(
-            back.world(),
-            WORLD,
+            back.world().bytes(),
+            Some(WORLD),
             "the world stamp round-trips its bytes exactly"
         );
         assert_eq!(
@@ -3240,7 +3316,7 @@ mod tests {
 
         let interner = interner_with(&[]);
 
-        let direct = Executor::resume(store(), plan.clone(), cursor, WORLD)
+        let direct = Executor::resume(store(), plan.clone(), cursor, WorldStamp::stamped(WORLD))
             .expect("resume")
             .enumerate(
                 Vec::new(),
@@ -3252,7 +3328,7 @@ mod tests {
             )
             .expect("run");
 
-        let through_bytes = Executor::resume(store(), plan, back, WORLD)
+        let through_bytes = Executor::resume(store(), plan, back, WorldStamp::stamped(WORLD))
             .expect("resume")
             .enumerate(
                 Vec::new(),
@@ -3269,6 +3345,30 @@ mod tests {
 
         assert_eq!(want, got, "resuming through bytes answers the same rows");
         assert!(!want.is_empty(), "the resume was not vacuous");
+    }
+
+    /// Omitting a world stamp is an explicit state, not an empty byte string that
+    /// happens to compare equal to a caller-supplied empty stamp. If these encode the
+    /// same, an embedder can omit both sides of I4 without leaving any evidence it did.
+    #[test]
+    fn an_unstamped_cursor_is_not_an_empty_stamped_cursor() {
+        let p = PredicateId(0);
+        let plan = one_level(scan_all(p, 0).sources);
+
+        let unstamped = suspend_after_first_row(three_int_facts(p), plan.clone());
+        let stamped = Executor::new(three_int_facts(p), plan)
+            .with_world_stamp(WorldStamp::stamped(&[][..]))
+            .enumerate(
+                (),
+                |(), _row| Ok(Stream::Suspend(())),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+        let Iteratee::Suspended((), stamped) = stamped else {
+            panic!("the plan was supposed to suspend");
+        };
+
+        assert_ne!(unstamped.to_bytes(), stamped.to_bytes());
     }
 
     /// **Bytes that are not a cursor are refused rather than half-read.**
@@ -3349,7 +3449,7 @@ mod tests {
         rebuilt.insert(p, i64_field(1), 99);
 
         assert!(matches!(
-            Executor::resume(rebuilt, plan(), cursor, &[][..]),
+            Executor::resume(rebuilt, plan(), cursor, WorldStamp::Unstamped),
             Err(FjordError::BadResumeKey)
         ));
     }
@@ -3371,7 +3471,7 @@ mod tests {
         let cursor = suspend_after_first_row(original, plan());
 
         assert!(matches!(
-            Executor::resume(MemStore::new(), plan(), cursor, &[][..]),
+            Executor::resume(MemStore::new(), plan(), cursor, WorldStamp::Unstamped),
             Err(FjordError::BadResumeKey)
         ));
     }
@@ -3867,7 +3967,7 @@ mod tests {
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0)])),
             forged,
-            &[][..],
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -3936,7 +4036,7 @@ mod tests {
                     .map(|entry| Entry { source: 0, ..entry })
                     .collect(),
             },
-            &[][..],
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -3979,7 +4079,7 @@ mod tests {
             three_int_facts(p),
             plan_b(),
             suspend_after_first_row(three_int_facts(p), plan_a()),
-            &[][..],
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -3993,7 +4093,7 @@ mod tests {
             suspend_after_first_row(three_int_facts(p), plan_a()),
             &plan_b(),
         );
-        let out = Executor::resume(three_int_facts(p), plan_b(), forged, &[][..])
+        let out = Executor::resume(three_int_facts(p), plan_b(), forged, WorldStamp::Unstamped)
             .expect("the fact id agrees, so nothing else objects")
             .enumerate(
                 Vec::new(),
@@ -4028,7 +4128,7 @@ mod tests {
         let elsewhere = Cursor {
             version: CURSOR_VERSION,
             plan: one_level(Box::new([seek_int(p, 10, 0)])).fingerprint(),
-            world: Box::default(),
+            world: WorldStamp::Unstamped,
             entries: Vec::new(),
         };
 
@@ -4036,7 +4136,7 @@ mod tests {
             three_int_facts(p),
             one_level(scan_all(p, 0).sources),
             elsewhere,
-            &[][..],
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -4057,11 +4157,16 @@ mod tests {
         let elsewhere = Cursor {
             version: CURSOR_VERSION,
             plan: plan.fingerprint(),
-            world: Box::from(*b"database-a"),
+            world: WorldStamp::stamped(*b"database-a"),
             entries: Vec::new(),
         };
 
-        let resumed = Executor::resume(three_int_facts(p), plan, elsewhere, *b"database-b");
+        let resumed = Executor::resume(
+            three_int_facts(p),
+            plan,
+            elsewhere,
+            WorldStamp::stamped(*b"database-b"),
+        );
 
         assert!(
             matches!(resumed, Err(FjordError::CursorWorld)),
@@ -4094,7 +4199,7 @@ mod tests {
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0)])),
             stale,
-            &[][..],
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -4931,7 +5036,7 @@ mod tests {
                 moved,
                 scan_then_fetch(person, refs, head()),
                 cursor,
-                &[][..]
+                WorldStamp::Unstamped
             ),
             Err(FjordError::BadResumeKey),
         ));
@@ -5852,7 +5957,7 @@ mod tests {
                 }
 
                 let (store, plan) = spec.build(&interner);
-                ex = Executor::resume(store, plan, cursor, &[][..]).expect("resume");
+                ex = Executor::resume(store, plan, cursor, WorldStamp::Unstamped).expect("resume");
             }
         }
 

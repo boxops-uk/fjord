@@ -77,11 +77,20 @@ impl BaseIdentity {
                 incarnation,
                 visible_seqno,
             } => {
+                // Length-prefixed rather than left to trail off the end: this is the
+                // base half of a composite the caller may concatenate more onto (a
+                // listing digest — see `fjord_server::session::with_listing_digest`),
+                // and an unterminated variable-length field in last position lets two
+                // different worlds encode identically by moving bytes across the
+                // boundary between this field and whatever follows it. An instance id
+                // is a directory name, so the input is user-supplied rather than
+                // adversarial only in theory.
                 let instance = instance.as_bytes();
-                let mut out = Vec::with_capacity(17 + instance.len());
+                let mut out = Vec::with_capacity(21 + instance.len());
                 out.push(TAG_WRITABLE);
                 out.extend_from_slice(&incarnation.to_le_bytes());
                 out.extend_from_slice(&visible_seqno.to_le_bytes());
+                out.extend_from_slice(&(instance.len() as u32).to_le_bytes());
                 out.extend_from_slice(instance);
                 out.into_boxed_slice()
             }
@@ -162,6 +171,30 @@ mod tests {
         assert_ne!(
             complete(fingerprint).to_bytes(),
             writable(instance, 0, 0).to_bytes()
+        );
+    }
+
+    /// **The instance id is length-prefixed, because it is not the only thing in the
+    /// composite a caller builds from these bytes.** `fjord_server::session` appends a
+    /// listing digest onto a `Writable` stamp's encoding, and an unterminated
+    /// variable-length field in last position lets two different worlds encode
+    /// identically by moving a byte across the boundary between this field and
+    /// whatever follows it — an instance named `"AB"` with a suffix byte `C` tacked on
+    /// must not read the same as an instance named `"ABC"` with nothing tacked on.
+    #[test]
+    fn the_instance_id_is_length_prefixed_so_a_suffix_cannot_be_mistaken_for_more_of_it() {
+        let shorter_plus_suffix: Vec<u8> = writable("AB", 1, 1)
+            .to_bytes()
+            .iter()
+            .copied()
+            .chain(*b"C")
+            .collect();
+        let longer_instance = writable("ABC", 1, 1).to_bytes();
+
+        assert_ne!(
+            shorter_plus_suffix,
+            longer_instance.to_vec(),
+            "a byte appended after the encoding was read as part of the instance id"
         );
     }
 }

@@ -189,7 +189,12 @@ pub fn run(
                 // streamed: expansion adds reads per row, never a buffer.
                 match &mut expander {
                     Some(expander) => {
-                        let expanded = expander.expand(&mut connection, &row, rendering.expand)?;
+                        let expanded = expander.expand(
+                            &mut connection,
+                            &row,
+                            rendering.expand,
+                            result.listing_digests(),
+                        )?;
                         sink.row(&expanded)?;
                     }
                     None => sink.row(&row)?,
@@ -1074,6 +1079,32 @@ mod surface {
         );
     }
 
+    /// A result may read both virtual predicates while exposing a reference from
+    /// only one. Expansion fetches one predicate per request, so an unrelated
+    /// virtual table must not make that table's unchanged digest look stale.
+    #[test]
+    fn a_virtual_reference_expands_when_the_query_reads_both_virtual_predicates() {
+        let serving = serving(FILES);
+        let quiet = AtomicBool::new(false);
+
+        let summary = run(
+            &Target::at(&serving.socket, "code"),
+            "X where X = fjord.db.List _; I = fjord.db.Interning _",
+            Rendering {
+                format: RowFormat::Count,
+                expand: fjord_client::FULL_DEPTH,
+            },
+            Limits::default(),
+            false,
+            &quiet,
+        )
+        .expect("the query and its expansion run");
+
+        assert_eq!(summary.rows, 1);
+        assert_eq!(summary.fetched, 1);
+        assert_eq!(summary.unresolved, 0);
+    }
+
     /// **A virtual predicate answers a fetch like any other**, and an id past its end is
     /// an *unstored* absence rather than a missing fact.
     ///
@@ -1110,7 +1141,9 @@ mod surface {
         // Sequence 1 is the first listed database, since the catalogue hands sequences out
         // from 1 as a real allocator does.
         let first = FactId::new(catalogue, 1).expect("a fact id");
-        let answered = connection.fetch(&schema, &[first]).expect("it resolves");
+        let answered = connection
+            .fetch(&schema, &[first], None)
+            .expect("it resolves");
 
         let Some(Found::Key(WireValue::Record(fields))) = answered.first() else {
             panic!("a catalogue row is a record: {answered:?}");
@@ -1124,7 +1157,9 @@ mod surface {
         // Past the end of the listing: nothing there, and **not** a claim of damage.
         let past = FactId::new(catalogue, 9_999).expect("a fact id");
         assert_eq!(
-            connection.fetch(&schema, &[past]).expect("it is answered"),
+            connection
+                .fetch(&schema, &[past], None)
+                .expect("it is answered"),
             vec![Found::Unstored],
             "a listing that has no such row is not a missing fact"
         );
@@ -1136,6 +1171,73 @@ mod surface {
         assert_eq!(
             connection.drain(&mut rows).expect("the rows arrive").len(),
             1
+        );
+    }
+
+    /// **The fetch race, closed**: a database created between a query answering a
+    /// virtual id and the *first* fetch of it must not resolve silently against the
+    /// listing that replaced it.
+    ///
+    /// `fjord.db.List`'s rows are a position in a listing materialised per query, not
+    /// a stored identity, so a second database sorting ahead of `code` renumbers it
+    /// out of the position this id names — the id then resolves to the *new* row
+    /// rather than to none, which looks exactly like success. The digest the query
+    /// carried with its rows is what lets the server refuse this by name instead;
+    /// the expander here has cached nothing, which is the case a cursor cannot reach
+    /// (no cursor is involved in a fetch at all).
+    ///
+    /// The positive control — the same id, the same fresh expander, no database
+    /// created in between — is `a_reference_into_a_virtual_predicate_expands` above:
+    /// a too-broad refusal would fail that test, not just leave this one unproven.
+    #[test]
+    fn a_catalogue_change_between_a_query_and_its_first_fetch_is_refused() {
+        use fjord_client::{ClientError, Expander, Mode};
+
+        let serving = serving(0);
+        let mut connection = super::connect(&Target::at(&serving.socket, "code"), Mode::ReadOnly)
+            .expect("a connection");
+        let schema = std::sync::Arc::new(connection.served_schema().expect("the schema"));
+
+        let mut rows = connection
+            .query("X where X = fjord.db.List _")
+            .expect("it compiles");
+        let row = connection
+            .next_row(&mut rows)
+            .expect("the row arrives")
+            .expect("the one database this server holds is listed");
+        let digests = rows.listing_digests().to_vec();
+        assert!(!digests.is_empty(), "this query reads the catalogue");
+        connection.drain(&mut rows).expect("the stream ends");
+
+        // A name sorting ahead of "code" moves it from sequence one to sequence two —
+        // the exact renumbering that would otherwise hand the id to the wrong row.
+        crate::testing::create_database(&serving, "aaa-earlier");
+
+        let mut expander = Expander::new(schema);
+        let refused = expander
+            .expand(&mut connection, &row, fjord_client::FULL_DEPTH, &digests)
+            .expect_err("the listing this id was minted from no longer exists");
+
+        assert!(
+            matches!(
+                refused,
+                ClientError::Server {
+                    code: fjord_client::ErrorCode::Refused,
+                    ..
+                }
+            ),
+            "refused by name, not silently answered from the wrong database: {refused:?}"
+        );
+
+        // And the session still works — a stale fetch fails its own request rather
+        // than the connection.
+        let mut again = connection
+            .query("N where fjord.db.List {name = N}")
+            .expect("it compiles");
+        assert_eq!(
+            connection.drain(&mut again).expect("the rows arrive").len(),
+            2,
+            "both databases, ordinarily"
         );
     }
 

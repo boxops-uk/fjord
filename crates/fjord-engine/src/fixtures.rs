@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::FjordError,
-    iter::{Cursor, Executor, Iteratee, Stream},
+    iter::{Cursor, Executor, Iteratee, Stream, WorldStamp},
     plan::Plan,
 };
 use fjord_encoding::tuple::Value;
@@ -114,8 +114,10 @@ pub fn run_with_suspends<S: FactStore>(
         let (store, plan) = mk();
 
         let ex = match cursor.take() {
-            None => Executor::new(store, plan).with_world_stamp(FIXTURE_WORLD),
-            Some(cursor) => Executor::resume(store, plan, cursor, FIXTURE_WORLD)?,
+            None => Executor::new(store, plan).with_world_stamp(WorldStamp::stamped(FIXTURE_WORLD)),
+            Some(cursor) => {
+                Executor::resume(store, plan, cursor, WorldStamp::stamped(FIXTURE_WORLD))?
+            }
         };
 
         let out = ex.enumerate(

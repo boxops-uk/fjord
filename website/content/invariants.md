@@ -129,11 +129,35 @@ this note used to say was missing:
 `against_a_server::a_write_between_two_pages_of_a_writable_database_is_refused`, with
 `paging_a_writable_database_with_no_intervening_write_still_works` as its negative control.
 
-**The third is still open.** A virtual predicate (`fjord.db.*`) is rematerialised per request, and
-nothing in the world stamp above says whether that materialisation agrees with a resumed cursor's —
-closing it needs a digest over the materialised listing, not a fact about the base, and is recorded
-with its fix in
-[the roadmap](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#a-defect-not-a-gap--a-cursor-does-not-name-the-world-it-was-made-in).
+**The third is closed too, and it splits in two, because the virtual predicates are not alike.**
+`fjord.db.List` is rematerialised per request but is otherwise a stable snapshot, so its listing
+gets a **digest**, folded into the world stamp beside the base identity
+(`fjord_server::session::with_listing_digest`) rather than a new cursor field: a `create`, `rm` or
+`finish` between two `QUERY_PAGE` calls moves the digest, the composite stops matching, and the
+same `FjordError::CursorWorld` refuses it — no new variant, no new check, because the engine still
+only compares opaque bytes. Gated on **which** predicate a plan reads (`Prepared::reads_listing`),
+not merely on a `Catalogue` existing: a query reading only `fjord.db.Interning` still gets one,
+built from a placeholder empty listing, whose digest is a constant rather than a signal.
+`fjord.db.Interning` has no such stable value — the counters are read by locking every interning
+stripe in turn, not a point-in-time capture even as it happens, and they thrash on every write — so
+a resume that **crosses requests** over it is refused by name instead
+(`ServerError::VolatileResume`), never validated against a digest that would always disagree. The
+base half's `Writable` encoding gained a length prefix on its instance id
+(`fjord_store_fjall::world::BaseIdentity::to_bytes`) for exactly this composition: an unterminated
+variable-length field in last position would let two different worlds encode identically by moving
+a byte across the boundary between it and the listing digest appended after it.
+
+Guards: `catalogue::two_catalogues_built_from_the_same_listing_agree`,
+`catalogue::a_changed_listing_changes_the_digest`,
+`catalogue::same_row_count_different_content_still_moves_the_digest` (`fjord-server`, unit — the
+digest is content, not a count, so a `create` racing a `rm` cannot leave it unmoved),
+`world::the_instance_id_is_length_prefixed_so_a_suffix_cannot_be_mistaken_for_more_of_it`
+(`fjord-store-fjall`, unit), and the server-level arms this note used to say were missing:
+`against_a_server::a_database_created_between_two_pages_of_a_listing_is_refused`,
+`against_a_server::a_database_removed_between_two_pages_of_a_listing_is_refused` and
+`against_a_server::resuming_a_query_over_the_interning_counters_is_refused_by_name`, with
+`against_a_server::paging_a_listing_with_no_intervening_change_still_works` as the first pair's
+negative control.
 
 [Executor → the cursor](executor.html#the-cursor-bytes-and-nothing-else)
 

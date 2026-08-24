@@ -102,7 +102,7 @@ indexing /path/to/fjord/clients/dotnet
   build layer: 3 project(s), 3 from a design-time build, 20 file(s) attributed exactly
 
 connecting to ./db/fjord.sock//code, 1 writer(s)
-  connected: protocol 2, 29 predicates, schema b08eea634e866a75
+  connected: protocol 3, 29 predicates, schema b08eea634e866a75
 
 indexed 20 file(s) in 4.0s
   src.File                        20

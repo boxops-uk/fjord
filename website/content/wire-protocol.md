@@ -4,7 +4,7 @@ description: Frames, streams, the handshake, the four query kinds, the write str
 ---
 
 One socket, framed and multiplexed. Everything talks it: the CLI, the shell, the viewer, and a
-C# client that shares no code with the server. Protocol version is **2**.
+C# client that shares no code with the server. Protocol version is **3**.
 
 The transport is a Unix socket by default. TCP is an explicit opt-in — `serve --listen-tcp
 host:port`, with no config-file entry and no environment variable, so a port can only appear
