@@ -1125,7 +1125,7 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
      `Placement::Written` respects.
    - **Forward references and mutual recursion are both legal**, which the rest of this section
      assumes and which nothing in the pipeline needs to be told twice.
-2. **A predicate catalogue exists, and `Schema` is left alone.** `PredicateId` is a predicate's
+2. **Pure model done — a predicate catalogue exists, and `Schema` is left alone.** `PredicateId` is a predicate's
    **position in a dense array** (`schema.rs`: "`predicates` is in id order"), so the reserved
    high band this section first proposed would require a multi-million-element sparse prefix and
    is withdrawn. What replaces it: an engine-side catalogue presenting base and local
@@ -1148,7 +1148,26 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    tags starting above the stored count would land on `fjord.db.*`. Allocation is deterministic
    and dense within the query; the guards are a catalogue with virtual predicates present, the
    exact last usable tag, and one past it.
-3. **Local identities are refused inside compilation, not stopped at the wire.** A local row
+
+   **Built as a pure model, in `fjord-engine::catalogue`.** `check_tag_space` is the bound above,
+   as arithmetic over two counts rather than over an actual catalogue — checked at the exact
+   boundary (`MAX_TAGGABLE_PREDICATE + 1` accepted, one past it refused, `reject/tag-space-exhausted`)
+   without allocating the ~16.7 million predicates reaching it for real would take, and refusing
+   rather than wrapping if the addition itself would overflow. `Catalogue<N>` wraps a `&Schema`
+   (already augmented — `fjord-server` appends its virtual predicates before this ever runs, so
+   `schema.len()` *is* the augmented count with nothing separate to track) plus a query's local
+   names, resolving either tier through one `resolve` and minting each local a `PredicateId`
+   continuing densely from `schema.len()` — proved against an independent oracle, a plain `Vec`
+   built by literally concatenating every schema predicate's name with the local names and reading
+   a name's id off its position in *that* array. `locals_are_allocated_after_a_schemas_virtual_predicates`
+   is the first named guard; the boundary tests are the other two.
+
+   **What is not built:** the engine-side catalogue is not yet *consumed* by `lower`, `ty`,
+   `flatten`, diagnostics or inspection — that wiring is Movement 1's, once there is a compiler
+   pipeline to hand it to. And the tag-space claim above ("if item 3 lands as internal-only, the
+   tag space can be reused per query") is still exactly a claim: nothing here re-derives it, and
+   item 3's own internal-only refusals are separately still open (see item 3).
+3. **The canonical-id allocator is done as a pure model; the rest of this item is still open.** A local row
    still has a `FactId` — `FactStore::Scan` yields one per row and there is no way not to mint
    it — and semi-naive gives one tuple two of them, one in the accumulated relation and one in
    the delta relation. So "internal-only, enforced at every output boundary" is the wrong
@@ -1261,7 +1280,26 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    aliasing is *observed* rather than reasoned about — and by its negative, a cached entry for an
    ordinary stored fact surviving the same boundary, since clearing everything would be a
    correctness fix that quietly deletes the cache's reason to exist.
-4. **Rule heads are reconciled with declared key order.** A local signature's declaration order
+
+   **Built as a pure model, in `fjord-engine::canonical_id`.** `canonical_ids` ranks a relation's
+   distinct tuples in encoded-key order — the paragraph above's "assign by rank, not by arrival" —
+   and mints each rank's `FactId` starting at one, sequence zero being reserved. Proved against an
+   independent O(n²) oracle (a key's rank is one plus the count of *other* distinct keys strictly
+   less than it — the definition read literally rather than read as a sort) across arrival order,
+   and by the specific claim this item makes about *why* a mid-fixpoint id is unobservable:
+   `inserting_a_key_shifts_only_what_sorts_after_it` — inserting one more key moves every later
+   key's rank by exactly one and touches no earlier key at all. No overflow test reaches
+   `MAX_FACT_SEQUENCE` here — see item 6's clamp, which is what makes that reasoning about
+   finalisation actually true rather than merely assumed by this module.
+
+   **Everything else in this item is still open**: the four-construct refusal
+   (`Project::FactRef`, `SeekKeyPart::RegisterFactId`, `ResidualOp::EqRegisterFactId`,
+   `Source::Fetch` onto a local target), *when* ranking runs relative to finalisation, and the
+   virtual-`FactId` scoping contract and its guards above — none of them needs the executor any
+   less than ranking does, but none of them is a pure function with an independent oracle either,
+   which is why only the allocator travelled with 0c.
+4. **The materialisation projection is done as a pure model; the record-only and key-only
+   restrictions it depends on are still open.** A local signature's declaration order
    is physical key order; a query's head record is **sorted by name at lowering**
    (`lower.rs:465`). Encoding a projected record straight into a `RelationDecl` therefore puts
    values under the wrong physical fields, and same-typed fields make it silent while the
@@ -1293,6 +1331,22 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    about how many facts there are. The cost is that a derived relation cannot carry a payload
    outside its index, which is cheap here because a local relation is re-derived per chunk rather
    than stored. Structural, not validated: a `RelationDecl` has no value field to set.
+
+   **Built as a pure model, in `fjord-engine::materialise`.** `project` reorders a `Vec<(N, V)>`
+   into declared order, generic over `V` and never cloning one — the reorder is a move, not a
+   read. Checked first for a duplicate *within* `declared` itself, before anything about `supplied`
+   is even asked: an early version of this module assumed a caller's `declared` was already known
+   distinct, which a property test disproved by shrinking a random case straight to a panic
+   (`declared = ["c", "c"]`) — pinned now as its own regression rather than left as something the
+   property alone remembers. The scenario the item exists to prevent is pinned directly:
+   `same_typed_fields_supplied_reversed_still_land_in_declared_order` supplies a `{from, to}`-shaped
+   pair backwards and checks the *positions*, not just that decoding succeeds — proved against an
+   independent string-name oracle, three unindexed linear scans in the same duplicate-then-missing-
+   then-extra precedence, sharing no code with the real `HashMap`-backed implementation.
+
+   **What is not built:** `reject/non-record-relation` and the key-only structural restriction —
+   both properties of a `RelationDecl` that does not exist yet, owed once Movement 1 gives this
+   projection something real to be called from.
 5. **The owned-scan representation is settled and costed.** `FactStore::Scan` is an owned
    associated type with no lifetime, so a `BTreeMap::range` iterator cannot be returned from
    `scan(&self)` — `MemStore` copes by cloning the matching range into a `Vec`. Doing that for
@@ -1390,7 +1444,7 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    *not* taken first. Writing that down is the point: otherwise it lands later as a "bug fix"
    while silently moving the rule-output-attempt counts item 6 budgets and the profile numbers
    5b exists to keep stable.
-6. **Resource limits cover work and bytes, not just cardinality — and none of them is
+6. **The chokepoint for four of six limits is done as a pure model.** Resource limits cover work and bytes, not just cardinality — and none of them is
    semantics.** Named, separate limits for retained facts, retained encoded bytes, rows examined,
    rule-output attempts, fixpoint rounds as a defensive backstop, and generated program size
    (adorned, magic and supplementary relations are produced at compile time and are themselves
@@ -1503,6 +1557,31 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    token earns its stride; a `u64` compare does not need one. **Neither it nor the cancellation
    token reaches the driver's own work**, which is why item 14 now owes work units of its own
    rather than only a budget to hand down.
+
+   **Built as a pure model, in `fjord-engine::budget`.** Two types, not one, because the table
+   above states two different reset boundaries and merging them would let a caller reset the
+   wrong half: `DerivationBudget` (retained facts, retained bytes, rule attempts, rounds — reset
+   per chunk) and `CompileBudget` (generated program size — reset per compilation). Every counter
+   is a private field; the only way to move one is a `charge_*` method reporting whether the
+   result is still within limit, which is the chokepoint read literally — there is no setter and
+   no way to construct a budget already holding an arbitrary tally. Retained facts is genuinely
+   monotonic (nothing is ever removed from an accumulated relation mid-derivation); retained bytes
+   is the one **live** counter, tracking a running total that a release can bring back down and a
+   separate peak that cannot — the distinction the table's bare "peak live" qualifier on bytes
+   alone, and its absence on facts, turned out to mean literally. `DerivationLimits::new` clamps a
+   caller's retained-facts request to `MAX_FACT_SEQUENCE`, which is item 3's own cross-reference
+   made real: canonical-id finalisation now genuinely has no failure it can reach. Every charge
+   method is checked against an independent oracle — a plain `i128` running total compared to the
+   limit, sharing no overflow handling or accounting logic with the `u64` saturating counters it is
+   checked against.
+
+   **What is not built:** the rows-examined ceiling stays exactly where it already was
+   (`Executor::with_examined_ceiling`, scoped to one executor, unrelated to either budget type
+   here), and item 14's aggregation — a driver seeding each rule's executor from one remaining
+   count and decrementing it by work actually done — is still owed to the movement that names it.
+   Nothing here is wired into a driver or a generator, because neither exists yet; what "nothing
+   can bypass the chokepoint" means before Movement 2 is only that the budget's *own* state cannot
+   be moved except through a charge.
 
 7. **Magic failure falls back; it never changes what the language accepts *statically*.** The
    qualifier is load-bearing and was added after the limits in item 6 turned out to be policy:
@@ -1623,7 +1702,8 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    diagnostic name a source variable and a span. A language rule checked after step 9 would be
    a language rule living downstream of an optimiser — and normalisation sitting at step 5 means
    no refusal is ever stated over a body the compiler rewrote.
-10. **A rule body is normalised to disjunction-free form; a query body is not.** A disjunction
+10. **The DNF product is done as a pure model; every pipeline-integration claim below is still
+    open.** A rule body is normalised to disjunction-free form; a query body is not. A disjunction
     is one level with one alternative per branch (`flatten.rs`, and every branch must be a fact
     pattern today). Semi-naive is defined "per recursive occurrence", and a level mixing a
     recursive alternative with a base one belongs to neither half of the seed/step split:
@@ -1716,6 +1796,25 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     inside a **non-recursive, unmagicked local relation** must still compile to one multi-source
     level, which `a_disjunction_is_one_level_with_a_source_per_branch` asserts for a query alone.
     Movement 7 owes the local-relation arm.
+
+    **Built as a pure model, in `fjord-engine::dnf`.** `dnf_product` is the transformation, generic
+    over the atom type — nothing here needs to know what a `Source` or a `Stmt` is, only that a
+    body is a sequence of statements and a statement a sequence of branches — and it reproduces the
+    plan's own worked example verbatim, in order: `(A|B); (C|D)` expands to `[AC, AD, BC, BD]`.
+    Proved against an independent oracle that shares no code with the fold-based real
+    implementation: a "truth table", decoded by row number in mixed radix over each statement's
+    branch count, the arithmetic a person filling one in by hand would use — checked for the
+    **exact sequence**, not merely the set, which is the stronger claim and the one that also pins
+    the order. A statement with zero branches collapses the whole product to no clauses, matching a
+    cartesian product over an empty factor; an empty body is one empty clause, the fold's identity.
+    `clause_count` restates "multiply, do not add" as its own function so a caller can state an
+    expected count (`2×2×2 = 8`, not `2+2+2 = 6`) without building the bodies to measure them.
+
+    **What is not built:** everything about *when* and *to which rules* this runs — step 5 after
+    stratification, restricted to rules that are adorned or delta-generated, the scan-cost
+    amplification Movement 3 owes a store-spy over, and the local-relation carve-out guard Movement
+    7 owes. This module is called by nothing yet; it is the transformation Movement 3 will call,
+    proved correct in isolation first.
 11. **A predicate reached only through negation still gets demand.** Magic keeps the rules
     demand reaches. A local recursive relation whose only use is a ground `!Blocked {x = X}` in
     a higher stratum therefore derives nothing, and the negation passes for everything — while
@@ -2294,10 +2393,18 @@ is along proof lines, and each part is green before the next starts:
   that needed real genericity, a dozen more in `fjord-engine` that only needed the literal
   `Symbol::Schema(...)` replaced by the one conversion — and proves the narrowest thing, which is
   exactly why it travelled alone.
-- **0c — the pure models.** The budget state machine and its chokepoint, the canonical-id
-  allocator, the DNF product against a truth-table evaluator, the materialisation projection
-  against a string-name model, and the catalogue against a dense-array model with its tag bound.
-  Every one is a pure function with an independent oracle, and none needs the executor.
+- **0c — the pure models. Done.** The budget state machine and its chokepoint (`fjord-engine::budget`),
+  the canonical-id allocator (`::canonical_id`), the DNF product against a truth-table evaluator
+  (`::dnf`), the materialisation projection against a string-name model (`::materialise`), and the
+  catalogue against a dense-array model with its tag bound (`::catalogue`). Every one is a pure
+  function with an independent oracle, and none needs the executor — which is also exactly what is
+  *not* yet true of any of them: nothing here is called by a compiler pipeline, a driver or a
+  generator, because none of those exist before Movement 1. Each item's own paragraph above states
+  precisely which of its other claims 0c does not reach, so the boundary is legible without cross-
+  referencing this bullet against five separate movements. One genuine bug surfaced by a property
+  test rather than anticipated by hand: the materialisation projection's first draft assumed a
+  caller's declared field order was already known to have no repeated name, and a shrunk random
+  case turned that assumption into a panic before it became a pinned regression instead.
 - **0d — the seam and the ledger.** The sealed reference wrapper against the seam battery, the
   guard marker and its script, the registry's amendments (I8's second witness, I9's third escape
   boundary, I11's virtual carve-out), and the deferred guards themselves.

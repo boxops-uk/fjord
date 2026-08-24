@@ -12,13 +12,18 @@
 //! [chapter 5](../../../website/content/executor.md) for resume, and
 //! [chapter 7](../../../website/content/query-language.md) for the compiler.
 
+pub mod budget;
+pub mod canonical_id;
+pub mod catalogue;
 pub mod compile;
 pub mod cst;
 pub mod diag;
+pub mod dnf;
 pub mod error;
 pub mod flatten;
 pub mod iter;
 pub mod lower;
+pub mod materialise;
 pub mod parse;
 pub mod plan;
 pub mod print;
