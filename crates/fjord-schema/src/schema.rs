@@ -19,7 +19,23 @@ pub enum Symbol {
     Local(Spur),
 }
 
-/// One alternative of a [`PredicateTy::Union`]: a name, an **explicit
+/// Lift a schema-tier name into the two-tier symbol space.
+impl From<Spur> for Symbol {
+    fn from(spur: Spur) -> Symbol {
+        Symbol::Schema(spur)
+    }
+}
+
+/// A schema-tier alternative.
+pub type Alternative = AlternativeNamed<Spur>;
+
+/// A schema-tier predicate type.
+///
+/// This concrete alias preserves the published construction surface while
+/// [`PredicateTyNamed`] supplies the name-tier parameter needed by local relations.
+pub type PredicateTy = PredicateTyNamed<Spur>;
+
+/// One alternative of a [`PredicateTyNamed::Union`]: a name, an **explicit
 /// discriminant**, and the type of its payload.
 ///
 /// The discriminant is written down rather than derived from the position, which is
@@ -30,22 +46,27 @@ pub enum Symbol {
 /// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)
 /// leaves no schema to transform between, so the tag is explicit here instead.
 ///
-/// A struct rather than a `(Spur, u32, PredicateTy)` triple, unlike a record's
+/// A struct rather than a tuple, unlike a record's
 /// fields: `alt.1` for a discriminant reads as an index into something, which is
 /// exactly the reading this type exists to refuse.
 #[derive(Debug, Clone)]
-pub struct Alternative {
-    pub name: Spur,
+pub struct AlternativeNamed<N> {
+    pub name: N,
     pub disc: u32,
-    pub ty: PredicateTy,
+    pub ty: PredicateTyNamed<N>,
 }
 
+/// A predicate's key or value type parameterised by its field-name representation.
+///
+/// Persisted schemas use the concrete [`PredicateTy`] alias, whose names are
+/// schema-tier [`Spur`]s. Local signatures use `PredicateTyNamed<Symbol>`, so every
+/// nested field and alternative retains the tier of the interner that minted it.
 #[derive(Debug, Clone)]
-pub enum PredicateTy {
+pub enum PredicateTyNamed<N> {
     Int,
     Str,
     Fact(PredicateId),
-    Record(Arc<[(Spur, PredicateTy)]>),
+    Record(Arc<[(N, PredicateTyNamed<N>)]>),
     /// A **tagged alternative** — one of N, each with its own payload type.
     ///
     /// Held in **declaration order**, and that order is *not* identity-bearing, which
@@ -56,15 +77,15 @@ pub enum PredicateTy {
     /// that moves the fingerprint ([chapter 6]).
     ///
     /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md
-    Union(Arc<[Alternative]>),
+    Union(Arc<[AlternativeNamed<N>]>),
 }
 
-impl PredicateTy {
+impl<N> PredicateTyNamed<N> {
     /// The alternative this discriminant names, if the union declares one.
     #[must_use]
-    pub fn alternative(&self, disc: u32) -> Option<&Alternative> {
+    pub fn alternative(&self, disc: u32) -> Option<&AlternativeNamed<N>> {
         match self {
-            PredicateTy::Union(alts) => alts.iter().find(|alt| alt.disc == disc),
+            PredicateTyNamed::Union(alts) => alts.iter().find(|alt| alt.disc == disc),
             _ => None,
         }
     }
@@ -347,6 +368,12 @@ mod tests {
             .collect();
 
         Schema::new(rodeo.into_reader(), Arc::from(predicates))
+    }
+
+    #[test]
+    fn the_published_alias_keeps_unannotated_scalar_construction() {
+        let scalar = PredicateTy::Int;
+        assert!(matches!(scalar, PredicateTy::Int));
     }
 
     /// The two-tier resolve reaches both tiers, and the schema tier resolves a

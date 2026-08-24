@@ -1112,12 +1112,12 @@ fn schema_ty(ty: &PredicateTy) -> Ty {
         PredicateTy::Record(fields) => Ty::Record(
             fields
                 .iter()
-                .map(|(name, field)| (Symbol::Schema(*name), schema_ty(field)))
+                .map(|(name, field)| (Symbol::from(*name), schema_ty(field)))
                 .collect(),
         ),
         PredicateTy::Union(alts) => Ty::Union(
             alts.iter()
-                .map(|alt| (Symbol::Schema(alt.name), alt.disc, schema_ty(&alt.ty)))
+                .map(|alt| (Symbol::from(alt.name), alt.disc, schema_ty(&alt.ty)))
                 .collect(),
         ),
     }

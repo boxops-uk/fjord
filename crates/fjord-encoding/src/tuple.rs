@@ -6,7 +6,7 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 use crate::error::StoreCodecError;
 use fjord_schema::{
     id::FactId,
-    schema::{LocalInterner, PredicateId, PredicateTy, Symbol},
+    schema::{LocalInterner, PredicateId, PredicateTy, PredicateTyNamed, Symbol},
 };
 
 pub const MARK_NULL: u8 = 0x00;
@@ -1193,21 +1193,21 @@ pub fn decode_typed(
 /// `MARK_RECORD` that was never written.
 ///
 /// [chapter 3]: ../../website/content/storage.md
-pub fn decode_key(
+pub fn decode_key<N: Copy + Into<Symbol>>(
     interner: &LocalInterner,
     bytes: &[u8],
-    ty: &PredicateTy,
+    ty: &PredicateTyNamed<N>,
 ) -> Result<Value, StoreCodecError> {
     let mut dec = TupleDecoder::new(bytes);
 
     let value = match ty {
-        PredicateTy::Record(fields) => {
+        PredicateTyNamed::Record(fields) => {
             let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
 
             for (name, field_ty) in fields.iter() {
                 let value = decode_typed_at(interner, &mut dec, field_ty)?;
 
-                let symbol = Symbol::Schema(*name);
+                let symbol: Symbol = (*name).into();
                 let field_name = interner
                     .try_resolve(symbol)
                     .ok_or(StoreCodecError::UnknownSymbol(symbol))?
@@ -1237,27 +1237,27 @@ pub fn decode_key(
     Ok(value)
 }
 
-pub fn decode_typed_at(
+pub fn decode_typed_at<N: Copy + Into<Symbol>>(
     interner: &LocalInterner,
     dec: &mut TupleDecoder<'_>,
-    ty: &PredicateTy,
+    ty: &PredicateTyNamed<N>,
 ) -> Result<Value, StoreCodecError> {
     // I5 probe: this is the single funnel for typed field/value decoding.
     #[cfg(any(test, feature = "proptest"))]
     decode_probe::bump();
 
     match ty {
-        PredicateTy::Int => {
+        PredicateTyNamed::Int => {
             let i = dec.take_i64()?;
             Ok(Value::Int(i))
         }
 
-        PredicateTy::Str => {
+        PredicateTyNamed::Str => {
             let s = dec.take_str()?;
             Ok(Value::Str(s.into_owned()))
         }
 
-        PredicateTy::Fact(predicate) => {
+        PredicateTyNamed::Fact(predicate) => {
             // A fact reference is encoded with its own marker (MARK_FACT_REF),
             // consistently with `skip` and the `FactId` codec — not the integer
             // codec.
@@ -1270,7 +1270,7 @@ pub fn decode_typed_at(
             Ok(Value::FactRef(id))
         }
 
-        PredicateTy::Record(fields) => dec.record(|dec| {
+        PredicateTyNamed::Record(fields) => dec.record(|dec| {
             let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
 
             for (name, field_ty) in fields.iter() {
@@ -1280,7 +1280,7 @@ pub fn decode_typed_at(
 
                 let value = decode_typed_at(interner, dec, field_ty)?;
 
-                let symbol = Symbol::Schema(*name);
+                let symbol: Symbol = (*name).into();
                 let field_name = interner
                     .try_resolve(symbol)
                     .ok_or(StoreCodecError::UnknownSymbol(symbol))?
@@ -1296,7 +1296,7 @@ pub fn decode_typed_at(
             Ok(Value::Record(out.into_boxed_slice()))
         }),
 
-        PredicateTy::Union(alts) => dec.union(|dec, tag| {
+        PredicateTyNamed::Union(alts) => dec.union(|dec, tag| {
             let alt = alts
                 .iter()
                 .find(|alt| u64::from(alt.disc) == tag)
@@ -1304,7 +1304,7 @@ pub fn decode_typed_at(
 
             let value = decode_typed_at(interner, dec, &alt.ty)?;
 
-            let symbol = Symbol::Schema(alt.name);
+            let symbol: Symbol = alt.name.into();
             let name = interner
                 .try_resolve(symbol)
                 .ok_or(StoreCodecError::UnknownSymbol(symbol))?
@@ -2726,6 +2726,126 @@ pub(crate) mod tests {
             decode_typed(&interner, &bytes, &ty),
             Err(StoreCodecError::UnknownSymbol(Symbol::Schema(s))) if s == name
         ));
+    }
+
+    #[test]
+    fn a_local_only_name_in_a_nested_record_resolves_to_the_local_text() {
+        use fjord_schema::schema::{PredicateTyNamed, SchemaInterner, Symbol};
+        use lasso::Rodeo;
+
+        let schema = SchemaInterner::new(Rodeo::new().into_reader());
+        let mut interner = LocalInterner::new(schema);
+
+        let field = interner.get_or_intern("query_local_inner_field");
+        assert!(
+            matches!(field, Symbol::Local(_)),
+            "the schema is empty, so the name must intern locally"
+        );
+
+        let ty: PredicateTyNamed<Symbol> =
+            PredicateTyNamed::Record(Arc::from([(field, PredicateTyNamed::Str)]));
+
+        let mut bytes = vec![MARK_RECORD];
+        put_str(&mut bytes, "x");
+        bytes.push(MARK_TERM);
+
+        let mut dec = TupleDecoder::new(&bytes);
+        let decoded =
+            decode_typed_at(&interner, &mut dec, &ty).expect("a local-tier name resolves");
+
+        assert_eq!(
+            decoded,
+            Value::Record(Box::new([(
+                "query_local_inner_field".to_owned(),
+                Value::Str("x".to_owned())
+            )]))
+        );
+    }
+
+    #[test]
+    fn a_local_only_alternative_name_in_a_union_resolves_to_the_local_text() {
+        use fjord_schema::schema::{AlternativeNamed, PredicateTyNamed, SchemaInterner, Symbol};
+        use lasso::Rodeo;
+
+        let schema = SchemaInterner::new(Rodeo::new().into_reader());
+        let mut interner = LocalInterner::new(schema);
+
+        let alt_name = interner.get_or_intern("query_local_alt");
+        assert!(
+            matches!(alt_name, Symbol::Local(_)),
+            "the schema is empty, so the name must intern locally"
+        );
+
+        let ty: PredicateTyNamed<Symbol> = PredicateTyNamed::Union(Arc::from([AlternativeNamed {
+            name: alt_name,
+            disc: 0,
+            ty: PredicateTyNamed::Str,
+        }]));
+
+        let mut bytes = Vec::new();
+        TupleEncoder::new(&mut bytes)
+            .union(0, |enc| {
+                enc.put_str("payload");
+                Ok(())
+            })
+            .unwrap();
+
+        let mut dec = TupleDecoder::new(&bytes);
+        let decoded = decode_typed_at(&interner, &mut dec, &ty)
+            .expect("a local-tier alternative name resolves");
+
+        assert_eq!(
+            decoded,
+            Value::Union {
+                disc: 0,
+                alt: "query_local_alt".to_owned(),
+                value: Box::new(Value::Str("payload".to_owned())),
+            }
+        );
+    }
+
+    #[test]
+    fn a_schema_and_local_name_sharing_a_numeric_value_do_not_alias() {
+        use fjord_schema::schema::{PredicateTyNamed, SchemaInterner, Symbol};
+        use lasso::Rodeo;
+
+        let mut schema_rodeo = Rodeo::new();
+        let schema_spur = schema_rodeo.get_or_intern("eve");
+        let schema = SchemaInterner::new(schema_rodeo.into_reader());
+
+        let mut interner = LocalInterner::new(schema);
+        let local_symbol = interner.get_or_intern("eva");
+        let Symbol::Local(local_spur) = local_symbol else {
+            panic!("\"eva\" is absent from the schema, so it must intern locally");
+        };
+        assert_eq!(
+            schema_spur, local_spur,
+            "the adversarial setup needs the two tiers to share a numeric value; \
+             two fresh interners' first name shares the same underlying index"
+        );
+
+        assert_eq!(
+            interner.try_resolve(Symbol::Schema(schema_spur)),
+            Some("eve")
+        );
+        assert_eq!(interner.try_resolve(Symbol::Local(local_spur)), Some("eva"));
+
+        let ty: PredicateTyNamed<Symbol> = PredicateTyNamed::Record(Arc::from([(
+            Symbol::Local(local_spur),
+            PredicateTyNamed::Int,
+        )]));
+
+        let mut bytes = Vec::new();
+        put_i64(&mut bytes, 3);
+
+        let decoded = decode_key(&interner, &bytes, &ty).expect("a local-tier field resolves");
+
+        assert_eq!(
+            decoded,
+            Value::Record(Box::new([("eva".to_owned(), Value::Int(3))])),
+            "the local text must win — the type names which tier this field's \
+             Spur belongs to, so the schema's same-numbered \"eve\" is never asked"
+        );
     }
 
     proptest! {

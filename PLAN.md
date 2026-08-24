@@ -1967,8 +1967,8 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     deduplication, *during* a snapshot merge and *during* final canonical-id assignment, each with
     no executor live, and each must observe the token within one stride.
 
-15. **A local signature's field names have no representation, and the failure is silent.** The
-    plan promises a local relation reuses the schema type grammar in full. It cannot today.
+15. **Done — a local signature's field names have no representation, and the failure is silent.**
+    The plan promises a local relation reuses the schema type grammar in full. It could not.
     `PredicateTy::Record` holds `Arc<[(Spur, PredicateTy)]>` and `Alternative::name` is a `Spur`
     — raw interner indices with no tier — while `decode_key` resolves them with
     `Symbol::Schema(*name)`, **unconditionally**. Query-local names live in the per-query
@@ -1981,17 +1981,18 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     alternative in the one item that decides what a signature may contain is the last thing a
     foundation should ship with.
 
-    **Selected: the name tier becomes a type parameter.** `PredicateTy<N = Spur>` and
-    `Alternative<N = Spur>`, with a persisted schema holding `PredicateTy<Spur>` — today's type,
-    byte for byte — and a local relation's signature holding `PredicateTy<Symbol>`. The ten-odd
-    sites that today write `Symbol::Schema(*name)` unconditionally become generic over
-    `N: Copy + Into<Symbol>`, with `impl From<Spur> for Symbol` supplying `Symbol::Schema`, so
-    every existing call site keeps its exact present behaviour and the tier assertion moves to the
-    one conversion.
+    **Selected: the name tier becomes a type parameter behind a concrete compatibility alias.**
+    `PredicateTyNamed<N>` and `AlternativeNamed<N>` hold the representation; the published
+    `PredicateTy` and `Alternative` names remain concrete aliases over `Spur`, so an unannotated
+    `PredicateTy::Int` expression keeps compiling. A persisted schema therefore holds
+    `PredicateTyNamed<Spur>`, while a local relation's signature holds
+    `PredicateTyNamed<Symbol>`. The name-bearing decode sites are generic over
+    `N: Copy + Into<Symbol>`, with `impl From<Spur> for Symbol` supplying the schema-tier lift.
 
     **The reason it is the parameter and not simply `Symbol` everywhere: an illegal state that
     cannot be constructed beats one that is rejected.** `Schema::new` is infallible and is
-    constructed all over the tests and fixtures; make its field type `PredicateTy<Symbol>` and it
+    constructed all over the tests and fixtures; make its field type
+    `PredicateTyNamed<Symbol>` and it
     becomes *capable* of holding `Symbol::Local`, at which point the fingerprint walk and
     `decode_key` can misresolve a name again and the only thing standing between them and a wrong
     answer is a validation nobody is obliged to call. With the parameter, a local type cannot be
@@ -2011,8 +2012,7 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     drawn from the schema and local interners never alias — structural, since the tier travels
     with the name. And **every existing artifact is unchanged**: schema canonical forms,
     fingerprints, stored bytes, wire descriptors and base-query plan fingerprints. That last one
-    is not structural, it is a non-regression obligation, and it is the clause a `N = Spur` default
-    makes plausible rather than proven.
+    is not structural, it is a non-regression obligation rather than a consequence of the alias.
 
     Guards, all owed by Movement 0: **local-only names in a nested record and in a union**, each
     resolving to the local text; the adversarial case where a schema `Spur` and a local `Spur`
@@ -2023,6 +2023,38 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     change. The worked example's `from` and `to` are schema names, so they resolve to *something*
     and a corpus built around it stays green over the defect; that is why the census asserts the
     local-only case rather than assuming a generator reaches it.
+
+    **Built exactly as selected.** `PredicateTyNamed<N>` and `AlternativeNamed<N>` live in
+    `fjord-schema::schema`, with the old public names as concrete schema-tier aliases.
+    `impl From<Spur> for Symbol` is the conversion the name-bearing sites use instead of writing
+    `Symbol::Schema(...)` themselves. `fjord_encoding::tuple::decode_key` and `decode_typed_at`
+    recurse into a local relation's future `PredicateTyNamed<Symbol>` the same way they recurse
+    into a persisted schema's type. `the_published_alias_keeps_unannotated_scalar_construction`
+    and the unchanged direct `decode_key(..., &PredicateTy::Str)` call guard the source-compatibility
+    edge that a generic default does not cover in an expression with no expected type.
+
+    **The first structural clause proved itself at compile time rather than at a guard.**
+    Reverting `decode_key`'s conversion back to a literal `Symbol::Schema(*name)` — to check the
+    new tests were not vacuously green — does not fail a test; it fails to compile
+    (`expected Spur, found type parameter N`), which is the stronger property "an illegal state
+    that cannot be constructed" promises and a runtime guard could only approximate.
+
+    Guards, `fjord-encoding::tuple::tests`: `a_local_only_name_in_a_nested_record_resolves_to_the_local_text`
+    and `a_local_only_alternative_name_in_a_union_resolves_to_the_local_text` build a
+    `PredicateTyNamed<Symbol>` by hand — the shape a local relation's signature will eventually hold,
+    stood in for since local relations are a later movement — with a field or alternative name that
+    was never interned in the schema, and decode it through `decode_typed_at` directly (the nested,
+    wrapped-record arm, as opposed to `decode_key`'s flat top-level one a plain key can never
+    exercise). `a_schema_and_local_name_sharing_a_numeric_value_do_not_alias` is the adversarial
+    case by name: two fresh interners' first-ever name shares the same underlying `Spur` value by
+    construction, and the test asserts both that this precondition holds and that each tier still
+    resolves to its own text — `eve` for the schema `Spur`, `eva` for the local one carrying the
+    same number — proving the two never alias rather than merely proving one example decodes. The
+    fourth clause is pinned rather than inferred from round trips: schema fingerprints and stored
+    bytes retain their existing independent goldens; `descriptor_bytes_are_stable` pins every
+    descriptor arm; and the supported corpus carries exact per-entry descriptor bytes (or the
+    existing named unprojectable outcome) and base-plan fingerprints. A consistent encoder change
+    can no longer leave this non-regression set green.
 
 **Acceptance is a proof boundary, not a reading.** The previous version of this paragraph asked
 for "a written answer for each of the fifteen, and a failing test first for items 1 and 4". That
@@ -2255,9 +2287,13 @@ is along proof lines, and each part is green before the next starts:
   the composite refuses through the executor's existing `CursorWorld` check, unchanged —
   and `fjord.db.Interning`, which has no stable value to digest, is refused by name on a resume
   that crosses requests instead.
-- **0b — item 15's name tier.** `PredicateTy<N>`, the nested local-name and cross-tier collision
-  properties, and the full non-regression set. It touches the most files and proves the narrowest
-  thing, which is exactly why it travels alone.
+- **0b — item 15's name tier. Done.** `PredicateTyNamed<N>` behind the concrete published
+  `PredicateTy` alias, the nested local-name and cross-tier
+  collision properties, and the full non-regression set. It touched fewer files than the estimate
+  above worried it would — `fjord-schema` for the type itself, three sites in `fjord-encoding`
+  that needed real genericity, a dozen more in `fjord-engine` that only needed the literal
+  `Symbol::Schema(...)` replaced by the one conversion — and proves the narrowest thing, which is
+  exactly why it travelled alone.
 - **0c — the pure models.** The budget state machine and its chokepoint, the canonical-id
   allocator, the DNF product against a truth-table evaluator, the materialisation projection
   against a string-name model, and the catalogue against a dense-array model with its tag bound.

@@ -1595,6 +1595,11 @@ mod tests {
         assert_eq!(base().fingerprint(), base().fingerprint());
     }
 
+    #[test]
+    fn a_base_plan_fingerprint_is_stable() {
+        assert_eq!(base().fingerprint().raw(), 0x2b86_9a1a_ad93_cd1c);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 

@@ -1570,7 +1570,7 @@ impl Flattener<'_> {
         let mut determined = true;
 
         for (name, field_ty) in field_tys.iter() {
-            let pattern = field_pattern(&fields, Symbol::Schema(*name));
+            let pattern = field_pattern(&fields, Symbol::from(*name));
 
             if let (PredicateTy::Fact(predicate), Some(pattern)) = (field_ty, pattern)
                 && let ExprKind::Var(symbol) = self.ast.store().kind(pattern)
@@ -2168,7 +2168,7 @@ impl Flattener<'_> {
                         return;
                     };
 
-                    if let Some(alt) = alts.iter().find(|alt| Symbol::Schema(alt.name) == *name) {
+                    if let Some(alt) = alts.iter().find(|alt| Symbol::from(alt.name) == *name) {
                         let (alt_ty, payload) = (alt.ty.clone(), *payload);
                         self.scan_field(payload, &alt_ty, claims, occurrences);
                     }
@@ -2181,7 +2181,7 @@ impl Flattener<'_> {
                 };
 
                 for (name, field_ty) in field_tys.iter() {
-                    if let Some(pattern) = field_pattern(fields, Symbol::Schema(*name)) {
+                    if let Some(pattern) = field_pattern(fields, Symbol::from(*name)) {
                         self.scan_field(pattern, field_ty, claims, occurrences);
                     }
                 }
@@ -2938,7 +2938,7 @@ impl Flattener<'_> {
                 let fields = fields.clone();
 
                 for (idx, (name, field_ty)) in field_tys.clone().iter().enumerate() {
-                    match field_pattern(&fields, Symbol::Schema(*name)) {
+                    match field_pattern(&fields, Symbol::from(*name)) {
                         Some(pattern) => {
                             self.field(pattern, field_ty, address, &FieldPath::field(idx), level);
                         }
@@ -3008,7 +3008,7 @@ impl Flattener<'_> {
         };
 
         for (idx, (name, field_ty)) in field_tys.clone().iter().enumerate() {
-            let Some(field) = self.field_slot(node, &slot, Symbol::Schema(*name)) else {
+            let Some(field) = self.field_slot(node, &slot, Symbol::from(*name)) else {
                 level.building = false;
                 continue;
             };
@@ -3320,7 +3320,7 @@ impl Flattener<'_> {
         let fields = fields.clone();
 
         for (idx, (name, field_ty)) in field_tys.clone().iter().enumerate() {
-            if let Some(pattern) = field_pattern(&fields, Symbol::Schema(*name)) {
+            if let Some(pattern) = field_pattern(&fields, Symbol::from(*name)) {
                 self.field(pattern, field_ty, address, &path.then(idx), level);
             }
         }
@@ -3377,7 +3377,7 @@ impl Flattener<'_> {
 
         let Some(alt) = alts
             .iter()
-            .find(|alt| Symbol::Schema(alt.name) == *name)
+            .find(|alt| Symbol::from(alt.name) == *name)
             .cloned()
         else {
             level.building = false;
@@ -4162,7 +4162,7 @@ impl Flattener<'_> {
                 let mut out = vec![MARK_RECORD];
 
                 for (name, field_ty) in field_tys.iter() {
-                    let pattern = field_pattern(fields, Symbol::Schema(*name))?;
+                    let pattern = field_pattern(fields, Symbol::from(*name))?;
 
                     match self.constant(pattern, field_ty)? {
                         Const::Bytes(bytes) => out.extend_from_slice(&bytes),
@@ -4185,7 +4185,7 @@ impl Flattener<'_> {
                     return None;
                 };
 
-                let alt = alts.iter().find(|alt| Symbol::Schema(alt.name) == *name)?;
+                let alt = alts.iter().find(|alt| Symbol::from(alt.name) == *name)?;
 
                 let mut out = UnionTag::new(alt.disc).as_bytes().to_vec();
 
@@ -4304,7 +4304,7 @@ impl Flattener<'_> {
 
                 let alt = alts
                     .iter()
-                    .find(|alt| Symbol::Schema(alt.name) == name)?
+                    .find(|alt| Symbol::from(alt.name) == name)?
                     .clone();
 
                 self.selects.push((address, path.clone(), alt.disc));
@@ -4516,7 +4516,7 @@ impl Flattener<'_> {
                                 .enumerate()
                                 .map(|(idx, (name, field_ty))| {
                                     (
-                                        Symbol::Schema(*name),
+                                        Symbol::from(*name),
                                         Project::RegisterField {
                                             address,
                                             path: FieldPath::field(idx),
@@ -4584,7 +4584,7 @@ fn field_of(ty: &PredicateTy, name: Symbol) -> Option<(usize, PredicateTy)> {
     fields
         .iter()
         .enumerate()
-        .find(|(_, (field, _))| Symbol::Schema(*field) == name)
+        .find(|(_, (field, _))| Symbol::from(*field) == name)
         .map(|(idx, (_, field_ty))| (idx, field_ty.clone()))
 }
 
