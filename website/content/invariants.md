@@ -38,19 +38,38 @@ the only one that can see both implementations of it.
 | [I5](#i5) | A register holds the whole row; fields decode lazily | `exec::bind_is_refcount_not_decode` | green |
 | [I6](#i6) | Values never enter the scan hot loop | `exec::no_value_fetch_in_scan` | green |
 | [I7](#i7) | The executor is a defunctionalised state machine | structural + the resume battery | green |
-| [I8](#i8) | Immutable snapshot per query, released at suspend | `i8_snapshot::snapshot_released_at_suspend` | green |
-| [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` | green |
+| [I8](#i8) | Immutable snapshot per query, released at suspend | `i8_snapshot::snapshot_released_at_suspend` | green; a second witness pending — see [I8](#i8) |
+| [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` | green; the third escape boundary pending — see [I9](#i9) |
 | [I10](#i10) | Union discriminants are stable and append-only | `i10_discriminants::*` — four checks, see [I10](#i10) | green |
-| [I11](#i11) | A `FactId` is stable, unique and never reused within a database | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | green |
+| [I11](#i11) | A `FactId` is stable, unique and never reused within a database — **of a stored fact** | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | green |
 | [I12](#i12) | Both maps are written atomically — and a key names exactly one fact | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) + `concurrent_interning_of_one_key_creates_one_fact` | green |
 | [I13](#i13) | The database's schema is embedded and frozen at create | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` | green |
 | [I14](#i14) | A derived bind is a pure function of the fact bindings | `iter::a_derive_is_recomputed_across_every_cut_point` | green |
 | [I15](#i15) | A database says which format wrote it; an unreadable one is refused | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | green |
 
-No guard is `#[ignore]`d: the coverage ledger (`cargo test -- --ignored --list`) lists
-nothing pending. I10's was the last, and unions made it live. The next entry is already
-named — [I9](#i9)'s recursive-materialisation guard, which the recursion work owes *before*
-the materialisation path it measures exists, not after.
+**Sixteen guards are `#[ignore]`d, and every one names its owner.** The recursion work's
+proof boundary requires that each assertion it defers be owned by exactly one named guard in a
+named later movement rather than left as prose, so those guards are written up front and sit in
+the ledger until the movement that owns them arrives —
+`fjord-engine/tests/recursion_ledger.rs`. Two of them are this registry's own: [I8](#i8)'s
+second witness and [I9](#i9)'s recursive-materialisation guard, which the recursion work owes
+*before* the paths they measure exist, not after.
+
+The ledger only reads as a ledger because every `#[ignore]` declares which it is:
+
+```rust
+#[ignore = "guard: <claim>, owned by Movement <N>"]
+#[ignore = "not a guard: <why>"]
+```
+
+`cargo test -- --ignored --list` prints names without reasons and has always also listed tests
+that are not guards at all — three child processes of crash tests and a fingerprint printer — so
+"the ledger contains exactly the documented obligations" was a sentence nothing could check.
+`scripts/check-guards.py` checks those attributes against an independent manifest of the exact
+names, claims and owners, and against the tests Cargo actually builds. Deleting, inventing,
+weakening or re-owning an obligation fails; so does a reason in neither form, an owner whose
+movement has **closed**, or a guard the harness does not list. The gate's own mutation controls
+provoke each rejection path in `scripts/test_check_guards.py`.
 
 <a id="i1"></a>
 
@@ -293,6 +312,22 @@ sequence in the low 40. Uniqueness across predicates is structural rather than e
 A physical id, **not** cross-database identity. It is also the prerequisite for the resume
 integrity check: a saved key that still resolves to the saved fact is only meaningful if ids do
 not move.
+
+**This is a promise about *stored* facts, and a virtual row does not keep it.** The reserved
+`fjord.db.*` predicates are materialised per request from a directory walk that persists nothing,
+and `Catalogue::of` assigns each row's sequence from its **position in that listing** — so the id
+*is* the position. Create a database that sorts earlier and the same database answers to a
+different id; there is no ingest at which anything was assigned once. Stating that as a carve-out
+rather than leaving it to be inferred matters because a shipped feature had already inferred the
+other way: `fjord_client::expand::Expander` cached by `FactId` for the life of a shell session,
+resting in its own comment on this invariant's general form, and a relisting between two requests
+made a cached entry answer for the wrong database.
+
+So the rule for a virtual id is scope, not stability: **it is valid only within the listing that
+minted it, and nothing may cache one across requests.** The carve-out is deliberately narrow —
+`FactId::predicate` puts the predicate in the high three bytes, so "is this virtual" is a question
+about the id itself and needs no index to answer, and every id outside the reserved namespace
+keeps the invariant in full.
 
 <a id="i12"></a>
 

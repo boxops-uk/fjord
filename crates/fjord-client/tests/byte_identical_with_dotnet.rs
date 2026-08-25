@@ -783,7 +783,7 @@ fn unions_are_byte_identical_with_the_dotnet_client() {
 /// has to read it off. `fjord schema fingerprint` is how a real client's author gets it;
 /// this corpus has no `.sigla` file of its own, so this is that command for it.
 #[test]
-#[ignore = "prints the union corpus's schema fingerprint, for the C# client to carry"]
+#[ignore = "not a guard: prints the union corpus's schema fingerprint, for the C# client to carry"]
 fn print_the_union_schema_fingerprint() {
     println!(
         "union schema fingerprint {:016x}",

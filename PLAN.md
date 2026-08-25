@@ -24,7 +24,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 | [The read-path benchmark](#the-read-path-benchmark-against-glean) | planned, with predictions | a quiet machine and the indexed corpus |
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
 | [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
-| [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not | [Movement 0](#movement-0--semantics-and-seams): eight semantics-and-seams decisions, four of them gating representation |
+| [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not. [Movement 0](#movement-0--semantics-and-seams)'s parts 0a–0d are green | a **0e**: items 1 and 9's `Program` AST, item 3's four refusals, and the `Expander` repair — three green-before-close cells no part of the split owned |
 | [Operational gaps](#operational-gaps) | each named with the seam that keeps it cheap | — |
 | [Language backlog](#language-backlog) | additive; none reshapes the machine | — |
 
@@ -2405,13 +2405,64 @@ is along proof lines, and each part is green before the next starts:
   test rather than anticipated by hand: the materialisation projection's first draft assumed a
   caller's declared field order was already known to have no repeated name, and a shrunk random
   case turned that assumption into a panic before it became a pinned regression instead.
-- **0d — the seam and the ledger.** The sealed reference wrapper against the seam battery, the
-  guard marker and its script, the registry's amendments (I8's second witness, I9's third escape
-  boundary, I11's virtual carve-out), and the deferred guards themselves.
+- **0d — the seam and the ledger. Done.** `borrow::StoreRef` — the sealed wrapper — against the
+  full scan-and-point seam battery on each implementation, with the no-hidden-clone measurement
+  and the drop probe that makes I8's move to the driver *observable* rather than argued. Its seal
+  is a module-private constructor, which requires the driver to live beneath that boundary and
+  prevents sibling engine modules constructing a borrowing executor. A structural source guard
+  refuses `pub`, `pub(crate)`, `pub(super)` and any other spelling that removes the private
+  declaration; external privacy is proved by a `compile_fail` doctest, paired with a positive
+  control: rustdoc's
+  error-code form is not checked on stable, so `compile_fail,E0624` passed against a
+  deliberately impossible code too, and the discriminating half had to be a snippet that
+  compiles. The marker (`guard: <claim>, owned by Movement <N>` / `not a guard: <why>`) and
+  `scripts/check-guards.py`, whose independent manifest makes deleting, inventing, weakening or
+  re-owning an obligation fail, as do a reason in neither form, a guard naming no owner, a guard
+  owned by a **closed** movement, and a guard the harness does not build — every path proved by a
+  mutation control. The registry's I11 carve-out, its ledger paragraph, and sixteen
+  deferred guards in `fjord-engine/tests/recursion_ledger.rs`, every body `unimplemented!` so
+  that un-ignoring one without writing it turns the suite red rather than green.
+
+  **The list script could not do what this section said it would**, and the correction is
+  recorded rather than quietly absorbed: `cargo test -- --ignored --list` prints names *without*
+  reasons, so nothing can "partition the list on that prefix". The marker lives in the source
+  attribute, so the script reads the tree, checks it against the exact independent manifest, and
+  cross-checks that set against the harness's list in both directions. A guard behind a `cfg` the
+  suite never builds would otherwise read as present; a guard deleted from both source and harness
+  would otherwise disappear without evidence.
 
 The order is a dependency order rather than a preference: 0a repairs what recursion would
 otherwise be built on, 0b decides what a signature may contain, 0c is what 0b's decisions are
 checked with, and 0d is the only part that widens a seam.
+
+**With 0a–0d green, Movement 0 does not close, and the four parts do not cover it.** Read the
+proof-boundary table against the tree rather than against this list and three of its
+green-before-close cells have no part that owns them — the same finding the seventh round made
+about assertions owned by nobody, one level up, about *work* owned by no part. They are named
+here rather than absorbed into a later movement, because each is a gate something downstream was
+told it could rely on:
+
+- **Items 1 and 9 own the largest of them.** Their cell requires a hand-built `Program` AST
+  preserving clause multiplicity and source order, duplicate declarations refusing, forward and
+  mutual references resolving, and per-rule `collect` equalling today's single-query collection.
+  No `Program`, `Rule`, `Stratum`, `RelationDecl` or `LocalPredicate` exists in the tree, and
+  none of 0a–0d proposes one. This is the item that **gates Movement 3** and Movement 2's
+  acceptance, so it is not deferrable into them.
+- **Item 3's four identity-observability refusals are unwritten**, which the item's own text
+  says plainly ("everything else in this item is still open") while the table requires them
+  green here. There is no diagnostic `Code` for any of them, so nothing yet refuses
+  `Project::FactRef` of a local row.
+- **Item 3's cache repair is half done.** 0a landed the fetch digest; the other consequence —
+  `Expander` dropping cached entries for virtual predicates at every request boundary — did not.
+  The hole it was for is still live and reachable: `expand` skips the fetch for an id already in
+  the cache, so the digest is never checked for one, and `shell.rs` holds one `Expander` for the
+  whole session. List, create a database that sorts earlier, list again, and a cached virtual id
+  still answers for the wrong database.
+
+So a **0e** is owed before the closing checklist can be run — items 1 and 9's `Program` AST with
+per-rule `collect`, item 3's four refusals and their diagnostics, and the `Expander` repair.
+Nothing in it moves the architecture; it is the work the split missed rather than work the split
+deferred.
 
 **Gating is about *completion*, not about starting, and an earlier draft of this paragraph
 conflated them.** A movement can be prototyped against hand-authored inputs long before the items

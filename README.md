@@ -107,6 +107,7 @@ testing method, and where every other kind of truth lives. Read it before changi
 cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger
+python3 scripts/check-guards.py     # the ledger is exact, owned and built
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the book builds clean, as CI requires

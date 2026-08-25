@@ -12,6 +12,7 @@
 //! [chapter 5](../../../website/content/executor.md) for resume, and
 //! [chapter 7](../../../website/content/query-language.md) for the compiler.
 
+pub mod borrow;
 pub mod budget;
 pub mod canonical_id;
 pub mod catalogue;

@@ -79,9 +79,12 @@ over one producer.
   invisible to inspection and caught only by a generated case. Write the property first, watch
   it fail, then fill the impl. "It compiles" is not done.
 - **Every invariant owns a guard test, written up front.** A guard whose subsystem does not
-  exist yet is `#[ignore]`d with the invariant in the message; `cargo test -- --ignored --list`
-  is the coverage ledger and currently lists nothing pending. Work that touches an invariant is
-  done only when its guard is un-ignored and green.
+  exist yet is `#[ignore]`d with the claim and its owner in the message —
+  `#[ignore = "guard: <claim>, owned by Movement <N>"]`, and `not a guard: <why>` for an ignored
+  test that is not one. `cargo test -- --ignored --list` is the coverage ledger and
+  `scripts/check-guards.py` is what makes it readable as one: the list carries names without
+  reasons, so a guard owing no owner, or owned by a movement that has closed, is otherwise
+  invisible. Work that touches an invariant is done only when its guard is un-ignored and green.
 - **Non-functional criteria are part of *done*, and are tested, not asserted.** No per-row
   allocation, no value fetch in the scan loop, no snapshot held across suspend — each has a
   mechanical guard (a counting allocator, a store spy, a drop probe cross-checked against
@@ -101,6 +104,8 @@ over one producer.
 cargo build
 cargo test                          # the green suite — default-members is the whole workspace
 cargo test -- --ignored --list      # the invariant coverage ledger
+python3 scripts/check-guards.py     # every pending guard names a claim and a live owner
+python3 -m unittest scripts/test_check_guards.py  # the ledger gate's mutation controls
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)

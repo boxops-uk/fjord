@@ -2829,7 +2829,7 @@ mod tests {
     /// process. Writes facts in a loop while a watchdog aborts the process, so the
     /// kill lands at an arbitrary point — including inside a batch commit.
     #[test]
-    #[ignore = "not a guard — child process of store::tests::no_half_present_facts"]
+    #[ignore = "not a guard: child process of store::tests::no_half_present_facts"]
     fn crashing_writer_child_process() {
         let Ok(dir) = std::env::var(CRASH_DIR_VAR) else {
             panic!("{CRASH_DIR_VAR} is unset: this test is only run as a child process");

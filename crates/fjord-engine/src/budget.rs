@@ -282,10 +282,7 @@ mod tests {
         assert_eq!(budget.charge_retained_facts(MAX_FACT_SEQUENCE), Ok(()));
         // One more must fail, proving the configured limit really did land at
         // MAX_FACT_SEQUENCE and not at the caller's oversized request.
-        assert_eq!(
-            budget.charge_retained_facts(1),
-            Err(Limit::RetainedFacts)
-        );
+        assert_eq!(budget.charge_retained_facts(1), Err(Limit::RetainedFacts));
     }
 
     proptest! {
@@ -430,7 +427,8 @@ mod tests {
     /// generated-program count back down within one derivation.
     #[test]
     fn a_monotonic_limit_stays_exceeded_once_hit() {
-        let mut budget = DerivationBudget::new(DerivationLimits::new(5, u64::MAX, u64::MAX, u64::MAX));
+        let mut budget =
+            DerivationBudget::new(DerivationLimits::new(5, u64::MAX, u64::MAX, u64::MAX));
         assert_eq!(budget.charge_retained_facts(6), Err(Limit::RetainedFacts));
         // Charging zero more still reports over-limit rather than resetting.
         assert_eq!(budget.charge_retained_facts(0), Err(Limit::RetainedFacts));
@@ -442,7 +440,8 @@ mod tests {
     /// plan's table exists to distinguish from the other four counters.
     #[test]
     fn retained_bytes_recovers_after_a_release() {
-        let mut budget = DerivationBudget::new(DerivationLimits::new(u64::MAX, 100, u64::MAX, u64::MAX));
+        let mut budget =
+            DerivationBudget::new(DerivationLimits::new(u64::MAX, 100, u64::MAX, u64::MAX));
         assert_eq!(budget.charge_retained_bytes(150), Err(Limit::RetainedBytes));
         assert_eq!(budget.charge_retained_bytes(-100), Ok(())); // live: 50
         assert_eq!(budget.charge_retained_bytes(40), Ok(())); // live: 90
@@ -453,7 +452,8 @@ mod tests {
 
     #[test]
     fn charging_zero_retained_facts_probes_without_moving_the_counter() {
-        let mut budget = DerivationBudget::new(DerivationLimits::new(10, u64::MAX, u64::MAX, u64::MAX));
+        let mut budget =
+            DerivationBudget::new(DerivationLimits::new(10, u64::MAX, u64::MAX, u64::MAX));
         assert_eq!(budget.charge_retained_facts(0), Ok(()));
         assert_eq!(budget.retained_facts(), 0);
     }
