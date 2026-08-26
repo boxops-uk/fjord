@@ -330,7 +330,7 @@ check(
 
 await openSection('tokens')
 await page.waitForSelector('.scroller tbody tr')
-await type('.editor .input', 'P where code.File P; P = 7 ~')
+await type('.editor .input', 'P where code.File P; P = 7 ~ @')
 
 const tokens = (await page.$$eval('.scroller tbody tr', (trs) =>
   trs.map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent)),
@@ -348,7 +348,8 @@ check(
       ['UId', 'variable', 'P'],
       ['Eq', 'punctuation', '='],
       ['Nat', 'number', '7'],
-      ['Error', 'error', '~'],
+      ['Tilde', 'punctuation', '~'],
+      ['Error', 'error', '@'],
     ]),
 )
 check(
@@ -364,7 +365,7 @@ check(
   'the source is underlined at every phase, not just the lexer',
   (await page.$$('.editor .tok.faulty')).length > 0,
 )
-await type('.editor .input', 'P where code.File P; P = 7 ~')
+await type('.editor .input', 'P where code.File P; P = 7 ~ @')
 check(
   'every class the page styles reaches the paint layer',
   new Set(await page.$$eval('.paint .tok', (ts) => ts.map((t) => t.className))).size >= 5,
