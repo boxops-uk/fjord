@@ -94,7 +94,7 @@ pub enum Placement {
 }
 
 /// What one statement needs bound before it runs, and what it can bind itself.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StmtDeps {
     /// Variables this statement can bind, by capturing them from a key field it
     /// matches. A variable in more than one statement's `captures` is bound by
@@ -110,7 +110,7 @@ pub struct StmtDeps {
 
 /// The dependency graph flatten hands to [`reorder`]: one entry per statement, in
 /// the order flatten collected them.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Deps {
     stmts: Box<[StmtDeps]>,
 }

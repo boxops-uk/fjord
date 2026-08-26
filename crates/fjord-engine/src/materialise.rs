@@ -263,6 +263,52 @@ mod tests {
         prop::sample::select(vec!["a", "b", "c", "d"])
     }
 
+    /// **The census.** Three of the four outcomes here are refusals, and a refusal
+    /// agrees with the oracle cheaply — both say `Err`. It is the *successful*
+    /// projection that carries the claim this module exists for, that each value lands
+    /// under its declared position, and it is the rarest draw of the four.
+    #[test]
+    fn the_generator_reaches_every_outcome_including_success() {
+        use proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 2_000;
+
+        let mut runner = TestRunner::deterministic();
+        let strategy = (
+            prop::collection::vec(small_name(), 0..5),
+            prop::collection::vec(small_name(), 0..5),
+        );
+        let (mut projected, mut duplicate, mut missing, mut extra) = (0, 0, 0, 0);
+
+        for _ in 0..RUNS {
+            let (declared, supplied_names) = strategy.new_tree(&mut runner).unwrap().current();
+            let supplied: Vec<(&str, u32)> = supplied_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (*name, i as u32))
+                .collect();
+
+            match project(&declared, supplied) {
+                Ok(_) => projected += 1,
+                Err(ProjectionError::DuplicateField(_)) => duplicate += 1,
+                Err(ProjectionError::MissingField(_)) => missing += 1,
+                Err(ProjectionError::ExtraField(_)) => extra += 1,
+            }
+        }
+
+        assert!(
+            projected > RUNS / 50,
+            "the generator almost never draws a well-formed pair, so the placement \
+             claim is barely exercised: {projected} of {RUNS}"
+        );
+        assert!(duplicate > 0, "no draw was refused for a duplicate");
+        assert!(missing > 0, "no draw was refused for a missing field");
+        assert!(extra > 0, "no draw was refused for an extra field");
+    }
+
     proptest! {
         /// The real projection and the naive string-name oracle agree exactly
         /// — same `Ok`/`Err`, same value, for any declared/supplied pair,

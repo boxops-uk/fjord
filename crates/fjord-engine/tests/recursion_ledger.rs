@@ -31,6 +31,16 @@ fn a_with_block_parses_and_the_corpus_executes_it() {
     unimplemented!("Movement 7 — the surface")
 }
 
+/// The declaration list and the compiler catalogue are two name spaces that have never
+/// met: `Program` holds `Symbol` names, `Catalogue<'a, N>` is generic in its local name
+/// type, and nothing yet says one is built from the other. Until it does, a local
+/// relation resolves in the program and is unknown to the compiler.
+#[test]
+#[ignore = "guard: a program's declared local names are the compiler catalogue's locals, and each resolves to the id the catalogue mints for it, owned by Movement 1"]
+fn a_programs_local_names_are_the_catalogues_locals() {
+    unimplemented!("Movement 1 — the relation store and the overlay")
+}
+
 // ---- item 2 — the predicate catalogue -----------------------------------------
 
 #[test]

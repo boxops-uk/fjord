@@ -304,6 +304,30 @@ impl Schema {
         self
     }
 
+    /// Mark every predicate in the **reserved namespace** virtual.
+    ///
+    /// The one definition of which predicates are virtual, because the two sides that
+    /// need it are not free to disagree: the server marks a served schema this way, and
+    /// a client that recovers that schema from its source text gets a `Schema` with
+    /// nothing marked — `with_virtual` is opt-in and the printed form carries no marker.
+    /// A client deciding virtuality separately, or not at all, holds catalogue rows it
+    /// believes are stored facts, which is the identity-scope hole
+    /// [I11](../../../website/content/invariants.md#i11)'s carve-out is about.
+    #[must_use]
+    pub fn with_reserved_virtual(self) -> Schema {
+        let reserved: Vec<PredicateId> = (0..self.len())
+            .filter_map(|index| {
+                let id = PredicateId(index as u32);
+                self.get(id)?
+                    .name()?
+                    .starts_with(crate::syntax::lower::RESERVED_NAMESPACE)
+                    .then_some(id)
+            })
+            .collect();
+
+        self.with_virtual(reserved)
+    }
+
     /// Whether this predicate is answered rather than stored.
     ///
     /// **What the answer changes, everywhere it is asked.** A virtual predicate has no

@@ -737,6 +737,147 @@ fn cancelling_a_virtual_query_before_its_first_row_consumes_the_listing_digest()
     assert!(connection.drain(&mut again).expect("it answers").is_empty());
 }
 
+/// **A cached virtual id does not outlive the listing it was a position in.** The fetch
+/// digest cannot catch this on its own: `prefetch` asks only for ids it does not already
+/// hold, so a cached catalogue row is never re-fetched and its digest never re-checked.
+/// Left unrepaired, the second expansion below names the database the *first* listing had
+/// at that position.
+#[test]
+fn a_cached_virtual_id_does_not_survive_a_relisting() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+    let mut connection = serving.open(Mode::ReadOnly);
+    // The *served* schema, which is what declares the catalogue and marks it virtual.
+    // The handshake schema deliberately excludes it, so an expander built from that one
+    // would neither decode a listing row nor know it held a virtual id.
+    let served = Arc::new(connection.served_schema().expect("the served schema"));
+    let mut expander = Expander::new(served);
+
+    let name_of = |value: &WireValue| -> String {
+        let WireValue::Record(fields) = &nested(value).key else {
+            panic!("a listing row's key is a record: {value:?}");
+        };
+        let WireValue::Str(name) = &fields[0] else {
+            panic!("a listing row's first field is its name: {fields:?}");
+        };
+        name.clone()
+    };
+
+    let mut rows = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens");
+    let listed = connection.drain(&mut rows).expect("the rows arrive");
+    assert_eq!(listed.len(), 1);
+
+    let first = expander
+        .expand(
+            &mut connection,
+            &listed[0],
+            FULL_DEPTH,
+            rows.listing_digests(),
+        )
+        .expect("the virtual id resolves");
+    assert_eq!(name_of(&first), "code");
+
+    // A database that sorts *before* the one already there, so the row this id names
+    // changes rather than merely moving down the page.
+    control.create("aaa", &source).expect("a second database");
+
+    let mut relisted = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens again");
+    let after = connection.drain(&mut relisted).expect("the rows arrive");
+    assert_eq!(after.len(), 2);
+
+    let second = expander
+        .expand(
+            &mut connection,
+            &after[0],
+            FULL_DEPTH,
+            relisted.listing_digests(),
+        )
+        .expect("the virtual id resolves");
+    assert_eq!(
+        name_of(&second),
+        "aaa",
+        "a cached virtual id answered for the listing it was minted in"
+    );
+
+    // The digests really did move, so the assertion above is not passing because
+    // nothing changed.
+    assert_ne!(
+        rows.listing_digests(),
+        relisted.listing_digests(),
+        "the listing digest did not move; this test proves nothing"
+    );
+}
+
+/// A digest scopes caching, not whether the fetch result is useful for the current
+/// expansion. The server deliberately resolves a digestless virtual id typed by hand.
+#[test]
+fn a_digestless_virtual_fetch_expands_for_the_current_row() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+    let mut connection = serving.open(Mode::ReadOnly);
+    let served = Arc::new(connection.served_schema().expect("the served schema"));
+    let mut expander = Expander::new(served);
+
+    let mut rows = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens");
+    let listed = connection.drain(&mut rows).expect("the row arrives");
+    assert_eq!(listed.len(), 1);
+
+    let expanded = expander
+        .expand(&mut connection, &listed[0], FULL_DEPTH, &[])
+        .expect("a digestless fetch still resolves now");
+
+    let listing_name = |value: &WireValue| -> String {
+        let WireValue::Ref(WireRef::Nested(fact)) = value else {
+            panic!("the listing id was not expanded: {value:?}");
+        };
+        let WireValue::Record(fields) = &fact.key else {
+            panic!("a listing key is a record: {:?}", fact.key);
+        };
+        let WireValue::Str(name) = &fields[0] else {
+            panic!("a listing name is a string: {fields:?}");
+        };
+        name.clone()
+    };
+    assert_eq!(listing_name(&expanded), "code");
+
+    control.create("aaa", &source).expect("a second database");
+    let current = expander
+        .expand(&mut connection, &listed[0], FULL_DEPTH, &[])
+        .expect("the same id resolves without using the previous row");
+    assert_eq!(listing_name(&current), "aaa");
+}
+
+/// The repair above rests on the recovered schema knowing which predicates are virtual,
+/// and the printed form carries no marker for it. A `served_schema` that stopped marking
+/// them would leave every guard above green while the cache went stale again.
+#[test]
+fn a_served_schema_marks_the_catalogue_virtual() {
+    let serving = start_with_catalogue();
+    let mut connection = serving.open(Mode::ReadOnly);
+    let served = connection.served_schema().expect("the served schema");
+
+    let (listing, _) = served
+        .find_position("fjord.db.List")
+        .expect("the catalogue is served");
+    assert!(served.is_virtual(listing));
+
+    let (stored, _) = served
+        .find_position("src.File")
+        .expect("the database's own predicates are served too");
+    assert!(
+        !served.is_virtual(stored),
+        "a stored predicate was marked virtual"
+    );
+}
+
 /// A query that does not compile fails its **stream**, carrying the compiler's own
 /// diagnostics, and the connection is usable afterwards.
 #[test]

@@ -30,7 +30,7 @@ use std::{
 
 use fjord_schema::{
     fingerprint::{self, Identity},
-    schema::{PredicateId, Schema},
+    schema::Schema,
     syntax,
 };
 use fjord_store_fjall::{
@@ -190,16 +190,7 @@ impl Schemas {
 /// marked the same way as one appended to a database's schema. Marking it in one place
 /// and not the other is how a catalogue predicate acquires keyspaces.
 fn with_virtuals_marked(schema: &Schema) -> Schema {
-    schema
-        .clone()
-        .with_virtual((0..schema.len()).filter_map(|index| {
-            let id = PredicateId(index as u32);
-            schema
-                .get(id)?
-                .name()?
-                .starts_with(syntax::lower::RESERVED_NAMESPACE)
-                .then_some(id)
-        }))
+    schema.clone().with_reserved_virtual()
 }
 
 /// The store root, and the databases open under it.
@@ -632,7 +623,7 @@ fn finished(sealed: &Finished) -> ControlReply {
 
 #[cfg(test)]
 mod tests {
-    use fjord_schema::schema::{Predicate, PredicateTy};
+    use fjord_schema::schema::{Predicate, PredicateId, PredicateTy};
     use lasso::Rodeo;
 
     use super::*;

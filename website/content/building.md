@@ -27,7 +27,7 @@ counting.
 :::note The coverage ledger
 `cargo test -- --ignored --list` prints every test that is written but not yet live.
 `scripts/check-guards.py` separates guards from test machinery and checks the exact names,
-claims and owners against an independent manifest. The ledger currently holds **sixteen**
+claims and owners against an independent manifest. The ledger currently holds **seventeen**
 pending guards. Work that touches one is finished only when it is implemented, un-ignored
 and green. See [Testing method](testing.html).
 :::

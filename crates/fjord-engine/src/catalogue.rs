@@ -259,6 +259,46 @@ mod tests {
         names
     }
 
+    /// **The census.** A draw with no locals never resolves through the local half at
+    /// all, and one with no base predicates never exercises the schema-first rule. The
+    /// oracle agrees with either trivially.
+    #[test]
+    fn the_generator_reaches_both_halves_of_the_catalogue() {
+        use proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 2_000;
+
+        let mut runner = TestRunner::deterministic();
+        let strategy = (
+            prop::collection::hash_set("[a-z]{1,6}", 0..8),
+            prop::collection::hash_set("[A-Z]{1,6}", 0..8),
+        );
+        let (mut no_locals, mut no_base, mut both) = (0, 0, 0);
+
+        for _ in 0..RUNS {
+            let (base, locals) = strategy.new_tree(&mut runner).unwrap().current();
+
+            if locals.is_empty() {
+                no_locals += 1;
+            } else if base.is_empty() {
+                no_base += 1;
+            } else {
+                both += 1;
+            }
+        }
+
+        assert!(
+            both > RUNS / 4,
+            "the generator rarely draws a schema and locals together, which is the \
+             only shape that exercises the boundary between them: {both} of {RUNS}"
+        );
+        assert!(no_locals > 0, "no draw reached the base-only case");
+        assert!(no_base > 0, "no draw reached the locals-only case");
+    }
+
     proptest! {
         /// For any base schema plus any local names (distinct from the base
         /// and from each other, so resolution is unambiguous), the catalogue's

@@ -571,7 +571,12 @@ impl Connection {
     pub fn served_schema(&mut self) -> Result<Schema, ClientError> {
         let source = self.served_schema_source()?;
 
+        // **Marked here, or `is_virtual` lies to every client-side consumer.** The
+        // printed form carries no virtual marker — virtuality is the reserved
+        // namespace, not syntax — so a recovered schema has nothing marked and an
+        // expander holding a catalogue row would take it for a stored fact.
         fjord_schema::syntax::recover("the schema this server serves", &source)
+            .map(Schema::with_reserved_virtual)
             .map_err(ClientError::Protocol)
     }
 

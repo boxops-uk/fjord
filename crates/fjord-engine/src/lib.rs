@@ -23,14 +23,17 @@ pub mod dnf;
 pub mod error;
 pub mod flatten;
 pub mod iter;
+pub mod local_identity;
 pub mod lower;
 pub mod materialise;
 pub mod parse;
 pub mod plan;
 pub mod print;
+pub mod program;
 pub mod reorder;
 pub mod syntax;
 pub mod ty;
+pub mod work_bound;
 
 // The generated-parser glue and its `logos` lexer. Public because the façade
 // (`cst`) hands out `Rule` and `Token` values, and because the compilation

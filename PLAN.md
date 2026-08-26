@@ -24,7 +24,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 | [The read-path benchmark](#the-read-path-benchmark-against-glean) | planned, with predictions | a quiet machine and the indexed corpus |
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
 | [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
-| [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not. [Movement 0](#movement-0--semantics-and-seams)'s parts 0a–0d are green | a **0e**: items 1 and 9's `Program` AST, item 3's four refusals, and the `Expander` repair — three green-before-close cells no part of the split owned |
+| [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not. [Movement 0](#movement-0--semantics-and-seams) is green through 0e | nothing — [Movement 1](#movement-1--the-relation-store-and-the-overlay) is next, and unblocked |
 | [Operational gaps](#operational-gaps) | each named with the seam that keeps it cheap | — |
 | [Language backlog](#language-backlog) | additive; none reshapes the machine | — |
 
@@ -2311,7 +2311,7 @@ leaving it permanently at its untested default.
 
 | item | green before Movement 0 closes | deferred, and to whom |
 |---|---|---|
-| **1, 9** | a hand-built `Program` AST preserves clause multiplicity and source order; duplicate declarations refuse; forward and mutual references resolve; per-rule `collect` equals today's single-query collection | source spelling and corpus execution — Movement 7 |
+| **1, 9** | a hand-built `Program` AST preserves clause multiplicity and source order; duplicate declarations refuse; every rule target resolves from the complete declaration list; per-rule `collect` equals today's single-query collection | local names consumed by the compiler catalogue — Movement 1; source spelling and corpus execution — Movement 7 |
 | **2** | the schema-first catalogue property against a **dense-array model**, virtual augmentation, deterministic tags, the exact-last and one-past bounds, base-only plans and fingerprints unchanged | generated magic and delta namespace exhaustion — Movement 6 |
 | **3** | the four identity-observability refusals over hand-built IR; the canonical-id allocator mapping encoded-key rank to a sequence from one; the permutation property; the virtual fetch and cache repair | driver-level canonicality across rule scheduling and expansion strategy — Movement 3 |
 | **4** | the projection property against an independent **string-name model**; non-lexical order; same-typed reversed fields; missing, extra and duplicate fields; scalar and union heads refused by name | the full source corpus — Movement 7 |
@@ -2435,12 +2435,13 @@ The order is a dependency order rather than a preference: 0a repairs what recurs
 otherwise be built on, 0b decides what a signature may contain, 0c is what 0b's decisions are
 checked with, and 0d is the only part that widens a seam.
 
-**With 0a–0d green, Movement 0 does not close, and the four parts do not cover it.** Read the
-proof-boundary table against the tree rather than against this list and three of its
-green-before-close cells have no part that owns them — the same finding the seventh round made
-about assertions owned by nobody, one level up, about *work* owned by no part. They are named
-here rather than absorbed into a later movement, because each is a gate something downstream was
-told it could rely on:
+**The four parts did not cover the movement, and a fifth was owed.** Read the proof-boundary
+table against the tree rather than against this list and five of its green-before-close cells had
+no part that owned them — the same finding the seventh round made about assertions owned by
+nobody, one level up, about *work* owned by no part. Three were found by the audit that closed
+0d and two more only while 0e was being built, which is the part worth remembering: an audit of a
+split is itself a claim, and this one was wrong twice. They are named here rather than absorbed
+into a later movement, because each is a gate something downstream was told it could rely on:
 
 - **Items 1 and 9 own the largest of them.** Their cell requires a hand-built `Program` AST
   preserving clause multiplicity and source order, duplicate declarations refusing, forward and
@@ -2463,6 +2464,49 @@ So a **0e** is owed before the closing checklist can be run — items 1 and 9's 
 per-rule `collect`, item 3's four refusals and their diagnostics, and the `Expander` repair.
 Nothing in it moves the architecture; it is the work the split missed rather than work the split
 deferred.
+
+- **0e — the work the split missed. Done, and it was larger than the audit that named it.**
+  `program::Program` — several named rules over one syntax store with the answer goal as the
+  `Ast`'s own query. `NodeId` carries its arena identity, `SyntaxTree` refuses foreign children,
+  and `Program` returns `ForeignSyntaxTree` before a foreign rule can be collected. The public
+  two-stage builder fixes the complete declaration list before it hands out rule targets, so a
+  non-empty program is constructible without manufacturing an opaque index. Duplicate declarations
+  refuse, duplicate clauses are retained, and `rules_for` is proved to answer distinct bodies in
+  source order. Local predicate names inside rule bodies become provable when Movement 1 consumes
+  the already-built catalogue; this phase does not call declaration lookup "mutual recursion".
+  Item 9's SIPS seam is `flatten::rule_dependencies`:
+  the `Flattener` gains the rule body as a field beside the shared `Ast`, which is seven call sites
+  and no behaviour change — the full engine battery is the evidence — and `collect_rule` is
+  proved equal to today's single-query collection over four bodies, with a shorter body as the
+  control that stops the equality passing vacuously.
+  `local_identity` refuses item 3's four constructs over hand-built IR and holds the declaration
+  rule that makes three of them unreachable, with the worked `Reach` fetch — *through* a local row
+  onto a base target — as the control a too-broad refusal would fail.
+  The `Expander` repair is digest-keyed rather than a method a caller must remember to call. A
+  digestless virtual fetch uses a per-expansion transient map, so its successful answer expands the
+  current row but cannot survive into the next one. `Schema::with_reserved_virtual` is now the one
+  definition of which predicates are virtual, used by
+  the server when it serves a schema and by the client when it recovers one.
+
+  **Two more green-before-close cells had no owner, and the audit that produced this list missed
+  them too** — recorded because the same omission twice is the finding, not the two items. Item 4's
+  scalar and union heads are now refused by name (`ProgramError::NonRecordRelation`), and its
+  key-only rule is structural: `RelationDecl` carries no value field, guarded by a source check, so
+  the three subsystems that would disagree about a value side cannot be given one. Item 5's
+  history-sensitive work bound is `work_bound`, a trait-level harness measuring an empty-range seek,
+  a narrow seek, a point lookup and a full scan across a batch-built and an N-round relation — with
+  a per-round segmented relation as the control it must reject, since a harness nothing fails is a
+  harness that proves nothing. The bound is a **ratio to the oracle**, computed in `u128` so large
+  work counters cannot saturate both cross-products into a false equality; a size whose `2N`
+  overflows is refused before either relation is built.
+
+  **What 0e deliberately does not reach.** No `Code` variant is added for any refusal here: the
+  closing checklist forbids a variant ahead of the path that provokes it, and every one of these
+  is reached from source only once Movement 7 gives `with` a surface — so each is a typed error at
+  the layer that can provoke it today, and owes its `Code`, its corpus entry and its reachability
+  then. And `program::proptest` is not written: a `Program` type exists but nothing generates one
+  yet, so a canonical strategy and its population census belong to the movement that first
+  evaluates generated programs, alongside the relation strategy Movement 1 owes.
 
 **Gating is about *completion*, not about starting, and an earlier draft of this paragraph
 conflated them.** A movement can be prototyped against hand-authored inputs long before the items
@@ -2490,6 +2534,40 @@ relation named as a local relation's field type (item 3), execution-tag exhausti
 that the generated-program limit and execution-tag exhaustion are the two entries that sometimes
 have no diagnostic at all, because **any** compile-time failure attributable to the magic attempt
 falls back (item 7) while the same failure in a mandatory expansion does not.
+
+**Movement 0 was then audited against its own boundary rather than against itself, and the
+audit is recorded because four of its five findings were *vacuity* rather than absence** — guards
+that existed, passed, and proved less than they read as proving. The method was mutation: break
+the subject, require the named guard to go red. Twenty-eight mutations across every part, and the
+four that stayed green are the findings.
+
+- **A guard passing for the wrong reason.** `a_tree_refuses_a_child_from_another_arena` pushed a
+  foreign node into an *empty* tree, so `contains`'s bounds half already refused it and the arena
+  comparison was never reached — delete arena identity entirely and the guard stayed green. Its
+  sibling now gives the foreign node an index that is valid in the target tree, which is the case
+  that silently mis-resolves rather than panicking.
+- **Half of item 5's bound was unexercised.** Every rejection in `work_bound` came from the growth
+  branch; disable the factor comparison and the module stayed green. Since Movement 1's acceptance
+  is phrased as "a bounded factor more **and** may not grow with N", the half it will lean on to
+  say *bounded factor* had no test. A constant-overhead relation — fixed multiple of the oracle at
+  every size, so growth has nothing to report — now rejects on the factor alone, and passes under a
+  factor that admits it.
+- **Five generated domains had no census**, against a convention this repository already keeps in
+  nine files. All five were measured before anything was asserted and all five were healthy — but
+  unasserted health is what a census exists to stop: the DNF strategy reaches a real multi-branch
+  product in 35% of draws and a well-formed materialisation is 5% of its own, and either could fall
+  to zero under a later strategy edit with every property still green. Each census is itself
+  mutation-tested against a deliberately degenerated strategy.
+- **A deferred obligation owned by nobody.** Item 1 and 9's deferred column names *local names
+  consumed by the compiler catalogue*, and no ledger guard claimed it — the table was amended when
+  the row was narrowed and the ledger was not. `Program` holds `Symbol` names and `Catalogue` is
+  generic in its local name type; nothing yet says one is built from the other. Now owned by
+  Movement 1, which brings the ledger to seventeen.
+
+The fifth finding is that nothing else moved: the other twenty-four mutations were caught by the
+guard that names them, including every refusal in `local_identity`, both halves of the `Expander`
+repair, the seal on `borrow::StoreRef`, the schema-first rule in `catalogue`, and the dedup in
+`canonical_id`.
 
 ### Movement 1 — the relation store and the overlay
 

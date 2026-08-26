@@ -110,6 +110,47 @@ mod tests {
             .collect()
     }
 
+    /// **The census.** The oracle property is about *ranking*, which a set of one key
+    /// cannot exercise and an empty one cannot reach at all. Duplicates matter as much:
+    /// collapsing them is this function's job, so a draw that never repeats a key would
+    /// leave the dedup unmeasured.
+    #[test]
+    fn the_generator_reaches_multi_key_sets_and_duplicates() {
+        use proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 2_000;
+
+        let mut runner = TestRunner::deterministic();
+        let strategy = prop::collection::vec(prop::collection::vec(any::<u8>(), 0..6), 0..40);
+        let (mut trivial, mut many, mut with_duplicates) = (0, 0, 0);
+
+        for _ in 0..RUNS {
+            let keys = strategy.new_tree(&mut runner).unwrap().current();
+            let distinct: BTreeSet<Vec<u8>> = keys.iter().cloned().collect();
+
+            with_duplicates += usize::from(keys.len() != distinct.len());
+            if distinct.len() < 2 {
+                trivial += 1;
+            } else {
+                many += 1;
+            }
+        }
+
+        assert!(
+            many > RUNS / 2,
+            "the generator rarely draws two distinct keys, so ranking is barely \
+             exercised: {many} of {RUNS}"
+        );
+        assert!(
+            with_duplicates > RUNS / 20,
+            "duplicates are barely drawn: {with_duplicates}"
+        );
+        assert!(trivial > 0, "no draw reached the empty or single-key case");
+    }
+
     proptest! {
         /// The real allocator and the naive counting oracle agree on every rank,
         /// for any set of keys in any arrival order — the property `canonical_ids`

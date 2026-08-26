@@ -73,7 +73,9 @@ use crate::{
         Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
-    syntax::{ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, QueryStmt},
+    syntax::{
+        ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt,
+    },
 };
 use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, Value, put_i64, put_str};
 use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
@@ -612,8 +614,31 @@ pub fn dependencies(
     interner: &mut LocalInterner,
     diagnostics: &mut Diagnostics,
 ) -> Option<Deps> {
+    rule_dependencies(ast, ast.query(), schema, interner, diagnostics)
+}
+
+/// The same, over **one rule of a program** rather than over the syntax store's own
+/// query — the SIPS seam item 9 names.
+///
+/// Adornment and semi-naive variant generation are clause rewrites, and what they need
+/// is the collected statements and symbol dependencies of an *arbitrary* rule body:
+/// `Collected` is built before an order is chosen, and `Deps` is symbol-level
+/// `captures`/`reads` with no plan structure in it. `ast` supplies the shared syntax
+/// store — `store`, `is_constant`, `is_destructurable` — and `query` the rule.
+///
+/// **`query`'s nodes must be `ast`'s.** A `NodeId` is a position in one store, so a rule
+/// built against another tree indexes this one's arena and silently collects a different
+/// query. A program holds one store precisely so that cannot arise.
+pub(crate) fn rule_dependencies(
+    ast: &Ast,
+    query: &Query<NodeId>,
+    schema: &Schema,
+    interner: &mut LocalInterner,
+    diagnostics: &mut Diagnostics,
+) -> Option<Deps> {
     let mut flattener = Flattener {
         ast,
+        query,
         schema,
         interner,
         diagnostics,
@@ -665,6 +690,7 @@ fn flatten_reporting(
 ) -> Option<Plan> {
     let mut flattener = Flattener {
         ast,
+        query: ast.query(),
         schema,
         interner,
         diagnostics,
@@ -705,6 +731,14 @@ fn flatten_reporting(
 
 struct Flattener<'a> {
     ast: &'a Ast,
+    /// **The rule body being collected**, which is the `Ast`'s own query for every
+    /// query the language compiles today.
+    ///
+    /// Separate from `ast` because a program is several rules over *one* syntax store:
+    /// `store`, `is_constant` and `is_destructurable` are the program's and shared,
+    /// while the body and head are the rule's. Reading `ast.query()` here instead is
+    /// what made collection single-query, and adornment needs it per rule.
+    query: &'a Query<NodeId>,
     schema: &'a Schema,
     interner: &'a mut LocalInterner,
     diagnostics: &'a mut Diagnostics,
@@ -788,7 +822,7 @@ impl Flattener<'_> {
         let mark = self.diagnostics.len();
         let mut stmts: Vec<Stmt> = vec![];
 
-        for stmt in self.ast.query().body() {
+        for stmt in self.query.body() {
             match stmt {
                 QueryStmt::Implicit(node) => {
                     if let Some(generator) = self.generator(*node, None) {
@@ -822,7 +856,7 @@ impl Flattener<'_> {
 
         // The head last, and after every statement: a generator in the head is read by
         // the projection, which runs once every level has bound, and nothing reads it.
-        let head = *self.ast.query().head();
+        let head = *self.query.head();
         self.hoist_node(head, &mut stmts);
 
         // `X = Y` is symmetric and its spelling is not, so the direction is settled
@@ -960,7 +994,7 @@ impl Flattener<'_> {
         self.negated_wildcards(&stmts, &deps);
 
         let mut head = Occurrences::default();
-        self.scan_head(*self.ast.query().head(), &mut head);
+        self.scan_head(*self.query.head(), &mut head);
 
         if self.diagnostics.len() != mark {
             return None;
@@ -1708,7 +1742,7 @@ impl Flattener<'_> {
         let mut outer = vec![];
         let mut seen_subquery = false;
 
-        for stmt in self.ast.query().body() {
+        for stmt in self.query.body() {
             match stmt {
                 QueryStmt::Bind(_, rhs) if *rhs == at => seen_subquery = true,
                 QueryStmt::Implicit(node) if seen_subquery => {
@@ -2428,7 +2462,7 @@ impl Flattener<'_> {
 
         for read in &collected.head_reads {
             if !bound.contains(read) && !missing.contains(read) {
-                let at = self.ast.store().span(*self.ast.query().head());
+                let at = self.ast.store().span(*self.query.head());
                 missing.push(*read);
                 self.unbound(*read, at);
                 ok = false;
@@ -2649,14 +2683,14 @@ impl Flattener<'_> {
 
         // The head reads after every statement has bound, so its own fetches are
         // the innermost levels — one row each, so the row count is unchanged.
-        self.fetch_within(*self.ast.query().head(), &mut body);
+        self.fetch_within(*self.query.head(), &mut body);
 
         self.apply_compares(&mut body);
         self.apply_constraints(&mut body);
         self.apply_denials(&mut body);
         self.apply_comparisons(&mut body);
 
-        let head = self.project(*self.ast.query().head());
+        let head = self.project(*self.query.head());
 
         // **Last, and prepended.** A select in the head is not resolved until
         // `project` above has run, so this cannot come earlier; and because a tag

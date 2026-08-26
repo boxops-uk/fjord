@@ -1,4 +1,11 @@
-use std::{ops::Range, sync::Arc};
+use std::{
+    fmt,
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use fjord_schema::schema::{PredicateId, Symbol};
 
@@ -51,8 +58,17 @@ impl TyVarId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NodeId(u32);
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct NodeId {
+    arena: u64,
+    index: u32,
+}
+
+impl fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("NodeId").field(&self.index).finish()
+    }
+}
 
 impl NodeId {
     /// Index into a side table. `NodeId`s are dense — the store is append-only —
@@ -60,7 +76,7 @@ impl NodeId {
     ///
     /// [chapter 7]: ../../../website/content/query-language.md
     pub fn index(self) -> usize {
-        self.0 as usize
+        self.index as usize
     }
 }
 
@@ -194,6 +210,7 @@ impl CompareOp {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum QueryStmt<T> {
     Bind(T, T),
     Implicit(T),
@@ -222,6 +239,7 @@ pub enum QueryStmt<T> {
     Compare(T, T, CompareOp),
 }
 
+#[derive(Clone)]
 pub struct Query<T> {
     body: Box<[QueryStmt<T>]>,
     head: T,
@@ -247,7 +265,11 @@ pub struct Ast {
 }
 
 impl Ast {
-    pub fn new(query: Query<NodeId>, store: SyntaxTree<ExprKind<NodeId>>) -> Self {
+    pub(crate) fn new(query: Query<NodeId>, store: SyntaxTree<ExprKind<NodeId>>) -> Self {
+        assert!(
+            store.owns_query(&query),
+            "an AST query must belong to its syntax arena"
+        );
         Ast { query, store }
     }
 
@@ -257,6 +279,11 @@ impl Ast {
 
     pub fn store(&self) -> &SyntaxTree<ExprKind<NodeId>> {
         &self.store
+    }
+
+    /// Whether every root in `query` belongs to this AST's arena.
+    pub(crate) fn owns(&self, query: &Query<NodeId>) -> bool {
+        self.store.owns_query(query)
     }
 
     /// Whether `node` is a value known at **compile time** — a literal, or a record
@@ -315,6 +342,7 @@ impl Ast {
 ///
 /// [chapter 7]: ../../../website/content/query-language.md
 pub struct SyntaxTree<K: Recursive> {
+    arena: u64,
     kinds: Vec<K>,
     spans: Vec<NodeSpan>,
 }
@@ -327,7 +355,16 @@ impl<K: Recursive> Default for SyntaxTree<K> {
 
 impl<K: Recursive> SyntaxTree<K> {
     pub fn new() -> Self {
+        static NEXT_ARENA: AtomicU64 = AtomicU64::new(1);
+        let arena = match NEXT_ARENA.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        }) {
+            Ok(arena) => arena,
+            Err(_) => panic!("syntax arena identity space exhausted"),
+        };
+
         SyntaxTree {
+            arena,
             kinds: vec![],
             spans: vec![],
         }
@@ -335,18 +372,36 @@ impl<K: Recursive> SyntaxTree<K> {
 
     /// Append a node and return its id.
     pub fn push(&mut self, kind: K, span: NodeSpan) -> NodeId {
-        let id = NodeId(self.kinds.len() as u32);
+        let _ = kind.map(|child| {
+            assert!(
+                self.contains(child),
+                "a syntax node cannot contain a child from another arena"
+            );
+        });
+
+        let id = NodeId {
+            arena: self.arena,
+            index: self.kinds.len() as u32,
+        };
         self.kinds.push(kind);
         self.spans.push(span);
         id
     }
 
     pub fn kind(&self, id: NodeId) -> &K {
-        &self.kinds[id.0 as usize]
+        assert!(
+            self.contains(id),
+            "node does not belong to this syntax arena"
+        );
+        &self.kinds[id.index as usize]
     }
 
     pub fn span(&self, id: NodeId) -> NodeSpan {
-        self.spans[id.0 as usize].clone()
+        assert!(
+            self.contains(id),
+            "node does not belong to this syntax arena"
+        );
+        self.spans[id.index as usize].clone()
     }
 
     pub fn len(&self) -> usize {
@@ -355,6 +410,24 @@ impl<K: Recursive> SyntaxTree<K> {
 
     pub fn is_empty(&self) -> bool {
         self.kinds.is_empty()
+    }
+
+    fn contains(&self, id: NodeId) -> bool {
+        id.arena == self.arena && id.index < self.kinds.len() as u32
+    }
+
+    fn owns_query(&self, query: &Query<NodeId>) -> bool {
+        if !self.contains(*query.head()) {
+            return false;
+        }
+
+        query.body().iter().all(|stmt| {
+            let mut owned = true;
+            let _ = stmt.map(|node| {
+                owned &= self.contains(node);
+            });
+            owned
+        })
     }
 
     /// Fold the subtree at `id` bottom-up.
@@ -366,7 +439,11 @@ impl<K: Recursive> SyntaxTree<K> {
     where
         F: FnMut(NodeId, K::Base<R>) -> R,
     {
-        let acc = self.kinds[id.0 as usize].map(|child_id| self.reduce(child_id, f));
+        assert!(
+            self.contains(id),
+            "node does not belong to this syntax arena"
+        );
+        let acc = self.kinds[id.index as usize].map(|child_id| self.reduce(child_id, f));
         f(id, acc)
     }
 }
@@ -444,6 +521,37 @@ mod tests {
             let span = narrow_offset(start)..narrow_offset(end);
             assert_eq!(source_range(&span), start..end);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "a syntax node cannot contain a child from another arena")]
+    fn a_tree_refuses_a_child_from_another_arena() {
+        let mut one = SyntaxTree::new();
+        let mut other = SyntaxTree::new();
+        let foreign = other.push(ExprKind::Lit(Literal::Int(1)), 0..1);
+
+        one.push(ExprKind::Access(FieldRef::Value, foreign), 0..1);
+    }
+
+    /// **The arena, not the index, is what refuses it.** The sibling above pushes into
+    /// an *empty* tree, so the bounds half of `contains` already fails and the arena
+    /// comparison is never reached — the guard would stay green with arena identity
+    /// deleted. Here the foreign node's index is a perfectly valid one in the target
+    /// tree, which is the case that actually mis-resolves: a silent read of a different
+    /// node rather than a panic.
+    #[test]
+    #[should_panic(expected = "a syntax node cannot contain a child from another arena")]
+    fn a_foreign_node_with_a_valid_index_is_still_refused() {
+        let mut one = SyntaxTree::new();
+        let mut other = SyntaxTree::new();
+
+        one.push(ExprKind::Lit(Literal::Int(7)), 0..1);
+        one.push(ExprKind::Lit(Literal::Int(8)), 0..1);
+        let foreign = other.push(ExprKind::Lit(Literal::Int(9)), 0..1);
+
+        // Index 0 exists in `one`, so only the arena tells the two apart.
+        assert_eq!(foreign.index(), 0);
+        one.push(ExprKind::Access(FieldRef::Value, foreign), 0..1);
     }
 
     /// The assertion is not decorative: an offset `parse` should have refused is

@@ -47,7 +47,7 @@ the only one that can see both implementations of it.
 | [I14](#i14) | A derived bind is a pure function of the fact bindings | `iter::a_derive_is_recomputed_across_every_cut_point` | green |
 | [I15](#i15) | A database says which format wrote it; an unreadable one is refused | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | green |
 
-**Sixteen guards are `#[ignore]`d, and every one names its owner.** The recursion work's
+**Seventeen guards are `#[ignore]`d, and every one names its owner.** The recursion work's
 proof boundary requires that each assertion it defers be owned by exactly one named guard in a
 named later movement rather than left as prose, so those guards are written up front and sit in
 the ledger until the movement that owns them arrives —

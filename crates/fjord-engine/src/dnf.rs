@@ -152,6 +152,45 @@ mod tests {
         (0..total).map(|row| truth_table_row(body, row)).collect()
     }
 
+    /// **The census.** The oracle property tolerates a degenerate draw: a body holding
+    /// an empty branch list collapses the whole product, and one whose statements each
+    /// have a single branch is one clause. Both agree with the oracle trivially, so if
+    /// the strategy ever drew only those the property would stay green and say nothing
+    /// about multiplication at all.
+    #[test]
+    fn the_generator_reaches_a_real_product() {
+        use proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 2_000;
+
+        let mut runner = TestRunner::deterministic();
+        let strategy = prop::collection::vec(prop::collection::vec(any::<u8>(), 0..4), 0..5);
+        let (mut collapsed, mut one_clause, mut real_product) = (0, 0, 0);
+
+        for _ in 0..RUNS {
+            let body = strategy.new_tree(&mut runner).unwrap().current();
+
+            if body.iter().any(Vec::is_empty) {
+                collapsed += 1;
+            } else if body.iter().all(|branches| branches.len() == 1) {
+                one_clause += 1;
+            } else {
+                real_product += 1;
+            }
+        }
+
+        assert!(
+            real_product > RUNS / 10,
+            "the generator rarely draws a body with two branches anywhere, so the \
+             oracle property is mostly comparing empty products: {real_product} of {RUNS}"
+        );
+        assert!(collapsed > 0, "no draw reached the collapsing case");
+        assert!(one_clause > 0, "no draw reached the single-clause case");
+    }
+
     proptest! {
         /// The real product and the truth-table oracle agree on the exact
         /// sequence of clauses, not merely on the set of them — the stronger

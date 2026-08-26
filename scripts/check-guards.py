@@ -30,6 +30,10 @@ EXPECTED_GUARDS: dict[str, tuple[int, str]] = {
         7,
         "a `with` block's source spelling parses, and the corpus executes it end to end",
     ),
+    "a_programs_local_names_are_the_catalogues_locals": (
+        1,
+        "a program's declared local names are the compiler catalogue's locals, and each resolves to the id the catalogue mints for it",
+    ),
     "generated_namespace_exhaustion_is_refused_by_name": (
         6,
         "a generated magic or delta namespace that exhausts the tag space is refused by name rather than wrapping",

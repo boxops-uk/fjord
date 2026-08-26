@@ -285,6 +285,39 @@ mod tests {
         assert_eq!(budget.charge_retained_facts(1), Err(Limit::RetainedFacts));
     }
 
+    /// **The census.** A charge sequence that never reaches its limit agrees with the
+    /// oracle without ever exercising a refusal, and one that exceeds immediately never
+    /// exercises the running total. Both halves have to be drawn.
+    #[test]
+    fn the_generator_reaches_both_sides_of_every_limit() {
+        use proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 2_000;
+
+        let mut runner = TestRunner::deterministic();
+        let strategy = (0u64..2000, prop::collection::vec(0u64..50, 0..80));
+        let (mut never_exceeds, mut exceeds) = (0, 0);
+
+        for _ in 0..RUNS {
+            let (limit, charges) = strategy.new_tree(&mut runner).unwrap().current();
+
+            if oracle_outcomes(limit, &charges).iter().all(|ok| *ok) {
+                never_exceeds += 1;
+            } else {
+                exceeds += 1;
+            }
+        }
+
+        assert!(
+            never_exceeds > RUNS / 10 && exceeds > RUNS / 10,
+            "the generator is one-sided, so half the oracle property is unexercised: \
+             {never_exceeds} within the limit, {exceeds} over it, of {RUNS}"
+        );
+    }
+
     proptest! {
         /// However large a caller's requested retained-facts limit is, the
         /// configured limit this budget actually enforces never exceeds the id
