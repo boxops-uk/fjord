@@ -11,8 +11,9 @@ use std::sync::{
 };
 
 use byteview::ByteView;
-use fjord_encoding::tuple::{Value, put_str};
+use fjord_encoding::tuple::{Value, put_str, string_probe};
 use fjord_engine::{
+    error::FjordError,
     fixtures::collect_rows,
     levenshtein,
     plan::{
@@ -378,6 +379,28 @@ fn a_long_key_is_walked_only_as_far_as_the_term_can_reach() {
     );
 
     assert_eq!(guided, filtered);
+
+    let inspected = |candidate: &str| {
+        string_probe::reset();
+        let rows = collect_rows(
+            store_of(&[candidate]),
+            guided_plan("parse", 2, None),
+            &interner,
+        )
+        .expect("guided run");
+        assert!(rows.is_empty(), "the work probe needs a rejected candidate");
+        string_probe::count()
+    };
+
+    let short = inspected("parsexxx");
+    let long = inspected(&format!("parsexxx{}", "x".repeat(500)));
+
+    assert!(short > 0, "the byte-inspection probe saw no decode work");
+    assert_eq!(
+        long, short,
+        "an unreachable suffix changed decoder work: {short} bytes for the short key, \
+         {long} for the long key"
+    );
 }
 
 /// A plan built by hand can name a term the automaton will not build for, and it
@@ -393,5 +416,26 @@ fn an_oversized_term_is_refused_rather_than_truncated() {
     assert!(
         format!("{error}").contains("fuzzy term"),
         "wrong error: {error}"
+    );
+}
+
+/// A public hand-built residual is still a data path: an unsupported distance
+/// must surface as an error and must never overflow inside the DP arithmetic.
+#[test]
+fn an_unsupported_residual_distance_is_an_error_not_a_panic() {
+    let interner = LocalInterner::new(fjord_store::fixture::schema().interner().clone());
+    let outcome = std::panic::catch_unwind(|| {
+        collect_rows(store_of(CORPUS), filtered_plan("parse", u8::MAX), &interner)
+    });
+
+    assert!(
+        matches!(
+            outcome,
+            Ok(Err(FjordError::FuzzyTermUnsupported {
+                chars: 5,
+                distance: u8::MAX
+            }))
+        ),
+        "an unsupported residual distance must return an error, got {outcome:?}"
     );
 }

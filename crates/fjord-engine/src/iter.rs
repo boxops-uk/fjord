@@ -16,7 +16,7 @@ use fjord_encoding::{
     error::StoreCodecError,
     tuple::{
         MARK_ESCAPE, MARK_RECORD, MARK_TERM, MARK_UNION, TupleDecoder, UnionTag, Value,
-        decode_typed, fact_ref_bytes, get_str, get_u64, put_str, skip, strinc,
+        decode_typed, fact_ref_bytes, get_u64, put_str, skip, str_chars, strinc,
     },
 };
 use fjord_schema::{
@@ -756,8 +756,15 @@ impl GuideWalk {
 
         // The one decode in the scan loop, and it is what buys the distance a
         // person means: edit distance over UTF-8 bytes would make one accented
-        // character two edits. Borrowed unless the stored string holds a NUL.
-        let (text, _) = get_str(field)?;
+        // character two edits.
+        //
+        // **Lazy, and that is the bound.** `get_str` finds the terminator before
+        // it yields anything, so a 4 KiB identifier cost 4 KiB of decoding to
+        // reject on its fourth character — the walk was bounded and the read it
+        // walked was not. Reading character by character makes the whole per-row
+        // cost `|term| + distance`, and unescapes nothing
+        // ([I9](../../website/content/invariants.md#i9)).
+        let mut text = str_chars(field)?;
 
         let max = self.automaton.max_chars();
         let mut state = self.automaton.start();
@@ -771,7 +778,9 @@ impl GuideWalk {
         // than a short one.
         let mut killer = None;
 
-        for c in text.chars() {
+        for c in text.by_ref() {
+            let c = c.map_err(FjordError::Decode)?;
+
             if self.chars.len() >= max {
                 killer = Some(c);
                 break;
@@ -866,6 +875,19 @@ struct StackFrame<S: FactStore> {
     /// for every other source, and cleared when the level closes: a walk holds a
     /// range, and a re-entered level opens a different one.
     guide: Option<GuideWalk>,
+    /// One automaton per [`ResidualOp::Fuzzy`] on the open source, **in the order
+    /// the residuals carry them**.
+    ///
+    /// Level state rather than per-row scratch, which is the whole point: building
+    /// one costs a term's characters and an alphabet, and a residual is asked
+    /// about every row a scan yields, so building per row would make allocation
+    /// scale with rows rejected ([I9](../../../website/content/invariants.md#i9)).
+    /// Empty for a source with no fuzzy residual, which allocates nothing.
+    ///
+    /// [`check_residuals`](Self::check_residuals) walks the two in step, so the
+    /// order here is a contract with [`build_matchers`](Self::build_matchers) and
+    /// not an accident of construction.
+    matchers: Vec<Automaton>,
     field_offsets: Box<[FieldOffsets]>,
     /// Whether a step that produces **at most one row** has produced it — a
     /// [`Step::Derive`]'s value, or a [`Step::Test`]'s pass. Unused by levels, which
@@ -903,6 +925,7 @@ impl<S: FactStore> StackFrame<S> {
             source: 0,
             current: None,
             guide: None,
+            matchers: Vec::new(),
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
             produced: false,
             #[cfg(feature = "trace")]
@@ -937,6 +960,35 @@ impl<S: FactStore> StackFrame<S> {
         self.source = 0;
         self.current = None;
         self.guide = None;
+        self.matchers.clear();
+    }
+
+    /// Build one automaton per fuzzy residual on `source`, for the life of the
+    /// opening.
+    ///
+    /// Refusing here is what puts the residual form on the same footing as the
+    /// guided one: a term or a distance the automaton will not build for is an
+    /// error before the first row, not a per-row decision that quietly answers no.
+    /// A compiled plan cannot reach the refusal — typecheck names both limits —
+    /// so this is for a `Plan` built by hand, which is the same footing the guide's
+    /// own refusal sits on.
+    fn build_matchers(&mut self, source: &Source) -> Result<(), FjordError> {
+        self.matchers.clear();
+
+        for residual in source.residuals() {
+            let ResidualOp::Fuzzy { term, distance } = &residual.op else {
+                continue;
+            };
+
+            self.matchers.push(Automaton::new(term, *distance).ok_or(
+                FjordError::FuzzyTermUnsupported {
+                    chars: term.chars().count(),
+                    distance: *distance,
+                },
+            )?);
+        }
+
+        Ok(())
     }
 
     fn open(
@@ -955,6 +1007,7 @@ impl<S: FactStore> StackFrame<S> {
         self.field_offsets.iter_mut().for_each(|fo| fo.clear());
 
         self.guide = None;
+        self.build_matchers(source)?;
 
         self.rows = Some(match source {
             Source::Seek { access, .. } | Source::Guided { access, .. } => {
@@ -1192,6 +1245,7 @@ impl<S: FactStore> StackFrame<S> {
                 &mut self.field_offsets,
                 state,
                 source.residuals(),
+                &self.matchers,
                 &current,
             )? {
                 None => {
@@ -1252,10 +1306,16 @@ impl<S: FactStore> StackFrame<S> {
         frame_field_offsets: &mut [FieldOffsets],
         state: &MachineState,
         residuals: &[Residual],
+        matchers: &[Automaton],
         register: &Register,
     ) -> Result<Option<usize>, FjordError> {
         let key = register.key();
         let mut row_field_offsets = FieldOffsets::new();
+
+        // Walked in step with the residuals rather than indexed: both are in the
+        // source's residual order, so the n-th fuzzy residual meets the n-th
+        // automaton without either side counting.
+        let mut matchers = matchers.iter();
 
         for (at, residual) in residuals.iter().enumerate() {
             let span = field_span(&mut row_field_offsets, &key, &residual.path)?;
@@ -1351,9 +1411,24 @@ impl<S: FactStore> StackFrame<S> {
                 // compared — see [`ResidualOp::Fuzzy`]. Still no value read
                 // ([I6](../../website/content/invariants.md#i6)): the field is in
                 // the key the scan is already holding.
-                ResidualOp::Fuzzy { term, distance } => {
-                    let (text, _) = get_str(field)?;
-                    crate::levenshtein::within(term, &text, *distance)
+                //
+                // Decoded **lazily**, and matched by an automaton the level
+                // already holds. Both halves are I9: `get_str` unescapes into a
+                // fresh `String` for a field holding a NUL, and building the
+                // matcher here would allocate a term and a row per candidate.
+                // The walk also stops at the character that kills it, so a long
+                // field costs what a short one does.
+                //
+                // [I9]: ../../website/content/invariants.md#i9
+                ResidualOp::Fuzzy { .. } => {
+                    // One was built for every fuzzy residual on this source, and
+                    // `next` cannot run before `open` — an unopened level fails
+                    // above with `AdvanceAfterClose`.
+                    let automaton = matchers.next().expect("one matcher per fuzzy residual");
+
+                    automaton
+                        .matches(str_chars(field)?)
+                        .map_err(FjordError::Decode)?
                 }
             };
             if !ok {
@@ -6272,6 +6347,56 @@ mod tests {
         );
     }
 
+    /// **The census, for fuzzy plans.** I4's generated interruption schedules
+    /// prove nothing about a new source or residual arm until the canonical plan
+    /// generator actually draws both.
+    #[test]
+    fn the_battery_reaches_a_guided_source_and_a_fuzzy_residual() {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 300;
+
+        let mut runner = TestRunner::deterministic();
+        let (mut guided, mut residual) = (0usize, 0usize);
+
+        for _ in 0..RUNS {
+            let spec = arb_plan_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let plan = spec.build_plan(&spec.interner());
+
+            for step in plan.body.iter() {
+                let Step::Level(level) = step else { continue };
+
+                for source in level.sources.iter() {
+                    guided += usize::from(matches!(source, Source::Guided { .. }));
+                    residual += source
+                        .residuals()
+                        .iter()
+                        .filter(|residual| matches!(residual.op, ResidualOp::Fuzzy { .. }))
+                        .count();
+                }
+            }
+        }
+
+        let mut missing = vec![];
+        if guided == 0 {
+            missing.push("a `Source::Guided`");
+        }
+        if residual == 0 {
+            missing.push("a `ResidualOp::Fuzzy`");
+        }
+        assert!(
+            missing.is_empty(),
+            "{RUNS} generated plans never carried {}",
+            missing.join(" or ")
+        );
+    }
+
     /// Whether a projected row holds a union anywhere in it.
     fn holds_a_union(value: &Value) -> bool {
         match value {
@@ -6723,6 +6848,68 @@ mod tests {
         assert_eq!(
             bytes_n, bytes_2n,
             "hot path allocates per row by volume: {bytes_n} bytes for 64 rows vs {bytes_2n} for 128"
+        );
+    }
+
+    /// **I9, for the fuzzy residual.** Its matcher is state belonging to the open
+    /// level, not scratch rebuilt for every candidate: doubling rejected rows
+    /// must therefore change neither allocation count nor allocated bytes.
+    #[test]
+    fn a_fuzzy_residual_is_alloc_free_per_row() {
+        let control = allocation_counter::measure(|| {
+            std::hint::black_box(Vec::<u8>::with_capacity(4096));
+        });
+        assert!(
+            control.count_total > 0 && control.bytes_total >= 4096,
+            "counting allocator is not installed; this guard would pass vacuously: {control:?}"
+        );
+
+        let p = PredicateId(0);
+        let store = |count: u64| {
+            FrozenStore::from_keys(
+                p,
+                (1..=count).map(|i| (str_field(&format!("candidate-{i:03}")), i)),
+            )
+        };
+        let plan = || Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::Fuzzy {
+                        term: std::sync::Arc::from("parse"),
+                        distance: 1,
+                    },
+                }]),
+            ))]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let store_n = store(64);
+        let store_2n = store(128);
+
+        let mut n1 = 0;
+        let mut n2 = 0;
+        let info_n = allocation_counter::measure(|| n1 = count_rows(store_n, plan()).unwrap());
+        let info_2n = allocation_counter::measure(|| {
+            n2 = count_rows(store_2n, plan()).unwrap();
+        });
+
+        assert_eq!((n1, n2), (0, 0), "the population must exercise rejection");
+        assert_eq!(
+            info_n.count_total, info_2n.count_total,
+            "a fuzzy residual allocates per row: {} allocs for 64 rows vs {} for 128",
+            info_n.count_total, info_2n.count_total
+        );
+        assert_eq!(
+            info_n.bytes_total, info_2n.bytes_total,
+            "a fuzzy residual allocates per row by volume: {} bytes vs {}",
+            info_n.bytes_total, info_2n.bytes_total
         );
     }
 

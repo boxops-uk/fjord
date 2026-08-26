@@ -372,6 +372,14 @@ pub const CORPUS: &[Entry] = &[
          clamped would answer a question nobody asked",
     ),
     entry(
+        "N where test.Name N; N = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"~1",
+        Diagnosed(Code::RejectFuzzyTerm),
+        "and the **term** is bounded the same way, in the same phase. Which physical \
+         plan flatten picks decides whether a guide or a residual answers, so a \
+         limit either one held alone would refuse a leading field and answer a \
+         trailing one",
+    ),
+    entry(
         "N where test.Name N; N != \"ann\"~1",
         Diagnosed(Code::NyiFuzzyDenial),
         "**denying** a fuzzy match is meaningful and deferred by name: a residual \

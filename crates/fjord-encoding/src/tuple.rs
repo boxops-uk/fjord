@@ -309,6 +309,9 @@ fn get_escaped(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, usize), StoreCodecError> 
             return Err(StoreCodecError::UnexpectedEof);
         };
 
+        #[cfg(any(test, feature = "proptest"))]
+        string_probe::bump(null_idx + 1);
+
         let abs_null = i + null_idx;
 
         if bytes.get(abs_null + 1) == Some(&MARK_ESCAPE) {
@@ -329,6 +332,144 @@ fn get_escaped(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, usize), StoreCodecError> 
 
         out.extend_from_slice(&bytes[start..abs_null]);
         return Ok((Cow::Owned(out), abs_null + 1));
+    }
+}
+
+/// Bytes inspected while decoding terminated string contents.
+///
+/// The fuzzy guide's long-key guard uses this to distinguish a bounded automaton
+/// walk from a decoder that validates the whole stored string before handing the
+/// first character over. Thread-local for the same reason [`decode_probe`] is:
+/// concurrent tests must not charge one another's work.
+#[cfg(any(test, feature = "proptest"))]
+pub mod string_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static BYTES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Reset the inspected-byte counter to zero.
+    pub fn reset() {
+        BYTES.with(|count| count.set(0));
+    }
+
+    /// Number of bytes inspected since the last [`reset`].
+    pub fn count() -> usize {
+        BYTES.with(Cell::get)
+    }
+
+    pub(crate) fn bump(bytes: usize) {
+        BYTES.with(|count| count.set(count.get() + bytes));
+    }
+}
+
+/// The characters of a stored string, decoded one at a time.
+///
+/// The trap this exists for is in [`get_str`]: it finds the terminator before it
+/// yields anything, so reading the *first* character of a stored string costs the
+/// whole string. A fuzzy match is bounded — no candidate can match a term past
+/// `|term| + distance` characters — and paying for a 4 KiB identifier to reject it
+/// on the fourth character is exactly the cost a guided seek exists to avoid.
+///
+/// Inspects only the bytes it yields, which is what makes that bound real, and
+/// allocates nothing: an escaped NUL is yielded as a character rather than
+/// unescaped into a buffer, which is the other half of what `get_str` cannot do
+/// ([I9](../../../website/content/invariants.md#i9)).
+///
+/// Ends at the terminator; running out of bytes before one is
+/// [`UnexpectedEof`](StoreCodecError::UnexpectedEof), never a silent stop.
+pub struct StrChars<'a> {
+    bytes: &'a [u8],
+    at: usize,
+    done: bool,
+}
+
+/// The characters of the string at the start of `bytes`, lazily.
+pub fn str_chars(bytes: &[u8]) -> Result<StrChars<'_>, StoreCodecError> {
+    let Some((&mark, contents)) = bytes.split_first() else {
+        return Err(StoreCodecError::UnexpectedEof);
+    };
+
+    if mark != MARK_STRING {
+        return Err(StoreCodecError::UnexpectedMark(mark));
+    }
+
+    Ok(StrChars {
+        bytes: contents,
+        at: 0,
+        done: false,
+    })
+}
+
+/// How many bytes the UTF-8 character starting with `lead` occupies, by the
+/// leading byte alone. `None` for a byte that cannot lead one — `from_utf8` is
+/// still what validates the sequence, so this only has to be right about length.
+fn utf8_width(lead: u8) -> Option<usize> {
+    match lead {
+        0x00..=0x7F => Some(1),
+        0xC0..=0xDF => Some(2),
+        0xE0..=0xEF => Some(3),
+        0xF0..=0xF7 => Some(4),
+        _ => None,
+    }
+}
+
+impl Iterator for StrChars<'_> {
+    type Item = Result<char, StoreCodecError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        let Some(&lead) = self.bytes.get(self.at) else {
+            self.done = true;
+            return Some(Err(StoreCodecError::UnexpectedEof));
+        };
+
+        #[cfg(any(test, feature = "proptest"))]
+        string_probe::bump(1);
+
+        // A NUL is the terminator unless the escape marker follows it — the same
+        // rule `get_escaped` reads, decided one character at a time.
+        if lead == MARK_TERM {
+            if self.bytes.get(self.at + 1) != Some(&MARK_ESCAPE) {
+                self.done = true;
+                return None;
+            }
+
+            #[cfg(any(test, feature = "proptest"))]
+            string_probe::bump(1);
+
+            self.at += 2;
+            return Some(Ok('\0'));
+        }
+
+        let width = utf8_width(lead).unwrap_or(1);
+        let Some(sequence) = self.bytes.get(self.at..self.at + width) else {
+            self.done = true;
+            return Some(Err(StoreCodecError::UnexpectedEof));
+        };
+
+        #[cfg(any(test, feature = "proptest"))]
+        string_probe::bump(width - 1);
+
+        let text = match std::str::from_utf8(sequence) {
+            Ok(text) => text,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(StoreCodecError::BadString(e)));
+            }
+        };
+
+        self.at += width;
+
+        // `from_utf8` accepted a non-empty slice, so it holds a character.
+        Some(Ok(text
+            .chars()
+            .next()
+            .expect("from_utf8 accepted a non-empty slice")))
     }
 }
 
@@ -2874,6 +3015,35 @@ pub(crate) mod tests {
             let (decoded, consumed) = get_str(&buf).unwrap();
             assert_eq!(s, decoded);
             assert_eq!(consumed, buf.len());
+        }
+
+        /// **The two string decoders must not drift.** `str_chars` reads the
+        /// escape scheme a character at a time so a bounded reader can stop
+        /// early; `get_str` reads it in one pass. A disagreement about an escaped
+        /// NUL or a multi-byte character would make a fuzzy match answer
+        /// differently from every other reader of the same field.
+        #[test]
+        fn str_chars_yields_what_get_str_decodes(s in any::<String>()) {
+            let mut buf = Vec::new();
+            put_str(&mut buf, &s);
+
+            let lazy: Result<String, _> = str_chars(&buf).unwrap().collect();
+            let (eager, _) = get_str(&buf).unwrap();
+
+            assert_eq!(lazy.unwrap(), eager);
+        }
+
+        /// A reader that stops early must consume the same prefix a full decode
+        /// would begin with — the bound is only sound if truncating it changes
+        /// nothing but where it stops.
+        #[test]
+        fn a_bounded_read_is_a_prefix_of_the_whole(s in any::<String>(), take in 0usize..8) {
+            let mut buf = Vec::new();
+            put_str(&mut buf, &s);
+
+            let bounded: Result<String, _> = str_chars(&buf).unwrap().take(take).collect();
+
+            assert!(s.starts_with(&bounded.unwrap()));
         }
 
         #[test]

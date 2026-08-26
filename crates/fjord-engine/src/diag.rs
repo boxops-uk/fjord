@@ -73,6 +73,14 @@ pub enum Code {
     /// rather than a type mismatch, because the fix is a smaller number rather
     /// than a different kind of thing.
     RejectFuzzyDistance,
+    /// A fuzzy term longer than the automaton is built for.
+    ///
+    /// Reported here rather than left to the executor because the limit belongs to
+    /// the **language**, not to the plan that happens to be chosen: flatten turns
+    /// the same pattern into a guide or a residual depending on where the field
+    /// sits in the key, and a limit enforced by only one of them would make an
+    /// over-long term refuse on a leading field and answer on a trailing one.
+    RejectFuzzyTerm,
     RejectInfiniteType,
     RejectNoValue,
     RejectNotAGenerator,
@@ -126,6 +134,7 @@ impl Code {
         Code::RejectBindLhs,
         Code::RejectDuplicateField,
         Code::RejectFuzzyDistance,
+        Code::RejectFuzzyTerm,
         Code::RejectInfiniteType,
         Code::RejectNoValue,
         Code::RejectNotAGenerator,
@@ -166,6 +175,7 @@ impl Code {
             Code::RejectBindLhs => "reject/bind-lhs",
             Code::RejectDuplicateField => "reject/duplicate-field",
             Code::RejectFuzzyDistance => "reject/fuzzy-distance",
+            Code::RejectFuzzyTerm => "reject/fuzzy-term",
             Code::RejectInfiniteType => "reject/infinite-type",
             Code::RejectNoValue => "reject/no-value",
             Code::RejectNotAGenerator => "reject/not-a-generator",
@@ -209,6 +219,7 @@ impl Code {
             Code::RejectBindLhs
             | Code::RejectDuplicateField
             | Code::RejectFuzzyDistance
+            | Code::RejectFuzzyTerm
             | Code::RejectInfiniteType
             | Code::RejectNoValue
             | Code::RejectNotAGenerator
@@ -464,6 +475,7 @@ mod tests {
                 | Code::RejectBindLhs
                 | Code::RejectDuplicateField
                 | Code::RejectFuzzyDistance
+                | Code::RejectFuzzyTerm
                 | Code::RejectInfiniteType
                 | Code::RejectNoValue
                 | Code::RejectNotAGenerator

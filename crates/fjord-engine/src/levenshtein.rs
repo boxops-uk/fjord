@@ -197,6 +197,33 @@ impl Automaton {
         }
     }
 
+    /// Whether `candidate` — its characters, from a reader that may fail — is
+    /// within this automaton's distance of its term.
+    ///
+    /// **Pulls only as far as it must.** A dead state cannot come back to life, so
+    /// a candidate is rejected at the character that killed it however much of it
+    /// is left unread; against a lazy decoder that is a bound on decode work
+    /// rather than only on arithmetic. No explicit length cap is needed for that:
+    /// a candidate longer than `|term| + distance` has every cell of its row above
+    /// the distance — an edit distance is never below the length difference — so
+    /// [`live`](Self::live) has already stopped the walk.
+    ///
+    /// Allocates nothing: [`State`] is a fixed-size `Copy` value
+    /// ([I9](../../../website/content/invariants.md#i9)).
+    pub fn matches<E>(&self, candidate: impl Iterator<Item = Result<char, E>>) -> Result<bool, E> {
+        let mut state = self.start();
+
+        for c in candidate {
+            state = self.step(&state, c?);
+
+            if !self.live(&state) {
+                return Ok(false);
+            }
+        }
+
+        Ok(self.accepts(&state).is_some())
+    }
+
     /// The smallest scalar value above `after` that the term does not contain.
     fn first_char_outside_term(&self, after: Option<char>) -> Option<char> {
         let mut c = match after {
@@ -228,38 +255,28 @@ fn next_scalar(c: char) -> Option<char> {
 
 /// Edit distance `<= distance`, decided directly.
 ///
-/// The residual form: when the fuzzy field is not the one a seek could narrow,
-/// there is nothing to guide and the question is only whether this row's field
-/// matches. Its own function rather than a walk over [`Automaton`] because it
-/// needs no state stack and no alphabet — two capped rows and a compare.
+/// The one-shot form: build, walk, throw away. A caller deciding many candidates
+/// against one term wants [`Automaton::matches`] instead, which is this without
+/// the per-candidate build — the executor holds its automaton for the life of the
+/// level precisely so a rejected row allocates nothing
+/// ([I9](../../../website/content/invariants.md#i9)).
+///
+/// **A term the automaton will not build for is no match**, rather than a wrong
+/// answer. Both real paths refuse such a term by name long before this — the
+/// front end at typecheck (`reject/fuzzy-term`, `reject/fuzzy-distance`) and the
+/// executor when it opens the level ([`FuzzyTermUnsupported`]) — so this is the
+/// backstop, and it is here because the arithmetic it replaced did not have one:
+/// a 256-character term wrapped its own length to zero in a `u8` and reported the
+/// empty string as a match.
+///
+/// [`FuzzyTermUnsupported`]: crate::error::FjordError::FuzzyTermUnsupported
 #[must_use]
 pub fn within(term: &str, candidate: &str, distance: u8) -> bool {
-    let term: Vec<char> = term.chars().collect();
-    let cap = distance + 1;
-
-    let mut previous: Vec<u8> = (0..=term.len()).map(|i| (i as u8).min(cap)).collect();
-    let mut current = previous.clone();
-
-    for c in candidate.chars() {
-        current[0] = (previous[0] + 1).min(cap);
-
-        for i in 1..=term.len() {
-            let substitute = previous[i - 1] + u8::from(term[i - 1] != c);
-            let delete = previous[i] + 1;
-            let insert = current[i - 1] + 1;
-
-            current[i] = substitute.min(delete).min(insert).min(cap);
-        }
-
-        // Every cell is at the cap: no extension can come back under it.
-        if current.iter().all(|&cell| cell > distance) {
-            return false;
-        }
-
-        std::mem::swap(&mut previous, &mut current);
-    }
-
-    previous[term.len()] <= distance
+    Automaton::new(term, distance).is_some_and(|automaton| {
+        automaton
+            .matches(candidate.chars().map(Ok::<char, ()>))
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(test)]
@@ -493,6 +510,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A residual receives the same source-language term a guide does, so the
+    /// guide's fixed-state bound must not turn into integer truncation when the
+    /// physical key order makes the match a filter instead. At 256 characters,
+    /// casting the empty-input distance to `u8` wraps it to zero and would make
+    /// the empty string look like a match at distance one.
+    #[test]
+    fn an_oversized_residual_term_never_wraps_into_a_match() {
+        let term = "a".repeat(256);
+
+        assert!(!within(&term, "", 1));
     }
 
     #[test]

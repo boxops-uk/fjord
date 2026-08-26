@@ -79,7 +79,7 @@ use crate::{
         ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt,
     },
 };
-use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, Value, put_i64, put_str};
+use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, Value, get_str, put_i64, put_str};
 use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 /// Where a pattern's value lives when the plan runs.
@@ -3687,7 +3687,7 @@ impl Flattener<'_> {
                 // which is a level with no source to open. That is `never`'s level,
                 // written by a statement that did not say `never`.
                 Some(Slot::Const(folded)) => {
-                    let (Some(Const::Bytes(value)), Some(Const::Prefix(prefix))) = (
+                    let (Some(Const::Bytes(value)), Some(pattern_const)) = (
                         self.constant(folded, &PredicateTy::Str),
                         self.constant(pattern, &PredicateTy::Str),
                     ) else {
@@ -3699,7 +3699,36 @@ impl Flattener<'_> {
                         continue;
                     };
 
-                    if !value.starts_with(&prefix) {
+                    // **Decided on the bytes a row would have carried.** `value` is
+                    // the constant in its stored form, so folding here asks the
+                    // question the residual would have asked of a real row — which
+                    // is what keeps `X = "abc"; X = "abd"~1` and a scan finding
+                    // `"abc"` agreeing about the same pair.
+                    let holds = match pattern_const {
+                        Const::Prefix(prefix) => value.starts_with(&prefix),
+                        Const::Fuzzy { term, distance } => {
+                            let Ok((text, _)) = get_str(&value) else {
+                                self.report(
+                                    pattern,
+                                    Code::RejectTypeMismatch,
+                                    "this pattern is not a pattern for that variable's type",
+                                );
+                                continue;
+                            };
+
+                            crate::levenshtein::within(&term, &text, distance)
+                        }
+                        Const::Bytes(_) => {
+                            self.report(
+                                pattern,
+                                Code::RejectTypeMismatch,
+                                "this prefix is not a pattern for that variable's type",
+                            );
+                            continue;
+                        }
+                    };
+
+                    if !holds {
                         body.push_level(Level {
                             sources: Box::new([]),
                             binds: Box::new([body.next_address()]),
@@ -5658,6 +5687,24 @@ mod tests {
             lines(&["r0 <- never", "head \"abc\""])
         );
         assert_eq!(rows("X where X = \"abc\"; X = \"z\".."), vec![]);
+    }
+
+    /// The fuzzy pattern is the prefix pattern's semantic sibling: when both
+    /// sides are constants it folds to the unit or empty relation rather than
+    /// reaching a residual or being misreported as a type mismatch.
+    #[test]
+    fn a_fuzzy_constraint_on_a_constant_folds_at_compile_time() {
+        assert_eq!(
+            shape("X where X = \"abc\"; X = \"abd\"~1"),
+            lines(&["head \"abc\""])
+        );
+        assert_eq!(rows("X where X = \"abc\"; X = \"abd\"~1"), strs(&["abc"]));
+
+        assert_eq!(
+            shape("X where X = \"abc\"; X = \"xyz\"~1"),
+            lines(&["r0 <- never", "head \"abc\""])
+        );
+        assert_eq!(rows("X where X = \"abc\"; X = \"xyz\"~1"), vec![]);
     }
 
     /// A **disjunction**'s branches each bind the variable, so each narrows itself.
@@ -7785,6 +7832,17 @@ pub mod proptest {
         NotPrefix(&'static str),
         /// `V{v} != "p"` — a filter comparing whole values.
         NotEqual(&'static str),
+        /// `V{v} = "t"~n` — sargeable like a prefix and in the same place, but a
+        /// *set* of ranges rather than one: the level capturing `v` walks its range
+        /// with an automaton where a prefix would simply narrow it.
+        ///
+        /// The reason it is drawn here beside the prefix rather than given a table
+        /// of its own is that the two compile down the same fork. Which of
+        /// [`Source::Guided`] and [`ResidualOp::Fuzzy`] a query reaches is decided
+        /// by where the field sits in the key, exactly as it is for a prefix and
+        /// [`ResidualOp::Prefix`] — so one entry in this table reaches both arms,
+        /// and the census is what says it did.
+        Fuzzy(&'static str, u8),
     }
 
     impl Match {
@@ -7793,6 +7851,7 @@ pub mod proptest {
                 Match::Prefix(text) => format!("V{var} = {text:?}.."),
                 Match::NotPrefix(text) => format!("V{var} != {text:?}.."),
                 Match::NotEqual(text) => format!("V{var} != {text:?}"),
+                Match::Fuzzy(text, distance) => format!("V{var} = {text:?}~{distance}"),
             }
         }
 
@@ -7802,6 +7861,11 @@ pub mod proptest {
                 Match::Prefix(text) => value.starts_with(text),
                 Match::NotPrefix(text) => !value.starts_with(text),
                 Match::NotEqual(text) => value != text,
+                // The model's own answer, not the guide's: `within` is the direct
+                // decision and the automaton walk is the optimisation of it, so an
+                // oracle built on the walk would agree with the executor by
+                // construction.
+                Match::Fuzzy(text, distance) => crate::levenshtein::within(text, value, distance),
             }
         }
     }
@@ -7825,12 +7889,19 @@ pub mod proptest {
     ///   `""` prefixes every string, so denying it would keep no row at all.
     /// - `!= "a"` and `!= "b"` each remove exactly one string, which is the mildest
     ///   filter the domain allows.
-    const MATCHES: [Match; 5] = [
+    /// - `= "a"~1` keeps all three (every string in the domain is one edit from
+    ///   `"a"`) and `= "ac"~1` keeps `"a"` and `"ab"` but not `"b"` — the same
+    ///   all-three/two-of-three pair the prefixes above are chosen for. A term
+    ///   severe enough to keep one of three is deliberately absent for the reason
+    ///   `= "b".."` is: applied this often it thins the whole battery.
+    const MATCHES: [Match; 7] = [
         Match::Prefix(""),
         Match::Prefix("a"),
         Match::NotPrefix("a"),
         Match::NotEqual("a"),
         Match::NotEqual("b"),
+        Match::Fuzzy("a", 1),
+        Match::Fuzzy("ac", 1),
     ];
 
     /// A generated key field's type: a scalar, a record of scalars, or a **reference**
@@ -9909,6 +9980,8 @@ mod battery {
         negation_above_a_scan: bool,
         disjunctive_level: bool,
         disjunctive_negation: bool,
+        guided_source: bool,
+        fuzzy_residual: bool,
     }
 
     impl Shapes {
@@ -9955,6 +10028,8 @@ mod battery {
                     self.disjunctive_negation,
                     "a negation over more than one source — `!(A | B)`",
                 ),
+                (self.guided_source, "a `Source::Guided`"),
+                (self.fuzzy_residual, "a `ResidualOp::Fuzzy`"),
             ] {
                 if !present {
                     out.push(what);
@@ -10019,6 +10094,8 @@ mod battery {
                 // of a disjunction is as reached as one in the first, and the
                 // census is what says the battery saw it at all.
                 for source in level.sources.iter() {
+                    self.guided_source |= matches!(source, Source::Guided { .. });
+
                     match source {
                         Source::Seek { access, .. } | Source::Guided { access, .. } => {
                             match &access.seek_key {
@@ -10055,7 +10132,7 @@ mod battery {
                         self.nested_path |= !path.is_flat();
                         match op {
                             ResidualOp::Prefix(_) => self.prefix_residual = true,
-                            ResidualOp::Fuzzy { .. } => {}
+                            ResidualOp::Fuzzy { .. } => self.fuzzy_residual = true,
                             ResidualOp::NotPrefix(_) => self.not_prefix_residual = true,
                             ResidualOp::NotEqConst(_) => self.not_eq_const_residual = true,
                             ResidualOp::EqRegisterField { path, .. } => {
