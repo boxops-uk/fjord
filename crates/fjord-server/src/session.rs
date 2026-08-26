@@ -1356,6 +1356,17 @@ fn label_step(step: &Step, schema: &Schema) -> (String, bool) {
                         };
                     }
 
+                    // **Never a full scan, whatever its seek pinned.** A guide's
+                    // whole job is to seek past what it can prove cannot match, so
+                    // an unpinned range here is the ordinary case rather than the
+                    // thing this flag exists to point at.
+                    Source::Guided { access, .. } => {
+                        names.push(format!(
+                            "guided {}",
+                            predicate_name(schema, access.predicate_id)
+                        ));
+                    }
+
                     // One point read per row of the level above — never a scan, so
                     // never a full one however many rows it answers.
                     Source::Fetch { predicate_id, .. } => {
@@ -1385,7 +1396,9 @@ fn label_step(step: &Step, schema: &Schema) -> (String, bool) {
             let names: Vec<String> = sources
                 .iter()
                 .map(|source| match source {
-                    Source::Seek { access, .. } => predicate_name(schema, access.predicate_id),
+                    Source::Seek { access, .. } | Source::Guided { access, .. } => {
+                        predicate_name(schema, access.predicate_id)
+                    }
                     Source::Fetch { predicate_id, .. } => predicate_name(schema, *predicate_id),
                 })
                 .collect();

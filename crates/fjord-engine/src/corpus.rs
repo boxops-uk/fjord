@@ -323,6 +323,61 @@ pub const CORPUS: &[Entry] = &[
         Supported("test.Name#1"),
         "string prefix against a scalar string key — ResidualOp::Prefix",
     ),
+    // ---- fuzzy matching ----------------------------------------------------
+    //
+    // `~` is the sibling of `..`: a prefix denotes one contiguous range of the key
+    // order and a fuzzy pattern denotes a set of them, so one narrows a seek and
+    // the other walks it. Both are patterns rather than values, which is why
+    // neither can be bound to a variable.
+    entry(
+        "N where test.Name N; N = \"ann\"~",
+        Supported("ann; anna"),
+        "**a guided seek** — a Levenshtein automaton walks the key order, seeking \
+         past the keys it can prove cannot match. `~` with no number is one edit",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~2",
+        Supported("abc; ann; anna"),
+        "two edits reaches further: `abc` is two substitutions from `ann`",
+    ),
+    entry(
+        "X where X = test.Name \"ann\"~1",
+        Supported("test.Name#2; test.Name#3"),
+        "written at the key field rather than as a constraint on a variable — the \
+         same plan, as `\"abc\"..` and `N = \"abc\"..` are the same plan",
+    ),
+    entry(
+        "N where test.Name N; N = \"an\"..; N = \"ann\"~2",
+        Supported("ann; anna"),
+        "**anchored**: the prefix builds the seek's range and the automaton walks \
+         inside it, so `abc` is out of range rather than out of distance. This is \
+         the spelling that keeps a two-edit search off the whole predicate",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~2; N = \"an\"..",
+        Supported("ann; anna"),
+        "and the other order is the same plan: constraints are applied by what each \
+         one can do, not by where it was written",
+    ),
+    entry(
+        "X where X = test.Foo {id = _, name = N}; N = \"ann\"~1",
+        Supported("test.Foo#1; test.Foo#3"),
+        "the field does not lead `test.Foo`'s key, so there is no seek to narrow \
+         and the same question becomes ResidualOp::Fuzzy — the split `..` makes",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~9",
+        Diagnosed(Code::RejectFuzzyDistance),
+        "the automaton is built for a bounded distance, and a plan that silently \
+         clamped would answer a question nobody asked",
+    ),
+    entry(
+        "N where test.Name N; N != \"ann\"~1",
+        Diagnosed(Code::NyiFuzzyDenial),
+        "**denying** a fuzzy match is meaningful and deferred by name: a residual \
+         op is what a resume fingerprint tags, so it arrives when something wants \
+         it rather than for symmetry",
+    ),
     entry(
         "X where X = test.Count -42",
         Supported("test.Count#2"),
@@ -1203,6 +1258,12 @@ mod tests {
             "bf7f4da079aa8760",
             "9fdd3e823c7f9ad3",
             "d6d91409bcbcf1b7",
+            "31d9924c3424bd97",
+            "cfaa5d5ecd8ffe80",
+            "2ef25f5df17bd9c5",
+            "0575fa290f4ab2fd",
+            "0575fa290f4ab2fd",
+            "f14a1b5b620c68ab",
             "b1a21a89a4c3e1ff",
             "25bc3be24acdb4e2",
             "92bdf3ae6a7ec577",

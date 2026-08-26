@@ -132,6 +132,14 @@ pub enum ExprKind<T> {
     /// The empty pattern — `never`. Deferred; typecheck reports it.
     Never,
     Prefix(Symbol),
+    /// `"parse"~2` — **within `n` edits**. The symbol is the term, the `u8` the
+    /// distance; `"parse"~` is distance 1, as `..` takes no argument either.
+    ///
+    /// Beside [`Prefix`](ExprKind::Prefix) rather than folded into it because what
+    /// the two *denote* differs in the one way that matters downstream: a prefix
+    /// is a single contiguous range of the key order and a fuzzy match is a set of
+    /// them, so one narrows a seek and the other has to walk it.
+    Fuzzy(Symbol, u8),
     Record(Box<[(Symbol, T)]>),
     Access(FieldRef, T),
     /// Union select — `x.alt?`. A distinct operation from [`ExprKind::Access`]: it
@@ -462,6 +470,7 @@ impl Recursive for ExprKind<NodeId> {
             ExprKind::Var(symbol) => ExprKind::Var(*symbol),
             ExprKind::Wildcard => ExprKind::Wildcard,
             ExprKind::Prefix(symbol) => ExprKind::Prefix(*symbol),
+            ExprKind::Fuzzy(symbol, distance) => ExprKind::Fuzzy(*symbol, *distance),
             ExprKind::Record(fields) => ExprKind::Record(
                 fields
                     .iter()

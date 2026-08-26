@@ -99,7 +99,13 @@ pub fn escapes(plan: &Plan, is_local: &impl Fn(PredicateId) -> bool) -> Vec<Esca
 
         for source in sources {
             match source {
-                Source::Seek { access, residuals } => {
+                // A guide narrows what a seek visits and names no register, so
+                // it can carry no identity out of a local row — the seek key and
+                // the residuals are still the whole of what escapes.
+                Source::Seek { access, residuals }
+                | Source::Guided {
+                    access, residuals, ..
+                } => {
                     seek_key_escapes(&access.seek_key, &bound, &mut found);
                     residual_escapes(residuals, &bound, &mut found);
                 }

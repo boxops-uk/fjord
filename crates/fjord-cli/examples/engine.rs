@@ -1076,6 +1076,12 @@ fn plan_shape(plan: &Plan, schema: &Schema) -> String {
                                 name(access.predicate_id)
                             });
                         }
+                        // Never marked a full scan: a guide seeks past what it
+                        // proves cannot match, so an unpinned range is the
+                        // ordinary case rather than the warning `*` is for.
+                        Source::Guided { access, .. } => {
+                            parts.push(format!("guided {}", name(access.predicate_id)));
+                        }
                         Source::Fetch { predicate_id, .. } => {
                             parts.push(format!("fetch {}", name(*predicate_id)));
                         }

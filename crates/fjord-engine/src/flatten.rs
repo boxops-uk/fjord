@@ -66,11 +66,13 @@
 //! [chapter 3]: ../../../website/content/storage.md
 //! [I6]: ../../../website/content/invariants.md#i6
 
+use std::sync::Arc;
+
 use crate::{
     diag::{Code, Diagnostics},
     plan::{
-        Access, Address, Arith, Compare as CompareRel, Computed, DerivedBind, FieldPath, Level,
-        Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Arith, Compare as CompareRel, Computed, DerivedBind, FieldPath, Guide,
+        Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     syntax::{
@@ -390,6 +392,13 @@ struct Collected {
 enum Const {
     Bytes(Vec<u8>),
     Prefix(Vec<u8>),
+    /// `"parse"~2` — a **set** of ranges rather than one, which is the whole of
+    /// why it cannot be bytes like its two siblings. It ends a seek prefix as a
+    /// prefix does, and then narrows what the scan visits inside it.
+    Fuzzy {
+        term: Arc<str>,
+        distance: u8,
+    },
 }
 
 /// One statement's variable occurrences, gathered before any order is chosen.
@@ -515,6 +524,21 @@ struct SeekBuilder {
     /// string prefix (which ends the prefix *after* itself) — closes it, and
     /// everything later filters instead.
     building: bool,
+    /// The guide this level's scan is walked by, if a fuzzy pattern reached a
+    /// field while the prefix was still open.
+    ///
+    /// At most one: a second fuzzy pattern on the same field filters instead, which
+    /// is what "both hold" means when only one of them can drive the walk.
+    guide: Option<Guide>,
+    /// The field a **prefix range** closed the seek prefix on, if one did.
+    ///
+    /// This is what makes `X = "pa"..; X = "parse"~2` one guided seek over the
+    /// `"pa"` bucket rather than a bucket scan with a filter. A prefix closes the
+    /// seek because nothing may follow it *in the key*, but a guide does not follow
+    /// it — it narrows the same field further, inside the range the prefix chose.
+    /// Any other field closing the seek leaves nothing for a guide to attach to,
+    /// which is why this remembers the path rather than a flag.
+    range_at: Option<FieldPath>,
 }
 
 impl SeekBuilder {
@@ -523,6 +547,31 @@ impl SeekBuilder {
             parts: vec![],
             residuals: vec![],
             building: true,
+            guide: None,
+            range_at: None,
+        }
+    }
+
+    /// The finished source: guided where a fuzzy pattern narrowed a field the
+    /// seek prefix reached, an ordinary seek otherwise.
+    ///
+    /// One place rather than two so that every construction of a level's source
+    /// asks the same question — a branch that built a `Source::Seek` directly
+    /// would silently drop the guide and answer the whole range.
+    fn source(&mut self, predicate_id: PredicateId) -> Source {
+        let access = Access {
+            predicate_id,
+            seek_key: self.seek_key(),
+        };
+        let residuals = std::mem::take(&mut self.residuals).into();
+
+        match self.guide.take() {
+            Some(guide) => Source::Guided {
+                access,
+                guide,
+                residuals,
+            },
+            None => Source::Seek { access, residuals },
         }
     }
 
@@ -1364,7 +1413,10 @@ impl Flattener<'_> {
             // and `reorder` would be free to run that first. A constant
             // is what `N` *is*, in every order, so it cannot wait.
             self.fold_into(lhs, rhs);
-        } else if matches!(self.ast.store().kind(rhs), ExprKind::Prefix(_)) {
+        } else if matches!(
+            self.ast.store().kind(rhs),
+            ExprKind::Prefix(_) | ExprKind::Fuzzy(..)
+        ) {
             // A **pattern**, not a value: a range has nothing for the
             // left side to be, so this constrains where that side
             // already lives rather than binding it — see
@@ -1691,7 +1743,11 @@ impl Flattener<'_> {
     }
 
     fn deny(&mut self, lhs: NodeId, rhs: NodeId, stmts: &mut Vec<Stmt>) {
-        if !matches!(self.ast.store().kind(rhs), ExprKind::Prefix(_)) && !self.is_foldable(rhs) {
+        if !matches!(
+            self.ast.store().kind(rhs),
+            ExprKind::Prefix(_) | ExprKind::Fuzzy(..)
+        ) && !self.is_foldable(rhs)
+        {
             self.report(
                 rhs,
                 Code::NyiBindUnification,
@@ -2168,7 +2224,7 @@ impl Flattener<'_> {
         occurrences: &mut Occurrences,
     ) {
         match self.ast.store().kind(node) {
-            ExprKind::Wildcard | ExprKind::Lit(_) | ExprKind::Prefix(_) => {}
+            ExprKind::Wildcard | ExprKind::Lit(_) | ExprKind::Prefix(_) | ExprKind::Fuzzy(..) => {}
 
             ExprKind::Var(symbol) => {
                 // A variable something else has **claimed** can only be read here —
@@ -2567,13 +2623,7 @@ impl Flattener<'_> {
                             self.reconcile(alt.key, &first, branch);
                         }
 
-                        sources.push(Source::Seek {
-                            access: Access {
-                                predicate_id: alt.predicate,
-                                seek_key: current.seek_key(),
-                            },
-                            residuals: current.residuals.into(),
-                        });
+                        sources.push(current.source(alt.predicate));
                     }
 
                     self.bindings.extend(first);
@@ -2636,13 +2686,7 @@ impl Flattener<'_> {
                         let mut current = SeekBuilder::new();
                         self.key(alt.key, &key_ty, address, &mut current);
 
-                        sources.push(Source::Seek {
-                            access: Access {
-                                predicate_id: alt.predicate,
-                                seek_key: current.seek_key(),
-                            },
-                            residuals: current.residuals.into(),
-                        });
+                        sources.push(current.source(alt.predicate));
                     }
 
                     // Nothing above can have bound anything, and a binding recorded
@@ -3097,14 +3141,14 @@ impl Flattener<'_> {
             // A **range**, and so the one narrowing that is not a slot: there is no
             // single value for `"a".."` to be, which is also why a variable cannot be
             // bound to one.
-            ExprKind::Prefix(_) => match self.constant(node, ty) {
+            ExprKind::Prefix(_) | ExprKind::Fuzzy(..) => match self.constant(node, ty) {
                 Some(constant) => Self::narrow_by(constant, path, level),
-                // Typecheck rejects a prefix against a non-string field first;
+                // Typecheck rejects a range against a non-string field first;
                 // reported rather than declined so no path refuses a plan silently.
                 None => self.report(
                     node,
                     Code::RejectTypeMismatch,
-                    "this prefix is not a pattern for that field's type",
+                    "this pattern is not a pattern for that field's type",
                 ),
             },
 
@@ -3479,10 +3523,38 @@ impl Flattener<'_> {
                 if level.building {
                     level.parts.push(SeekKeyPart::Bytes(bytes.into()));
                     level.building = false;
+                    level.range_at = Some(path.clone());
                 } else {
                     level.residuals.push(Residual {
                         path: path.clone(),
                         op: ResidualOp::Prefix(bytes.into()),
+                    });
+                }
+            }
+
+            // A fuzzy pattern ends the seek prefix exactly as a prefix does, and
+            // then keeps going: it becomes the **guide** the range is walked by.
+            // Where the prefix has already closed there is no walk to attach to —
+            // the scan is over rows an outer field chose — so it filters, which is
+            // the same split `Prefix` makes one arm above.
+            //
+            // A guide already in hand means a second fuzzy pattern on this level;
+            // it filters, because only one of them can drive the walk and both
+            // still have to hold.
+            Const::Fuzzy { term, distance } => {
+                let attachable = level.building || level.range_at.as_ref() == Some(path);
+
+                if attachable && level.guide.is_none() {
+                    level.guide = Some(Guide {
+                        path: path.clone(),
+                        term,
+                        distance,
+                    });
+                    level.building = false;
+                } else {
+                    level.residuals.push(Residual {
+                        path: path.clone(),
+                        op: ResidualOp::Fuzzy { term, distance },
                     });
                 }
             }
@@ -3509,12 +3581,26 @@ impl Flattener<'_> {
         path: &FieldPath,
         level: &mut SeekBuilder,
     ) {
-        let patterns: Vec<NodeId> = self
+        let mut patterns: Vec<NodeId> = self
             .constraints
             .iter()
             .filter(|(constrained, _)| *constrained == symbol)
             .map(|(_, pattern)| *pattern)
             .collect();
+
+        // **Ordered by what each pattern can do, not by where it was written.**
+        // Only one constraint can end the seek prefix, so which one gets to is
+        // decided here — an exact constant first (it extends the prefix and costs
+        // nothing), then a byte prefix, then a guide. Without this,
+        // `N = "parse"~2; N = "pa".."` and `N = "pa"..; N = "parse"~2` would
+        // compile to different plans, and two spellings of one query must not:
+        // the same rule that makes `Z = 1; test.Bar {id = Z}` narrow exactly as
+        // `test.Bar {id = 1}` does.
+        patterns.sort_by_key(|pattern| match self.ast.store().kind(*pattern) {
+            ExprKind::Fuzzy(..) => 2,
+            ExprKind::Prefix(_) => 1,
+            _ => 0,
+        });
 
         if patterns.is_empty() {
             level.building = false;
@@ -3566,7 +3652,15 @@ impl Flattener<'_> {
                         continue;
                     };
 
-                    let (Const::Prefix(bytes) | Const::Bytes(bytes)) = constant;
+                    // No seek is left to narrow — the row is already bound — so
+                    // every kind of pattern filters here, a guide included.
+                    let op = match constant {
+                        Const::Prefix(bytes) | Const::Bytes(bytes) => {
+                            ResidualOp::Prefix(bytes.into())
+                        }
+                        Const::Fuzzy { term, distance } => ResidualOp::Fuzzy { term, distance },
+                    };
+
                     let Some(level) = body.level_mut(address) else {
                         continue;
                     };
@@ -3579,7 +3673,7 @@ impl Flattener<'_> {
 
                         extended.push(Residual {
                             path: path.clone(),
-                            op: ResidualOp::Prefix(bytes.clone().into()),
+                            op: op.clone(),
                         });
 
                         *residuals = extended.into();
@@ -3938,11 +4032,11 @@ impl Flattener<'_> {
     ) -> Option<Box<[u8]>> {
         match self.constant(folded, ty) {
             Some(Const::Bytes(bytes)) => Some(bytes.into()),
-            Some(Const::Prefix(_)) => {
+            Some(Const::Prefix(_) | Const::Fuzzy { .. }) => {
                 self.report(
                     at,
                     Code::RejectTypeMismatch,
-                    "a prefix range has no order — compare against a value",
+                    "a range has no order — compare against a value",
                 );
                 None
             }
@@ -4003,6 +4097,15 @@ impl Flattener<'_> {
                     let op = match constant {
                         Const::Prefix(bytes) => ResidualOp::NotPrefix(bytes.into()),
                         Const::Bytes(bytes) => ResidualOp::NotEqConst(bytes.into()),
+                        // Deliberately by name rather than by inventing the
+                        // operator: "not spelled like this" is meaningful and
+                        // nothing has asked for it, and a residual op is what a
+                        // resume fingerprint tags — so it arrives when a caller
+                        // wants it, not before.
+                        Const::Fuzzy { .. } => {
+                            self.report(pattern, Code::NyiFuzzyDenial, "denying a fuzzy match");
+                            continue;
+                        }
                     };
 
                     let Some(level) = body.level_mut(address) else {
@@ -4061,6 +4164,10 @@ impl Flattener<'_> {
                     let met = match denied {
                         Const::Prefix(prefix) => value.starts_with(&prefix),
                         Const::Bytes(bytes) => value == bytes,
+                        Const::Fuzzy { .. } => {
+                            self.report(pattern, Code::NyiFuzzyDenial, "denying a fuzzy match");
+                            continue;
+                        }
                     };
 
                     if met {
@@ -4182,6 +4289,11 @@ impl Flattener<'_> {
                 Some(Const::Bytes(out))
             }
 
+            (ExprKind::Fuzzy(text, distance), PredicateTy::Str) => Some(Const::Fuzzy {
+                term: Arc::from(self.interner.try_resolve(*text)?),
+                distance: *distance,
+            }),
+
             (ExprKind::Prefix(text), PredicateTy::Str) => {
                 let mut out = vec![];
                 put_str(&mut out, self.interner.try_resolve(*text)?);
@@ -4200,10 +4312,11 @@ impl Flattener<'_> {
 
                     match self.constant(pattern, field_ty)? {
                         Const::Bytes(bytes) => out.extend_from_slice(&bytes),
-                        // A prefix cannot sit inside a record: the fields after it
-                        // and the terminator follow, so the bytes would not be a
-                        // prefix of anything.
-                        Const::Prefix(_) => return None,
+                        // Neither range can sit inside a record: the fields after
+                        // it and the terminator follow, so the bytes would not be a
+                        // prefix of anything — and a guide narrows a *field*, not
+                        // part of one.
+                        Const::Prefix(_) | Const::Fuzzy { .. } => return None,
                     }
                 }
 
@@ -4229,7 +4342,7 @@ impl Flattener<'_> {
                     // a record's: the terminator follows it, so the bytes would not
                     // be a prefix of anything. `inject` narrows by the tag and then
                     // by the range, which is the same seek one part longer.
-                    Const::Prefix(_) => return None,
+                    Const::Prefix(_) | Const::Fuzzy { .. } => return None,
                 }
 
                 out.push(MARK_TERM);
@@ -4809,6 +4922,16 @@ mod tests {
                         Source::Fetch {
                             reference, path, ..
                         } => format!("fetch[{reference}.{path}]"),
+
+                        // `seek~` says the range is walked rather than drained,
+                        // which is the difference this shape summary exists to
+                        // show.
+                        Source::Guided { access, guide, .. } => match &access.seek_key {
+                            SeekKey::Prefix(bytes) if bytes.is_empty() => {
+                                format!("seek~[{}]", guide.path)
+                            }
+                            _ => format!("seek~[k {}]", guide.path),
+                        },
                     };
 
                     let residuals = source
@@ -4817,6 +4940,7 @@ mod tests {
                         .map(|Residual { path, op }| match op {
                             ResidualOp::EqConst(_) => format!("{path} == k"),
                             ResidualOp::Prefix(_) => format!("{path} ^= k"),
+                            ResidualOp::Fuzzy { distance, .. } => format!("{path} ~{distance} k"),
                             ResidualOp::NotEqConst(_) => format!("{path} != k"),
                             ResidualOp::NotPrefix(_) => format!("{path} !^= k"),
                             ResidualOp::EqRegisterField { address, path: at } => {
@@ -9896,24 +10020,28 @@ mod battery {
                 // census is what says the battery saw it at all.
                 for source in level.sources.iter() {
                     match source {
-                        Source::Seek { access, .. } => match &access.seek_key {
-                            SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
-                            SeekKey::Composite(parts) => {
-                                self.multi_part_seek |= parts.len() > 1;
+                        Source::Seek { access, .. } | Source::Guided { access, .. } => {
+                            match &access.seek_key {
+                                SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
+                                SeekKey::Composite(parts) => {
+                                    self.multi_part_seek |= parts.len() > 1;
 
-                                for part in parts.iter() {
-                                    match part {
-                                        SeekKeyPart::Bytes(_) => self.constant_in_composite = true,
-                                        SeekKeyPart::RegisterField { path, .. } => {
-                                            self.nested_path |= !path.is_flat();
-                                        }
-                                        SeekKeyPart::RegisterFactId(_) => {
-                                            self.fact_id_splice = true;
+                                    for part in parts.iter() {
+                                        match part {
+                                            SeekKeyPart::Bytes(_) => {
+                                                self.constant_in_composite = true
+                                            }
+                                            SeekKeyPart::RegisterField { path, .. } => {
+                                                self.nested_path |= !path.is_flat();
+                                            }
+                                            SeekKeyPart::RegisterFactId(_) => {
+                                                self.fact_id_splice = true;
+                                            }
                                         }
                                     }
                                 }
                             }
-                        },
+                        }
                         Source::Fetch { path, .. } => {
                             self.fetch_source = true;
                             self.nested_path |= !path.is_flat();
@@ -9927,6 +10055,7 @@ mod battery {
                         self.nested_path |= !path.is_flat();
                         match op {
                             ResidualOp::Prefix(_) => self.prefix_residual = true,
+                            ResidualOp::Fuzzy { .. } => {}
                             ResidualOp::NotPrefix(_) => self.not_prefix_residual = true,
                             ResidualOp::NotEqConst(_) => self.not_eq_const_residual = true,
                             ResidualOp::EqRegisterField { path, .. } => {

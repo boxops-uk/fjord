@@ -429,6 +429,26 @@ impl Checker<'_> {
         let ty = match ast.store().kind(id) {
             ExprKind::Lit(Literal::Int(_)) => Ty::Int,
             ExprKind::Lit(Literal::Str(_)) | ExprKind::Prefix(_) => Ty::String,
+
+            // A fuzzy pattern is a *string* pattern, so it types exactly as a
+            // prefix does; what is checked here beyond that is the distance,
+            // because the automaton is built for a bounded one and a plan that
+            // silently clamped would answer a question nobody asked.
+            ExprKind::Fuzzy(_, distance) => {
+                let distance = *distance;
+                if distance == 0 || distance > crate::levenshtein::MAX_DISTANCE {
+                    self.reject(
+                        ast,
+                        id,
+                        Code::RejectFuzzyDistance,
+                        format!(
+                            "an edit distance of {distance} is outside 1..={}",
+                            crate::levenshtein::MAX_DISTANCE
+                        ),
+                    );
+                }
+                Ty::String
+            }
             ExprKind::Wildcard => self.fresh_var(),
             ExprKind::Error => Ty::Error,
 

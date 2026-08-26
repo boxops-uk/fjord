@@ -16,6 +16,16 @@ pub enum FjordError {
     #[error("{0} was read before anything was bound to it")]
     UseBeforeBind(Address),
 
+    /// A guide whose term the automaton will not build for.
+    ///
+    /// A compiled plan cannot reach it — the front end refuses an over-long term
+    /// or an out-of-range distance by name — so this is here for a plan built by
+    /// hand, which is the same footing `DiscriminantMismatch` sits on.
+    #[error(
+        "a fuzzy term of {chars} characters at distance {distance} is beyond what a guide is built for"
+    )]
+    FuzzyTermUnsupported { chars: usize, distance: u8 },
+
     #[error("{address} holds {held} where the plan wanted {wanted}")]
     SlotKindMismatch {
         address: Address,

@@ -6,16 +6,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::FjordError,
+    levenshtein::{Automaton, State as GuideState},
     plan::{
-        Access, Address, Arith, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual,
-        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Arith, Computed, FieldPath, Guide, Plan, PlanFingerprint, Project,
+        Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
 };
 use fjord_encoding::{
     error::StoreCodecError,
     tuple::{
         MARK_ESCAPE, MARK_RECORD, MARK_TERM, MARK_UNION, TupleDecoder, UnionTag, Value,
-        decode_typed, fact_ref_bytes, get_u64, skip, strinc,
+        decode_typed, fact_ref_bytes, get_str, get_u64, put_str, skip, strinc,
     },
 };
 use fjord_schema::{
@@ -675,6 +676,181 @@ impl<S: FactStore> Iterator for Rows<S> {
     }
 }
 
+/// What one row's field told the guide to do next.
+enum Verdict {
+    /// The field matches; the row goes on to the residuals.
+    Accept,
+    /// No match, and no seek worth paying for — the next row is the next
+    /// candidate anyway. A live-but-not-yet-accepting prefix is this case: its
+    /// matching extensions sort immediately after it.
+    Advance,
+    /// No match, and every key up to [`GuideWalk::candidate`] is a non-answer.
+    Seek,
+    /// No key in the rest of this range can match. Nothing left to read.
+    Exhausted,
+}
+
+/// The automaton, its range, and the scratch a walk reuses.
+///
+/// Everything here is allocated once per level opening and reused per row, which
+/// is what keeps the per-row cost of a guided scan free of allocation
+/// ([I9](../../../website/content/invariants.md#i9)). The bound that makes it possible is
+/// [`Automaton::max_chars`]: no key is walked past `|term| + distance + 1`
+/// characters however long it is, so neither buffer below can grow with the data.
+struct GuideWalk {
+    automaton: Automaton,
+    /// The range the level opened over. A computed seek target has to stay inside
+    /// it: below `lo` it would re-read rows already emitted, and at or above `hi`
+    /// there is nothing left to read.
+    lo: Vec<u8>,
+    hi: Option<Vec<u8>>,
+    /// `states[j]` is the automaton after `j` characters of this row's field —
+    /// every one of them live. Backtracking down it is how a seek target is found.
+    states: Vec<GuideState>,
+    chars: Vec<char>,
+    /// The last field the automaton accepted.
+    ///
+    /// A predicate keyed `{name, to}` gives one name many rows, so a run of rows
+    /// shares one string field; comparing against this turns the run into one walk
+    /// and a `memcmp` rather than one walk per row. The rejecting side needs no
+    /// equivalent — its seek target skips the whole run in a single move.
+    accepted: Vec<u8>,
+    candidate: Vec<u8>,
+    scratch: String,
+    /// How many times this walk re-opened the scan — read by the guard that says a
+    /// guided source is a seek rather than a scan.
+    hops: u64,
+}
+
+impl GuideWalk {
+    fn new(automaton: Automaton, lo: Vec<u8>, hi: Option<Vec<u8>>) -> GuideWalk {
+        let capacity = automaton.max_chars() + 1;
+
+        GuideWalk {
+            automaton,
+            lo,
+            hi,
+            states: Vec::with_capacity(capacity),
+            chars: Vec::with_capacity(capacity),
+            accepted: Vec::new(),
+            candidate: Vec::new(),
+            scratch: String::new(),
+            hops: 0,
+        }
+    }
+
+    /// Walk this row's field, and say what to do about it.
+    fn check(&mut self, guide: &Guide, register: &Register) -> Result<Verdict, FjordError> {
+        let key = register.key();
+
+        // The row's own offsets, as `check_residuals` uses: the frame's cache
+        // holds spans into *other* registers, and this path is reading the row
+        // being decided rather than one already bound.
+        let mut offsets = FieldOffsets::new();
+        let span = field_span(&mut offsets, &key, &guide.path)?;
+        let field = &key[span.clone()];
+
+        if !self.accepted.is_empty() && field == self.accepted.as_slice() {
+            return Ok(Verdict::Accept);
+        }
+
+        // The one decode in the scan loop, and it is what buys the distance a
+        // person means: edit distance over UTF-8 bytes would make one accented
+        // character two edits. Borrowed unless the stored string holds a NUL.
+        let (text, _) = get_str(field)?;
+
+        let max = self.automaton.max_chars();
+        let mut state = self.automaton.start();
+
+        self.states.clear();
+        self.chars.clear();
+        self.states.push(state);
+
+        // The character the walk died on, if it died. A string longer than `max`
+        // dies at `max` whatever follows, which is why a long key costs no more
+        // than a short one.
+        let mut killer = None;
+
+        for c in text.chars() {
+            if self.chars.len() >= max {
+                killer = Some(c);
+                break;
+            }
+
+            let next = self.automaton.step(&state, c);
+            if !self.automaton.live(&next) {
+                killer = Some(c);
+                break;
+            }
+
+            state = next;
+            self.chars.push(c);
+            self.states.push(state);
+        }
+
+        if killer.is_none() {
+            return Ok(if self.automaton.accepts(&state).is_some() {
+                self.accepted.clear();
+                self.accepted.extend_from_slice(field);
+                Verdict::Accept
+            } else {
+                // Live but short of a match: its matching extensions are the very
+                // next keys, so seeking past them would drop answers.
+                Verdict::Advance
+            });
+        }
+
+        // Dead. The longest prefix still live, and the smallest character above
+        // this row's that keeps it live, name the smallest key that could still
+        // match — every key between here and there is a non-answer.
+        for j in (0..=self.chars.len()).rev() {
+            let after = if j == self.chars.len() {
+                killer
+            } else {
+                Some(self.chars[j])
+            };
+
+            let Some(c) = self.automaton.next_live_char(&self.states[j], after) else {
+                continue;
+            };
+
+            self.scratch.clear();
+            self.scratch.extend(self.chars[..j].iter());
+            self.scratch.push(c);
+
+            self.candidate.clear();
+            self.candidate
+                .extend_from_slice(&register.bytes[..PREDICATE_ID_SIZE + span.start]);
+            put_str(&mut self.candidate, &self.scratch);
+            // A string's encoding without its terminator is what every string
+            // starting with it begins with — the same bytes a prefix pattern
+            // seeks on ([I1](../../../website/content/invariants.md#i1)).
+            self.candidate.pop();
+
+            if let Some(hi) = &self.hi {
+                if self.candidate.as_slice() >= hi.as_slice() {
+                    return Ok(Verdict::Exhausted);
+                }
+            }
+
+            // Neither can happen for a target computed above — a live successor
+            // character is strictly greater, so the target is strictly past this
+            // row and never below the range's floor. Checked because a `Plan` is
+            // public and hand-built, and the failure modes are a re-read loop and
+            // a scan that walks backwards.
+            if self.candidate.as_slice() <= register.bytes.as_ref()
+                || self.candidate.as_slice() < self.lo.as_slice()
+            {
+                return Ok(Verdict::Advance);
+            }
+
+            return Ok(Verdict::Seek);
+        }
+
+        Ok(Verdict::Exhausted)
+    }
+}
+
 struct StackFrame<S: FactStore> {
     rows: Option<Rows<S>>,
     /// Which of the level's [`Source`]s is being drained.
@@ -686,6 +862,10 @@ struct StackFrame<S: FactStore> {
     /// recoverable from the row itself.
     source: usize,
     current: Option<Register>,
+    /// The live walk, for a level whose source is a [`Source::Guided`]. `None`
+    /// for every other source, and cleared when the level closes: a walk holds a
+    /// range, and a re-entered level opens a different one.
+    guide: Option<GuideWalk>,
     field_offsets: Box<[FieldOffsets]>,
     /// Whether a step that produces **at most one row** has produced it — a
     /// [`Step::Derive`]'s value, or a [`Step::Test`]'s pass. Unused by levels, which
@@ -722,6 +902,7 @@ impl<S: FactStore> StackFrame<S> {
             rows: None,
             source: 0,
             current: None,
+            guide: None,
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
             produced: false,
             #[cfg(feature = "trace")]
@@ -755,6 +936,7 @@ impl<S: FactStore> StackFrame<S> {
         self.rows = None;
         self.source = 0;
         self.current = None;
+        self.guide = None;
     }
 
     fn open(
@@ -772,8 +954,10 @@ impl<S: FactStore> StackFrame<S> {
         // out-of-range slice.
         self.field_offsets.iter_mut().for_each(|fo| fo.clear());
 
+        self.guide = None;
+
         self.rows = Some(match source {
-            Source::Seek { access, .. } => {
+            Source::Seek { access, .. } | Source::Guided { access, .. } => {
                 let prefix = self.build_prefix(state, access)?;
                 let hi = strinc(&prefix);
                 let lo = resume_at.unwrap_or(&prefix);
@@ -798,6 +982,20 @@ impl<S: FactStore> StackFrame<S> {
                         lo: lo.to_vec(),
                         hi: hi.clone(),
                     });
+                }
+
+                // The guide is built here rather than at plan build so that a
+                // level opened many times over — once per outer row of a join —
+                // starts each pass from a clean walk over its own range.
+                if let Source::Guided { guide, .. } = source {
+                    let automaton = Automaton::new(&guide.term, guide.distance).ok_or(
+                        FjordError::FuzzyTermUnsupported {
+                            chars: guide.term.chars().count(),
+                            distance: guide.distance,
+                        },
+                    )?;
+
+                    self.guide = Some(GuideWalk::new(automaton, prefix.clone(), hi.clone()));
                 }
 
                 Rows::Scan(store.scan(lo, hi.as_deref())?)
@@ -924,14 +1122,24 @@ impl<S: FactStore> StackFrame<S> {
     /// (see [`Deadline`]).
     fn next(
         &mut self,
+        store: &S,
         state: &MachineState,
         source: &Source,
         deadline: &mut Deadline<'_>,
         depth: usize,
     ) -> Result<Option<Register>, FjordError> {
-        let rows = self.rows.as_mut().ok_or(FjordError::AdvanceAfterClose)?;
+        let guide = match source {
+            Source::Guided { guide, .. } => Some(guide),
+            Source::Seek { .. } | Source::Fetch { .. } => None,
+        };
 
-        for row in rows {
+        loop {
+            let rows = self.rows.as_mut().ok_or(FjordError::AdvanceAfterClose)?;
+
+            let Some(row) = rows.next() else {
+                return Ok(None);
+            };
+
             deadline.tick(depth)?;
 
             let (key_bytes, fact_id) = row?;
@@ -954,6 +1162,32 @@ impl<S: FactStore> StackFrame<S> {
                 bytes: key_bytes,
             };
 
+            // **The guide runs before the residuals**, and the order is not a
+            // preference: a rejection here does not drop one row, it names a key
+            // to seek to, so paying for the residuals first would be work done on
+            // a row about to be jumped over.
+            if let Some(guide) = guide {
+                let walk = self.guide.as_mut().ok_or(FjordError::AdvanceAfterClose)?;
+
+                match walk.check(guide, &current)? {
+                    Verdict::Accept => {}
+                    Verdict::Advance => continue,
+                    Verdict::Exhausted => return Ok(None),
+                    Verdict::Seek => {
+                        let scan = {
+                            let walk = self.guide.as_ref().expect("held across the check above");
+                            store.scan(&walk.candidate, walk.hi.as_deref())?
+                        };
+
+                        self.rows = Some(Rows::Scan(scan));
+
+                        let walk = self.guide.as_mut().expect("held across the check above");
+                        walk.hops += 1;
+                        continue;
+                    }
+                }
+            }
+
             match Self::check_residuals(
                 &mut self.field_offsets,
                 state,
@@ -970,8 +1204,6 @@ impl<S: FactStore> StackFrame<S> {
                 Some(residual) => deadline.rejected(depth, &current, residual),
             }
         }
-
-        Ok(None)
     }
 
     /// Whether **no** source produces a row — the whole of a negation, decided
@@ -999,7 +1231,7 @@ impl<S: FactStore> StackFrame<S> {
         for source in sources {
             self.open(store, source, state, None)?;
             self.report_opening(deadline, depth);
-            let witness = self.next(state, source, deadline, depth)?;
+            let witness = self.next(store, state, source, deadline, depth)?;
             self.close();
 
             if witness.is_some() {
@@ -1112,6 +1344,16 @@ impl<S: FactStore> StackFrame<S> {
                     let (left, _) = fjord_encoding::tuple::get_i64(field)?;
                     let right = as_i64(state.value(*var_address)?)?;
                     op.holds(left.cmp(&right))
+                }
+
+                // **The one residual that decodes.** Edit distance is over
+                // characters, not bytes, so the span is read as UTF-8 rather than
+                // compared — see [`ResidualOp::Fuzzy`]. Still no value read
+                // ([I6](../../website/content/invariants.md#i6)): the field is in
+                // the key the scan is already holding.
+                ResidualOp::Fuzzy { term, distance } => {
+                    let (text, _) = get_str(field)?;
+                    crate::levenshtein::within(term, &text, *distance)
                 }
             };
             if !ok {
@@ -1678,7 +1920,7 @@ impl<S: FactStore> Executor<S> {
                     frame.open(&ex.store, source, &ex.state, Some(&saved.row.bytes))?;
 
                     let row = frame
-                        .next(&ex.state, source, &mut deadline, index)?
+                        .next(&ex.store, &ex.state, source, &mut deadline, index)?
                         .ok_or(FjordError::BadResumeKey)?;
 
                     if row.fact_id != saved.row.fact_id {
@@ -1966,7 +2208,7 @@ impl<S: FactStore> Executor<S> {
                     frame.report_opening(deadline, self.depth);
                 }
 
-                match frame.next(&self.state, source, deadline, self.depth)? {
+                match frame.next(&self.store, &self.state, source, deadline, self.depth)? {
                     Some(register) => {
                         for var_address in level.binds.iter() {
                             self.state

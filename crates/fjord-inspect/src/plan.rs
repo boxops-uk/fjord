@@ -155,5 +155,9 @@ fn access_of(source: &Source) -> &'static str {
             _ => "seek",
         },
         Source::Fetch { .. } => "fetch",
+        // Its own name, because the cost model is its own: a seek opens a range
+        // and drains it, and a guided seek re-opens it wherever the automaton
+        // proves the rest of a run cannot match.
+        Source::Guided { .. } => "guided",
     }
 }

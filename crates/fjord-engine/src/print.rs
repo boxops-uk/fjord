@@ -186,6 +186,25 @@ pub fn steps(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> Vec<Stri
                     }
                 },
 
+                // `seek~` rather than `seek`, because the difference is the whole
+                // point: a seek opens one range and drains it, and this one is
+                // walked by an automaton that re-opens it. A plan that rendered
+                // the two the same would hide the cost model from the person
+                // reading it.
+                Source::Guided { access, guide, .. } => {
+                    let at = field(&guide.path);
+                    let range = match &access.seek_key {
+                        SeekKey::Prefix(bytes) if bytes.is_empty() => String::new(),
+                        seek_key => format!("{} ", seek(plan, schema, interner, key_ty, seek_key)),
+                    };
+
+                    let _ = write!(
+                        out,
+                        " seek~[{range}{at} ~{} {:?}]",
+                        guide.distance, guide.term
+                    );
+                }
+
                 // Named for the reference it follows rather than for a range,
                 // because that is the whole of what this level does: one row, the
                 // one that field points at. `fetch[r0.of]` reads against the
@@ -207,6 +226,9 @@ pub fn steps(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> Vec<Stri
                 let ty = field_ty(key_ty, path);
 
                 let _ = match op {
+                    ResidualOp::Fuzzy { term, distance } => {
+                        write!(out, "\n       where {at} ~{distance} {term:?}")
+                    }
                     ResidualOp::EqConst(bytes) => {
                         write!(
                             out,
@@ -908,6 +930,10 @@ impl Printer<'_> {
             ExprKind::Never => out.push("never"),
             ExprKind::Var(symbol) => out.push(self.name(*symbol)),
 
+            ExprKind::Fuzzy(symbol, distance) => {
+                out.push(&format!("{:?}~{distance}", self.name(*symbol)));
+            }
+
             ExprKind::Lit(Literal::Int(value)) => {
                 // `i64::MIN`'s magnitude does not fit an `i64`, and the grammar's
                 // negative literal is `'-' Nat`, so the sign is printed separately
@@ -1068,6 +1094,10 @@ impl Printer<'_> {
             ExprKind::Wildcard => out.push_str("(wild)"),
             ExprKind::Never => out.push_str("(never)"),
             ExprKind::Error => out.push_str("(error)"),
+
+            ExprKind::Fuzzy(symbol, distance) => {
+                let _ = write!(out, "(fuzzy {:?} {distance})", self.name(*symbol));
+            }
 
             ExprKind::Var(symbol) => {
                 out.push_str("(var ");

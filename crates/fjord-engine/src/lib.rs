@@ -23,6 +23,7 @@ pub mod dnf;
 pub mod error;
 pub mod flatten;
 pub mod iter;
+pub mod levenshtein;
 pub mod local_identity;
 pub mod lower;
 pub mod materialise;
