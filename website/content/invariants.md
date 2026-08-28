@@ -38,17 +38,38 @@ the only one that can see both implementations of it.
 | [I5](#i5) | A register holds the whole row; fields decode lazily | `exec::bind_is_refcount_not_decode` | green |
 | [I6](#i6) | Values never enter the scan hot loop | `exec::no_value_fetch_in_scan` | green |
 | [I7](#i7) | The executor is a defunctionalised state machine | structural + the resume battery | green |
-| [I8](#i8) | Immutable snapshot per query, released at suspend | `i8_snapshot::snapshot_released_at_suspend` | green |
-| [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` | green |
+| [I8](#i8) | Immutable snapshot per query, released at suspend | `i8_snapshot::snapshot_released_at_suspend` | green; a second witness pending — see [I8](#i8) |
+| [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` | green; the third escape boundary pending — see [I9](#i9) |
 | [I10](#i10) | Union discriminants are stable and append-only | `i10_discriminants::*` — four checks, see [I10](#i10) | green |
-| [I11](#i11) | A `FactId` is stable, unique and never reused within a database | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | green |
+| [I11](#i11) | A `FactId` is stable, unique and never reused within a database — **of a stored fact** | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | green |
 | [I12](#i12) | Both maps are written atomically — and a key names exactly one fact | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) + `concurrent_interning_of_one_key_creates_one_fact` | green |
 | [I13](#i13) | The database's schema is embedded and frozen at create | `i13_embedded_schema::ingest_rejects_incompatible_schema` + `fingerprint::declaration_order_and_file_layout_do_not_move_the_fingerprint` | green |
 | [I14](#i14) | A derived bind is a pure function of the fact bindings | `iter::a_derive_is_recomputed_across_every_cut_point` | green |
 | [I15](#i15) | A database says which format wrote it; an unreadable one is refused | `store::a_database_says_which_format_wrote_it` + `a_corrupt_format_stamp_is_reported` | green |
 
-No guard is `#[ignore]`d: the coverage ledger (`cargo test -- --ignored --list`) lists
-nothing pending. I10's was the last, and unions made it live.
+**Seventeen guards are `#[ignore]`d, and every one names its owner.** The recursion work's
+proof boundary requires that each assertion it defers be owned by exactly one named guard in a
+named later movement rather than left as prose, so those guards are written up front and sit in
+the ledger until the movement that owns them arrives —
+`fjord-engine/tests/recursion_ledger.rs`. Two of them are this registry's own: [I8](#i8)'s
+second witness and [I9](#i9)'s recursive-materialisation guard, which the recursion work owes
+*before* the paths they measure exist, not after.
+
+The ledger only reads as a ledger because every `#[ignore]` declares which it is:
+
+```rust
+#[ignore = "guard: <claim>, owned by Movement <N>"]
+#[ignore = "not a guard: <why>"]
+```
+
+`cargo test -- --ignored --list` prints names without reasons and has always also listed tests
+that are not guards at all — three child processes of crash tests and a fingerprint printer — so
+"the ledger contains exactly the documented obligations" was a sentence nothing could check.
+`scripts/check-guards.py` checks those attributes against an independent manifest of the exact
+names, claims and owners, and against the tests Cargo actually builds. Deleting, inventing,
+weakening or re-owning an obligation fails; so does a reason in neither form, an owner whose
+movement has **closed**, or a guard the harness does not list. The gate's own mutation controls
+provoke each rejection path in `scripts/test_check_guards.py`.
 
 <a id="i1"></a>
 
@@ -102,6 +123,61 @@ real one, where the two must also agree row for row and id for id;
 matter; and over **compiled** plans it is `flatten::resume_of_a_compiled_plan_equals_the_query`,
 which draws its loop order rather than taking the identity.
 
+**What every arm of that guard shares is a base that cannot change, and that is the shape of what
+it misses.** The generators produce one store and hold it, so no case in the battery can express a
+resume against a *different* database, a database still being written to, or a virtual predicate
+rematerialised between requests. A property whose oracle and subject share an assumption cannot
+fail on it; closing these means a **server-level** arm, not a stronger generator.
+
+**The first two are closed.** `Cursor` now carries a **world stamp** — opaque bytes the
+database-owning layer computes and the engine only compares, never interprets
+([`FjallDb::reader_stamped`](https://github.com/boxops-uk/fjord/blob/main/crates/fjord-store-fjall/src/store.rs),
+`fjord_store_fjall::world::BaseIdentity`). A Complete database's stamp is the content
+fingerprint `finish` computed, which cannot move; a Writable database's is its live handle's
+incarnation and write position at the instant the chunk's snapshot was taken, so a write that
+lands between two chunks moves it and the next chunk's stamp disagrees — refused as
+`FjordError::CursorWorld` rather than answered as a hybrid of two states. The incarnation, not the
+write position alone, is what makes a cursor from **before a reopen** refused unconditionally: a
+sequence number recovered from what a crash left durable can be lower than a live cursor's stamp,
+and reasoning about what survived is exactly what a fresh nonce per `FjallDb::open` avoids having
+to do. Guards: `store::reopening_mints_a_new_incarnation`,
+`store::visible_seqno_moves_after_a_write_and_the_snapshot_agrees` (`fjord-store-fjall`, unit),
+`iter::an_empty_cursor_from_another_world_is_refused` (`fjord-engine`, unit — the world check runs
+before the empty-cursor shortcut, exactly as the plan fingerprint's does), and the server-level arm
+this note used to say was missing:
+`against_a_server::a_write_between_two_pages_of_a_writable_database_is_refused`, with
+`paging_a_writable_database_with_no_intervening_write_still_works` as its negative control.
+
+**The third is closed too, and it splits in two, because the virtual predicates are not alike.**
+`fjord.db.List` is rematerialised per request but is otherwise a stable snapshot, so its listing
+gets a **digest**, folded into the world stamp beside the base identity
+(`fjord_server::session::with_listing_digest`) rather than a new cursor field: a `create`, `rm` or
+`finish` between two `QUERY_PAGE` calls moves the digest, the composite stops matching, and the
+same `FjordError::CursorWorld` refuses it — no new variant, no new check, because the engine still
+only compares opaque bytes. Gated on **which** predicate a plan reads (`Prepared::reads_listing`),
+not merely on a `Catalogue` existing: a query reading only `fjord.db.Interning` still gets one,
+built from a placeholder empty listing, whose digest is a constant rather than a signal.
+`fjord.db.Interning` has no such stable value — the counters are read by locking every interning
+stripe in turn, not a point-in-time capture even as it happens, and they thrash on every write — so
+a resume that **crosses requests** over it is refused by name instead
+(`ServerError::VolatileResume`), never validated against a digest that would always disagree. The
+base half's `Writable` encoding gained a length prefix on its instance id
+(`fjord_store_fjall::world::BaseIdentity::to_bytes`) for exactly this composition: an unterminated
+variable-length field in last position would let two different worlds encode identically by moving
+a byte across the boundary between it and the listing digest appended after it.
+
+Guards: `catalogue::two_catalogues_built_from_the_same_listing_agree`,
+`catalogue::a_changed_listing_changes_the_digest`,
+`catalogue::same_row_count_different_content_still_moves_the_digest` (`fjord-server`, unit — the
+digest is content, not a count, so a `create` racing a `rm` cannot leave it unmoved),
+`world::the_instance_id_is_length_prefixed_so_a_suffix_cannot_be_mistaken_for_more_of_it`
+(`fjord-store-fjall`, unit), and the server-level arms this note used to say were missing:
+`against_a_server::a_database_created_between_two_pages_of_a_listing_is_refused`,
+`against_a_server::a_database_removed_between_two_pages_of_a_listing_is_refused` and
+`against_a_server::resuming_a_query_over_the_interning_counters_is_refused_by_name`, with
+`against_a_server::paging_a_listing_with_no_intervening_change_still_works` as the first pair's
+negative control.
+
 [Executor → the cursor](executor.html#the-cursor-bytes-and-nothing-else)
 
 <a id="i5"></a>
@@ -149,17 +225,58 @@ paused query that leaves an iterator alive is as much a leak as a suspended one.
 *Guard:* cross-checks a drop probe against the storage engine's own count of open snapshots,
 because "we dropped our handle" and "the engine considers it closed" are two different claims.
 
+**Where the guarantee is *structural* is about to move, and that is the part to watch.** Today
+`Executor` owns its store and `enumerate` takes `self` by value, so every exit path — done,
+suspend, cancel, unwind — drops the store handle and no caller can park a live iterator. That
+signature is the proof. A fixpoint runs many plans over one snapshot, so the executor can no
+longer be the owner, and ownership moves to the program driver: dropping an executor then drops
+a borrow, not the snapshot. The obligation becomes one the driver owes explicitly — **one base
+snapshot observed by every rule and every round**, not one per rule, which would multiply the
+count below; and that owner released on every exit path. It is also a correctness rule, not only
+resource hygiene: "a fixpoint is a function of a frozen base" *means* one snapshot.
+
+**A derived relation is a second kind of snapshot, and the fjall count cannot see it.** A
+query-local relation is an engine-side `Arc` with no storage-engine counterpart, so a suspended
+recursive program could retain every derived tuple while the existing cross-check reports zero
+open snapshots and passes. The two witnesses establish different halves of this invariant and
+neither substitutes for the other: keep the fjall count for the base reader, and add a drop probe
+around the relation snapshot, with positive controls showing **both** live during execution and
+both at zero after an answer-page suspend, a cancellation mid-fixpoint, a materialisation or limit
+error, and normal completion.
+
 <a id="i9"></a>
 
 ### I9 — The hot path is allocation-free per row
 
 Reused scratch buffers; refcount-bump clones; inline field-offset caches that never spill. Copy
-out only at escape boundaries — a suspend, and a string or bytes projection.
+out only at escape boundaries — a suspend, a string or bytes projection, and **a tuple retained
+into a derived relation**.
 
 *Guard:* a counting global allocator asserts that scanning N and 2N rows allocates the same count
 **and** bytes, with a positive control proving the allocator is linked. The caveat the project
 records: the guard runs a single-level plan, and opening a level allocates — so a join allocates
 once per outer row, and no guard covers that.
+
+**The third escape boundary is named rather than excluded, and that distinction is the whole
+point.** Recursion's fixpoint driver sits above `enumerate`, so nothing inside `advance` changes
+— but a rule's materialisation callback runs *per rule-output attempt*, and must encode,
+deduplicate and sometimes retain that output. That is a hot path in every operational sense, and
+re-scoping this invariant to say the fixpoint is outside the path it measures would leave a
+duplicate-heavy join allocating per attempt while `scan_is_alloc_free_per_row` stayed green.
+So the rule is stated positively instead: **allocation may scale with bytes actually retained,
+under the declared byte budget, and with nothing else** — not with rejected attempts, not with
+duplicates, not with rounds.
+
+Its guard does not exist yet because the relation store does not
+([PLAN.md](https://github.com/boxops-uk/fjord/blob/main/PLAN.md#recursion--query-local-relations-magic-sets-stratified-negation)
+owes it before recursive materialisation lands, `#[ignore]`d up front like every other). It is
+three measurements, not one, because the single-level caveat above multiplies here — a fixpoint
+opens a level per rule per round:
+
+- N versus 2N **duplicate** output attempts, retained tuples held constant: equal counts and bytes;
+- N versus 2N **distinct retained** tuples: bytes scale with the retained payload and the count
+  does not scale with attempts;
+- repeated level opening across rounds, with the same positive allocator control.
 
 <a id="i10"></a>
 
@@ -195,6 +312,22 @@ sequence in the low 40. Uniqueness across predicates is structural rather than e
 A physical id, **not** cross-database identity. It is also the prerequisite for the resume
 integrity check: a saved key that still resolves to the saved fact is only meaningful if ids do
 not move.
+
+**This is a promise about *stored* facts, and a virtual row does not keep it.** The reserved
+`fjord.db.*` predicates are materialised per request from a directory walk that persists nothing,
+and `Catalogue::of` assigns each row's sequence from its **position in that listing** — so the id
+*is* the position. Create a database that sorts earlier and the same database answers to a
+different id; there is no ingest at which anything was assigned once. Stating that as a carve-out
+rather than leaving it to be inferred matters because a shipped feature had already inferred the
+other way: `fjord_client::expand::Expander` cached by `FactId` for the life of a shell session,
+resting in its own comment on this invariant's general form, and a relisting between two requests
+made a cached entry answer for the wrong database.
+
+So the rule for a virtual id is scope, not stability: **it is valid only within the listing that
+minted it, and nothing may cache one across requests.** The carve-out is deliberately narrow —
+`FactId::predicate` puts the predicate in the high three bytes, so "is this virtual" is a question
+about the id itself and needs no index to answer, and every id outside the reserved namespace
+keeps the invariant in full.
 
 <a id="i12"></a>
 

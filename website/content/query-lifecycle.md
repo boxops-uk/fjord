@@ -144,7 +144,10 @@ grows.
 
 **Constants and constraints are collected before an order is chosen.** `X = 42` is
 substituted at every use and takes no register and no step. `X = "a"..` is applied by
-whichever level captures `X`, so writing it first or last is the same plan.
+whichever level captures `X`, so writing it first or last is the same plan. Where a variable
+carries several, they are applied by what each one *can do* rather than by where it was
+written — an exact constant, then a prefix, then a [fuzzy pattern](fuzzy-search.html) — which
+is what makes `N = "an"..; N = "ann"~2` and the reverse one plan and not two.
 
 The output is the contract between the two halves of the system:
 
@@ -169,6 +172,10 @@ Read it as two nested loops. The outer one scans `src.Decl` and filters on `name
 `src.Decl`'s key is `{module, name, line}` and the leading field is open, so the name cannot
 narrow the scan. The inner one **seeks**: `src.Ref`'s key leads with `to`, so the
 declaration's fact id is spliced into the seek key and only its references are read.
+
+That difference — which field narrowed and which one only filtered — is most of what a query
+costs, and it is decided here rather than at run time. [Query
+efficiency](query-efficiency.html) is the whole rule.
 
 The same compilation, over the demo schema, with the plan the engine actually emits — its
 levels, its registers, and the access each step uses:
@@ -225,7 +232,7 @@ The driver, one transition at a time — the registers as the machine fills them
 they are yielded, and the rows a residual read and dropped, which are invisible in the answer
 and are most of what a query costs:
 
-:::demo run
+:::demo run guided
 N where code.Decl {file = _, name = N, line = L}; L > 15
 :::
 

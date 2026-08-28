@@ -16,6 +16,16 @@ pub enum FjordError {
     #[error("{0} was read before anything was bound to it")]
     UseBeforeBind(Address),
 
+    /// A guide whose term the automaton will not build for.
+    ///
+    /// A compiled plan cannot reach it — the front end refuses an over-long term
+    /// or an out-of-range distance by name — so this is here for a plan built by
+    /// hand, which is the same footing `DiscriminantMismatch` sits on.
+    #[error(
+        "a fuzzy term of {chars} characters at distance {distance} is beyond what a guide is built for"
+    )]
+    FuzzyTermUnsupported { chars: usize, distance: u8 },
+
     #[error("{address} holds {held} where the plan wanted {wanted}")]
     SlotKindMismatch {
         address: Address,
@@ -79,6 +89,25 @@ pub enum FjordError {
     #[error("resume key not found")]
     BadResumeKey,
 
+    /// A resume cursor whose world stamp does not match the one it is being resumed
+    /// against.
+    ///
+    /// Opaque to this crate by design — a content fingerprint for a Complete
+    /// database, or an instance/incarnation/sequence triple for a Writable one,
+    /// encoded by the database-owning layer, which is the only layer that can
+    /// compute either half. What this refuses is a different database, a
+    /// same-database resume after a reopen, and — on a Writable database — a resume
+    /// after a write has crossed the chunk boundary, which the two of them
+    /// otherwise answer as a silent hybrid of two states
+    /// ([I4](../../../website/content/invariants.md#i4)).
+    #[error("resume cursor was read against a different world")]
+    CursorWorld,
+
+    /// The world-stamp tag or payload in an untrusted cursor is not one this layout
+    /// defines.
+    #[error("resume cursor carries an invalid world stamp")]
+    CursorWorldEncoding,
+
     /// A plan stepping *into* a key field that is not a record. The field's own
     /// marker says what it is, so this is a plan disagreeing with the schema the
     /// row was written under — reported rather than read as bytes that happen to
@@ -123,6 +152,21 @@ pub enum FjordError {
 
     #[error("operation cancelled")]
     Cancelled,
+
+    /// A run that examined more rows than its ceiling allows.
+    ///
+    /// **Examined, not produced**, which is the whole reason this exists: every
+    /// other limit in this engine counts output, and a scan whose residuals reject
+    /// every row produces nothing while doing all the work. A ceiling that counted
+    /// rows *answered* would read zero on exactly the query it needs to stop.
+    ///
+    /// Checked per row rather than on the cancellation stride, so `examined` is
+    /// always `ceiling + 1`: a stride-checked ceiling could never fire for a caller
+    /// driving the machine one transition at a time, since that path rebuilds its
+    /// deadline — and its stride counter — on every call. Both numbers are carried
+    /// anyway, because an error that says only "too many" cannot be acted on.
+    #[error("examined {examined} rows, over this run's ceiling of {ceiling}")]
+    ExaminedCeiling { examined: u64, ceiling: u64 },
 
     #[error("store error: {0}")]
     Store(#[from] StoreError),

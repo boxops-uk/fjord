@@ -54,6 +54,9 @@ pub enum Code {
     NyiBindUnification,
     NyiDisjunction,
     NyiFactField,
+    /// `X != "parse"~1` — denying a fuzzy match. Meaningful, and deferred rather
+    /// than refused: the operator does not exist because nothing has wanted it.
+    NyiFuzzyDenial,
     NyiNegation,
     NyiNever,
     NyiRepeatedVariable,
@@ -66,6 +69,18 @@ pub enum Code {
     // `reject/` — meaningless, rejected for good.
     RejectBindLhs,
     RejectDuplicateField,
+    /// `"parse"~9` — an edit distance the automaton is not built for. Its own code
+    /// rather than a type mismatch, because the fix is a smaller number rather
+    /// than a different kind of thing.
+    RejectFuzzyDistance,
+    /// A fuzzy term longer than the automaton is built for.
+    ///
+    /// Reported here rather than left to the executor because the limit belongs to
+    /// the **language**, not to the plan that happens to be chosen: flatten turns
+    /// the same pattern into a guide or a residual depending on where the field
+    /// sits in the key, and a limit enforced by only one of them would make an
+    /// over-long term refuse on a leading field and answer on a trailing one.
+    RejectFuzzyTerm,
     RejectInfiniteType,
     RejectNoValue,
     RejectNotAGenerator,
@@ -107,6 +122,7 @@ impl Code {
         Code::NyiBindUnification,
         Code::NyiDisjunction,
         Code::NyiFactField,
+        Code::NyiFuzzyDenial,
         Code::NyiNegation,
         Code::NyiNever,
         Code::NyiRepeatedVariable,
@@ -117,6 +133,8 @@ impl Code {
         Code::NyiWholeKey,
         Code::RejectBindLhs,
         Code::RejectDuplicateField,
+        Code::RejectFuzzyDistance,
+        Code::RejectFuzzyTerm,
         Code::RejectInfiniteType,
         Code::RejectNoValue,
         Code::RejectNotAGenerator,
@@ -144,6 +162,7 @@ impl Code {
             Code::NyiBindUnification => "nyi/bind-unification",
             Code::NyiDisjunction => "nyi/disjunction",
             Code::NyiFactField => "nyi/fact-field",
+            Code::NyiFuzzyDenial => "nyi/fuzzy-denial",
             Code::NyiNegation => "nyi/negation",
             Code::NyiNever => "nyi/never",
             Code::NyiRepeatedVariable => "nyi/repeated-variable",
@@ -155,6 +174,8 @@ impl Code {
 
             Code::RejectBindLhs => "reject/bind-lhs",
             Code::RejectDuplicateField => "reject/duplicate-field",
+            Code::RejectFuzzyDistance => "reject/fuzzy-distance",
+            Code::RejectFuzzyTerm => "reject/fuzzy-term",
             Code::RejectInfiniteType => "reject/infinite-type",
             Code::RejectNoValue => "reject/no-value",
             Code::RejectNotAGenerator => "reject/not-a-generator",
@@ -185,6 +206,7 @@ impl Code {
             Code::NyiBindUnification
             | Code::NyiDisjunction
             | Code::NyiFactField
+            | Code::NyiFuzzyDenial
             | Code::NyiNegation
             | Code::NyiNever
             | Code::NyiRepeatedVariable
@@ -196,6 +218,8 @@ impl Code {
 
             Code::RejectBindLhs
             | Code::RejectDuplicateField
+            | Code::RejectFuzzyDistance
+            | Code::RejectFuzzyTerm
             | Code::RejectInfiniteType
             | Code::RejectNoValue
             | Code::RejectNotAGenerator
@@ -439,6 +463,7 @@ mod tests {
                 Code::NyiBindUnification
                 | Code::NyiDisjunction
                 | Code::NyiFactField
+                | Code::NyiFuzzyDenial
                 | Code::NyiNegation
                 | Code::NyiNever
                 | Code::NyiRepeatedVariable
@@ -449,6 +474,8 @@ mod tests {
                 | Code::NyiWholeKey
                 | Code::RejectBindLhs
                 | Code::RejectDuplicateField
+                | Code::RejectFuzzyDistance
+                | Code::RejectFuzzyTerm
                 | Code::RejectInfiniteType
                 | Code::RejectNoValue
                 | Code::RejectNotAGenerator

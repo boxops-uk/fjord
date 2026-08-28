@@ -4,7 +4,7 @@ description: Frames, streams, the handshake, the four query kinds, the write str
 ---
 
 One socket, framed and multiplexed. Everything talks it: the CLI, the shell, the viewer, and a
-C# client that shares no code with the server. Protocol version is **2**.
+C# client that shares no code with the server. Protocol version is **3**.
 
 The transport is a Unix socket by default. TCP is an explicit opt-in — `serve --listen-tcp
 host:port`, with no config-file entry and no environment variable, so a port can only appear
@@ -45,6 +45,7 @@ Two rules the frame layer holds and nothing above it needs to restate:
 | `G` | `QUERY_PAGE` | → | The same, stop after N rows and hand back a token |
 | `N` | `QUERY_COUNT` | → | The same, report only how many rows |
 | `T` | `ROW_DESCRIPTION` | ← | The head's shape, once per query stream |
+| `l` | `LISTING_DIGEST` | ← | Which virtual predicate these ids were minted from, and the digest of that listing |
 | `D` | `DATA_ROW` | ← | One row |
 | `p` | `PROFILE` | ← | What the query examined, once, just before `C` |
 | `n` | `COUNT` | ← | How many rows |
@@ -147,6 +148,25 @@ Rows go out **256 at a time**, off the executor's suspend, and the next chunk re
 bytes-only cursor. So a result of any size never buffers in the server and never monopolises the
 socket — and between chunks is exactly where a cancel gets its chance to land.
 
+### Rows off a virtual predicate
+
+A query reading a [virtual predicate](concepts.html) gets one extra frame per such predicate,
+right after `T`:
+
+```text
+  ←  T   {name: string, state: string}
+  ←  l   fjord.db.List, digest 9f3c…
+  ←  D   one row
+```
+
+`fjord.db.List`'s rows are a **materialised view, not a keyspace**, so its ids are positions in
+a listing rather than durable identities: a `create` or a `db rm` between two requests can
+renumber it, and an id then lands on a *different* row rather than on none — which a reply
+cannot be inspected to notice, because it looks exactly like a correct one. The digest travels
+with the rows and comes back on a `FETCH`, which is what lets the server refuse that case by
+name instead of answering it. It is also folded into a page's resume token, so the same move
+between two pages is refused there too.
+
 ### Cancellation
 
 ```text
@@ -180,10 +200,17 @@ parsing English; the message exists because a person reads it.
 | 9 `InUse` | Something else holds this database — the one code worth **retrying** |
 | 10 `Refused` | A well-formed request the server will not carry out — the answer is in the message |
 
+Two refusals are worth naming because a client can act on them. **A stale listing**: a `FETCH`
+carrying a digest the current listing no longer matches is refused whole, before any id is
+resolved — re-run the query and fetch against the new rows. **A volatile resume**: paging across
+requests over `fjord.db.Interning` is refused, because its counters are read by locking every
+interning stripe in turn and thrash on every write, so there is no stable value to digest. Ask
+for the whole answer in one request instead.
+
 ## Fetching what an id names
 
 ```text
-  →  F   a batch of ids, batched per predicate
+  →  F   a batch of ids, batched per predicate, with the listing digest for a virtual one
   ←  f   one key each, in the order asked
 ```
 
@@ -210,6 +237,10 @@ key. Five properties, each deliberate:
   the blocking pool. It reads the store as it is *now* rather than under the query's snapshot,
   and nothing follows from that: a fact is immutable and an id is never reused, so an id that
   was in a row names the same fact under every later view.
+- **Except for a virtual predicate**, where the previous point does not hold and the digest is
+  what replaces it: those ids are positions in a listing that can be rematerialised, so a
+  `FETCH` naming a digest that has moved is refused whole rather than resolved against rows
+  that are no longer the ones the caller saw.
 
 ## The write stream
 
@@ -375,7 +406,7 @@ remote form of `list` is a query over the virtual predicate `fjord.db.List`.
 
 | | |
 |---|---|
-| **Built** | The frame layer; the handshake including the schema check and the mode refusal; write streams; query streams in all four kinds; `H`/`h`; `F`/`f`; in-band per-stream cancellation; a reader task per connection and one fair writer over bounded queues; control frames for create/finish/remove; stream-level failure that leaves the connection usable |
+| **Built** | The frame layer; the handshake including the schema check and the mode refusal; write streams; query streams in all four kinds; `H`/`h`; `F`/`f`; `l` and the stale-listing refusal it makes possible; in-band per-stream cancellation; a reader task per connection and one fair writer over bounded queues; control frames for create/finish/remove; stream-level failure that leaves the connection usable |
 | **Deferred** | Per-stream flow-control windows |
 | **Opt-in** | TCP — default-closed, and `--listen-tcp` is the only way to open one |
 | **Not built** | Ingesting a fact **file** (the format is defined and the block encoding is shared; the splitter and the pipeline are not wired to a command) |

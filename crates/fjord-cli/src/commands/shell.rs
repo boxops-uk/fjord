@@ -575,10 +575,12 @@ impl Repl {
                 // one per reference — and a row that is interrupted before it is reached
                 // costs nothing.
                 if self.expand > 0 {
-                    match self
-                        .expander
-                        .expand(&mut self.connection, value, self.expand)
-                    {
+                    match self.expander.expand(
+                        &mut self.connection,
+                        value,
+                        self.expand,
+                        held.rows.listing_digests(),
+                    ) {
                         Ok(expanded) => sink.row(&expanded).map_err(ClientError::Io)?,
 
                         // **A server that cannot expand should cost one message, not one

@@ -5,7 +5,13 @@
 //! the conversation — that a page holds its place, that two results can be open at
 //! once, and that a cancel ends one stream and leaves the connection working.
 
-use std::{path::PathBuf, sync::Arc, thread};
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream as RawUnixStream,
+    path::PathBuf,
+    sync::Arc,
+    thread,
+};
 
 use fjord_client::{
     ClientError, Connection, ErrorCode, Expander, FULL_DEPTH, Mode, WireFact, WireRef, WireValue,
@@ -179,6 +185,18 @@ impl Serving {
 }
 
 fn start() -> Serving {
+    start_with_examined_ceiling(None)
+}
+
+fn start_with_examined_ceiling(examined_ceiling: Option<u64>) -> Serving {
+    start_configured(examined_ceiling, "")
+}
+
+fn start_with_catalogue() -> Serving {
+    start_configured(None, fjord_server::catalogue::SOURCE)
+}
+
+fn start_configured(examined_ceiling: Option<u64>, virtual_source: &str) -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("fjord.sock");
 
@@ -186,9 +204,13 @@ fn start() -> Serving {
     let catalog = Catalog::open(dir.path().join("store")).expect("a store root");
     catalog.create("code", &schema).expect("a database");
 
-    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
+    let (registry, _listing) =
+        Registry::open(catalog, Schemas::new(virtual_source)).expect("a registry");
     let registry = Arc::new(registry);
-    let listener = Listener::bind(&socket).expect("a socket");
+    let mut listener = Listener::bind(&socket).expect("a socket");
+    if let Some(ceiling) = examined_ceiling {
+        listener = listener.with_examined_ceiling(ceiling);
+    }
 
     let serving = Arc::clone(&registry);
     thread::spawn(move || {
@@ -200,6 +222,59 @@ fn start() -> Serving {
         socket,
         registry,
     }
+}
+
+fn send_frame(
+    stream: &mut RawUnixStream,
+    kind: fjord_wire::FrameKind,
+    id: fjord_wire::StreamId,
+    payload: &[u8],
+) {
+    let mut out = vec![];
+    fjord_wire::frame::encode_frame(&mut out, kind, id, payload).expect("a frame encodes");
+    stream.write_all(&out).expect("the frame is sent");
+}
+
+/// Read exactly one frame without consuming any bytes belonging to the next one.
+fn read_frame(stream: &mut RawUnixStream) -> (fjord_wire::FrameHeader, Vec<u8>) {
+    let mut head = [0u8; fjord_wire::frame::HEADER_LEN];
+    stream
+        .read_exact(&mut head)
+        .expect("a frame header arrives");
+    let header = fjord_wire::frame::decode_header(&head).expect("a frame header");
+    let mut payload = vec![0u8; header.length as usize];
+    stream
+        .read_exact(&mut payload)
+        .expect("the frame payload arrives");
+    (header, payload)
+}
+
+fn ready_fake_server(stream: &mut RawUnixStream) {
+    let (header, _) = read_frame(stream);
+    assert_eq!(header.kind, fjord_wire::protocol::kinds::STARTUP);
+    let ready = fjord_wire::protocol::encode_ready(&fjord_wire::protocol::Ready {
+        version: fjord_wire::protocol::VERSION,
+        schema_fingerprint: 0,
+        predicates: 0,
+    });
+    send_frame(
+        stream,
+        fjord_wire::protocol::kinds::READY,
+        header.stream,
+        &ready,
+    );
+}
+
+fn string_row(text: &str) -> Vec<u8> {
+    let mut out = vec![];
+    fjord_wire::value::encode_value(
+        &mut out,
+        &schema(),
+        &PredicateTy::Str,
+        &WireValue::Str(text.to_owned()),
+    )
+    .expect("a string encodes");
+    out
 }
 
 /// Write `count` files, so a result can be made as long as a test needs.
@@ -376,7 +451,7 @@ fn a_reference_expands_into_the_fact_it_names() {
 
     let mut expander = Expander::new(Arc::clone(&schema));
     let expanded = expander
-        .expand(&mut connection, &unexpanded[0], FULL_DEPTH)
+        .expand(&mut connection, &unexpanded[0], FULL_DEPTH, &[])
         .expect("the ids resolve");
 
     // doc → declaration → file, and the file's key is the path the producer nested.
@@ -406,18 +481,18 @@ fn a_reference_expands_into_the_fact_it_names() {
     // declaration in the *same* file, so it costs one read rather than two — and
     // re-expanding the first costs none at all.
     expander
-        .expand(&mut connection, &unexpanded[1], FULL_DEPTH)
+        .expand(&mut connection, &unexpanded[1], FULL_DEPTH, &[])
         .expect("the ids resolve");
     assert_eq!(expander.fetched(), 3, "the file was already known");
 
     expander
-        .expand(&mut connection, &unexpanded[0], FULL_DEPTH)
+        .expand(&mut connection, &unexpanded[0], FULL_DEPTH, &[])
         .expect("the ids resolve");
     assert_eq!(expander.fetched(), 3, "nothing was read twice");
 
     // Depth is hops: one reaches the declaration and leaves its file an id.
     let shallow = expander
-        .expand(&mut connection, &unexpanded[0], 1)
+        .expand(&mut connection, &unexpanded[0], 1, &[])
         .expect("the ids resolve");
     let WireValue::Record(shallow_decl) = &nested(field(&shallow, 0)).key else {
         panic!("a declaration's key is a record");
@@ -449,7 +524,7 @@ fn an_id_that_names_nothing_is_answered_and_one_that_cannot_exist_is_refused() {
     let absent = FactId::new(FILE, 9_999).expect("a well-formed id");
     assert_eq!(
         connection
-            .fetch(&schema, &[absent])
+            .fetch(&schema, &[absent], None)
             .expect("it is answered"),
         vec![Found::Missing],
         "a well-formed id for a fact nobody wrote"
@@ -457,7 +532,7 @@ fn an_id_that_names_nothing_is_answered_and_one_that_cannot_exist_is_refused() {
 
     let nowhere = FactId::new(PredicateId(99), 1).expect("a well-formed id");
     let refused = connection
-        .fetch(&schema, &[nowhere])
+        .fetch(&schema, &[nowhere], None)
         .expect_err("no such predicate");
     assert!(
         matches!(refused, ClientError::Server { .. }),
@@ -488,7 +563,7 @@ fn a_refusal_that_is_not_about_the_frame_is_not_reported_as_an_old_server() {
 
     let id = FactId::new(FILE, 1).expect("a well-formed id");
     let refused = control
-        .fetch(&schema, &[id])
+        .fetch(&schema, &[id], None)
         .expect_err("a control session names no database");
 
     assert!(
@@ -637,6 +712,172 @@ fn a_cancel_ends_one_result_and_leaves_the_connection_working() {
     assert_eq!(connection.cancel(&mut rows).expect("a no-op"), sent);
 }
 
+/// A virtual query announces its listing immediately after the row description.
+/// Cancelling before the first row must consume that transparent frame just as
+/// ordinary row pulling does, rather than mistake it for the query's answer.
+#[test]
+fn cancelling_a_virtual_query_before_its_first_row_consumes_the_listing_digest() {
+    let serving = start_with_catalogue();
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens");
+
+    let sent = connection.cancel(&mut rows).expect("it cancels");
+    assert!(
+        sent <= 1,
+        "the one-row listing sent at most its row: {sent}"
+    );
+    assert!(rows.finished());
+
+    let mut again = connection
+        .query("F where src.File F")
+        .expect("the connection still works");
+    assert!(connection.drain(&mut again).expect("it answers").is_empty());
+}
+
+/// **A cached virtual id does not outlive the listing it was a position in.** The fetch
+/// digest cannot catch this on its own: `prefetch` asks only for ids it does not already
+/// hold, so a cached catalogue row is never re-fetched and its digest never re-checked.
+/// Left unrepaired, the second expansion below names the database the *first* listing had
+/// at that position.
+#[test]
+fn a_cached_virtual_id_does_not_survive_a_relisting() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+    let mut connection = serving.open(Mode::ReadOnly);
+    // The *served* schema, which is what declares the catalogue and marks it virtual.
+    // The handshake schema deliberately excludes it, so an expander built from that one
+    // would neither decode a listing row nor know it held a virtual id.
+    let served = Arc::new(connection.served_schema().expect("the served schema"));
+    let mut expander = Expander::new(served);
+
+    let name_of = |value: &WireValue| -> String {
+        let WireValue::Record(fields) = &nested(value).key else {
+            panic!("a listing row's key is a record: {value:?}");
+        };
+        let WireValue::Str(name) = &fields[0] else {
+            panic!("a listing row's first field is its name: {fields:?}");
+        };
+        name.clone()
+    };
+
+    let mut rows = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens");
+    let listed = connection.drain(&mut rows).expect("the rows arrive");
+    assert_eq!(listed.len(), 1);
+
+    let first = expander
+        .expand(
+            &mut connection,
+            &listed[0],
+            FULL_DEPTH,
+            rows.listing_digests(),
+        )
+        .expect("the virtual id resolves");
+    assert_eq!(name_of(&first), "code");
+
+    // A database that sorts *before* the one already there, so the row this id names
+    // changes rather than merely moving down the page.
+    control.create("aaa", &source).expect("a second database");
+
+    let mut relisted = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens again");
+    let after = connection.drain(&mut relisted).expect("the rows arrive");
+    assert_eq!(after.len(), 2);
+
+    let second = expander
+        .expand(
+            &mut connection,
+            &after[0],
+            FULL_DEPTH,
+            relisted.listing_digests(),
+        )
+        .expect("the virtual id resolves");
+    assert_eq!(
+        name_of(&second),
+        "aaa",
+        "a cached virtual id answered for the listing it was minted in"
+    );
+
+    // The digests really did move, so the assertion above is not passing because
+    // nothing changed.
+    assert_ne!(
+        rows.listing_digests(),
+        relisted.listing_digests(),
+        "the listing digest did not move; this test proves nothing"
+    );
+}
+
+/// A digest scopes caching, not whether the fetch result is useful for the current
+/// expansion. The server deliberately resolves a digestless virtual id typed by hand.
+#[test]
+fn a_digestless_virtual_fetch_expands_for_the_current_row() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+    let mut connection = serving.open(Mode::ReadOnly);
+    let served = Arc::new(connection.served_schema().expect("the served schema"));
+    let mut expander = Expander::new(served);
+
+    let mut rows = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the virtual query opens");
+    let listed = connection.drain(&mut rows).expect("the row arrives");
+    assert_eq!(listed.len(), 1);
+
+    let expanded = expander
+        .expand(&mut connection, &listed[0], FULL_DEPTH, &[])
+        .expect("a digestless fetch still resolves now");
+
+    let listing_name = |value: &WireValue| -> String {
+        let WireValue::Ref(WireRef::Nested(fact)) = value else {
+            panic!("the listing id was not expanded: {value:?}");
+        };
+        let WireValue::Record(fields) = &fact.key else {
+            panic!("a listing key is a record: {:?}", fact.key);
+        };
+        let WireValue::Str(name) = &fields[0] else {
+            panic!("a listing name is a string: {fields:?}");
+        };
+        name.clone()
+    };
+    assert_eq!(listing_name(&expanded), "code");
+
+    control.create("aaa", &source).expect("a second database");
+    let current = expander
+        .expand(&mut connection, &listed[0], FULL_DEPTH, &[])
+        .expect("the same id resolves without using the previous row");
+    assert_eq!(listing_name(&current), "aaa");
+}
+
+/// The repair above rests on the recovered schema knowing which predicates are virtual,
+/// and the printed form carries no marker for it. A `served_schema` that stopped marking
+/// them would leave every guard above green while the cache went stale again.
+#[test]
+fn a_served_schema_marks_the_catalogue_virtual() {
+    let serving = start_with_catalogue();
+    let mut connection = serving.open(Mode::ReadOnly);
+    let served = connection.served_schema().expect("the served schema");
+
+    let (listing, _) = served
+        .find_position("fjord.db.List")
+        .expect("the catalogue is served");
+    assert!(served.is_virtual(listing));
+
+    let (stored, _) = served
+        .find_position("src.File")
+        .expect("the database's own predicates are served too");
+    assert!(
+        !served.is_virtual(stored),
+        "a stored predicate was marked virtual"
+    );
+}
+
 /// A discard is **not** a cancel: the query runs to its end and the server's own count
 /// is what comes back, with no row ever decoded on this side.
 #[test]
@@ -732,6 +973,11 @@ fn a_bad_query_fails_its_stream_by_code() {
 
     let mut rows = connection.query("F where src.File F").expect("it compiles");
     assert!(connection.drain(&mut rows).expect("no rows").is_empty());
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the query after the terminal refusal must reuse its stream id"
+    );
 }
 
 /// The lifecycle, through the client: create a database, seal it, and find that
@@ -1223,6 +1469,277 @@ fn a_resume_token_belongs_to_the_query_that_made_it() {
     assert_eq!(connection.drain(&mut rows).expect("the page").len(), 2);
 }
 
+/// **A write that lands between two pages of a Writable database is refused,
+/// rather than answered as a hybrid of the two states the read passed through.**
+///
+/// A cursor names a plan, a layout version and — since the world stamp landed —
+/// which base it was read against. On a Complete database that base can never
+/// move, so nothing here would fire; a Writable one is read through a fresh
+/// snapshot every chunk, so an ingest between two `query_page` calls is exactly
+/// the case [I4](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i4)
+/// names: "a database still being written to... the cursor carries nothing that
+/// would detect [it]". This is the server-level arm that closes it, and it has to
+/// be server-level — a generated `(plan, store)` pair in the engine's own battery
+/// holds one store for the whole property and cannot express a store that changes
+/// mid-resume.
+#[test]
+fn a_write_between_two_pages_of_a_writable_database_is_refused() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 20);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("F where src.File F", 5, None)
+        .expect("the first page");
+    let first = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(first.len(), 5);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    // The database is still Writable — nothing here finishes it — so the write
+    // below lands squarely inside the case this test exists to cover. A new name,
+    // not `seed`'s own `f00000.py`: seeding again would dedup against the fact
+    // already written and move nothing.
+    let written = writer
+        .write(FILE, &[file("between-the-pages.py")])
+        .expect("the extra fact is written");
+    assert_eq!(written.created, 1, "the write must actually create a fact");
+
+    // `query_page` itself only sends the request and reads the row description,
+    // which is sent before the resumed chunk ever runs — so the refusal, like any
+    // other mid-stream error, surfaces on the read that follows rather than here.
+    let mut second_page = connection
+        .query_page("F where src.File F", 5, Some(&token))
+        .expect("the row description arrives before the resumed chunk runs");
+    let refused = connection.drain(&mut second_page);
+    assert!(
+        refused.is_err(),
+        "a write between two pages of a Writable database was answered rather than refused: {:?}",
+        refused.map(|rows| rows.len())
+    );
+
+    // The refusal ended the stream, not the connection: a fresh page still works,
+    // and — since it is unpaged from here — sees all 21 rows, never a duplicate or
+    // a gap from the page that was refused.
+    let mut whole = connection
+        .query("F where src.File F")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 21);
+}
+
+/// **The negative control for the test above**: paging a Writable database with no
+/// intervening write behaves exactly as it always has. Without this, a bug that
+/// made the world stamp refuse *every* Writable resume — not only one a write
+/// crossed — would still pass every other test in this file, since none of them
+/// distinguish "always refused" from "refused when it should be".
+#[test]
+fn paging_a_writable_database_with_no_intervening_write_still_works() {
+    let serving = start();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 20);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("F where src.File F", 5, None)
+        .expect("the first page");
+    let first = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(first.len(), 5);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    let mut rows = connection
+        .query_page("F where src.File F", 5, Some(&token))
+        .expect("the second page, over an unchanged Writable database");
+    let second = strings(&connection.drain(&mut rows).expect("the page"));
+    assert_eq!(second.len(), 5);
+
+    let mut whole = connection.query("F where src.File F").expect("a query");
+    let all = strings(&connection.drain(&mut whole).expect("the rows"));
+    assert_eq!(&all[..10], &[first, second].concat()[..]);
+}
+
+/// **A database created between two pages of `fjord.db.List` renumbers the listing
+/// under a cursor that is a *position* in it — item 12's defect, closed the same way
+/// item 13 closes the base-database one above.** `fjord.db.List`'s rows are a view
+/// materialised per request, not a keyspace: `query_page` re-prepares on every call,
+/// so a `create` between two calls changes what the listing *is* while the cursor
+/// still names the same plan and the same (Writable, in this test unwritten-to) base.
+/// Nothing but the listing's own digest, folded into the world stamp beside the base
+/// identity, can catch that — which is exactly what this proves happens.
+#[test]
+fn a_database_created_between_two_pages_of_a_listing_is_refused() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+
+    // Two databases already, so a page of one leaves a second row for the resumed
+    // page to find — otherwise the first page would already exhaust the listing and
+    // there would be nothing left to disagree about.
+    control
+        .create("second", &source)
+        .expect("a second database");
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, None)
+        .expect("the first page");
+    let first = connection.drain(&mut rows).expect("the page");
+    assert_eq!(first.len(), 1);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    control.create("third", &source).expect("a third database");
+
+    // `query_page` itself only sends the request and reads the row description and
+    // the listing digest — both sent before the resumed chunk ever runs — so, exactly
+    // as the Writable-write case above, the refusal surfaces on the read that follows
+    // rather than here.
+    let mut second_page = connection
+        .query_page("X where X = fjord.db.List _", 1, Some(&token))
+        .expect("the row description arrives before the resumed chunk runs");
+    let refused = connection.drain(&mut second_page);
+    assert!(
+        refused.is_err(),
+        "a database created between two pages of a listing was answered rather than \
+         refused: {:?}",
+        refused.map(|rows| rows.len())
+    );
+
+    // The refusal ended the stream, not the connection: a fresh, unpaged query still
+    // works and sees all three databases.
+    let mut whole = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 3);
+}
+
+/// The other direction of the case above: a `rm` between two pages moves the listing
+/// exactly as a `create` does, and must be caught the same way.
+#[test]
+fn a_database_removed_between_two_pages_of_a_listing_is_refused() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+
+    control
+        .create("second", &source)
+        .expect("a second database");
+    control.create("third", &source).expect("a third database");
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, None)
+        .expect("the first page");
+    let first = connection.drain(&mut rows).expect("the page");
+    assert_eq!(first.len(), 1);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    remove_when_released(&mut control, "third");
+
+    let mut second_page = connection
+        .query_page("X where X = fjord.db.List _", 1, Some(&token))
+        .expect("the row description arrives before the resumed chunk runs");
+    let refused = connection.drain(&mut second_page);
+    assert!(
+        refused.is_err(),
+        "a database removed between two pages of a listing was answered rather than \
+         refused: {:?}",
+        refused.map(|rows| rows.len())
+    );
+
+    let mut whole = connection
+        .query("X where X = fjord.db.List _")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 2);
+}
+
+/// **The negative control for the pair above**: paging a listing with no intervening
+/// `create` or `rm` behaves exactly as it always has. Without this, a bug that made
+/// the listing's digest refuse *every* resume over a virtual predicate — not only one
+/// a mutation crossed — would still pass both tests above, since neither distinguishes
+/// "always refused" from "refused when it should be".
+#[test]
+fn paging_a_listing_with_no_intervening_change_still_works() {
+    let serving = start_with_catalogue();
+    let mut control = serving.control();
+    let source = fjord_schema::syntax::print::print(&schema());
+
+    control
+        .create("second", &source)
+        .expect("a second database");
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, None)
+        .expect("the first page");
+    let first = connection.drain(&mut rows).expect("the page");
+    assert_eq!(first.len(), 1);
+    let token = rows.resume_token().expect("there is more").to_vec();
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.List _", 1, Some(&token))
+        .expect("the second page, over an unchanged listing");
+    let second = connection.drain(&mut rows).expect("the page");
+    assert_eq!(second.len(), 1);
+
+    let mut whole = connection
+        .query("X where X = fjord.db.List _")
+        .expect("a query");
+    assert_eq!(connection.drain(&mut whole).expect("the rows").len(), 2);
+}
+
+/// **`fjord.db.Interning` has no snapshot to number, so a resume that crosses
+/// requests is refused by name rather than validated against a digest that would
+/// always disagree.** The counters are read by taking every interning stripe's lock
+/// in turn — not a point-in-time capture even as it happens, and thrashing on every
+/// write — so unlike `fjord.db.List` there is no stable value a generation could
+/// name. This is not a race to provoke: the refusal fires on any attempt to resume
+/// such a query across two requests, whether or not the counters actually moved.
+#[test]
+fn resuming_a_query_over_the_interning_counters_is_refused_by_name() {
+    let serving = start_with_catalogue();
+
+    let mut writer = serving.open(Mode::ReadWrite);
+    seed(&mut writer, 1);
+    drop(writer);
+
+    let mut connection = serving.open(Mode::ReadOnly);
+
+    let mut rows = connection
+        .query_page("X where X = fjord.db.Interning _", 1, None)
+        .expect("the first page");
+    let _ = connection.drain(&mut rows).expect("the page");
+    let token = rows
+        .resume_token()
+        .expect("a token, whether or not more rows remain")
+        .to_vec();
+
+    let refused = connection.query_page("X where X = fjord.db.Interning _", 1, Some(&token));
+    assert!(
+        refused.is_err(),
+        "a resume across requests over fjord.db.Interning was accepted: {:?}",
+        refused.map(|_| ())
+    );
+    let error = refused.expect_err("checked above");
+    assert_eq!(error.code(), Some(ErrorCode::Refused));
+    assert!(
+        error.to_string().contains("fjord.db.Interning"),
+        "the refusal names the predicate: {error}"
+    );
+
+    // The refusal ended the stream, not the connection.
+    let mut whole = connection
+        .query("F where src.File F")
+        .expect("the connection still works");
+    assert_eq!(connection.drain(&mut whole).expect("its rows").len(), 1);
+}
+
 /// Garbage is refused rather than half-read.
 #[test]
 fn a_malformed_resume_token_is_refused() {
@@ -1310,6 +1827,53 @@ fn a_count_ends_its_stream() {
         connection.stream_ids_issued() <= 2,
         "fifty counts invented {} stream ids",
         connection.stream_ids_issued()
+    );
+}
+
+/// The server's examined ceiling reaches both wire paths as a terminal error, and
+/// each path releases its stream id before the connection carries on.
+#[test]
+fn the_server_ceiling_stops_queries_and_counts_without_leaking_their_streams() {
+    let serving = start_with_examined_ceiling(Some(3));
+    let mut connection = serving.open(Mode::ReadWrite);
+    seed(&mut connection, 5);
+
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("the descriptor arrives before execution");
+    let query_error = connection
+        .next_row(&mut rows)
+        .expect_err("the fourth examined row exceeds the ceiling");
+    assert_eq!(query_error.code(), Some(ErrorCode::Internal));
+    assert!(
+        query_error
+            .to_string()
+            .contains("examined 4 rows, over this run's ceiling of 3"),
+        "the executor's named refusal reaches the client: {query_error}"
+    );
+    assert!(rows.finished(), "the query error is terminal");
+
+    let count_error = connection
+        .count("F where src.File F")
+        .expect_err("count uses the same ceiling");
+    assert_eq!(count_error.code(), Some(ErrorCode::Internal));
+    assert!(
+        count_error
+            .to_string()
+            .contains("examined 4 rows, over this run's ceiling of 3"),
+        "the count path carries the same refusal: {count_error}"
+    );
+
+    assert_eq!(
+        connection
+            .count("F where src.File F; F = \"f00000.py\"")
+            .expect("a seek inside the ceiling still works"),
+        1
+    );
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the write, failed query, failed count, and successful count are sequential and reuse one id"
     );
 }
 
@@ -1587,10 +2151,9 @@ fn a_union_is_written_and_read_back_over_the_wire() {
 #[test]
 fn a_server_that_predates_expansion_is_reported_as_unsupported() {
     use fjord_wire::{
-        frame::{self, FrameKind},
-        protocol::{self, ErrorCode, Ready},
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
     };
-    use std::io::{Read, Write};
 
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("old.sock");
@@ -1598,35 +2161,16 @@ fn a_server_that_predates_expansion_is_reported_as_unsupported() {
 
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("a connection");
-        let mut buf = vec![0u8; 4096];
-
-        // The handshake: swallow STARTUP, answer READY.
-        let n = stream.read(&mut buf).expect("a startup frame");
-        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
-        assert_eq!(header.kind, protocol::kinds::STARTUP);
-
-        let ready = protocol::encode_ready(&Ready {
-            version: protocol::VERSION,
-            schema_fingerprint: 0,
-            predicates: 0,
-        });
-        let mut out = vec![];
-        frame::encode_frame(&mut out, protocol::kinds::READY, header.stream, &ready)
-            .expect("a ready frame");
-        stream.write_all(&out).expect("ready sent");
+        ready_fake_server(&mut stream);
 
         // The next frame is the fetch this server has never heard of.
-        let n = stream.read(&mut buf).expect("a fetch frame");
-        let (header, _, _) = frame::decode_frame(&buf[..n]).expect("a frame");
+        let (header, _) = read_frame(&mut stream);
 
         let refusal = protocol::encode_error(
             ErrorCode::Protocol,
             &format!("no handler for frame kind {:?}", header.kind),
         );
-        let mut out = vec![];
-        frame::encode_frame(&mut out, FrameKind::ERROR, header.stream, &refusal)
-            .expect("an error frame");
-        stream.write_all(&out).expect("error sent");
+        send_frame(&mut stream, FrameKind::ERROR, header.stream, &refusal);
     });
 
     let schema = Arc::new(schema());
@@ -1636,13 +2180,436 @@ fn a_server_that_predates_expansion_is_reported_as_unsupported() {
 
     let id = FactId::new(FILE, 1).expect("a well-formed id");
     let refused = connection
-        .fetch(&schema, &[id])
+        .fetch(&schema, &[id], None)
         .expect_err("the fake server refuses the frame kind");
 
     assert!(
         matches!(&refused, ClientError::Unsupported(message)
             if message.contains("before expansion existed")),
         "an old server is reported as unsupported, with the remedy: {refused:?}"
+    );
+
+    server.join().expect("the fake server exits cleanly");
+}
+
+/// **A server-reported error mid-stream is terminal, exactly as `COMPLETE` is.**
+///
+/// The real-server ceiling guard fixes an error before a chunk has emitted anything;
+/// this peer fixes the other important position by sending one `DATA_ROW` first. The
+/// second query proves release by reusing the terminal stream's id.
+#[test]
+fn a_mid_stream_error_ends_the_stream_the_way_complete_does() {
+    use fjord_wire::{
+        desc::{Desc, encode_desc},
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
+    };
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("fake.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+
+        ready_fake_server(&mut stream);
+
+        // First query: one row, then an error instead of `COMPLETE`.
+        let (first, _) = read_frame(&mut stream);
+        assert_eq!(first.kind, protocol::kinds::QUERY);
+
+        let mut desc = vec![];
+        encode_desc(&mut desc, &Desc::Str);
+        send_frame(&mut stream, FrameKind::ROW_DESCRIPTION, first.stream, &desc);
+        send_frame(
+            &mut stream,
+            FrameKind::DATA_ROW,
+            first.stream,
+            &string_row("row-one"),
+        );
+        send_frame(
+            &mut stream,
+            FrameKind::ERROR,
+            first.stream,
+            &protocol::encode_error(ErrorCode::Internal, "examined rows past this run's ceiling"),
+        );
+
+        // Second query, on the *same connection*: the stream id it carries is the
+        // proof. Reused only if the errored stream was actually released.
+        let (second, _) = read_frame(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::QUERY);
+        assert_eq!(
+            second.stream, first.stream,
+            "the errored stream's id was never recycled"
+        );
+
+        send_frame(
+            &mut stream,
+            FrameKind::ROW_DESCRIPTION,
+            second.stream,
+            &desc,
+        );
+        send_frame(
+            &mut stream,
+            FrameKind::DATA_ROW,
+            second.stream,
+            &string_row("row-two"),
+        );
+        send_frame(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            second.stream,
+            &protocol::encode_complete(1, 0),
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("the stream opens");
+
+    assert_eq!(
+        connection
+            .next_row(&mut rows)
+            .expect("the first row arrives"),
+        Some(WireValue::Str("row-one".to_owned()))
+    );
+
+    let error = connection
+        .next_row(&mut rows)
+        .expect_err("the server's error reaches the caller");
+    assert!(
+        matches!(&error, ClientError::Server { code, .. } if *code == ErrorCode::Internal),
+        "the server's own error, not a protocol complaint about the frame: {error:?}"
+    );
+
+    assert!(
+        rows.finished(),
+        "an error ends the result exactly as COMPLETE does"
+    );
+
+    // Safe to call again only because `finished()` is already true above: this
+    // returns `Ok(None)` without touching the socket rather than waiting on a stream
+    // whose server-side task has already returned.
+    assert_eq!(
+        connection
+            .next_row(&mut rows)
+            .expect("finished is idempotent"),
+        None
+    );
+
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "one stream was ever needed before the second query"
+    );
+
+    let mut second_rows = connection
+        .query("F where src.File F")
+        .expect("it opens again");
+    assert_eq!(
+        connection.drain(&mut second_rows).expect("its row arrives"),
+        vec![WireValue::Str("row-two".to_owned())]
+    );
+
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the second query reused the errored stream's id rather than minting a new one"
+    );
+
+    server.join().expect("the fake server exits cleanly");
+}
+
+/// A session-level error may surface while a query is open, but it does not prove
+/// that query's task ended and must not make its stream id available for reuse.
+#[test]
+fn a_session_error_does_not_recycle_a_query_stream_that_is_still_running() {
+    use fjord_wire::{
+        StreamId,
+        desc::{Desc, encode_desc},
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
+    };
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("session-error.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        ready_fake_server(&mut stream);
+
+        let (first, _) = read_frame(&mut stream);
+        assert_eq!(first.kind, protocol::kinds::QUERY);
+
+        let mut desc = vec![];
+        encode_desc(&mut desc, &Desc::Str);
+        send_frame(&mut stream, FrameKind::ROW_DESCRIPTION, first.stream, &desc);
+        send_frame(
+            &mut stream,
+            FrameKind::ERROR,
+            StreamId(0),
+            &protocol::encode_error(ErrorCode::Internal, "the session reported a fault"),
+        );
+
+        // The first query is still live, so concurrent work must claim another id.
+        let (second, _) = read_frame(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::QUERY);
+        assert_ne!(second.stream, first.stream);
+        send_frame(
+            &mut stream,
+            FrameKind::ROW_DESCRIPTION,
+            second.stream,
+            &desc,
+        );
+        send_frame(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            second.stream,
+            &protocol::encode_complete(0, 0),
+        );
+
+        send_frame(
+            &mut stream,
+            FrameKind::DATA_ROW,
+            first.stream,
+            &string_row("first-still-live"),
+        );
+        send_frame(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            first.stream,
+            &protocol::encode_complete(1, 0),
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection = Connection::connect(&socket, "code", schema, Mode::ReadOnly, false)
+        .expect("the handshake completes");
+
+    let mut first = connection.query("F where src.File F").expect("a result");
+    let error = connection
+        .next_row(&mut first)
+        .expect_err("the session error surfaces immediately");
+    assert_eq!(error.code(), Some(ErrorCode::Internal));
+    assert!(!first.finished(), "the query itself has not ended");
+
+    let mut second = connection
+        .query("F where src.File F")
+        .expect("another stream can still be opened");
+    assert!(
+        connection
+            .drain(&mut second)
+            .expect("it completes")
+            .is_empty()
+    );
+    assert_eq!(connection.stream_ids_issued(), 2);
+
+    assert_eq!(
+        connection
+            .next_row(&mut first)
+            .expect("the query carries on"),
+        Some(WireValue::Str("first-still-live".to_owned()))
+    );
+    assert_eq!(connection.next_row(&mut first).expect("it completes"), None);
+
+    server.join().expect("the fake server exits cleanly");
+}
+
+/// A fetch has no `Rows` bookmark, but its stream is still live when a session-level
+/// error interrupts the receive. Reusing that id lets its late positional reply answer
+/// a different fetch, silently returning the wrong fact.
+#[test]
+fn a_session_error_does_not_recycle_a_fetch_stream_that_is_still_running() {
+    use fjord_wire::{
+        StreamId,
+        frame::FrameKind,
+        protocol::{self, ErrorCode, Fetched},
+    };
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("fetch-session-error.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+    let first_id = FactId::new(FILE, 1).expect("an id");
+    let second_id = FactId::new(FILE, 2).expect("an id");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        ready_fake_server(&mut stream);
+
+        let (first, _) = read_frame(&mut stream);
+        assert_eq!(first.kind, protocol::kinds::FETCH);
+        send_frame(
+            &mut stream,
+            FrameKind::ERROR,
+            StreamId(0),
+            &protocol::encode_error(ErrorCode::Internal, "the session reported a fault"),
+        );
+
+        let (second, _) = read_frame(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::FETCH);
+
+        // The first reply arrives only after the second request. Since FETCHED is
+        // positional and carries no ids, reusing the stream would make this look like
+        // the answer to `second_id` and return the wrong key without a decode error.
+        let first_reply = protocol::encode_fetched(
+            &schema(),
+            &[Fetched {
+                id: first_id,
+                found: Found::Key(WireValue::Str("first.py".to_owned())),
+            }],
+        )
+        .expect("a reply");
+        send_frame(
+            &mut stream,
+            protocol::kinds::FETCHED,
+            first.stream,
+            &first_reply,
+        );
+
+        let second_reply = protocol::encode_fetched(
+            &schema(),
+            &[Fetched {
+                id: second_id,
+                found: Found::Key(WireValue::Str("second.py".to_owned())),
+            }],
+        )
+        .expect("a reply");
+        send_frame(
+            &mut stream,
+            protocol::kinds::FETCHED,
+            second.stream,
+            &second_reply,
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let error = connection
+        .fetch(&schema, &[first_id], None)
+        .expect_err("the session error surfaces");
+    assert_eq!(error.code(), Some(ErrorCode::Internal));
+
+    assert_eq!(
+        connection
+            .fetch(&schema, &[second_id], None)
+            .expect("the second fetch"),
+        vec![Found::Key(WireValue::Str("second.py".to_owned()))]
+    );
+    assert_eq!(
+        connection.stream_ids_issued(),
+        2,
+        "the still-live first fetch keeps its stream id"
+    );
+
+    server.join().expect("the fake server exits cleanly");
+}
+
+/// **A cancel that races a terminal error must not hang, and the connection must
+/// still work afterwards.**
+///
+/// [`Connection::cancel`] reads frames on the same query stream `next_row` does, and
+/// shares its fix: a server can answer `CANCEL` with an error instead of `COMPLETE`
+/// — the query the cancel raced against had already failed — and that stream must be
+/// released exactly as an error mid-`next_row` releases it.
+#[test]
+fn a_cancel_racing_a_terminal_error_leaves_the_connection_working() {
+    use fjord_wire::{
+        desc::{Desc, encode_desc},
+        frame::FrameKind,
+        protocol::{self, ErrorCode},
+    };
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("fake.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+
+        ready_fake_server(&mut stream);
+
+        let (query, _) = read_frame(&mut stream);
+        assert_eq!(query.kind, protocol::kinds::QUERY);
+
+        let mut desc = vec![];
+        encode_desc(&mut desc, &Desc::Str);
+        send_frame(&mut stream, FrameKind::ROW_DESCRIPTION, query.stream, &desc);
+
+        // The client cancels before any row arrives — the fake server answers the
+        // `CANCEL` with an error rather than `COMPLETE`.
+        let (cancel, _) = read_frame(&mut stream);
+        assert_eq!(cancel.kind, protocol::kinds::CANCEL);
+        assert_eq!(cancel.stream, query.stream);
+        send_frame(
+            &mut stream,
+            FrameKind::ERROR,
+            query.stream,
+            &protocol::encode_error(ErrorCode::Internal, "failed before the cancel landed"),
+        );
+
+        // A second query proves the first stream's id was recycled.
+        let (second, _) = read_frame(&mut stream);
+        assert_eq!(second.kind, protocol::kinds::QUERY);
+        assert_eq!(
+            second.stream, query.stream,
+            "the errored-during-cancel stream's id was never recycled"
+        );
+
+        send_frame(
+            &mut stream,
+            FrameKind::ROW_DESCRIPTION,
+            second.stream,
+            &desc,
+        );
+        let row = string_row("still-here");
+        send_frame(&mut stream, FrameKind::DATA_ROW, second.stream, &row);
+        send_frame(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            second.stream,
+            &protocol::encode_complete(1, 0),
+        );
+    });
+
+    let schema = Arc::new(schema());
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::clone(&schema), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("the stream opens");
+
+    let error = connection
+        .cancel(&mut rows)
+        .expect_err("the race's error reaches the caller rather than being swallowed");
+    assert!(
+        matches!(&error, ClientError::Server { code, .. } if *code == ErrorCode::Internal),
+        "wrong error: {error:?}"
+    );
+    assert!(rows.finished(), "the race still ends the result");
+
+    let mut second_rows = connection
+        .query("F where src.File F")
+        .expect("it opens again");
+    assert_eq!(
+        connection.drain(&mut second_rows).expect("its row arrives"),
+        vec![WireValue::Str("still-here".to_owned())]
+    );
+
+    assert_eq!(
+        connection.stream_ids_issued(),
+        1,
+        "the connection is still usable and did not need a second stream id"
     );
 
     server.join().expect("the fake server exits cleanly");

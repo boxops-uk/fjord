@@ -25,8 +25,10 @@ pub use fjord_cli::sample_schema;
 
 /// **The allocator every thread in this binary allocates from.**
 ///
-/// `fjord serve` runs one scan per connection and the scan path allocates per chunk;
-/// on glibc those threads contend on per-arena mutexes and park inside `malloc`, so
+/// `fjord serve` runs one scan per connection, and answering it allocates all the way
+/// out — in the store below the executor and in the row path above it, never on the
+/// per-row path [I9](../../../website/content/invariants.md#i9) guards. On glibc those
+/// threads contend on per-arena mutexes and park inside `malloc`, so
 /// throughput stops rising with cores while nothing in the engine looks wrong — the
 /// contention is invisible to every guard above it, and only a stack sample under load
 /// shows it. See [`bench/FINDINGS.md`](../../../bench/FINDINGS.md) §18.

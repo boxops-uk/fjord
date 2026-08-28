@@ -21,12 +21,20 @@ Three habits carry it:
 ```bash
 cargo test                       # the green suite
 cargo test -- --ignored --list   # the ledger
+python3 scripts/check-guards.py  # the ledger is exact, owned and built
 ```
 
-A guard whose subsystem does not exist yet is `#[ignore]`d with the invariant in the message — a
-real test body asserting the rule, just not yet runnable. So the ignored list *is* the list of
-specified-but-not-live invariants, and work that touches an invariant is finished only when its
-guard is un-ignored and green. The list is currently **empty**: every guard is live.
+A guard whose subsystem does not exist yet is `#[ignore]`d with its claim and owning movement in
+the message. Its body is `unimplemented!`, so deleting `#[ignore]` before writing the measurement
+makes the suite red rather than silently certifying an empty test. Work that touches an invariant
+is finished only when its guard is implemented, un-ignored and green.
+
+The ledger currently holds **seventeen pending guards** and four ignored tests that are not guards.
+`scripts/check-guards.py` checks the source attributes against both Cargo's built-test list and an
+independent manifest of the exact names, claims and owners. Deleting, inventing, weakening or
+re-owning a guard therefore fails. So does a malformed marker, an owner whose movement has closed,
+or a guard hidden behind a configuration the workspace does not build. The gate's own mutation
+controls run with `python3 -m unittest scripts/test_check_guards.py`.
 
 A test ignored for any other reason must say so, so reading the ledger stays unambiguous. There
 are four: three child processes that the crash guards spawn and abort, and a printer that emits

@@ -1218,13 +1218,17 @@ plateaued at ~9 of ~14 available cores, which read as an internal limit on how m
 server will run at once. It is not one. Two costs *outside* the engine were being read as one
 inside it — **a process and a connection per request** on the client's side, and **glibc's
 per-arena mutexes** on a scan path that allocates per chunk. No guard the project has can see
-either: [I9](../website/content/invariants.md#i9) holds, and holds *per row*, while every
-allocation the contention is about is per chunk or per opened level — which is exactly what I9's
-own caveat exempts.
+either. [I9](../website/content/invariants.md#i9) is about the *engine's* hot path, and its guard
+runs a plan in process: what it proves is that the executor allocates the same count and bytes
+for 2N rows as for N. Everything this contention is about sits outside that — fjall decompressing
+a block, the server decoding rows and turning each value into a `WireValue`, one connection's
+thread doing all of it — plus the per-outer-row level opening that I9's own caveat records.
 
-**The tree.** `main` at `0184a57` plus the change this section justifies. The two arms of the
-allocator comparison are that source built twice, once with the `#[global_allocator]` attribute
-and once with it commented out; nothing else differs between the binaries.
+**The tree.** `main` at `0184a57` plus the change this section justifies — taken before
+`5ec10ef` landed, which the branch has since been rebased onto and on which nothing here has
+been re-measured. The two arms of the allocator comparison are that source built twice, once
+with the `#[global_allocator]` attribute and once with it commented out; nothing else differs
+between the binaries, which is what makes the ratio survive the tree moving under it.
 
 **The instrument.** `examples/loadgen.rs` against `fjord serve`, release, with `--only` to hold
 one workload still across arms and `Connection::discard` so the generator does not decode the
@@ -1299,12 +1303,12 @@ ms) while better on eight others. Four workloads, alternating arms, three rounds
 `--only` exists for — makes the comparison one the host's drift lands on both sides of, and the
 sign becomes consistent.
 
-**Why the scan path is exposed at all.** Per row it allocates nothing, and
-[I9](../website/content/invariants.md#i9)'s guard proves it. Per *chunk* it allocates several
-times — block decompression inside fjall (`lz4_flex`), the row decode, `rows::to_wire` — and
-opening a level allocates once per outer row of a join, which is the caveat I9 records. Many
-threads, short-lived allocations, one arena set: that is the shape glibc serialises and
-mimalloc's per-thread caches do not.
+**Why the scan path is exposed at all.** The engine's own loop allocates nothing per row and
+[I9](../website/content/invariants.md#i9)'s guard proves it — but that guard runs the executor in
+process, and a *served* query is more than the executor: fjall decompresses a block (`lz4_flex`),
+the server decodes rows and turns each value into a `WireValue`, and a join opens a level per
+outer row. Many threads, short-lived allocations, one arena set: that is the shape glibc
+serialises and mimalloc's per-thread caches do not.
 
 ### 18c. What measuring it needed, and what now holds it
 

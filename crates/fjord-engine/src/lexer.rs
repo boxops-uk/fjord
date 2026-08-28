@@ -46,6 +46,14 @@ pub enum Token {
     String,
     #[token("..")]
     DotDot,
+    /// `~` — a **fuzzy match**, the sibling of `..`. `"parse"~2` is "within two
+    /// edits of `parse`" as `"parse"..` is "starting with `parse`", and it is one
+    /// character for the same reason `..` is: what follows a string literal
+    /// decides what the literal *denotes*, and a denotation is not a function
+    /// call. The operator Lucene spells this with, which is what a person
+    /// searching a code index will have seen.
+    #[token("~")]
+    Tilde,
     #[token(".")]
     Dot,
     #[token("=")]

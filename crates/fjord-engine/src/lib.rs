@@ -12,19 +12,29 @@
 //! [chapter 5](../../../website/content/executor.md) for resume, and
 //! [chapter 7](../../../website/content/query-language.md) for the compiler.
 
+pub mod borrow;
+pub mod budget;
+pub mod canonical_id;
+pub mod catalogue;
 pub mod compile;
 pub mod cst;
 pub mod diag;
+pub mod dnf;
 pub mod error;
 pub mod flatten;
 pub mod iter;
+pub mod levenshtein;
+pub mod local_identity;
 pub mod lower;
+pub mod materialise;
 pub mod parse;
 pub mod plan;
 pub mod print;
+pub mod program;
 pub mod reorder;
 pub mod syntax;
 pub mod ty;
+pub mod work_bound;
 
 // The generated-parser glue and its `logos` lexer. Public because the façade
 // (`cst`) hands out `Rule` and `Token` values, and because the compilation

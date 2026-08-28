@@ -14,6 +14,7 @@ book, not here.
 | **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | Where we stand against Glean — read **before proposing a feature Glean has** | [`docs/glean.md`](docs/glean.md) |
+| What a code-intelligence product could ship on this — read **before claiming a question is or is not answerable** | [`docs/gitnexus.md`](docs/gitnexus.md) |
 | What has been measured, and the method | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](website/content/performance.md) |
 
 ## Module map — a workspace, bottom to top
@@ -29,7 +30,7 @@ their rustdoc is built with `-D warnings` in CI.
 | `fjord-wire` | the **transport** codec and protocol vocabulary: `varint`, schema-driven `value`, `crc`, `block`, `frame`, `protocol`. A sibling of `fjord-encoding`, not a layer on it — shares no bytes with the storage codec |
 | `fjord-store` | **the seam and nothing else**: the `FactStore` trait, `fact` (a fact written by hand), `keys` (the predicate a bound names), the format stamp, and `StoreError` — whose `Backend` variant is a boxed source, because *the backend failed* is the trait's business and *which* backend is not. Plus the shared test support: `fixture` (the database every battery queries) and `fixtures` (the probes, generic over `FactStore`). Links no fjall, no filesystem, no threads |
 | `fjord-store-mem` | `MemStore` — an implementation, not test machinery: the differential oracle, and the store an engine compiled to WebAssembly runs on |
-| `fjord-store-fjall` | the fjall backend (`store`, `lookup_cache`) and the lifecycle (`catalog`, `meta`, `schema_doc`, `identity`, `ulid`), with `CatalogError` for what is about a database as an *artifact* — a sidecar path, a held root lock, a database that is Complete |
+| `fjord-store-fjall` | the fjall backend (`store`, `lookup_cache`) and the lifecycle (`catalog`, `meta`, `schema_doc`, `identity`, `world`, `ulid`), with `CatalogError` for what is about a database as an *artifact* — a sidecar path, a held root lock, a database that is Complete |
 | `fjord-ingest` | the write funnel: `FactSink` (the write seam, as `FactStore` is the read seam) and `intern` — a `WireFact` in, a `FactId` out, nested references resolved bottom-up |
 | `fjord-engine` | **sigla** and the machine: lex → parse → typecheck → flatten → reorder → `Plan`, and the executor. All new query work lands here. `lib.rs` is the module list and nothing else. Depends on the **seam**, never on a backend — that edge is what makes a browser build possible, and `dependency_closure` is its guard |
 | `fjord-inspect` | the **JSON view** of every construct: view models that derive `Serialize`, and the mapping from the engine's internals onto them. Never `Serialize` on the internals — a `Symbol` means nothing without the interner that minted it. The precedent is `fjord_wire::desc`, and a browser is one more peer with no interner |
@@ -78,9 +79,12 @@ over one producer.
   invisible to inspection and caught only by a generated case. Write the property first, watch
   it fail, then fill the impl. "It compiles" is not done.
 - **Every invariant owns a guard test, written up front.** A guard whose subsystem does not
-  exist yet is `#[ignore]`d with the invariant in the message; `cargo test -- --ignored --list`
-  is the coverage ledger and currently lists nothing pending. Work that touches an invariant is
-  done only when its guard is un-ignored and green.
+  exist yet is `#[ignore]`d with the claim and its owner in the message —
+  `#[ignore = "guard: <claim>, owned by Movement <N>"]`, and `not a guard: <why>` for an ignored
+  test that is not one. `cargo test -- --ignored --list` is the coverage ledger and
+  `scripts/check-guards.py` is what makes it readable as one: the list carries names without
+  reasons, so a guard owing no owner, or owned by a movement that has closed, is otherwise
+  invisible. Work that touches an invariant is done only when its guard is un-ignored and green.
 - **Non-functional criteria are part of *done*, and are tested, not asserted.** No per-row
   allocation, no value fetch in the scan loop, no snapshot held across suspend — each has a
   mechanical guard (a counting allocator, a store spy, a drop probe cross-checked against
@@ -100,6 +104,8 @@ over one producer.
 cargo build
 cargo test                          # the green suite — default-members is the whole workspace
 cargo test -- --ignored --list      # the invariant coverage ledger
+python3 scripts/check-guards.py     # every pending guard names a claim and a live owner
+python3 -m unittest scripts/test_check_guards.py  # the ledger gate's mutation controls
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)

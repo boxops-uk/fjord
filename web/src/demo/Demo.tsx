@@ -6,8 +6,9 @@ import { Collapsible } from '@astryxdesign/core/Collapsible'
 import { Link } from '@astryxdesign/core/Link'
 import { Text } from '@astryxdesign/core/Text'
 import { Spinner } from '@astryxdesign/core/Spinner'
-import { HStack } from '@astryxdesign/core/Stack'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
 import { CodeBlock } from '@astryxdesign/core/CodeBlock'
+import { Grid } from '@astryxdesign/core/Grid'
 import { useEngine } from '../engine'
 import { fold } from '../run'
 import { usePlayback } from '../playback'
@@ -24,6 +25,9 @@ import { RunPane } from '../RunPane'
 import { DataTable } from '../DataTable'
 import { SchemaPane } from '../SchemaPane'
 import { Transport } from '../Transport'
+import { DfaDemo } from './DfaDemo'
+import { RunDfaPanel } from './RunDfaPanel'
+import { fuzzyTimeline, momentAt } from './fuzzyTimeline'
 
 /**
  * **A demo in the middle of the prose** — the real engine, compiled to
@@ -34,8 +38,9 @@ import { Transport } from '../Transport'
  * the planner learns to reorder one more shape, and the page goes on saying
  * what used to happen. Here the page has no answers in it. It has the engine.
  *
- * Each is editable, because the second question a reader has is always "what
- * about…", and the honest way to answer it is to let them type it.
+ * Most are editable, because the second question a reader has is always "what
+ * about…". A guided run instead fixes its query and keeps the plan, executor,
+ * narration and relevant database rows synchronized under one transport.
  */
 const WHAT: Record<string, string> = {
   lex: 'the lexer, on every keystroke',
@@ -48,9 +53,14 @@ const WHAT: Record<string, string> = {
 }
 
 export function Demo({ demo }: { demo: Spec }) {
+  return demo.kind === 'dfa' ? <DfaDemo source={demo.query} /> : <QueryDemo demo={demo} />
+}
+
+function QueryDemo({ demo }: { demo: Spec }) {
   // A demo is why the module is fetched at all — the prose around it is not.
   const { engine, failure } = useEngine(true)
   const schemaDemo = demo.kind === 'schema'
+  const guided = demo.guided && demo.kind === 'run'
 
   const [query, setQuery] = useState(schemaDemo ? '' : demo.query)
   const [schema, setSchema] = useState(schemaDemo ? demo.query : demo.schema)
@@ -79,7 +89,7 @@ export function Demo({ demo }: { demo: Spec }) {
         tree: demo.kind === 'parse' ? engine.parse(query) : null,
         lowered: compiled,
         trace: stepping ? engine.trace(schemaSource, query) : null,
-        database: demo.kind === 'store' ? engine.database(schemaSource) : null,
+        database: demo.kind === 'store' || guided ? engine.database(schemaSource) : null,
         schemaView: schemaDemo ? engine.schema(schemaSource) : null,
         broke: null as string | null,
       }
@@ -95,11 +105,22 @@ export function Demo({ demo }: { demo: Spec }) {
         broke: String(error),
       }
     }
-  }, [engine, blank, query, schemaSource, demo.kind, schemaDemo])
+  }, [engine, blank, query, schemaSource, demo.kind, schemaDemo, guided])
 
   const trace = analysis?.trace ?? null
-  const playback = usePlayback(trace?.steps.length ?? 0, at, setAt)
-  const moment = useMemo(() => (trace ? fold(trace, at) : null), [trace, at])
+  const plan = analysis?.lowered?.plan ?? null
+  const timeline = useMemo(
+    () =>
+      guided && engine && trace && plan ? fuzzyTimeline(engine, plan, trace) : null,
+    [guided, engine, trace, plan],
+  )
+  const playback = usePlayback(timeline?.frames.length ?? trace?.steps.length ?? 0, at, setAt)
+  const frame = timeline?.frames[Math.min(at, timeline.frames.length - 1)]
+  const machineAt = frame?.machineAt ?? at
+  const moment = useMemo(
+    () => (trace ? (frame ? momentAt(trace, frame) : fold(trace, machineAt)) : null),
+    [trace, frame, machineAt],
+  )
 
   // A new query is a new run, and the old play head means nothing against it.
   const retype = (next: string) => {
@@ -109,23 +130,30 @@ export function Demo({ demo }: { demo: Spec }) {
     else setQuery(next)
   }
 
-  const here = trace ? Math.min(at, trace.steps.length - 1) : 0
+  const here = trace ? Math.min(machineAt, trace.steps.length - 1) : 0
   const step = trace?.steps[here]
+  const standing =
+    frame?.kind === 'dfa'
+      ? frame.evaluation.planStep
+      : step && step.depth < (analysis?.lowered?.plan?.steps_count ?? 0)
+        ? step.depth
+        : null
+  const examined = step?.examined ?? []
 
   return (
-    <Card padding={0} className={`demo demo-${demo.kind}`}>
+    <Card padding={0} className={`demo demo-${demo.kind}${guided ? ' demo-guided' : ''}`}>
       <Toolbar
         label="Demo"
         size="sm"
         variant="muted"
         startContent={
           <Text type="label" color="secondary">
-            {WHAT[demo.kind] ?? 'the engine, live'}
+            {guided ? 'guided: the machine, one transition at a time' : WHAT[demo.kind] ?? 'the engine, live'}
           </Text>
         }
         endContent={
           <Link href={playgroundLink(schemaDemo ? '' : query, demo.schema)} data-testid="demo-open">
-            open in the playground
+            {guided ? 'edit in the playground' : 'open in the playground'}
           </Link>
         }
       />
@@ -172,6 +200,7 @@ export function Demo({ demo }: { demo: Spec }) {
               highlight={highlight}
               onChange={retype}
               onHighlight={setHighlight}
+              readOnly={guided}
               flaws={(analysis.lowered?.diagnostics ?? analysis.tokens?.diagnostics ?? []).flatMap(
                 (diagnostic) =>
                   diagnostic.labels.filter((label) => label.primary).map((label) => label.span),
@@ -242,14 +271,47 @@ export function Demo({ demo }: { demo: Spec }) {
 
           {demo.kind === 'run' && moment && (
             <>
-              <RunPane
-                trace={trace}
-                plan={analysis.lowered?.plan ?? null}
-                at={at}
-                moment={moment}
-                onSeek={setAt}
-                playback={playback}
-              />
+              {guided && analysis.lowered?.plan && trace ? (
+                <Grid columns={{ minWidth: 340, max: 2, repeat: 'fit' }} gap={0} align="start">
+                  <VStack gap={0} className="guided-machine">
+                    <PlanPane
+                      plan={analysis.lowered.plan}
+                      refused={false}
+                      active={standing}
+                      examined={examined}
+                    />
+                    {frame && (
+                      <RunDfaPanel
+                        engine={engine}
+                        plan={analysis.lowered.plan}
+                        frame={frame}
+                      />
+                    )}
+                    <RunPane
+                      trace={trace}
+                      plan={analysis.lowered.plan}
+                      at={here}
+                      moment={moment}
+                      onSeek={setAt}
+                      playback={playback}
+                      guided
+                      transportAt={at}
+                      sequence={timeline ?? undefined}
+                      frame={frame}
+                    />
+                  </VStack>
+                  <DataTable database={analysis.database} moment={moment} at={at} />
+                </Grid>
+              ) : (
+                <RunPane
+                  trace={trace}
+                  plan={analysis.lowered?.plan ?? null}
+                  at={at}
+                  moment={moment}
+                  onSeek={setAt}
+                  playback={playback}
+                />
+              )}
               <Diagnostics diagnostics={analysis.lowered?.diagnostics ?? []} source={query} />
             </>
           )}

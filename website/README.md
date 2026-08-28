@@ -73,7 +73,9 @@ N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..
 A **demo** is the engine itself, running in the page — kinds `lex`, `parse`, `types`, `plan`,
 `run`, `store` and `schema`, with an optional schema above a `---` line. This generator has no
 engine to run, so it renders the source and says where it comes alive; `web/` renders the
-engine. Either way the page has no typed-out answer in it to go stale.
+engine. `:::demo run guided` keeps the query read-only there, with the plan and relevant
+database rows beside the narrated executor. Either way the page has no typed-out answer in
+it to go stale.
 
 A block starting with `<` at the beginning of a line is passed through as raw HTML until the
 next blank line — which is how the home page's card grid and the status pills are written.

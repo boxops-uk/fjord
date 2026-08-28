@@ -22,6 +22,23 @@ import { scrollTo } from './router'
 const SITE = 'Fjord DB'
 
 /**
+ * How wide a page is allowed to get.
+ *
+ * A fixed measure is right for prose and wrong for a page, because most of a
+ * page here is not prose: a demo, a plan table or a fence has more to show at
+ * 1440 than at 880, and on a wide window the difference was empty gutter. The
+ * column grows with the window; the *reading* measure is kept by `book.css`,
+ * which caps the paragraphs rather than the page.
+ */
+const PAGE_WIDTH = 'min(100%, 1440px)'
+
+/* The page sits in a centring flex row, where a bare `max-width` is only a
+   ceiling: the item is still sized by its contents, so the column ended up as
+   wide as its widest paragraph rather than as wide as it was allowed. It has to
+   ask for the width and be capped, not just be capped. */
+const PAGE_SIZE = { width: '100%', maxWidth: PAGE_WIDTH } as const
+
+/**
  * One page of the book: the prose as it was written, with the demos running.
  *
  * Every block is a component — a table is a `Table`, a callout is a `Banner`, a
@@ -46,7 +63,7 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
 
   if (!page || !content) {
     return (
-      <Section padding={6} paddingBlock={8} maxWidth={880}>
+      <Section padding={6} paddingBlock={8} {...PAGE_SIZE}>
         <VStack gap={3}>
           <Heading level={1}>Not a page</Heading>
           <Text type="large" color="secondary">
@@ -61,8 +78,8 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
   const { previous, next } = neighbours(slug)
 
   return (
-    <Section padding={6} paddingBlock={8} maxWidth={880} data-testid="prose">
-      <VStack gap={4} align="stretch">
+    <Section padding={6} paddingBlock={8} {...PAGE_SIZE} data-testid="prose">
+      <VStack gap={4} align="stretch" className="book-column">
         {page.group && (
           <Text type="label" color="accent" weight="bold">
             {page.group.toUpperCase()}
@@ -72,13 +89,17 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
           {page.title}
         </Heading>
         {page.description && (
-          <Text size="lg" color="secondary">
+          <Text as="p" size="lg" color="secondary">
             {marks(inlines(page.description))}
           </Text>
         )}
 
+        {/* Keyed by the page as well as the position: a demo holds its query in
+            state, so two pages whose demos land at the same block index would
+            have React reuse the instance and keep the *previous* page's query —
+            a wrong demo that renders perfectly and says nothing about it. */}
         {content.blocks.map((block, index) => (
-          <BlockView key={index} block={block} />
+          <BlockView key={`${slug}:${index}`} block={block} />
         ))}
 
         <Divider />

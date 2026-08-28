@@ -63,5 +63,8 @@ fjord-store = { path = "../fjord-store", features = ["proptest"] }
 # take the engine out of a browser.
 fjord-store-fjall = { path = "../fjord-store-fjall", features = ["proptest"] }
 fjord-store-mem = { path = "../fjord-store-mem" }
+# The crate's own test-support surface, for an integration test — which sees the
+# crate from outside and so cannot reach a `cfg(test)` module.
+fjord-engine = { path = ".", features = ["proptest"] }
 proptest = "1.11.0"
 tempfile = "3"

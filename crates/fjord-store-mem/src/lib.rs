@@ -13,7 +13,7 @@
 //! that ran a row further, would make every differential test agree about the
 //! wrong thing.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Bound, sync::Arc};
 
 use byteview::ByteView;
 
@@ -27,7 +27,20 @@ use fjord_store::{
 
 #[derive(Default)]
 pub struct MemStore {
-    index: BTreeMap<Vec<u8>, u64>,
+    /// Behind an `Arc` so a [`MemScan`] can hold the map open without copying
+    /// the range it is about to walk.
+    ///
+    /// **That is not a micro-optimisation.** A scan used to materialise its whole
+    /// range at open, which is linear in the range whether the caller reads one
+    /// row or all of them — and a guided seek re-opens its scan every time the
+    /// automaton proves a run of keys cannot match, so the old shape made a
+    /// guided walk quadratic in the predicate. It read forty rows of a hundred
+    /// thousand and copied half the predicate thirty-nine times to do it.
+    ///
+    /// A writer copies on write ([`Arc::make_mut`]), so a scan also sees a frozen
+    /// view — which is what fjall's snapshot gives, and what this store owes as
+    /// its oracle.
+    index: Arc<BTreeMap<Vec<u8>, u64>>,
     by_id: BTreeMap<u64, (Vec<u8>, Vec<u8>)>,
 }
 
@@ -60,23 +73,57 @@ impl MemStore {
 
         let mut full_key = predicate_id.0.to_be_bytes().to_vec();
         full_key.extend_from_slice(&key_fields);
-        self.index.insert(full_key, fact_id.raw());
+        Arc::make_mut(&mut self.index).insert(full_key, fact_id.raw());
         self.by_id.insert(fact_id.raw(), (key_fields, value));
     }
 }
 
+/// A **lazy** walk of one range of the index.
+///
+/// Position is the last key yielded rather than a held iterator, so the scan
+/// costs `O(log n)` per row and nothing at all at open. Holding a
+/// `btree_map::Range` would be the obvious alternative and cannot be done here:
+/// the seam's `Scan` is an associated type with no lifetime, so an iterator
+/// borrowing the map has nowhere to record that it does.
 pub struct MemScan {
-    rows: std::vec::IntoIter<(Vec<u8>, u64)>,
+    index: Arc<BTreeMap<Vec<u8>, u64>>,
+    /// The lower bound: inclusive until the first row, then the last key yielded,
+    /// exclusive.
+    cursor: Vec<u8>,
+    started: bool,
+    end: Option<Vec<u8>>,
 }
 
 impl Iterator for MemScan {
     type Item = Result<(ByteView, FactId), StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let found = {
+            let start = if self.started {
+                Bound::Excluded(self.cursor.as_slice())
+            } else {
+                Bound::Included(self.cursor.as_slice())
+            };
+
+            let end = match &self.end {
+                Some(end) => Bound::Excluded(end.as_slice()),
+                None => Bound::Unbounded,
+            };
+
+            self.index
+                .range::<[u8], _>((start, end))
+                .next()
+                .map(|(key, &id)| (key.clone(), id))
+        };
+
+        let (key, id) = found?;
+
+        self.cursor.clear();
+        self.cursor.extend_from_slice(&key);
+        self.started = true;
+
         // The ids in this map came from `FactId::new`, so they are already valid.
-        self.rows
-            .next()
-            .map(|(k, id)| Ok((k.into(), FactId::from_raw(id))))
+        Some(Ok((key.into(), FactId::from_raw(id))))
     }
 }
 
@@ -102,20 +149,11 @@ impl FactStore for MemStore {
             (hi, predicate_end) => hi.or(predicate_end),
         };
 
-        let rows: Vec<_> = match end {
-            Some(end) => self
-                .index
-                .range(lo.to_vec()..end.to_vec())
-                .map(|(k, &v)| (k.clone(), v))
-                .collect(),
-            None => self
-                .index
-                .range(lo.to_vec()..)
-                .map(|(k, &v)| (k.clone(), v))
-                .collect(),
-        };
         Ok(MemScan {
-            rows: rows.into_iter(),
+            index: Arc::clone(&self.index),
+            cursor: lo.to_vec(),
+            started: false,
+            end: end.map(<[u8]>::to_vec),
         })
     }
 

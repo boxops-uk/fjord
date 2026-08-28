@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::FjordError,
-    iter::{Cursor, Executor, Iteratee, Stream},
+    iter::{Cursor, Executor, Iteratee, Stream, WorldStamp},
     plan::Plan,
 };
 use fjord_encoding::tuple::Value;
@@ -72,6 +72,16 @@ pub fn count_rows<S: FactStore>(store: S, plan: Plan) -> Result<usize, FjordErro
 /// hang.
 const MAX_SUSPENDS: usize = 4096;
 
+/// A fixed, non-empty world stamp, carried through every resume this fixture
+/// drives.
+///
+/// **Deliberately not empty.** [`Executor::resume`] treats an empty stamp as "no
+/// caller cares", which would let the whole I4 battery pass with the new
+/// `Cursor::world` field never actually round-tripped or compared. A fixed value
+/// exercises the real path — set, serialised, checked — over every generated
+/// `(plan, store, schedule)` this fixture is asked to run, for free.
+const FIXTURE_WORLD: &[u8] = b"fjord-engine::fixtures::run_with_suspends";
+
 /// Run `plan` against `store`, **suspending after every row index in `schedule`**
 /// (1-based, counted across the whole run), rebuilding the executor from a
 /// bytes-only [`Cursor`] at each resume.
@@ -104,8 +114,10 @@ pub fn run_with_suspends<S: FactStore>(
         let (store, plan) = mk();
 
         let ex = match cursor.take() {
-            None => Executor::new(store, plan),
-            Some(cursor) => Executor::resume(store, plan, cursor)?,
+            None => Executor::new(store, plan).with_world_stamp(WorldStamp::stamped(FIXTURE_WORLD)),
+            Some(cursor) => {
+                Executor::resume(store, plan, cursor, WorldStamp::stamped(FIXTURE_WORLD))?
+            }
         };
 
         let out = ex.enumerate(

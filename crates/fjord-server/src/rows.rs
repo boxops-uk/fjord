@@ -247,3 +247,165 @@ pub fn key_of<S: FactStore>(
 
     Ok(Found::Key(to_wire(&declared.key, &key)?))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write;
+
+    use fjord_engine::{compile::Compilation, corpus};
+    use fjord_wire::encode_desc;
+
+    use super::*;
+
+    fn hex(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(&mut out, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        out
+    }
+
+    #[test]
+    fn every_supported_entrys_descriptor_is_stable() {
+        let schema = corpus::schema();
+        let descriptors: Vec<String> = corpus::CORPUS
+            .iter()
+            .filter(|entry| matches!(entry.expect, corpus::Expectation::Supported(_)))
+            .map(|entry| {
+                let mut compilation = Compilation::new(entry.source, &schema);
+                let _plan = compilation
+                    .plan()
+                    .expect("a supported corpus entry produces a plan");
+                let desc = desc_of(
+                    compilation
+                        .head_ty()
+                        .expect("a supported corpus entry has a head type"),
+                    compilation.interner(),
+                );
+                let desc = match desc {
+                    Ok(desc) => desc,
+                    Err(ServerError::Unprojectable(reason)) => {
+                        return format!("unprojectable:{reason}");
+                    }
+                    Err(error) => panic!(
+                        "describing a supported corpus entry failed ({}): {error:?}",
+                        entry.source
+                    ),
+                };
+                let mut bytes = vec![];
+                encode_desc(&mut bytes, &desc);
+                hex(&bytes)
+            })
+            .collect();
+
+        let expected = [
+            "0200",
+            "01",
+            "0302016101016200",
+            "01",
+            "01",
+            "0302026c6f0002686900",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "01",
+            "0302016100016200",
+            "0302016100016200",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "01",
+            "00",
+            "0205",
+            "01",
+            "01",
+            "0205",
+            "01",
+            "01",
+            "0200",
+            "0206",
+            "0206",
+            "0206",
+            "0200",
+            "0200",
+            "0200",
+            "0200",
+            "00",
+            "00",
+            "0200",
+            "0200",
+            "0200",
+            "0200",
+            "0209",
+            "020b",
+            "0201",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "01",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "unprojectable:a head whose type is still undetermined",
+            "01",
+            "01",
+            "01",
+            "01",
+            "01",
+            "00",
+            "01",
+            "01",
+            "01",
+            "01",
+            "01",
+            "01",
+            "01",
+            "01",
+            "00",
+            "01",
+            "01",
+            "01",
+            "01",
+            "01",
+            "0200",
+            "01",
+            "00",
+            "01",
+            "01",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "00",
+            "030105696e6e657200",
+            "030105696e6e657200",
+            "0302017800017900",
+            "00",
+            "0302016100016200",
+            "01",
+            "01",
+            "01",
+            "0302016100016201",
+            "00",
+            "030202696400046e616d6501",
+        ];
+
+        assert_eq!(descriptors, expected);
+    }
+}

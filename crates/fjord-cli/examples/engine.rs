@@ -527,7 +527,13 @@ fn run_paged(db: &FjallDb, plan: &Plan, limit: u64) -> (Run, Paging) {
             None => Executor::new(store, plan.clone()),
             Some(cursor) => {
                 paging.resumes += 1;
-                Executor::resume(store, plan.clone(), cursor).expect("the cursor resumes")
+                Executor::resume(
+                    store,
+                    plan.clone(),
+                    cursor,
+                    fjord_engine::iter::WorldStamp::Unstamped,
+                )
+                .expect("the cursor resumes")
             }
         };
         paging.resume += started.elapsed();
@@ -1069,6 +1075,12 @@ fn plan_shape(plan: &Plan, schema: &Schema) -> String {
                             } else {
                                 name(access.predicate_id)
                             });
+                        }
+                        // Never marked a full scan: a guide seeks past what it
+                        // proves cannot match, so an unpinned range is the
+                        // ordinary case rather than the warning `*` is for.
+                        Source::Guided { access, .. } => {
+                            parts.push(format!("guided {}", name(access.predicate_id)));
                         }
                         Source::Fetch { predicate_id, .. } => {
                             parts.push(format!("fetch {}", name(*predicate_id)));

@@ -90,6 +90,28 @@ pub enum ServerError {
 
     #[error("{0}")]
     Execution(String),
+
+    /// A `FETCH` naming a listing digest the current catalogue does not agree with —
+    /// at least one asked-for id was minted from a listing that has since moved, so
+    /// resolving it could answer for the wrong database rather than for none.
+    #[error(
+        "the database listing has changed since these ids were read; run the query \
+         again and fetch from its rows"
+    )]
+    StaleListing,
+
+    /// A `QUERY_PAGE` resuming a query that reads `fjord.db.Interning` — the write
+    /// path's own counters, taken by locking every interning stripe in turn, which
+    /// is not a point-in-time capture even as it happens. A generation can number a
+    /// listing that only moves when a database is created, removed or finished; it
+    /// cannot number a value that moves on every write, so there is no snapshot for
+    /// a resume that crosses requests to name. Refused by name instead of validated
+    /// against a stamp that would always disagree.
+    #[error(
+        "`{predicate}` has no stable snapshot across two requests and cannot be resumed; \
+         run the query again from the start"
+    )]
+    VolatileResume { predicate: String },
 }
 
 impl ServerError {
@@ -138,6 +160,9 @@ impl ServerError {
             ServerError::Io(_) | ServerError::Unprojectable(_) | ServerError::Execution(_) => {
                 ErrorCode::Internal
             }
+
+            // Well-formed, and the answer is in the message: run the query again.
+            ServerError::StaleListing | ServerError::VolatileResume { .. } => ErrorCode::Refused,
         }
     }
 

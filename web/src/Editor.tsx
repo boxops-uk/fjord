@@ -29,6 +29,7 @@ export function Editor({
   onHighlight,
   rows,
   flaws = [],
+  readOnly = false,
 }: {
   source: string
   tokens: TokenView[]
@@ -39,6 +40,8 @@ export function Editor({
   rows?: 'query' | 'schema'
   /** The spans every phase reported a fault at, underlined where they are. */
   flaws?: Span[]
+  /** Keep authored source fixed while still allowing selection and copying. */
+  readOnly?: boolean
 }) {
   const painted = useRef<HTMLPreElement>(null)
   const faulty = (span: Span) =>
@@ -69,6 +72,7 @@ export function Editor({
         className="input"
         spellCheck={false}
         value={source}
+        readOnly={readOnly}
         onChange={(event) => onChange(event.target.value)}
         onScroll={(event) => {
           if (painted.current) {

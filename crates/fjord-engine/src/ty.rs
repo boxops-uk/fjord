@@ -429,6 +429,46 @@ impl Checker<'_> {
         let ty = match ast.store().kind(id) {
             ExprKind::Lit(Literal::Int(_)) => Ty::Int,
             ExprKind::Lit(Literal::Str(_)) | ExprKind::Prefix(_) => Ty::String,
+
+            // A fuzzy pattern is a *string* pattern, so it types exactly as a
+            // prefix does; what is checked here beyond that is **both** of the
+            // automaton's bounds, because a plan that silently clamped either
+            // would answer a question nobody asked.
+            //
+            // The term's length is checked here and not only where a guide is
+            // built: flatten decides between `Source::Guided` and
+            // `ResidualOp::Fuzzy` by where the field sits in the key, so a limit
+            // held by the guide alone would make one spelling of a query refuse
+            // and the other answer.
+            ExprKind::Fuzzy(text, distance) => {
+                let distance = *distance;
+                if distance == 0 || distance > crate::levenshtein::MAX_DISTANCE {
+                    self.reject(
+                        ast,
+                        id,
+                        Code::RejectFuzzyDistance,
+                        format!(
+                            "an edit distance of {distance} is outside 1..={}",
+                            crate::levenshtein::MAX_DISTANCE
+                        ),
+                    );
+                }
+
+                let chars = self.name_of(*text).chars().count();
+                if chars > crate::levenshtein::MAX_TERM_CHARS {
+                    self.reject(
+                        ast,
+                        id,
+                        Code::RejectFuzzyTerm,
+                        format!(
+                            "a fuzzy term of {chars} characters is longer than the {} a match is built for",
+                            crate::levenshtein::MAX_TERM_CHARS
+                        ),
+                    );
+                }
+
+                Ty::String
+            }
             ExprKind::Wildcard => self.fresh_var(),
             ExprKind::Error => Ty::Error,
 
@@ -1112,12 +1152,12 @@ fn schema_ty(ty: &PredicateTy) -> Ty {
         PredicateTy::Record(fields) => Ty::Record(
             fields
                 .iter()
-                .map(|(name, field)| (Symbol::Schema(*name), schema_ty(field)))
+                .map(|(name, field)| (Symbol::from(*name), schema_ty(field)))
                 .collect(),
         ),
         PredicateTy::Union(alts) => Ty::Union(
             alts.iter()
-                .map(|alt| (Symbol::Schema(alt.name), alt.disc, schema_ty(&alt.ty)))
+                .map(|alt| (Symbol::from(alt.name), alt.disc, schema_ty(&alt.ty)))
                 .collect(),
         ),
     }
@@ -1538,6 +1578,22 @@ mod tests {
         assert_eq!(
             all_codes("X where {a = X} = {a = 1}; test.Foo {name = X}"),
             ["reject/type-mismatch"]
+        );
+    }
+
+    /// The guide has a fixed maximum term width, so that limit belongs to the
+    /// source-language contract rather than to whichever physical plan flatten
+    /// happens to choose. Otherwise a leading field fails during execution while
+    /// the same term on a trailing field reaches the residual implementation.
+    #[test]
+    fn an_oversized_fuzzy_term_is_rejected_by_name_before_planning() {
+        let term = "a".repeat(crate::levenshtein::MAX_TERM_CHARS + 1);
+        let source = format!("N where test.Name N; N = {term:?}~1");
+        let codes = all_codes(&source);
+
+        assert!(
+            matches!(codes.as_slice(), [code] if code.starts_with("reject/fuzzy-")),
+            "an oversized fuzzy term must draw one named rejection, got {codes:?}"
         );
     }
 

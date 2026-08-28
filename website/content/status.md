@@ -14,15 +14,16 @@ built rather than described as if it were.
 | **Storage codec** | Order-preserving, self-delimiting, golden-pinned marker table. Heavily property-tested |
 | **Storage layer** | A pair of trees per predicate, atomic two-map writes, snowflake ids recovered from the data, format stamp, snapshots released at suspend |
 | **Executor** | Three step kinds, one driver, lazy field decode, allocation-free scan, in-band cancellation |
-| **Suspend & resume** | A bytes-only cursor with a version, a plan fingerprint and a per-level integrity check — proven against an interruption-schedule generator on both stores |
+| **Suspend & resume** | A bytes-only cursor with a version, a plan fingerprint, a **world stamp** naming the base it was read in, and a per-level integrity check — proven against an interruption-schedule generator on both stores, and against a real server writing between two pages |
 | **sigla front end** | lex → parse → typecheck → flatten → reorder → `Plan`, round-trippable, span-checked, corpus-gated |
-| **The language** | Generators, joins, records, field access, `.value`, constants and folding, aliases, constraints, denials, four comparisons, integer arithmetic, negation, disjunction, `never`, subqueries, references both ways |
+| **The language** | Generators, joins, records, field access, `.value`, constants and folding, aliases, constraints, **fuzzy matching** (`"parse"~2`), denials, four comparisons, integer arithmetic, negation, disjunction, `never`, subqueries, references both ways |
+| **Fuzzy search** | A Levenshtein automaton written in the engine — no new dependency, and the wasm build is unchanged. A leading field it **guides**, seeking past the key bands its dead states prove cannot match; behind a closed seek prefix the same automaton filters. Held to two properties: guided answers what a filtered scan answers, and doubling the predicate does not double the rows examined |
 | **Schema DSL** | Files, namespaces, imports, canonical form, per-predicate and whole-schema fingerprints, subset-containment compatibility, `schema check` / `fingerprint` / `diff` |
 | **Embedded schema** | A database is created against a schema file, embeds it, and is **served from that copy** |
 | **Wire protocol** | Frames, streams, handshake with a per-predicate schema claim, four query kinds, paging, profiling, counting, fetch, control frames, cancellation, a fair writer |
 | **Ingestion over the wire** | Write streams, blocks, interning of nested references, dedup and deterministic conflict rejection |
 | **Parallel ingestion** | Per-key exclusion striped 64 ways; many writers per database, with correctness proven by a racing guard and by wire-level counts |
-| **Server** | Unix socket by default, TCP opt-in, per-connection reader task, per-stream tasks, blocking pool, virtual `fjord.db.List` |
+| **Server** | Unix socket by default, TCP opt-in, per-connection reader task, per-stream tasks, blocking pool, virtual `fjord.db.List` with a listing digest that refuses a stale fetch or a moved page by name, and a rows-examined ceiling per run |
 | **Client** | Rust client crate — connect, query, page, count, profile, fetch, expand, write, lifecycle |
 | **CLI** | `serve`, `create`, `finish`, `list`, `describe`, `query`, `shell`, `schema …`, `db rm` |
 | **Shell** | The wire REPL: compiles locally against the schema the server serves, real cursor paging, expansion, profiling |
@@ -40,7 +41,8 @@ built rather than described as if it were.
 | **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand — which is what four predicates in the sample schema are | The schema DSL (done) plus the re-derivation decision below |
 | **Arrays and sets** | A one-to-many is one fact per element. Marker bands are reserved | An open design question, not a missing implementation |
 | **`fjord write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
-| **Per-predicate statistics** | Nothing feeds a selectivity heuristic, which is why the reorderer does not have one | `finish` is the natural place to record them |
+| **Per-predicate statistics** | Nothing feeds a selectivity heuristic, which is why the reorderer does not have one — loop order is the query's written order wherever the written order is legal. [Query efficiency](query-efficiency.html) is what to do about that in the meantime | `finish` is the natural place to record them |
+| **Recursion** | A query cannot name a relation and derive it. The plan is written and its first movement has landed: the pure pieces a driver will call — a budget chokepoint, canonical ids from content, the DNF product, head materialisation, a predicate catalogue, a program's rule shape, the local-identity refusals and the read-work bound — each proved against an independent oracle, none wired to a pipeline, because no pipeline exists before the next movement | The movements after it, in order: the relation store, a `Program` and the naive driver it is differentiated against, semi-naive, resume re-proved over a program, stratification, magic sets, then the surface |
 | **Per-stream flow control** | Bounded queues and per-connection backpressure in the meantime | — |
 | **Publishing the interactive site** | The published copy of this book is the generated one, and it still highlights its code samples with a hand-written JavaScript lexer. The interactive copy — same pages, same reading order, with the lexer, parser, typechecker, planner, executor and database running in them — is built and checked, and not yet what the domain serves | GitHub Pages takes one artifact per run, so the switch-over is a deployment decision, not a missing feature |
 | **A resumable deadline** | A timeout unwinds terminally instead of handing back a cursor | The token cannot represent a mid-descent position |

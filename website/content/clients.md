@@ -281,4 +281,7 @@ So:
 | Cover the header in the block CRC | A corrupted `length` must be caught, not used to skip to the wrong place |
 | Nest references rather than inventing ids | An id you did not receive from the server names some other fact |
 | Expect ids in rows | A reference comes back as `#p:n`; expand with `F`/`f` if you need the key |
+| Carry the listing digest back on a `FETCH` | Ids from a [virtual predicate](wire-protocol.html#rows-off-a-virtual-predicate) are positions in a view, not identities. Send the `l` frame's digest with the ids it came with, and treat the refusal as "re-run the query", not as an error to retry |
+| Release a stream on **its own** terminal frame | A session-level error arrives on stream 0 wherever it lands. Recycling a stream id because a fault happened while that stream was waiting hands the id to a query that is still running |
+| Give a bookmark a terminal errored state | An error frame mid-result ends the stream exactly as `COMPLETE` does. A bookmark that stays "streaming" after one will wait forever on a server-side task that has already returned |
 | Hold connections open and pool them | A connection per request caps a consumer far below what the server can serve, and no server-side change lifts it |

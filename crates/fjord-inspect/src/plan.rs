@@ -19,11 +19,26 @@
 //! not `body.len()` — so both counts are carried, named apart.
 
 use fjord_engine::{
-    plan::{Plan, Source, Step, Test},
+    plan::{FieldPath, Plan, ResidualOp, Source, Step, Test},
     print,
 };
-use fjord_schema::schema::{LocalInterner, Schema};
+use fjord_schema::schema::{LocalInterner, PredicateTy, Schema};
 use serde::Serialize;
+
+/// The fuzzy matcher attached to one source, in enough structure to walk the
+/// row the executor is showing through the same automaton.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FuzzyView {
+    pub source: usize,
+    pub guide: bool,
+    /// Which residual this is within its source; absent for the guide itself.
+    pub residual: Option<usize>,
+    pub term: String,
+    pub distance: u8,
+    /// JSON object keys from the decoded fact key to the candidate string. A
+    /// scalar predicate has an empty path because its key is the string.
+    pub path: Vec<String>,
+}
 
 /// One step of the plan's body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -49,6 +64,8 @@ pub struct StepView {
     /// a row read and dropped, so this is the number worth looking at beside a
     /// seek that did not narrow.
     pub residuals: usize,
+    /// Fuzzy guides and residuals this step evaluates.
+    pub fuzzy: Vec<FuzzyView>,
     /// The step as the engine prints it.
     pub text: String,
 }
@@ -102,6 +119,11 @@ pub fn view(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> PlanView 
             };
 
             let sources = sources.map(|sources| &sources[..]).unwrap_or_default();
+            let fuzzy = sources
+                .iter()
+                .enumerate()
+                .flat_map(|(source_index, source)| fuzzy_of(source_index, source, schema))
+                .collect();
 
             StepView {
                 index,
@@ -125,6 +147,7 @@ pub fn view(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> PlanView 
                     })
                     .collect(),
                 residuals: sources.iter().map(|source| source.residuals().len()).sum(),
+                fuzzy,
                 text,
             }
         })
@@ -143,6 +166,80 @@ pub fn view(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> PlanView 
     }
 }
 
+fn fuzzy_of(source_index: usize, source: &Source, schema: &Schema) -> Vec<FuzzyView> {
+    let key_ty = schema
+        .get(source.predicate_id())
+        .map(|predicate| predicate.key().ty);
+    let mut views = Vec::new();
+
+    if let Source::Guided { guide, .. } = source {
+        views.push(FuzzyView {
+            source: source_index,
+            guide: true,
+            residual: None,
+            term: guide.term.to_string(),
+            distance: guide.distance,
+            path: path_names(key_ty, &guide.path, schema),
+        });
+    }
+
+    for (residual_index, residual) in source.residuals().iter().enumerate() {
+        let ResidualOp::Fuzzy { term, distance } = &residual.op else {
+            continue;
+        };
+        views.push(FuzzyView {
+            source: source_index,
+            guide: false,
+            residual: Some(residual_index),
+            term: term.to_string(),
+            distance: *distance,
+            path: path_names(key_ty, &residual.path, schema),
+        });
+    }
+
+    views
+}
+
+fn path_names(key_ty: Option<&PredicateTy>, path: &FieldPath, schema: &Schema) -> Vec<String> {
+    let Some(mut ty) = key_ty else {
+        return Vec::new();
+    };
+    if !matches!(ty, PredicateTy::Record(_)) && path.field_idx() == 0 && path.steps().is_empty() {
+        return Vec::new();
+    }
+
+    let mut names = Vec::new();
+    for index in std::iter::once(path.field_idx()).chain(path.steps().iter().copied()) {
+        match ty {
+            PredicateTy::Record(fields) => {
+                let Some((name, field_ty)) = fields.get(index) else {
+                    return Vec::new();
+                };
+                names.push(schema.interner().resolve(*name).unwrap_or("?").to_owned());
+                ty = field_ty;
+            }
+            PredicateTy::Union(alternatives) => {
+                let Some(alternative) = alternatives
+                    .iter()
+                    .find(|alternative| u64::from(alternative.disc) == index as u64)
+                else {
+                    return Vec::new();
+                };
+                names.push(
+                    schema
+                        .interner()
+                        .resolve(alternative.name)
+                        .unwrap_or("?")
+                        .to_owned(),
+                );
+                ty = &alternative.ty;
+            }
+            _ => return Vec::new(),
+        }
+    }
+    names
+}
+
 /// How a source reaches its rows.
 ///
 /// A seek with an empty prefix is a **scan**, and the difference is the whole
@@ -155,5 +252,9 @@ fn access_of(source: &Source) -> &'static str {
             _ => "seek",
         },
         Source::Fetch { .. } => "fetch",
+        // Its own name, because the cost model is its own: a seek opens a range
+        // and drains it, and a guided seek re-opens it wherever the automaton
+        // proves the rest of a run cannot match.
+        Source::Guided { .. } => "guided",
     }
 }

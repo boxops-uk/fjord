@@ -230,3 +230,32 @@ fn the_json_is_the_shape_the_page_reads() {
         "a step's text does not name the predicate it reads"
     );
 }
+
+#[test]
+fn fuzzy_plan_details_name_the_candidate_field_for_the_dfa_view() {
+    let guided = lowered(
+        "schema search { predicate Name : string }",
+        "N where search.Name N; N = \"parse\"~1",
+    )
+    .plan
+    .expect("the leading string field is guided");
+    let guide = &guided.steps[0].fuzzy[0];
+    assert!(guide.guide);
+    assert_eq!(guide.term, "parse");
+    assert_eq!(guide.distance, 1);
+    assert!(
+        guide.path.is_empty(),
+        "a scalar key is the candidate itself"
+    );
+
+    let residual = lowered(
+        SCHEMA,
+        "N where code.Decl {file = _, name = N, line = _}; N = \"parse\"~1",
+    )
+    .plan
+    .expect("the trailing string field is a residual");
+    let fuzzy = &residual.steps[0].fuzzy[0];
+    assert!(!fuzzy.guide);
+    assert_eq!(fuzzy.residual, Some(0));
+    assert_eq!(fuzzy.path, ["name"]);
+}

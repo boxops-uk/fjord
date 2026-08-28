@@ -665,6 +665,7 @@ dependencies = [
  "byteview",
  "codespan-reporting",
  "fjord-encoding",
+ "fjord-engine",
  "fjord-schema",
  "fjord-store",
  "fjord-store-fjall",
