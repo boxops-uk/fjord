@@ -94,9 +94,18 @@ then decide sargeability. [A query, step by step](query-lifecycle.html#7-compila
 **folding** — substituting a variable bound to a constant at every use, rather than giving it a
 register and a step. A folded bind reaches a key field exactly as a literal in place would.
 
+**fuzzy match** — `"parse"~2`: within that many single-character edits of the term. A *pattern*,
+like a prefix, so no variable is bound to one. Distance `1` to `3`, term at most 63 characters.
+[Fuzzy search](fuzzy-search.html)
+
 ## G–P
 
 **generator** — a fact pattern as a statement: a loop over one predicate's rows.
+
+**guide** — the fuzzy counterpart of a seek key: a `Source::Guided` walks the range a seek key
+opened, asking a Levenshtein automaton per row where the next possible answer is and re-opening
+the scan there. Spent per row, where a seek key is spent once.
+[Fuzzy search](fuzzy-search.html#7-where-a-fuzzy-match-can-sit)
 
 **head** — the plan's output projection, applied to the bound registers to build each row.
 
@@ -115,6 +124,15 @@ isolation, parallel ingest, and an O(1) wholesale drop.
 
 **level** — one loop of the nested loop: a step with sources and binds. `Plan::levels()` counts
 these, and a cursor holds one row per level.
+
+**Levenshtein automaton** — the machine behind `~`: a capped edit-distance row against the term,
+one row per consumed character. Fixed-size and `Copy`, so a transition allocates nothing and a
+walk re-enters at any string — which is why a guided scan needs no cursor state of its own.
+[Fuzzy search](fuzzy-search.html)
+
+**listing digest** — a hash of a virtual predicate's materialised rows, carried with the results
+and back on a `FETCH`. What lets a server refuse a stale id by name instead of resolving it
+against a listing that has since moved. [Wire protocol](wire-protocol.html#fetching-what-an-id-names)
 
 **marker** — the leading byte of an encoded value: determines sort position and skip shape. Frozen
 once data exists. [I3](invariants.html#i3)
@@ -161,8 +179,13 @@ prefix, and the order comparisons.
 
 **Row** — the borrowed, one-step-lived view of a fully bound result handed to the consumer.
 
-**sargeable** — a key field that can narrow the scan (a seek or a splice) rather than being filtered
-afterwards. Sargeability is **order-dependent**.
+**rows-examined ceiling** — the executor's one limit on *input*: rows pulled off a scan, charged
+per row. Deployment policy, not semantics — it refuses a run and never changes an answer.
+[Query efficiency](query-efficiency.html#the-ceiling-is-deployment-policy)
+
+**sargeable** — a key field that can narrow the scan (a seek, a splice or a guide) rather than
+being filtered afterwards. Sargeability is **order-dependent**.
+[Query efficiency](query-efficiency.html)
 
 **seek / SeekKey** — the scan start position for a level, built from constant bytes and register
 splices.
@@ -204,5 +227,10 @@ keys and values.
 keyspace — `fjord.db.List`. Absent from the handshake fingerprint, from a database's embedded
 schema and from every artifact's keyspaces, which is why a client that has never heard of it
 connects exactly as before.
+
+**world stamp** — opaque bytes on a cursor naming the base it was read in: a content fingerprint
+for a Complete database, an instance/incarnation/visible-sequence triple for a Writable one, plus
+the digest of any virtual listing the query read. The engine only compares them.
+[I4](invariants.html#i4)
 
 **Writable** — the mutable lifecycle state before `finish`. Ingestion happens here.

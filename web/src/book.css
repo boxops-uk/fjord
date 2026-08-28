@@ -75,9 +75,63 @@
 /* The first heading on a page follows the standfirst, which already spaced it. */
 [data-testid='prose'] h2:first-of-type { margin-block-start: var(--spacing-4); }
 
-/* Prose is read at a line length, not at a component's line-height. */
+/* ------------------------------------------------------------ the measure --
+
+   One width for the page, and everything is in it: the prose, the tables, the
+   fences, the demos. It opens with the window — from a comfortable line at a
+   laptop's width towards a long one on a wide screen — and it is centred in
+   whatever room the shell leaves, so the column sits under the reading eye
+   rather than against the navigation.
+
+   The measure is set here, on the stack, rather than as a `max-width` on each
+   block, because it has to be *one* width. Capping each element separately left
+   the standfirst wider than the body it introduces — `ch` resolves against the
+   element's own type, and the standfirst is set larger. A single container has
+   no such trouble: one width, in one place, for everything sitting in it. */
+
+.book-column {
+  --measure: clamp(46rem, 20rem + 38vw, 88rem);
+  width: 100%;
+  max-width: var(--measure);
+  margin-inline: auto;
+}
+
+/* Two things put a table outside the column, and both are right for a table that
+   owns the page and wrong for one inside a measure. It bleeds 24px into the
+   section's padding, to sit edge to edge; and it stretched to the flex line
+   rather than to the container, the line having been sized from the widest item
+   before the container's own `max-width` capped it, so a wide table pushed the
+   wrapper out instead of scrolling inside it — which is the one thing a scroll
+   wrapper exists to do. Asked for the width outright and denied the bleed, the
+   wrapper takes the column's width and the table scrolls in it. */
+.book-column > .astryx-table-scroll-wrapper {
+  width: 100%;
+  min-width: 0;
+  margin-inline: 0;
+}
+
+/* An embedded thing is not a step in the argument — it is an object the prose
+   has stopped to point at. The extra space belongs here rather than in the
+   stack's gap: a heading and its paragraph, or a paragraph and its list, are
+   continuous and read wrongly with a demo's worth of air between them. */
+.book-column > pre.astryx-codeblock,
+.book-column > .astryx-table-scroll-wrapper,
+.book-column > .demo,
+.book-column .authored .cards { margin-block: var(--spacing-5); }
+
+/* Prose is read at a line length, not at a component's line-height.
+
+   Justified, with hyphenation on: the two go together. Justification alone
+   stretches the word spaces to fill the line and opens rivers down the column;
+   hyphenation gives it somewhere to break instead. `text-wrap: pretty` is what
+   keeps a paragraph from ending on a single word. */
 [data-testid='prose'] p,
-[data-testid='prose'] li { line-height: 1.65; }
+[data-testid='prose'] li {
+  line-height: 1.65;
+  text-align: justify;
+  hyphens: auto;
+  text-wrap: pretty;
+}
 
 [data-testid='prose'] ul,
 [data-testid='prose'] ol { padding-inline-start: var(--spacing-5); }
@@ -100,6 +154,27 @@
 .demo .data { padding: var(--spacing-3); }
 .demo .data .scroll { max-height: 26rem; }
 .demo .scroller { max-height: 22rem; }
+
+/* A guided run is the worked explanation, not a compact peek at a tool. Its
+   plan and executor remain wholly visible while the transport moves between
+   them; an inner scrollbar would hide the context the narration refers to. */
+.demo-guided .scroller {
+  max-height: none;
+  overflow: visible;
+}
+
+.demo-guided .data .scroll {
+  max-height: none;
+  overflow: visible;
+}
+
+.demo-guided .guided-machine {
+  border-inline-end: var(--border-width) solid var(--color-border);
+}
+
+@container (max-width: 43rem) {
+  .demo-guided .guided-machine { border-inline-end: 0; }
+}
 
 /* --------------------------------------------------------------- search ---
 

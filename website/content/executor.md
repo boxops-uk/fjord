@@ -27,9 +27,10 @@ struct Level {
 }
 
 enum Source {
-    Seek  { access: Access, residuals: Box<[Residual]> },
-    Fetch { reference: Address, path: FieldPath,
-            predicate_id: PredicateId, residuals: Box<[Residual]> },
+    Seek   { access: Access, residuals: Box<[Residual]> },
+    Fetch  { reference: Address, path: FieldPath,
+             predicate_id: PredicateId, residuals: Box<[Residual]> },
+    Guided { access: Access, guide: Guide, residuals: Box<[Residual]> },
 }
 ```
 
@@ -80,6 +81,15 @@ piece:
 
 Splicing is how a join narrows the inner scan to rows matching the outer row. There is no join
 operator; there is a seek key with someone else's bytes in it.
+
+A **guided** source is the third shape, and it is deliberately not a fourth kind of thing: it
+carries an ordinary `Access`, so `lo` and `hi` come from the same prefix machinery, and the
+`Guide` decides only what is visited *inside* that range. A [Levenshtein
+automaton](fuzzy-search.html) is asked about each row's string field; a dead state proves that
+every key sharing that prefix is a non-answer, so the scan is re-opened at the smallest key
+that could still match. It binds what a seek binds, takes the cursor entry a seek takes, and is
+a witness for a negation exactly as a seek is — which is what lets everything downstream of the
+row be unable to tell the difference.
 
 A seek and a scan side by side: the outer level here seeks, because the leading key field is
 a constant, and the inner one filters what it reads. The badges on each step say which.
@@ -276,7 +286,7 @@ One transition per click. `depth` moves down as a level opens and up as one drai
 registers hold the rows the machine is standing on, and a yield is a row leaving the machine
 — the same loop, driven by hand:
 
-:::demo run
+:::demo run guided
 N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
 :::
 
@@ -324,12 +334,13 @@ renderer and the viewer's pages are all consumers of this seam.
 struct Cursor {
     version: u16,           // which cursor layout these bytes are in
     plan: PlanFingerprint,  // which plan produced them
+    world: WorldStamp,      // which *base* it was read in — opaque to the engine
     entries: Vec<Entry>,    // one per open loop *level*
 }
 struct Entry { source: usize, row: Register }
 ```
 
-That is the whole token: two stamps and one detached row per level. No open iterators, no plan
+That is the whole token: three stamps and one detached row per level. No open iterators, no plan
 pointer beyond the fingerprint, no snapshot — nothing a socket could not carry.
 
 - A **derive** step contributes nothing: it is recomputed on restore
@@ -358,6 +369,7 @@ narrowing:
 |---|---|---|
 | `version` | A cursor from a build where an entry meant something else | `CursorVersion` |
 | plan fingerprint | A cursor from another plan | `CursorPlan` |
+| world stamp | A cursor from another base, or from before a write landed | `CursorWorld` |
 | entry count | A forged length, exactly | `CursorPlanMismatch` |
 | `source` index | An alternative this level does not have | `CursorSourceOutOfRange` |
 | `fact_id` | A saved key that is no longer the row it named | `BadResumeKey` |
@@ -409,10 +421,34 @@ different store, or hit a bug. So resume **verifies** rather than trusts, and th
 where the safety lives: saving `(key, fact_id)` and checking the row re-read at the key can
 fail, where looking a key up *from* the id is a tautology that can never catch anything.
 
-The project is explicit that this is a **detector, not a guarantee**: two databases built from
-the same facts in the same order agree on a prefix of every predicate's mapping, so a cursor
-saved inside that prefix would resume clean and then emit the other database's rows. What
-closes it is a database fingerprint in the token — recorded as the third stamp, not yet built.
+On its own this is a **detector, not a guarantee**: two databases built from the same facts in
+the same order agree on a prefix of every predicate's mapping, so a cursor saved inside that
+prefix would resume clean and then emit the other database's rows. What closes it is the third
+stamp — the world.
+
+### The world stamp
+
+The engine cannot compute one. `FactStore` is `scan` and `point`; it exposes no identity and no
+listing, so *which base am I reading* is a question only the database-owning layer can answer.
+So the cursor carries **opaque bytes** that layer computes, and the engine does one thing with
+them: compares them, byte for byte, before anything else is trusted.
+
+| The base | What the stamp is | What it catches |
+|---|---|---|
+| **Complete** | The content fingerprint `finish` computed | A cursor from a different sealed database |
+| **Writable** | `{ instance, incarnation, visible sequence }`, read around the snapshot each chunk takes | A write that landed between two pages — refused rather than answered as a hybrid of two states |
+| Either, over a **virtual predicate** | …plus the digest of the listing the rows were minted from | A `create`, `rm` or `finish` between two pages of `fjord.db.List` |
+| An **embedded** caller with no notion of a world | `Unstamped`, explicitly | A resume must name that case again; it cannot use an empty byte string for both meanings |
+
+The incarnation is a nonce minted per open and **never persisted**, which is what makes a
+cursor from before a reopen refused unconditionally: a sequence number recovered from what a
+crash left durable can be lower than a live cursor's, and a fresh nonce turns "reason about
+what survived" into a case that cannot arise.
+
+One virtual predicate has no stable value to digest at all — `fjord.db.Interning`'s counters
+are read by locking every interning stripe in turn and thrash on every write — so a resume
+that crosses requests over it is refused by name (`VolatileResume`) rather than validated
+against a digest that would always disagree.
 
 :::invariant I4 — resume equals an uninterrupted run
 Resuming from a cursor produces exactly the rows, in exactly the order, that an uninterrupted
@@ -458,7 +494,7 @@ production. A property checked at every generated cut point is what catches that
 it ships; nothing about it is visible to inspection.
 :::
 
-## What a run examined
+## What a run examined, and the most it may
 
 The executor already counts rows examined, for cancellation. `enumerate_profiled` hands that
 counter back instead of throwing it away, **per step of the plan's body** — which is what gives
@@ -473,6 +509,22 @@ src.Ref   1
 
 Read it against `:plan`: the plan is the intent, this is the outcome.
 
+The same counter carries a **ceiling**. It is the one limit in this engine on *input*: every
+other one counts output, and a scan whose residuals reject every row produces nothing while
+doing all the work, so a limit that counted rows answered would read zero on exactly the query
+that needs stopping. `Executor::with_examined_ceiling` charges it per row in the tick that
+already drives cancellation and the profile, and a run that crosses it ends with
+`ExaminedCeiling { examined, ceiling }`.
+
+Per row rather than on the cancellation stride, deliberately: a stride-checked ceiling could
+never fire for a caller driving the machine one transition at a time, because that path rebuilds
+its deadline — and its stride counter — on every call.
+
+It is **deployment policy, not semantics**. The server sets one (64,000,000 rows by default, and
+a `Listener` may set a tighter one); an embedded caller reading its own database gets none unless
+it asks. It refuses a run and never changes an answer, and it is no part of a plan's fingerprint —
+so a cursor is not tied to whatever ceiling was in force when it was minted.
+
 ## Where this shows up
 
 | Feature | Built on |
@@ -481,4 +533,6 @@ Read it against `:plan`: the plan is the intent, this is the outcome.
 | Chunked results (256 rows) that never buffer server-side | The same, once per chunk |
 | In-band per-stream cancellation | The cancellation token, polled in the scan loop |
 | `--profile` | The counter cancellation already kept |
+| A bounded run — `ExaminedCeiling` | The same counter, with a ceiling attached |
+| A resume refused across a write, a rebuild or a moved listing | The cursor's world stamp |
 | `--count` | The same plan and executor with a different accumulator: the driver is a fold |

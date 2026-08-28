@@ -32,14 +32,25 @@ pub struct Sample {
 ///
 /// Between them they reach every construct the language has: a scan and a seek,
 /// a join through a reference in both key positions, a record head, a
-/// constraint, a comparison, arithmetic, a denial, a negation, a disjunction, a
-/// subquery, a nested record, a union matched as a seek and the same union
-/// matched as a residual, a select, and the value side.
+/// constraint, a fuzzy match, a comparison, arithmetic, a denial, a negation, a
+/// disjunction, a subquery, a nested record, a union matched as a seek and the
+/// same union matched as a residual, a select, and the value side.
+///
+/// The fuzzy sample is on `code.File` rather than on a declaration's name, and
+/// that is what it is for: `File`'s key *is* the string, so the pattern reaches
+/// the key order and the plan is a **guided** access. Behind `Decl`'s leading
+/// reference the same pattern is a residual — the same question, a different
+/// plan, one edit away in the box.
 pub const SAMPLES: &[Sample] = &[
     Sample {
         label: "a scan",
         source: "P where code.File P; P = \"src/\"..",
         rows: Some(3),
+    },
+    Sample {
+        label: "a fuzzy match",
+        source: "P where code.File P; P = \"src/uil.rs\"~2",
+        rows: Some(2),
     },
     Sample {
         label: "a join",

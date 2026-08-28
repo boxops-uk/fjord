@@ -90,12 +90,13 @@ them. Ask for those references to be expanded and you get the people themselves:
 The engine that answers a query like that is compiled to WebAssembly and running here, over
 a small code index: four files, seven declarations, and the references between them.
 
-:::demo run
+:::demo run guided
 N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
 :::
 
 Every demo in this book is that engine — not a recording, and not a JavaScript imitation.
-Edit the query and everything below it is recomputed by the same code the server runs.
+This walkthrough keeps its query fixed so each transition can explain itself; open it in the
+playground to edit the query and explore everything the engine exposes.
 
 ## What is built
 
@@ -111,6 +112,7 @@ honest list.
 <span class="pill ok">executor + resume</span>
 <span class="pill ok">fjall store</span>
 <span class="pill ok">sigla front end</span>
+<span class="pill ok">fuzzy search</span>
 <span class="pill ok">schema DSL</span>
 <span class="pill ok">union types</span>
 <span class="pill ok">wire protocol</span>
@@ -126,8 +128,9 @@ honest list.
 
 - **New here?** [Getting started](getting-started.html), then the
   [guided tour](walkthrough.html).
-- **Writing queries?** [sigla query language](query-language.html) and the
-  [Shell reference](shell.html).
+- **Writing queries?** [sigla query language](query-language.html), then
+  [Query efficiency](query-efficiency.html) for why two spellings of one question can differ
+  by orders of magnitude, and the [Shell reference](shell.html).
 - **Designing a schema?** [Schema language](schema-language.html) — read the part about
   field order twice.
 - **Wondering how it works?** [A query, step by step](query-lifecycle.html), then

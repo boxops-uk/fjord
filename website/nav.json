@@ -14,13 +14,15 @@
       "pages": [
         { "slug": "concepts", "title": "Concepts" },
         { "slug": "schema-language", "title": "Schema language" },
-        { "slug": "query-language", "title": "sigla query language" }
+        { "slug": "query-language", "title": "sigla query language" },
+        { "slug": "query-efficiency", "title": "Query efficiency" }
       ]
     },
     {
       "label": "How it works",
       "pages": [
         { "slug": "query-lifecycle", "title": "A query, step by step" },
+        { "slug": "fuzzy-search", "title": "Fuzzy search, step by step" },
         { "slug": "storage", "title": "Storage model" },
         { "slug": "executor", "title": "Executor & resume" },
         { "slug": "wire-protocol", "title": "Wire protocol" }

@@ -18,6 +18,8 @@ export type Moment = {
   dropped: string | null
   /** Every row dropped so far, so the table can grey them. */
   droppedSoFar: Set<string>
+  /** A row whose fuzzy field the nested DFA is currently evaluating. */
+  testing: string | null
 }
 
 export function fold(trace: Trace, at: number): Moment {
@@ -62,6 +64,7 @@ export function fold(trace: Trace, at: number): Moment {
     held,
     dropped,
     droppedSoFar,
+    testing: null,
   }
 }
 

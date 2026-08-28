@@ -707,9 +707,12 @@
 .data tr.within td { background: var(--fj-wash); }
 .data tr.held td { background: var(--fj-wash-strong); }
 .data tr.held .fact { color: var(--color-text-accent); font-weight: 600; }
+.data tr.testing td { background: var(--color-accent-muted); }
+.data tr.testing .fact { color: var(--color-text-accent); font-weight: 600; }
 .data tr.seen td { opacity: .5; }
 .data tr.dropped td { background: var(--color-error-muted); opacity: 1; }
 .data tr.dropped .fact { color: var(--color-error); }
+.run-dfa tr.dfa-active td { background: var(--color-accent-muted); }
 
 /* The bytes the seek pinned, against the ones the scan walks. The mark step: it
    is drawn on top of a row that is already washed, so it has to clear the

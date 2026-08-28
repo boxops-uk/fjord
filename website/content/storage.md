@@ -103,7 +103,17 @@ it recomputes the width and rejects any non-minimal encoding — because order p
 stated over encodings, and it holds only if one value has exactly one legal byte string.
 
 A string prefix becomes a **range** by encoding the prefix and dropping its terminator, which
-is what makes `"al"..` a byte range rather than a filter.
+is what makes `"al"..` a byte range rather than a filter. The same trick is what lets a
+[fuzzy match](fuzzy-search.html) compute where to seek next: the smallest key that could still
+match is a prefix, encoded the same way.
+
+Reading a stored string back has two forms, and the difference is a bound rather than a
+convenience. The whole-value decoder finds the terminator before it yields anything, so the
+*first* character of a 4 KiB identifier costs 4 KiB — which is exactly the cost a guided seek
+exists to avoid, since a fuzzy match can reject on the fourth character. So there is also a
+**character-at-a-time** reader that inspects only the bytes it yields and emits an escaped NUL
+as a character rather than unescaping into a buffer. Two properties pin the two decoders
+against each other so they cannot drift.
 
 Every stored key of a whole database, in the order a scan meets them, as bytes and decoded.
 The claim above is checkable here: read down the hex column and it ascends, and read down the

@@ -167,6 +167,8 @@ This is the one asymmetry worth learning early.
 - [Schema language](schema-language.html) — designing predicates, and why field order is
   the index design.
 - [sigla query language](query-language.html) — every construct, with the rows it returns.
+- [Query efficiency](query-efficiency.html) — what a query costs, why two spellings of one
+  question can differ by orders of magnitude, and how to tell which you wrote.
 - [Invariants](invariants.html) — the rules the design is checked against, each with the
   test that pins it. Two namespaces: `I1`–`I15` for the engine, `ops-I1`–`ops-I10` for
   operations.

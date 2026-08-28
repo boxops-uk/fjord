@@ -26,6 +26,8 @@
 pub mod database;
 /// The database the site queries: its schema, and its facts.
 pub mod demo;
+/// The fuzzy matcher's DFA state, one consumed character at a time.
+pub mod fuzzy;
 /// The lowered tree, and the types typecheck gave it.
 pub mod lowered;
 /// The plan: what the query does, and in what order.
@@ -49,8 +51,9 @@ pub mod view;
 
 pub use database::{Database, PredicateRows, RowBytes, database, database_json};
 pub use demo::SCHEMA;
+pub use fuzzy::{FuzzyStep, FuzzyWalk, fuzzy, fuzzy_json};
 pub use lowered::{Lowered, LoweredNode, StatementView, lowered, lowered_json};
-pub use plan::{PlanView, StepView};
+pub use plan::{FuzzyView, PlanView, StepView};
 pub use rows::{ROW_CAP, RowView, Rows, rows, rows_json};
 pub use samples::{SAMPLES, Sample, samples_json};
 pub use schema::{PredicateView, SchemaView, schema, schema_json};

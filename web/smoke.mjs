@@ -522,7 +522,7 @@ check(
 )
 check(
   'the reading order is the one the generator publishes',
-  (await page.$$('.astryx-side-nav-item')).length === 21,
+  (await page.$$('.astryx-side-nav-item')).length === 23,
 )
 
 // A page is a route. If any of these were a document load the marker would be
@@ -549,6 +549,132 @@ for (const title of titles) {
 check('every page in the reading order renders', broken.length === 0, broken.join(', '))
 check('a page is a route, not a page load', await page.evaluate(() => window.__oneApplication === true))
 
+await openPage('Fuzzy search, step by step')
+await page.waitForSelector('.demo-dfa table', { timeout: 20_000 })
+check(
+  'the fuzzy page builds every worked example from the real automaton',
+  (await page.$$('.demo-dfa')).length === 6,
+)
+check(
+  'a DFA example starts at the empty candidate state',
+  (await page.$eval('.demo-dfa [data-testid="dfa-description"]', (el) => el.textContent)).includes(
+    'Before reading the candidate',
+  ),
+)
+
+// `cut` is the substitution example. Moving to its end must expose the exact
+// distance returned by Rust, not an answer copied into the page.
+await page.$$eval('.demo-dfa', (demos) => {
+  const buttons = demos[2].querySelectorAll('button')
+  buttons[buttons.length - 1].click()
+})
+await settle()
+check(
+  'the substitution walkthrough reaches an accepting DFA state',
+  (await page.$$eval('.demo-dfa [data-testid="dfa-description"]', (descriptions) =>
+    descriptions[2].textContent,
+  )).includes('prefix “cut”'),
+)
+check(
+  'the accepting state reports the engine distance',
+  (await page.$$eval('.demo-dfa [data-testid="dfa-description"]', (descriptions) =>
+    descriptions[2].textContent,
+  )).includes('accepted at distance 1'),
+)
+
+// The engine stops walking the dead example at `zz`; its unread suffix cannot
+// bring the state back to life.
+await page.$$eval('.demo-dfa', (demos) => {
+  const buttons = demos[5].querySelectorAll('button')
+  buttons[buttons.length - 1].click()
+})
+await settle()
+check(
+  'the dead-prefix example stops when no continuation can match',
+  (await page.$$eval('.demo-dfa [data-testid="dfa-description"]', (descriptions) =>
+    descriptions[5].textContent,
+  )).includes('every stored key beginning with “zz” can be skipped'),
+)
+check(
+  'the page connects the DFA to a compiler-selected guided access',
+  (await page.$eval('.demo-plan .plan', (el) => el.textContent)).includes('guided'),
+)
+await page.waitForSelector('.demo-guided [data-testid="run-dfa"] table', { timeout: 20_000 })
+check(
+  'a database-backed fuzzy run starts with the DFA state table visible',
+  (await page.$eval('.demo-guided [data-testid="run-dfa"]', (el) => el.textContent)).includes(
+    'Inner machine · Levenshtein DFA',
+  ),
+)
+check(
+  'the outer tier names its executor position',
+  (await page.$eval('.demo-guided .transport .count', (el) => el.textContent)).includes('machine'),
+)
+
+// Keep stepping the outer machine until it enters fuzzy matching. Playback then
+// descends into the DFA and counts its transitions independently.
+let insideDfa = false
+for (let step = 0; step < 30 && !insideDfa; step++) {
+  await page.$eval('.demo-guided .transport', (transport) => {
+    const next = [...transport.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === '▶',
+    )
+    next?.click()
+  })
+  await settle()
+  insideDfa = (await page.$eval('.demo-guided .transport .count', (el) => el.textContent)).includes(
+    'DFA',
+  )
+}
+check('a fuzzy executor step descends into the DFA tier', insideDfa)
+check(
+  'the inner tier annotates both its DFA and containing executor transition',
+  (await page.$eval('.demo-guided [data-testid="step-description"]', (el) => el.textContent)).includes(
+    'DFA transition 1',
+  ) &&
+    (await page.$eval('.demo-guided [data-testid="step-description"]', (el) => el.textContent)).includes(
+      'inside executor transition',
+    ),
+)
+check(
+  'the database marks the row whose fuzzy field is being evaluated',
+  (await page.$$('.demo-guided .data tr.testing')).length === 1,
+)
+const dfaRows = (await page.$$('.demo-guided [data-testid="run-dfa"] table tr')).length
+await page.$eval('.demo-guided .transport', (transport) => {
+  const next = [...transport.querySelectorAll('button')].find(
+    (button) => button.textContent?.trim() === '▶',
+  )
+  next?.click()
+})
+await settle()
+check(
+  'one transport click advances one DFA transition while the executor stays paused',
+  (await page.$$('.demo-guided [data-testid="run-dfa"] table tr')).length === dfaRows + 1 &&
+    (await page.$eval('.demo-guided .transport .count', (el) => el.textContent)).includes('DFA 2/'),
+)
+
+let backInMachine = false
+for (let step = 0; step < 20 && !backInMachine; step++) {
+  await page.$eval('.demo-guided .transport', (transport) => {
+    const next = [...transport.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === '▶',
+    )
+    next?.click()
+  })
+  await settle()
+  backInMachine = (
+    await page.$eval('.demo-guided .transport .count', (el) => el.textContent)
+  ).trim().startsWith('machine')
+}
+check(
+  'the DFA returns its decision to the outer machine',
+  backInMachine &&
+    (await page.$eval('.demo-guided [data-testid="run-dfa"]', (el) => el.textContent)).includes(
+      'DFA has returned',
+    ),
+)
+
 await openPage('Storage model')
 check(
   'the page a reader is on is the page the tab says',
@@ -574,11 +700,98 @@ check(
   ),
 )
 
+// Arrived here from the fuzzy page, whose demos are at other block indices. A
+// demo holds its query in state, so blocks keyed by position alone let React
+// reuse an instance across a page change and keep the *previous* page's query —
+// which renders perfectly and says nothing about being the wrong demo.
+check(
+  'a demo is the one belonging to the page being read',
+  (await page.$eval('.demo .editor .input', (el) => el.value)).startsWith('P where code.File'),
+)
+
 // Editing a demo recompiles it, because there is nothing else it could do.
 await type('.demo .editor .input', 'P where code.Nonesuch P')
 check(
   'editing a demo recompiles it',
   (await texts('.demo .diagnostics li')).some((said) => said.includes('reject/unknown-predicate')),
+)
+
+// A guided run trades query editing for an explanation tied to its fixed plan.
+// The transport is still live: each transition changes the prose as well as the
+// registers and highlighted plan step.
+await openPage('Executor & resume')
+await page.waitForSelector('.demo-guided .transport', { timeout: 20_000 })
+check(
+  'a guided demo keeps its narrated query read-only',
+  await page.$eval('.demo-guided .editor .input', (input) => input.readOnly),
+)
+check(
+  'a guided demo keeps the plan, executor and database together',
+  await page.evaluate(() => {
+    const plan = document.querySelector('.demo-guided .plan')?.getBoundingClientRect()
+    const run = document.querySelector('.demo-guided .run')?.getBoundingClientRect()
+    const data = document.querySelector('.demo-guided .data')?.getBoundingClientRect()
+    return Boolean(
+      plan &&
+        run &&
+        data &&
+        Math.abs(plan.left - run.left) < 2 &&
+        plan.bottom <= run.top &&
+        Math.abs(plan.top - data.top) < 2 &&
+        plan.right <= data.left,
+    )
+  }),
+)
+check(
+  'a guided demo has no internally scrolling pane',
+  await page.$$eval('.demo-guided .scroller, .demo-guided .data .scroll', (panes) =>
+    panes.every(
+      (pane) =>
+        getComputedStyle(pane).overflowY === 'visible' || pane.scrollHeight <= pane.clientHeight,
+    ),
+  ),
+)
+await page.waitForSelector('.demo-guided .data tr.section')
+check(
+  'the guided database opens only the predicate the executor is touching',
+  JSON.stringify(
+    await page.$$eval('.demo-guided .data tr.section button[aria-expanded="true"] .name', (names) =>
+      names.map((name) => name.textContent.trim()),
+    ),
+  ) === JSON.stringify(['code.File']),
+)
+const explanationBefore = await page.$eval(
+  '.demo-guided [data-testid="step-description"]',
+  (panel) => panel.textContent.trim(),
+)
+await transport('▶')
+await settle()
+check(
+  'the guided plan follows the executor',
+  (await page.$$('.demo-guided .plan .steps li.on')).length === 1,
+)
+const explanationAfter = await page.$eval(
+  '.demo-guided [data-testid="step-description"]',
+  (panel) => panel.textContent.trim(),
+)
+check(
+  'the guided description follows the executor transition',
+  explanationBefore.includes('opens a seek on code.File') &&
+    explanationAfter !== explanationBefore &&
+    explanationAfter.includes('binds r0') &&
+    explanationAfter.includes('whole stored row') &&
+    /[.!?]$/.test(explanationAfter),
+  explanationAfter,
+)
+await transport('▶')
+await settle()
+check(
+  'the guided database follows a join into both relevant predicates',
+  JSON.stringify(
+    await page.$$eval('.demo-guided .data tr.section button[aria-expanded="true"] .name', (names) =>
+      names.map((name) => name.textContent.trim()).sort(),
+    ),
+  ) === JSON.stringify(['code.Decl', 'code.File']),
 )
 
 // A page with a demo on it has the module, and then the static blocks stop

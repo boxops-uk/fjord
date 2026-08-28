@@ -47,6 +47,14 @@ pub struct State {
     len: u8,
 }
 
+impl State {
+    /// The capped edit-distance row represented by this state.
+    #[must_use]
+    pub fn row(&self) -> &[u8] {
+        &self.cells[..self.len as usize]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Automaton {
     term: Box<[char]>,

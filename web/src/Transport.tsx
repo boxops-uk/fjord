@@ -20,20 +20,24 @@ export function Transport({
   at,
   onSeek,
   playback,
+  sequence,
 }: {
   trace: Trace
   at: number
   onSeek: (at: number) => void
   playback: { playing: boolean; setPlaying: (playing: boolean) => void }
+  /** A nested playback sequence, whose `dfa` entries sit inside machine steps. */
+  sequence?: { events: string[]; labels: string[] }
 }) {
-  const here = Math.min(at, trace.steps.length - 1)
-  const end = trace.steps.length - 1
+  const events = sequence?.events ?? trace.steps.map((step) => step.event)
+  const here = Math.min(at, events.length - 1)
+  const end = events.length - 1
   const seek = (to: number) => {
     playback.setPlaying(false)
     onSeek(to)
   }
-  const nextYield = trace.steps.findIndex((step, index) => index > here && step.event === 'yield')
-  const previousYield = findLast(trace.steps, here - 1, (step) => step.event === 'yield')
+  const nextYield = events.findIndex((event, index) => index > here && event === 'yield')
+  const previousYield = findLast(events, here - 1, (event) => event === 'yield')
 
   return (
     <Toolbar
@@ -93,7 +97,7 @@ export function Transport({
             valueDisplay="none"
           />
           <Text className="count" type="supporting" hasTabularNumbers>
-            {here + 1}/{trace.steps.length}
+            {sequence?.labels[here] ?? `${here + 1}/${trace.steps.length}`}
           </Text>
         </HStack>
       }
