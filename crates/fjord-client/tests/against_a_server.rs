@@ -878,6 +878,84 @@ fn a_served_schema_marks_the_catalogue_virtual() {
     );
 }
 
+/// A discard is **not** a cancel: the query runs to its end and the server's own count
+/// is what comes back, with no row ever decoded on this side.
+#[test]
+fn a_discard_runs_the_result_out_and_leaves_the_connection_working() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    seed(&mut connection, 1000);
+
+    let mut rows = connection.query("F where src.File F").expect("it compiles");
+    let sent = connection.discard(&mut rows).expect("it runs out");
+
+    assert_eq!(sent, 1000, "the whole result, not the first chunk");
+    assert_eq!(rows.seen(), 1000, "every row arrived here and was dropped");
+    assert!(rows.finished());
+
+    // A stream ended, not a session — and the id it held is free again, which is the
+    // half a load generator depends on: a connection it reuses for hours.
+    let mut again = connection
+        .query("F where src.File F; F = \"f00007\"..")
+        .expect("it compiles");
+    assert_eq!(
+        strings(&connection.drain(&mut again).expect("its rows")),
+        ["f00007.py"]
+    );
+
+    assert_eq!(connection.discard(&mut rows).expect("a no-op"), sent);
+}
+
+/// **The claim `discard` is for.** A result held in memory costs the client its length;
+/// one run out costs a frame at a time, and a load generator that paid the first price
+/// would be measuring itself rather than the server.
+///
+/// Peak live bytes rather than the total: the total is dominated by the frames read off
+/// the socket either way, and it is the *retention* the two calls disagree about.
+#[test]
+fn discarding_is_flat_in_the_length_of_the_result() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    seed(&mut connection, 4000);
+
+    let peak = |connection: &mut Connection, sigla: &str, drain: bool| -> u64 {
+        let mut rows = connection.query(sigla).expect("it compiles");
+        allocation_counter::measure(|| {
+            if drain {
+                connection.drain(&mut rows).expect("its rows");
+            } else {
+                connection.discard(&mut rows).expect("it runs out");
+            }
+        })
+        .bytes_max
+    };
+
+    const ONE: &str = "F where src.File F; F = \"f00007.py\"";
+    const ALL: &str = "F where src.File F";
+
+    let (drained_one, drained_all) = (
+        peak(&mut connection, ONE, true),
+        peak(&mut connection, ALL, true),
+    );
+    let (discarded_one, discarded_all) = (
+        peak(&mut connection, ONE, false),
+        peak(&mut connection, ALL, false),
+    );
+
+    assert!(
+        drained_all > drained_one * 10,
+        "a drained result is held, so four thousand rows cost proportionally more: \
+         {drained_one} → {drained_all}"
+    );
+    assert!(
+        discarded_all < discarded_one * 2,
+        "a discarded result is not held, so its peak does not follow the row count: \
+         {discarded_one} → {discarded_all}"
+    );
+}
+
 /// A query that does not compile fails its **stream**, carrying the compiler's own
 /// diagnostics, and the connection is usable afterwards.
 #[test]

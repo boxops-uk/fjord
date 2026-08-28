@@ -1211,6 +1211,122 @@ lever left on the producer side and it is `clients/dotnet`'s, not the database's
 held across memoisation lookups *and* across `Add`, so a slower sink widens a critical section
 eight threads are queued behind.
 
+## 18. The plateau was the connect and the allocator, not the engine — 27× from pooling a connection, 5–13% from mimalloc
+
+**What was asked.** [Issue #19](https://github.com/boxops-uk/fjord/issues/19): heavy read load
+plateaued at ~9 of ~14 available cores, which read as an internal limit on how many scans the
+server will run at once. It is not one. Two costs *outside* the engine were being read as one
+inside it — **a process and a connection per request** on the client's side, and **glibc's
+per-arena mutexes** on a scan path that allocates per chunk. No guard the project has can see
+either. [I9](../website/content/invariants.md#i9) is about the *engine's* hot path, and its guard
+runs a plan in process: what it proves is that the executor allocates the same count and bytes
+for 2N rows as for N. Everything this contention is about sits outside that — fjall decompressing
+a block, the server decoding rows and turning each value into a `WireValue`, one connection's
+thread doing all of it — plus the per-outer-row level opening that I9's own caveat records.
+
+**The tree.** `main` at `0184a57` plus the change this section justifies — taken before
+`5ec10ef` landed, which the branch has since been rebased onto and on which nothing here has
+been re-measured. The two arms of the allocator comparison are that source built twice, once
+with the `#[global_allocator]` attribute and once with it commented out; nothing else differs
+between the binaries, which is what makes the ratio survive the tree moving under it.
+
+**The instrument.** `examples/loadgen.rs` against `fjord serve`, release, with `--only` to hold
+one workload still across arms and `Connection::discard` so the generator does not decode the
+rows it asks for. The database is loadgen's own seed — 6,000 files, 30,000 declarations, 156,000
+facts created and 330,000 deduped — small enough to sit in page cache, because the question is
+contention between threads and not the disk.
+
+**Two hosts, and they agree on the sign and not the size.** *This box* is the host the rest of
+this register uses — 8 cores, 32 GB — with the load generator resident on the same cores as the
+server. *The issue's box* is #19's: a shared 80-core machine with a ~14-core cpuset, where the
+generator was not competing for the server's cores. Ratios travel further than absolutes, but
+not this ratio: what it depends on is how many cores the generator is taking.
+
+### 18a. A connection per request costs 27×, and it is the whole plateau
+
+Same server, same database, same one-row seek, 500 queries an arm, arms alternating over three
+rounds (*this box*):
+
+| What a request pays for | Queries/s | Per query |
+|---|---|---|
+| `fjord query` — a process and a connection each time | 199–205 | 4.88–5.03 ms |
+| One pooled `Connection`, sequential | 4,682–6,743 | 135–190 µs (p50) |
+| Eight pooled connections | 24,936 | 255 µs (p50) |
+
+**27× on one connection and 122× on eight, with the server identical in all three rows.** Where
+the 4.9 ms goes, by subtraction against the same loop running `fjord --version` (3.78–3.91 ms)
+and `/bin/true` (1.00 ms):
+
+| | Per request |
+|---|---|
+| The shell's own fork and exec | ~1.0 ms |
+| Starting `fjord` — dynamic link, argument parse, config | ~2.9 ms |
+| Socket, handshake, schema, teardown | ~0.9 ms |
+| **Answering the query** | **0.15 ms** |
+
+**Three per cent of the request is the database.** On the issue's box the same shape capped a
+bridge at ~580 req/s with fewer than nine scans ever in flight, against a server that saturated
+all fourteen cores when driven from pooled connections. The plateau was a client that could not
+ask fast enough, and no server-side change would have moved it.
+
+**What it costs to act on.** Nothing in the server. It is written down for consumers as
+[Hold the connection](../website/content/clients.md) — pool connections and keep them, and leave
+`fjord query` to people. `examples/loadgen.rs` and `examples/soak.rs` were already built that
+way, which is why they measure the server rather than the connect path.
+
+### 18b. mimalloc is worth 5–13% here and 38% at core saturation
+
+One database, eight connections, 40 runs a workload, the two binaries alternating over three
+rounds (*this box*):
+
+| Workload | glibc p50 | mimalloc p50 | Faster | Queries/s |
+|---|---|---|---|---|
+| scan decls | 165.5 ms | 156.7 ms | 5.3% | 47 → 50 |
+| project record | 189.7 ms | 170.6 ms | **10.1%** | 41 → 46 |
+| fetch, project a string | 262.5 ms | 237.5 ms | 9.5% | 30 → 33 |
+| join on a leading field | 275.0 ms | 255.8 ms | 7.0% | 28 → 30 |
+
+Medians of three rounds — and **mimalloc won all twelve round-pairs**, by 4.7% to 14.5%, with the
+arms never overlapping. That is what makes a single-digit claim worth making on a box this noisy.
+
+On the issue's box, fed by pooled connections at 24 concurrent heavy counts, the same swap is
+**441 → 609 q/s (+38%)** with cores in use going 13.5 → 13.9, and stacks sampled under load
+showed threads parked in `malloc` on glibc's arena mutexes. Here the generator sits on the same
+eight cores as the server and takes its share, so 5–13% is what is left of that. The direction
+reproduces; the size is a property of the host, and neither number is what a deployment sees.
+
+**The first pass at this said the opposite, and the method is the reason.** Run as a full
+catalogue pass per binary — glibc, then mimalloc — each arm takes about forty minutes, because
+the catalogue's slowest workload examines 900M rows. The two halves therefore ran under different
+host load, and mimalloc came out *worse* on `denial` (161 → 247 ms) and `scan refs` (144 → 167
+ms) while better on eight others. Four workloads, alternating arms, three rounds — which is what
+`--only` exists for — makes the comparison one the host's drift lands on both sides of, and the
+sign becomes consistent.
+
+**Why the scan path is exposed at all.** The engine's own loop allocates nothing per row and
+[I9](../website/content/invariants.md#i9)'s guard proves it — but that guard runs the executor in
+process, and a *served* query is more than the executor: fjall decompresses a block (`lz4_flex`),
+the server decodes rows and turns each value into a `WireValue`, and a join opens a level per
+outer row. Many threads, short-lived allocations, one arena set: that is the shape glibc
+serialises and mimalloc's per-thread caches do not.
+
+### 18c. What measuring it needed, and what now holds it
+
+- **`Connection::discard`** — a result read to its end with no row decoded. Decoding them made
+  the co-resident generator take ~40% of the box (#19's appendix), so a throughput number taken
+  with `drain` was partly a measurement of the client. Guarded by
+  `discarding_is_flat_in_the_length_of_the_result`: peak live bytes over a 4,000-row result
+  against a 1-row result, drained and discarded, asserting the held one grows with the result and
+  the discarded one does not.
+- **`loadgen --only`** — the A/B lever above, and a misspelt name exits 2 rather than reporting a
+  table with no rows.
+- **`the_global_allocator_is_mimalloc`** — the attribute is a whole-program choice with no
+  compile-time evidence that it took, so the guard asks mimalloc whether a live allocation is in
+  one of its own heap regions. Its mutation control was run: comment the attribute out and the
+  test fails. It passes for `x86_64-unknown-linux-musl` too, so the static release binary carries
+  the same allocator — and that build now needs a C compiler for musl in CI, because mimalloc is
+  a C library and a pure-Rust cross build never wanted one.
+
 ## What is still open
 
 - **Finding 7's number, after its fix.** The per-query retention had a cause, the cause has a
@@ -1274,6 +1390,17 @@ eight threads are queued behind.
 - **The corpus includes a file that is 45% of it.** [§15b](#15b-the-tail-one-generated-file-is-45-of-the-wall-clock-and-contributes-365-facts).
   Quote ex-tail, or drop `src/tests` and re-baseline — a decision to take before the next
   measurement rather than after it.
+- **The allocator's 38% has not been reproduced on a quiet host.**
+  [§18b](#18b-mimalloc-is-worth-513-here-and-38-at-core-saturation) has two numbers for one
+  change and the difference is the load generator's share of the cores. What would settle it is
+  the generator on another machine, or the server on its own cpuset — a `taskset` and a second
+  box, not a new instrument.
+- **Nothing here measures the static build.** Both release binaries now carry the same allocator,
+  so that is no longer what separates them, but every number in this register is from the
+  dynamically linked one. What is untested is musl's libc under a server's load.
+- **The consumer that provoked [§18a](#18a-a-connection-per-request-costs-27-and-it-is-the-whole-plateau)
+  has not been migrated.** The finding is recorded and the guidance is in the book; the bridge
+  that shells out per request is somebody's code and still does.
 
 
 ---

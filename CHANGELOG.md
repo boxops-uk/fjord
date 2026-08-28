@@ -5,6 +5,31 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## Unreleased
+
+### `fjord` allocates from mimalloc
+
+The tool links mimalloc as its `#[global_allocator]`, which is a whole-program choice and so
+belongs in the binary rather than in a library every consumer would inherit it through. Under
+concurrent scans glibc serialises the scan path's per-chunk allocations on its per-arena
+mutexes; mimalloc's per-thread caches do not. Measured at 5–13% on an 8-core box with the load
+generator resident on it and +38% at core saturation on a 14-core one —
+[`bench/FINDINGS.md` §18](bench/FINDINGS.md). `the_global_allocator_is_mimalloc` is the guard
+that catches the attribute going missing, since dropping it leaves a binary that still builds
+and passes, only slower.
+
+Both published binaries carry it, the statically linked one included, so the allocator is no
+longer what separates them — what separates them is musl's libc, and nothing is measured on
+that build.
+
+### `Connection::discard`
+
+A result read to its end with **no row decoded** — the server does the whole query, and the
+client stops short of the one cost that is only ever the client's. It is what a load generator
+should consume with, and it is not a cancel: nothing is cut short, so what it reports is the
+server's own count. Decoding rows in a co-resident generator took ~40% of the box, which made
+every throughput number partly a measurement of the generator.
+
 ## 0.1.0 — 2026-08-21
 
 The first published artifact. Everything below is *what is there*, and the

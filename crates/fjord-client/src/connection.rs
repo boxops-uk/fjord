@@ -863,7 +863,42 @@ impl Connection {
 
         self.check_open(rows)?;
         self.send(kinds::CANCEL, rows.stream(), &[])?;
+        self.read_out(rows)
+    }
 
+    /// Read a result to its end **without decoding a row**, and answer with how many
+    /// the server sent.
+    ///
+    /// The query runs in full — every frame the server would have sent is sent, framed
+    /// and read here — and the only thing that does not happen is decoding a row into a
+    /// [`WireValue`](fjord_wire::WireValue), which is the client's cost and nobody
+    /// else's. That is what makes it the right consumer for a load generator: decoding
+    /// rows made a co-resident client take ~40% of the machine, so a throughput number
+    /// measured with [`drain`](Connection::drain) is partly a measurement of the client
+    /// (`bench/FINDINGS.md` §18).
+    ///
+    /// It is **not** [`cancel`](Connection::cancel): nothing is cut short, so the
+    /// server does the whole scan. A number taken over a cancelled result would be a
+    /// number about the first chunk.
+    ///
+    /// # Errors
+    ///
+    /// As [`next_row`](Connection::next_row).
+    pub fn discard(&mut self, rows: &mut Rows) -> Result<u64, ClientError> {
+        if rows.finished() {
+            return Ok(rows.sent());
+        }
+
+        self.check_open(rows)?;
+        self.read_out(rows)
+    }
+
+    /// Read frames on this result until it completes, dropping the rows.
+    ///
+    /// The rows already in flight are read rather than left in the socket for the next
+    /// stream to trip over — which is why a cancel ends here too rather than simply
+    /// forgetting the stream.
+    fn read_out(&mut self, rows: &mut Rows) -> Result<u64, ClientError> {
         loop {
             let (kind, payload) = self.recv_row_frame(rows)?;
 

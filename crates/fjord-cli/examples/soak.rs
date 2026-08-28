@@ -395,7 +395,10 @@ fn run_client(
         let answered = connection
             .query(&classes[index].sigla)
             .and_then(|mut rows| {
-                while connection.next_row(&mut rows)?.is_some() {}
+                // Run out rather than decoded — this client shares the box with the
+                // server, and decoding is the part of the cost that is only ever this
+                // program's.
+                connection.discard(&mut rows)?;
                 Ok(())
             });
 

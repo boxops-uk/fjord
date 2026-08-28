@@ -36,8 +36,9 @@ gh attestation verify ./fjord --repo boxops-uk/fjord   # what built it, and from
 
 That one needs glibc 2.34 or newer — Ubuntu 22.04, Debian 12, RHEL 9 and later. The
 `-x86_64-linux-musl` builds beside it are the same code linked statically, for an older
-distro, Alpine or a `scratch` container; musl's allocator is slower under a server's load, so
-they are the second choice rather than the first.
+distro, Alpine or a `scratch` container. Both carry the same allocator, but every number the
+project publishes is measured on the first, so they are the second choice rather than the
+first.
 :::
 
 ```bash
