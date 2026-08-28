@@ -244,6 +244,33 @@ while let Some(row) = connection.next_row(&mut rows)? {
 `Rows` is a **bookmark**, not a borrow of the connection — so several results can be open at once,
 and `take` is the page `:more` is built on.
 
+### Hold the connection
+
+**A connection is a session, and a session is the unit a consumer should pool — not open per
+request.** This is the single largest capacity lever available to anything built on Fjord, and it
+is entirely on the client's side of the socket.
+
+A request that starts by connecting pays, before any query runs, for a socket, a handshake, a
+schema the server has to hand over, and — if it shells out to `fjord query` — a process and a
+dynamic link as well. That cost is serial per request, so it bounds the whole consumer regardless
+of how many cores the server has: a bridge shelling out per request measured **~580 req/s and
+never more than nine scans in flight** on a box whose server could saturate fourteen (`bench/FINDINGS.md`
+§18). Nothing about the server was the limit, and no server-side change would have moved it.
+
+So:
+
+- **Pool `Connection`s and keep them.** One per worker thread, reused for the life of the process.
+  `examples/loadgen.rs` and `examples/soak.rs` are both written this way, which is why they can
+  measure the server rather than the connect path.
+- **`fjord query` is a person's tool.** It is a whole process per query, and a service that calls
+  it has put a fork and a handshake in front of a 0.15 ms lookup.
+- **Read the result out even when you do not want the rows.** `Connection::discard` runs a result
+  to its end without decoding one — the server does all its work, and the client stops short of
+  the only cost that is the client's own.
+- **One connection is not a parallelism limit.** Streams multiplex, so several results can be in
+  flight on one; what a pool buys is that no request waits behind another's frames on the same
+  socket.
+
 ### Things a client should get right
 
 | | Why |
@@ -254,3 +281,4 @@ and `take` is the page `:more` is built on.
 | Cover the header in the block CRC | A corrupted `length` must be caught, not used to skip to the wrong place |
 | Nest references rather than inventing ids | An id you did not receive from the server names some other fact |
 | Expect ids in rows | A reference comes back as `#p:n`; expand with `F`/`f` if you need the key |
+| Hold connections open and pool them | A connection per request caps a consumer far below what the server can serve, and no server-side change lifts it |
