@@ -430,10 +430,26 @@ jobs:
       # download" stops being true for the reader who needed it most. musl links the C
       # library in.
       #
-      # It is the *second* download rather than the first because musl's allocator is
-      # slower under the load a server puts on it, and this is a database. Same code,
-      # same commit, same provenance — the choice is portability against throughput.
+      # It is the *second* download rather than the first because it is the build
+      # nothing is measured on: every number in `bench/FINDINGS.md` is taken on the
+      # dynamically linked one. Same code, same commit, same provenance, and since
+      # §18 the same allocator — mimalloc is linked into both — so what is untested
+      # here is musl's libc, not the allocator.
+      #
+      # **A C compiler for musl, or this job alone goes red.** mimalloc is a C library,
+      # so `libmimalloc-sys` compiles C for whatever target cargo builds, and for
+      # `x86_64-unknown-linux-musl` `cc-rs` looks for a cross compiler the runner does
+      # not carry. A pure-Rust build needs none — which is why nothing here wanted one
+      # until the allocator arrived, and why the failure appears in this job and no
+      # other.
+      - name: A C compiler for the musl target
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build the static binaries
+        env:
+          # `cc-rs` asks for `x86_64-linux-musl-gcc`; the Debian package installs it
+          # under the name `musl-gcc`, so the target-scoped override is what connects
+          # them. Scoped to the target: the host build above must keep its own `cc`.
+          CC_x86_64_unknown_linux_musl: musl-gcc
         run: >-
           cargo build --release --locked --target x86_64-unknown-linux-musl
           -p fjord-cli -p fjord-viewer --bins
@@ -519,9 +535,9 @@ jobs:
           \`\`\`
 
           The \`-x86_64-linux-musl\` builds are the same code linked statically, for an
-          older distro, Alpine, or a \`scratch\` container — no glibc floor, and musl's
-          allocator is slower under a server's load, so take them only if the one above
-          will not run.
+          older distro, Alpine, or a \`scratch\` container — no glibc floor. Both builds
+          allocate from the same allocator, but every number the project publishes is
+          measured on the one above, so take these only if it will not run.
 
           Every binary carries SLSA provenance, and \`SHA256SUMS\` covers all four:
 
