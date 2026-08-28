@@ -2,6 +2,9 @@ import { Badge } from '@astryxdesign/core/Badge'
 import { Transport } from './Transport'
 import type { PlanView, Trace } from './wasm'
 import type { Moment } from './run'
+import { StepDescription } from './StepDescription'
+import { DfaStepDescription } from './demo/RunDfaPanel'
+import type { GuidedFrame } from './demo/fuzzyTimeline'
 
 /**
  * **The debugger** — the run, one transition at a time.
@@ -23,6 +26,10 @@ export function RunPane({
   moment,
   onSeek,
   playback,
+  guided = false,
+  transportAt,
+  sequence,
+  frame,
 }: {
   trace: Trace | null
   plan: PlanView | null
@@ -30,6 +37,11 @@ export function RunPane({
   moment: Moment
   onSeek: (at: number) => void
   playback: { playing: boolean; setPlaying: (playing: boolean) => void }
+  guided?: boolean
+  /** Position in a nested machine/DFA timeline; `at` remains the executor step. */
+  transportAt?: number
+  sequence?: { events: string[]; labels: string[] }
+  frame?: GuidedFrame
 }) {
   if (!trace || trace.steps.length === 0) {
     return (
@@ -49,12 +61,27 @@ export function RunPane({
 
   return (
     <div className="scroller run">
-      <Transport trace={trace} at={at} onSeek={onSeek} playback={playback} />
+      <Transport
+        trace={trace}
+        at={transportAt ?? at}
+        onSeek={onSeek}
+        playback={playback}
+        sequence={sequence}
+      />
 
-      <p className={`event ${step.event}`}>
+      {guided && plan &&
+        (frame?.kind === 'dfa' ? (
+          <DfaStepDescription frame={frame} />
+        ) : (
+          <StepDescription trace={trace} plan={plan} at={at} moment={moment} />
+        ))}
+
+      <p className={`event ${frame?.kind === 'dfa' ? 'dfa' : step.event}`}>
         <Badge
           variant={
-            step.event === 'yield'
+            frame?.kind === 'dfa'
+              ? 'blue'
+              : step.event === 'yield'
               ? 'green'
               : step.event === 'reject'
                 ? 'red'
@@ -62,30 +89,41 @@ export function RunPane({
                   ? 'blue'
                   : 'neutral'
           }
-          label={step.event}
+          label={frame?.kind === 'dfa' ? 'DFA' : step.event}
         />
-        {step.event === 'yield' && <span className="said">answered {show(step.row)}</span>}
-        {step.event === 'scan' && step.scanning && (
+        {frame?.kind === 'dfa' && (
+          <span className="said">
+            consumed{' '}
+            <code>{frame.evaluation.walk.steps[frame.dfaAt].consumed || '∅'}</code> inside fuzzy
+            matching
+          </span>
+        )}
+        {frame?.kind !== 'dfa' && step.event === 'yield' && (
+          <span className="said">answered {show(step.row)}</span>
+        )}
+        {frame?.kind !== 'dfa' && step.event === 'scan' && step.scanning && (
           <span className="said">
             {step.scanning.fetch
               ? `one row, by reference — ${step.scanning.fetch}`
               : `over ${step.scanning.lo}…${step.scanning.hi ?? 'the end'}`}
           </span>
         )}
-        {step.event === 'reject' && step.rejected && (
+        {frame?.kind !== 'dfa' && step.event === 'reject' && step.rejected && (
           <span className="said">
             read {step.rejected.row.fact} and dropped it —{' '}
             <code>{residualOf(plan, step.rejected.step, step.rejected.residual)}</code>
           </span>
         )}
-        {step.event === 'step' && (
+        {frame?.kind !== 'dfa' && step.event === 'step' && (
           <span className="said">
             {step.depth >= (plan?.steps_count ?? 0)
               ? 'standing on the head'
               : `at ${plan?.steps[step.depth]?.kind.toLowerCase() ?? 'step'} ${step.depth}`}
           </span>
         )}
-        {step.event === 'done' && <span className="said">every level drained</span>}
+        {frame?.kind !== 'dfa' && step.event === 'done' && (
+          <span className="said">every level drained</span>
+        )}
       </p>
 
       <dl className="shape">
@@ -149,4 +187,3 @@ function residualOf(plan: PlanView | null, step: number, residual: number): stri
 function show(value: unknown): string {
   return typeof value === 'string' ? `"${value}"` : JSON.stringify(value) ?? '—'
 }
-

@@ -107,6 +107,7 @@ testing method, and where every other kind of truth lives. Read it before changi
 cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger
+python3 scripts/check-guards.py     # the ledger is exact, owned and built
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the book builds clean, as CI requires
@@ -136,6 +137,9 @@ them page for page.
 
 - [`docs/glean.md`](docs/glean.md) — where every idea came from, and what each system can be
   asked to do, spends, and charges. **Read it before proposing a feature Glean has.**
+- [`docs/gitnexus.md`](docs/gitnexus.md) — the same engine measured against a code-intelligence
+  *product* rather than another database: seventeen features, one verdict each, and the three
+  gaps that account for almost all of the partial ones.
 - [`bench/FINDINGS.md`](bench/FINDINGS.md) — the measurement register, one entry per thing
   measured; [`bench/glean-read-path.md`](bench/glean-read-path.md) is the comparison still to
   run.

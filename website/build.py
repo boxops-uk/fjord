@@ -173,7 +173,9 @@ def render(source: str, page: Page) -> str:
         # a live demo: the interactive site runs it, this one shows what it runs
         if stripped.startswith(":::demo"):
             spec = stripped[len(":::demo") :].strip()
-            kind = spec.split()[0] if spec else "run"
+            parts = spec.split()
+            kind = parts[0] if parts else "run"
+            guided = "guided" in parts[1:]
             index += 1
             block = []
             while index < len(lines) and not lines[index].strip().startswith(":::"):
@@ -181,7 +183,7 @@ def render(source: str, page: Page) -> str:
                 index += 1
             index += 1
             schema, query = split_demo("\n".join(block))
-            out.append(demo_html(kind, schema, query))
+            out.append(demo_html(kind, schema, query, guided))
             prose.append(plain(query))
             continue
 
@@ -313,6 +315,7 @@ DEMO_TITLES = {
     "run": "this query, one transition at a time",
     "store": "the rows this query reads, as stored bytes",
     "schema": "this schema, as the engine reads it",
+    "dfa": "the fuzzy matcher, one character at a time",
 }
 
 
@@ -324,7 +327,7 @@ def split_demo(body: str) -> tuple[str, str]:
     return "", body.strip()
 
 
-def demo_html(kind: str, schema: str, query: str) -> str:
+def demo_html(kind: str, schema: str, query: str, guided: bool = False) -> str:
     """The static stand-in: the same source, and where it comes alive.
 
     The interactive site runs these against the engine compiled to WebAssembly.
@@ -332,10 +335,12 @@ def demo_html(kind: str, schema: str, query: str) -> str:
     about what the answer is — a screenshot of an answer is a thing that goes
     stale silently.
     """
-    lang = "schema" if kind == "schema" else "sigla"
+    lang = "schema" if kind == "schema" else "json" if kind == "dfa" else "sigla"
     source = f"{schema}\n\n{query}".strip() if schema else query
     code = html.escape(source, quote=False)
     said = DEMO_TITLES.get(kind, "this query, live")
+    if guided:
+        said = f"guided: {said}"
     return (
         '<figure class="code demo">'
         f'<figcaption><span class="lang">{html.escape(lang)}</span>'

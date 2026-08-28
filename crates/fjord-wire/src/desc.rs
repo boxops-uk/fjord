@@ -344,6 +344,40 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_bytes_are_stable() {
+        let desc = Desc::Record(
+            vec![
+                ("count".to_owned(), Desc::Int),
+                ("name".to_owned(), Desc::Str),
+                ("owner".to_owned(), Desc::Fact(PredicateId(7))),
+                (
+                    "choice".to_owned(),
+                    Desc::Union(
+                        vec![
+                            ("number".to_owned(), 3, Desc::Int),
+                            ("text".to_owned(), 129, Desc::Str),
+                        ]
+                        .into(),
+                    ),
+                ),
+            ]
+            .into(),
+        );
+
+        let mut out = vec![];
+        encode_desc(&mut out, &desc);
+
+        assert_eq!(
+            out,
+            [
+                3, 4, 5, 99, 111, 117, 110, 116, 0, 4, 110, 97, 109, 101, 1, 5, 111, 119, 110, 101,
+                114, 2, 7, 6, 99, 104, 111, 105, 99, 101, 4, 2, 6, 110, 117, 109, 98, 101, 114, 3,
+                0, 4, 116, 101, 120, 116, 129, 1, 1,
+            ]
+        );
+    }
+
+    #[test]
     fn a_truncated_descriptor_is_refused() {
         let mut out = vec![];
         encode_desc(

@@ -14,6 +14,7 @@ cargo build --release --bin fjord # the tool, optimised
 
 cargo test                           # the green suite
 cargo test -- --ignored --list       # the invariant coverage ledger
+python3 scripts/check-guards.py      # the ledger is exact, owned and built
 cargo clippy --all-targets --workspace -- -D warnings
 cargo fmt --all
 ```
@@ -24,10 +25,11 @@ narrowing to one package as crates are extracted would be a ledger that had stop
 counting.
 
 :::note The coverage ledger
-`cargo test -- --ignored --list` prints any guard that is written but not yet live —
-each one pinned to an invariant whose subsystem does not exist yet. Work that touches an
-invariant is finished only when its guard is un-ignored and green. The ledger currently
-lists **nothing**: every invariant's guard is live. See [Testing method](testing.html).
+`cargo test -- --ignored --list` prints every test that is written but not yet live.
+`scripts/check-guards.py` separates guards from test machinery and checks the exact names,
+claims and owners against an independent manifest. The ledger currently holds **seventeen**
+pending guards. Work that touches one is finished only when it is implemented, un-ignored
+and green. See [Testing method](testing.html).
 :::
 
 ### Generated code

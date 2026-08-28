@@ -8,6 +8,7 @@
 import init, {
   compile,
   database,
+  fuzzy,
   run,
   sample_schema,
   samples,
@@ -103,8 +104,20 @@ export type StepView = {
   predicates: string[]
   /** Rows this step read and then dropped. */
   residuals: number
+  /** Fuzzy guides and filters this step evaluates. */
+  fuzzy: FuzzyPlan[]
   /** The step as the engine prints it — the same text `fjord query --plan` shows. */
   text: string
+}
+
+export type FuzzyPlan = {
+  source: number
+  guide: boolean
+  residual: number | null
+  term: string
+  distance: number
+  /** Object keys from the decoded fact key to its candidate string. */
+  path: string[]
 }
 
 export type PlanView = {
@@ -198,6 +211,24 @@ export type Trace = {
   diagnostics: DiagnosticView[]
 }
 
+export type FuzzyStep = {
+  at: number
+  input: string | null
+  consumed: string
+  row: number[]
+  live: boolean
+  accepts: number | null
+}
+
+export type FuzzyWalk = {
+  term: string
+  candidate: string
+  distance: number
+  cap: number
+  columns: string[]
+  steps: FuzzyStep[]
+}
+
 export type Engine = {
   version: string
   /** Bytes of the WebAssembly module, as delivered. */
@@ -214,6 +245,8 @@ export type Engine = {
   run: (schema: string, query: string) => Rows
   /** The whole run, one transition at a time. */
   trace: (schema: string, query: string) => Trace
+  /** One candidate walking through the fuzzy matcher's real DFA state. */
+  fuzzy: (term: string, candidate: string, distance: number) => FuzzyWalk | null
   /** Every stored row, as bytes and as a fact, in the order a scan meets them. */
   database: (schema: string) => Database
   /** What the site opens with — both tested in the Rust suite, not invented here. */
@@ -242,6 +275,8 @@ export function load(): Promise<Engine> {
         JSON.parse(run(schemaSource, query)) as Rows,
       trace: (schemaSource: string, query: string) =>
         JSON.parse(trace(schemaSource, query)) as Trace,
+      fuzzy: (term: string, candidate: string, distance: number) =>
+        JSON.parse(fuzzy(term, candidate, distance)) as FuzzyWalk | null,
       database: (schemaSource: string) => JSON.parse(database(schemaSource)) as Database,
       sampleSchema: sample_schema(),
       samples: JSON.parse(samples()) as Sample[],

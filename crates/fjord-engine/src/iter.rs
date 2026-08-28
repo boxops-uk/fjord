@@ -6,16 +6,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::FjordError,
+    levenshtein::{Automaton, State as GuideState},
     plan::{
-        Access, Address, Arith, Computed, FieldPath, Plan, PlanFingerprint, Project, Residual,
-        ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Access, Address, Arith, Computed, FieldPath, Guide, Plan, PlanFingerprint, Project,
+        Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
 };
 use fjord_encoding::{
     error::StoreCodecError,
     tuple::{
         MARK_ESCAPE, MARK_RECORD, MARK_TERM, MARK_UNION, TupleDecoder, UnionTag, Value,
-        decode_typed, fact_ref_bytes, get_u64, skip, strinc,
+        decode_typed, fact_ref_bytes, get_u64, put_str, skip, str_chars, strinc,
     },
 };
 use fjord_schema::{
@@ -430,6 +431,24 @@ fn get_field_span(
 
 pub const CANCELLATION_STRIDE: usize = 4096;
 
+/// **How much scanning a run may do, and how much it has done.**
+///
+/// A ceiling is the only limit this engine has on *input*. Everything else it can be
+/// asked to stop for is counted at the output — rows produced, a page's budget — and
+/// a query whose residuals reject every row produces nothing while reading
+/// everything. Such a query is stoppable today only by whoever holds the
+/// cancellation token, which on a shared server is somebody else's availability.
+///
+/// `None` is unlimited and is the default, because a ceiling is **deployment
+/// policy**: it is not a property of the query, it must not reach a plan
+/// fingerprint, and an embedded caller reading its own database is entitled to
+/// decide there is no ceiling at all. The server sets one; `Executor::new` does not.
+#[derive(Debug, Clone, Copy, Default)]
+struct Examined {
+    count: u64,
+    ceiling: Option<u64>,
+}
+
 /// Polls the cancellation token every [`CANCELLATION_STRIDE`] rows examined.
 ///
 /// **Rows examined, not rows produced.** The two shapes fail differently: a
@@ -443,6 +462,8 @@ pub const CANCELLATION_STRIDE: usize = 4096;
 struct Deadline<'a> {
     token: &'a CancellationToken,
     since_poll: usize,
+    /// What this run has examined, and the most it may — see [`Examined`].
+    examined: Examined,
     /// Where the tally goes. See [`Profile`].
     profile: &'a mut Profile,
     /// Who is watching, if anybody is — see [`Trace`].
@@ -531,10 +552,17 @@ pub trait Trace {
 }
 
 impl<'a> Deadline<'a> {
-    fn new(token: &'a CancellationToken, profile: &'a mut Profile) -> Self {
+    /// A deadline for one run, carrying what that run may examine.
+    ///
+    /// `examined` is a parameter rather than always starting at zero because a
+    /// caller driving [`Executor::step`] by hand runs one deadline *per call*: the
+    /// tally has to be handed back in, or a ceiling would be a ceiling per step and
+    /// no ceiling at all.
+    fn new(token: &'a CancellationToken, profile: &'a mut Profile, examined: Examined) -> Self {
         Self {
             token,
             since_poll: 0,
+            examined,
             profile,
             #[cfg(feature = "trace")]
             trace: None,
@@ -587,9 +615,25 @@ impl<'a> Deadline<'a> {
 
     fn tick(&mut self, depth: usize) -> Result<(), FjordError> {
         self.since_poll += 1;
+        self.examined.count += 1;
 
         if let Some(examined) = self.profile.examined.get_mut(depth) {
             *examined += 1;
+        }
+
+        // **Per row, unlike the token poll, and the difference is not a preference.**
+        // A deadline is rebuilt per call on the [`step`](Executor::step) path, so
+        // `since_poll` restarts at zero every step and a stride-checked ceiling
+        // would never fire for a caller driving the machine by hand. Polling a
+        // token is a syscall-shaped cost that earns its stride; this is a `u64`
+        // compare against a value already in a register.
+        if let Some(ceiling) = self.examined.ceiling {
+            if self.examined.count > ceiling {
+                return Err(FjordError::ExaminedCeiling {
+                    examined: self.examined.count,
+                    ceiling,
+                });
+            }
         }
 
         if self.since_poll >= CANCELLATION_STRIDE {
@@ -632,6 +676,190 @@ impl<S: FactStore> Iterator for Rows<S> {
     }
 }
 
+/// What one row's field told the guide to do next.
+enum Verdict {
+    /// The field matches; the row goes on to the residuals.
+    Accept,
+    /// No match, and no seek worth paying for — the next row is the next
+    /// candidate anyway. A live-but-not-yet-accepting prefix is this case: its
+    /// matching extensions sort immediately after it.
+    Advance,
+    /// No match, and every key up to [`GuideWalk::candidate`] is a non-answer.
+    Seek,
+    /// No key in the rest of this range can match. Nothing left to read.
+    Exhausted,
+}
+
+/// The automaton, its range, and the scratch a walk reuses.
+///
+/// Everything here is allocated once per level opening and reused per row, which
+/// is what keeps the per-row cost of a guided scan free of allocation
+/// ([I9](../../../website/content/invariants.md#i9)). The bound that makes it possible is
+/// [`Automaton::max_chars`]: no key is walked past `|term| + distance + 1`
+/// characters however long it is, so neither buffer below can grow with the data.
+struct GuideWalk {
+    automaton: Automaton,
+    /// The range the level opened over. A computed seek target has to stay inside
+    /// it: below `lo` it would re-read rows already emitted, and at or above `hi`
+    /// there is nothing left to read.
+    lo: Vec<u8>,
+    hi: Option<Vec<u8>>,
+    /// `states[j]` is the automaton after `j` characters of this row's field —
+    /// every one of them live. Backtracking down it is how a seek target is found.
+    states: Vec<GuideState>,
+    chars: Vec<char>,
+    /// The last field the automaton accepted.
+    ///
+    /// A predicate keyed `{name, to}` gives one name many rows, so a run of rows
+    /// shares one string field; comparing against this turns the run into one walk
+    /// and a `memcmp` rather than one walk per row. The rejecting side needs no
+    /// equivalent — its seek target skips the whole run in a single move.
+    accepted: Vec<u8>,
+    candidate: Vec<u8>,
+    scratch: String,
+    /// How many times this walk re-opened the scan — read by the guard that says a
+    /// guided source is a seek rather than a scan.
+    hops: u64,
+}
+
+impl GuideWalk {
+    fn new(automaton: Automaton, lo: Vec<u8>, hi: Option<Vec<u8>>) -> GuideWalk {
+        let capacity = automaton.max_chars() + 1;
+
+        GuideWalk {
+            automaton,
+            lo,
+            hi,
+            states: Vec::with_capacity(capacity),
+            chars: Vec::with_capacity(capacity),
+            accepted: Vec::new(),
+            candidate: Vec::new(),
+            scratch: String::new(),
+            hops: 0,
+        }
+    }
+
+    /// Walk this row's field, and say what to do about it.
+    fn check(&mut self, guide: &Guide, register: &Register) -> Result<Verdict, FjordError> {
+        let key = register.key();
+
+        // The row's own offsets, as `check_residuals` uses: the frame's cache
+        // holds spans into *other* registers, and this path is reading the row
+        // being decided rather than one already bound.
+        let mut offsets = FieldOffsets::new();
+        let span = field_span(&mut offsets, &key, &guide.path)?;
+        let field = &key[span.clone()];
+
+        if !self.accepted.is_empty() && field == self.accepted.as_slice() {
+            return Ok(Verdict::Accept);
+        }
+
+        // The one decode in the scan loop, and it is what buys the distance a
+        // person means: edit distance over UTF-8 bytes would make one accented
+        // character two edits.
+        //
+        // **Lazy, and that is the bound.** `get_str` finds the terminator before
+        // it yields anything, so a 4 KiB identifier cost 4 KiB of decoding to
+        // reject on its fourth character — the walk was bounded and the read it
+        // walked was not. Reading character by character makes the whole per-row
+        // cost `|term| + distance`, and unescapes nothing
+        // ([I9](../../website/content/invariants.md#i9)).
+        let mut text = str_chars(field)?;
+
+        let max = self.automaton.max_chars();
+        let mut state = self.automaton.start();
+
+        self.states.clear();
+        self.chars.clear();
+        self.states.push(state);
+
+        // The character the walk died on, if it died. A string longer than `max`
+        // dies at `max` whatever follows, which is why a long key costs no more
+        // than a short one.
+        let mut killer = None;
+
+        for c in text.by_ref() {
+            let c = c.map_err(FjordError::Decode)?;
+
+            if self.chars.len() >= max {
+                killer = Some(c);
+                break;
+            }
+
+            let next = self.automaton.step(&state, c);
+            if !self.automaton.live(&next) {
+                killer = Some(c);
+                break;
+            }
+
+            state = next;
+            self.chars.push(c);
+            self.states.push(state);
+        }
+
+        if killer.is_none() {
+            return Ok(if self.automaton.accepts(&state).is_some() {
+                self.accepted.clear();
+                self.accepted.extend_from_slice(field);
+                Verdict::Accept
+            } else {
+                // Live but short of a match: its matching extensions are the very
+                // next keys, so seeking past them would drop answers.
+                Verdict::Advance
+            });
+        }
+
+        // Dead. The longest prefix still live, and the smallest character above
+        // this row's that keeps it live, name the smallest key that could still
+        // match — every key between here and there is a non-answer.
+        for j in (0..=self.chars.len()).rev() {
+            let after = if j == self.chars.len() {
+                killer
+            } else {
+                Some(self.chars[j])
+            };
+
+            let Some(c) = self.automaton.next_live_char(&self.states[j], after) else {
+                continue;
+            };
+
+            self.scratch.clear();
+            self.scratch.extend(self.chars[..j].iter());
+            self.scratch.push(c);
+
+            self.candidate.clear();
+            self.candidate
+                .extend_from_slice(&register.bytes[..PREDICATE_ID_SIZE + span.start]);
+            put_str(&mut self.candidate, &self.scratch);
+            // A string's encoding without its terminator is what every string
+            // starting with it begins with — the same bytes a prefix pattern
+            // seeks on ([I1](../../../website/content/invariants.md#i1)).
+            self.candidate.pop();
+
+            if let Some(hi) = &self.hi {
+                if self.candidate.as_slice() >= hi.as_slice() {
+                    return Ok(Verdict::Exhausted);
+                }
+            }
+
+            // Neither can happen for a target computed above — a live successor
+            // character is strictly greater, so the target is strictly past this
+            // row and never below the range's floor. Checked because a `Plan` is
+            // public and hand-built, and the failure modes are a re-read loop and
+            // a scan that walks backwards.
+            if self.candidate.as_slice() <= register.bytes.as_ref()
+                || self.candidate.as_slice() < self.lo.as_slice()
+            {
+                return Ok(Verdict::Advance);
+            }
+
+            return Ok(Verdict::Seek);
+        }
+
+        Ok(Verdict::Exhausted)
+    }
+}
+
 struct StackFrame<S: FactStore> {
     rows: Option<Rows<S>>,
     /// Which of the level's [`Source`]s is being drained.
@@ -643,6 +871,23 @@ struct StackFrame<S: FactStore> {
     /// recoverable from the row itself.
     source: usize,
     current: Option<Register>,
+    /// The live walk, for a level whose source is a [`Source::Guided`]. `None`
+    /// for every other source, and cleared when the level closes: a walk holds a
+    /// range, and a re-entered level opens a different one.
+    guide: Option<GuideWalk>,
+    /// One automaton per [`ResidualOp::Fuzzy`] on the open source, **in the order
+    /// the residuals carry them**.
+    ///
+    /// Level state rather than per-row scratch, which is the whole point: building
+    /// one costs a term's characters and an alphabet, and a residual is asked
+    /// about every row a scan yields, so building per row would make allocation
+    /// scale with rows rejected ([I9](../../../website/content/invariants.md#i9)).
+    /// Empty for a source with no fuzzy residual, which allocates nothing.
+    ///
+    /// [`check_residuals`](Self::check_residuals) walks the two in step, so the
+    /// order here is a contract with [`build_matchers`](Self::build_matchers) and
+    /// not an accident of construction.
+    matchers: Vec<Automaton>,
     field_offsets: Box<[FieldOffsets]>,
     /// Whether a step that produces **at most one row** has produced it — a
     /// [`Step::Derive`]'s value, or a [`Step::Test`]'s pass. Unused by levels, which
@@ -679,6 +924,8 @@ impl<S: FactStore> StackFrame<S> {
             rows: None,
             source: 0,
             current: None,
+            guide: None,
+            matchers: Vec::new(),
             field_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
             produced: false,
             #[cfg(feature = "trace")]
@@ -712,6 +959,36 @@ impl<S: FactStore> StackFrame<S> {
         self.rows = None;
         self.source = 0;
         self.current = None;
+        self.guide = None;
+        self.matchers.clear();
+    }
+
+    /// Build one automaton per fuzzy residual on `source`, for the life of the
+    /// opening.
+    ///
+    /// Refusing here is what puts the residual form on the same footing as the
+    /// guided one: a term or a distance the automaton will not build for is an
+    /// error before the first row, not a per-row decision that quietly answers no.
+    /// A compiled plan cannot reach the refusal — typecheck names both limits —
+    /// so this is for a `Plan` built by hand, which is the same footing the guide's
+    /// own refusal sits on.
+    fn build_matchers(&mut self, source: &Source) -> Result<(), FjordError> {
+        self.matchers.clear();
+
+        for residual in source.residuals() {
+            let ResidualOp::Fuzzy { term, distance } = &residual.op else {
+                continue;
+            };
+
+            self.matchers.push(Automaton::new(term, *distance).ok_or(
+                FjordError::FuzzyTermUnsupported {
+                    chars: term.chars().count(),
+                    distance: *distance,
+                },
+            )?);
+        }
+
+        Ok(())
     }
 
     fn open(
@@ -729,8 +1006,11 @@ impl<S: FactStore> StackFrame<S> {
         // out-of-range slice.
         self.field_offsets.iter_mut().for_each(|fo| fo.clear());
 
+        self.guide = None;
+        self.build_matchers(source)?;
+
         self.rows = Some(match source {
-            Source::Seek { access, .. } => {
+            Source::Seek { access, .. } | Source::Guided { access, .. } => {
                 let prefix = self.build_prefix(state, access)?;
                 let hi = strinc(&prefix);
                 let lo = resume_at.unwrap_or(&prefix);
@@ -755,6 +1035,20 @@ impl<S: FactStore> StackFrame<S> {
                         lo: lo.to_vec(),
                         hi: hi.clone(),
                     });
+                }
+
+                // The guide is built here rather than at plan build so that a
+                // level opened many times over — once per outer row of a join —
+                // starts each pass from a clean walk over its own range.
+                if let Source::Guided { guide, .. } = source {
+                    let automaton = Automaton::new(&guide.term, guide.distance).ok_or(
+                        FjordError::FuzzyTermUnsupported {
+                            chars: guide.term.chars().count(),
+                            distance: guide.distance,
+                        },
+                    )?;
+
+                    self.guide = Some(GuideWalk::new(automaton, prefix.clone(), hi.clone()));
                 }
 
                 Rows::Scan(store.scan(lo, hi.as_deref())?)
@@ -881,14 +1175,24 @@ impl<S: FactStore> StackFrame<S> {
     /// (see [`Deadline`]).
     fn next(
         &mut self,
+        store: &S,
         state: &MachineState,
         source: &Source,
         deadline: &mut Deadline<'_>,
         depth: usize,
     ) -> Result<Option<Register>, FjordError> {
-        let rows = self.rows.as_mut().ok_or(FjordError::AdvanceAfterClose)?;
+        let guide = match source {
+            Source::Guided { guide, .. } => Some(guide),
+            Source::Seek { .. } | Source::Fetch { .. } => None,
+        };
 
-        for row in rows {
+        loop {
+            let rows = self.rows.as_mut().ok_or(FjordError::AdvanceAfterClose)?;
+
+            let Some(row) = rows.next() else {
+                return Ok(None);
+            };
+
             deadline.tick(depth)?;
 
             let (key_bytes, fact_id) = row?;
@@ -911,10 +1215,37 @@ impl<S: FactStore> StackFrame<S> {
                 bytes: key_bytes,
             };
 
+            // **The guide runs before the residuals**, and the order is not a
+            // preference: a rejection here does not drop one row, it names a key
+            // to seek to, so paying for the residuals first would be work done on
+            // a row about to be jumped over.
+            if let Some(guide) = guide {
+                let walk = self.guide.as_mut().ok_or(FjordError::AdvanceAfterClose)?;
+
+                match walk.check(guide, &current)? {
+                    Verdict::Accept => {}
+                    Verdict::Advance => continue,
+                    Verdict::Exhausted => return Ok(None),
+                    Verdict::Seek => {
+                        let scan = {
+                            let walk = self.guide.as_ref().expect("held across the check above");
+                            store.scan(&walk.candidate, walk.hi.as_deref())?
+                        };
+
+                        self.rows = Some(Rows::Scan(scan));
+
+                        let walk = self.guide.as_mut().expect("held across the check above");
+                        walk.hops += 1;
+                        continue;
+                    }
+                }
+            }
+
             match Self::check_residuals(
                 &mut self.field_offsets,
                 state,
                 source.residuals(),
+                &self.matchers,
                 &current,
             )? {
                 None => {
@@ -927,8 +1258,6 @@ impl<S: FactStore> StackFrame<S> {
                 Some(residual) => deadline.rejected(depth, &current, residual),
             }
         }
-
-        Ok(None)
     }
 
     /// Whether **no** source produces a row — the whole of a negation, decided
@@ -956,7 +1285,7 @@ impl<S: FactStore> StackFrame<S> {
         for source in sources {
             self.open(store, source, state, None)?;
             self.report_opening(deadline, depth);
-            let witness = self.next(state, source, deadline, depth)?;
+            let witness = self.next(store, state, source, deadline, depth)?;
             self.close();
 
             if witness.is_some() {
@@ -977,10 +1306,16 @@ impl<S: FactStore> StackFrame<S> {
         frame_field_offsets: &mut [FieldOffsets],
         state: &MachineState,
         residuals: &[Residual],
+        matchers: &[Automaton],
         register: &Register,
     ) -> Result<Option<usize>, FjordError> {
         let key = register.key();
         let mut row_field_offsets = FieldOffsets::new();
+
+        // Walked in step with the residuals rather than indexed: both are in the
+        // source's residual order, so the n-th fuzzy residual meets the n-th
+        // automaton without either side counting.
+        let mut matchers = matchers.iter();
 
         for (at, residual) in residuals.iter().enumerate() {
             let span = field_span(&mut row_field_offsets, &key, &residual.path)?;
@@ -1070,6 +1405,31 @@ impl<S: FactStore> StackFrame<S> {
                     let right = as_i64(state.value(*var_address)?)?;
                     op.holds(left.cmp(&right))
                 }
+
+                // **The one residual that decodes.** Edit distance is over
+                // characters, not bytes, so the span is read as UTF-8 rather than
+                // compared — see [`ResidualOp::Fuzzy`]. Still no value read
+                // ([I6](../../website/content/invariants.md#i6)): the field is in
+                // the key the scan is already holding.
+                //
+                // Decoded **lazily**, and matched by an automaton the level
+                // already holds. Both halves are I9: `get_str` unescapes into a
+                // fresh `String` for a field holding a NUL, and building the
+                // matcher here would allocate a term and a row per candidate.
+                // The walk also stops at the character that kills it, so a long
+                // field costs what a short one does.
+                //
+                // [I9]: ../../website/content/invariants.md#i9
+                ResidualOp::Fuzzy { .. } => {
+                    // One was built for every fuzzy residual on this source, and
+                    // `next` cannot run before `open` — an unopened level fails
+                    // above with `AdvanceAfterClose`.
+                    let automaton = matchers.next().expect("one matcher per fuzzy residual");
+
+                    automaton
+                        .matches(str_chars(field)?)
+                        .map_err(FjordError::Decode)?
+                }
             };
             if !ok {
                 return Ok(Some(at));
@@ -1085,6 +1445,25 @@ pub struct Executor<S: FactStore> {
     state: MachineState,
     stack: Box<[StackFrame<S>]>,
     depth: usize,
+    /// What this run has examined and the most it may — see [`Examined`].
+    ///
+    /// On the executor rather than passed to `enumerate`, so that no existing
+    /// caller changes and the default stays unlimited: a ceiling is deployment
+    /// policy, and a policy that arrived as a required argument would have to be
+    /// invented by every caller that does not have one.
+    examined: Examined,
+    /// **Opaque to the engine.** What the database-owning layer says the base it is
+    /// reading looks like — a content fingerprint for a Complete database, or an
+    /// instance/incarnation/sequence triple for a Writable one — encoded to bytes by
+    /// that layer and compared here byte for byte. `FactStore` is `scan` + `point`
+    /// and exposes neither an identity nor a listing, so the engine cannot compute
+    /// this itself; it can only carry it and compare it
+    /// ([I4](../../../website/content/invariants.md#i4)).
+    ///
+    /// Explicitly [`WorldStamp::Unstamped`] by default. A resume must name that case
+    /// again or supply a stamped value; it cannot accidentally use an empty byte string
+    /// for both meanings.
+    world: WorldStamp,
     /// One field-offset cache per register, for projection.
     ///
     /// Owned here rather than made per row: a fresh `Box<[_]>` for each row would
@@ -1119,18 +1498,55 @@ pub struct Entry {
 /// Separate from the [DB format stamp](fjord_store::format): that says what is on
 /// disk and this says what is in flight, they move for different reasons, and a
 /// cursor is checked against the build that reads it rather than against a database.
-pub const CURSOR_VERSION: u16 = 1;
-
-/// The resume token: **one detached row per open level**, and the two fields that
-/// say which run it belongs to.
 ///
-/// The entries are what resume replays; the version and the fingerprint are what
-/// make replaying them safe, since the entries are paired with the plan's levels by
-/// order and are otherwise indistinguishable from another plan's
-/// ([chapter 5](../../../website/content/executor.md)).
+/// **3**: an omitted world stamp became an explicit [`WorldStamp::Unstamped`] tag,
+/// distinct from a caller deliberately supplying an empty stamped value.
+///
+/// **2**: a cursor gained a [world stamp](Cursor::world) — bytes naming the base it
+/// was read against — closing the hole [I4](../../../website/content/invariants.md#i4)
+/// names: a cursor used to carry a plan, a layout version and a level count, and no
+/// part of the world it read.
+pub const CURSOR_VERSION: u16 = 3;
+
+/// What the database-owning layer says about the world an executor reads.
+///
+/// `Unstamped` is deliberately a real variant rather than an empty byte string: an
+/// embedded caller may choose not to identify its store, but it must make that choice
+/// explicitly when it resumes. `Stamped` remains opaque to the engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorldStamp {
+    Unstamped,
+    Stamped(Box<[u8]>),
+}
+
+impl WorldStamp {
+    #[must_use]
+    pub fn stamped(bytes: impl Into<Box<[u8]>>) -> WorldStamp {
+        WorldStamp::Stamped(bytes.into())
+    }
+
+    #[must_use]
+    pub fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            WorldStamp::Unstamped => None,
+            WorldStamp::Stamped(bytes) => Some(bytes),
+        }
+    }
+}
+
+/// The resume token: **one detached row per open level**, and the fields that say
+/// which run — and which world — it belongs to.
+///
+/// The entries are what resume replays; the version, the fingerprint and the world
+/// stamp are what make replaying them safe, since the entries are paired with the
+/// plan's levels by order and are otherwise indistinguishable from another plan's,
+/// or another database's ([chapter 5](../../../website/content/executor.md)).
 pub struct Cursor {
     version: u16,
     plan: PlanFingerprint,
+    /// The base this cursor was read against, opaque to the engine — see
+    /// [`Executor::world`](Executor::with_world_stamp).
+    world: WorldStamp,
     entries: Vec<Entry>,
 }
 
@@ -1160,6 +1576,17 @@ impl Cursor {
 
         out.extend_from_slice(&self.version.to_le_bytes());
         out.extend_from_slice(&self.plan.raw().to_le_bytes());
+        match &self.world {
+            WorldStamp::Unstamped => {
+                out.push(0);
+                out.extend_from_slice(&0u32.to_le_bytes());
+            }
+            WorldStamp::Stamped(world) => {
+                out.push(1);
+                out.extend_from_slice(&(world.len() as u32).to_le_bytes());
+                out.extend_from_slice(world);
+            }
+        }
         out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
 
         for entry in &self.entries {
@@ -1196,6 +1623,17 @@ impl Cursor {
 
         let version = u16::from_le_bytes(take(&mut at, 2)?.try_into().map_err(|_| short())?);
         let plan = u64::from_le_bytes(take(&mut at, 8)?.try_into().map_err(|_| short())?);
+
+        let world_tag = take(&mut at, 1)?[0];
+        let world_len =
+            u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
+        let world_bytes = take(&mut at, world_len)?.to_vec().into_boxed_slice();
+        let world = match (world_tag, world_len) {
+            (0, 0) => WorldStamp::Unstamped,
+            (1, _) => WorldStamp::Stamped(world_bytes),
+            _ => return Err(FjordError::CursorWorldEncoding),
+        };
+
         let count = u32::from_le_bytes(take(&mut at, 4)?.try_into().map_err(|_| short())?) as usize;
 
         // Bounded by what is actually here before allocating: a forged count of four
@@ -1226,6 +1664,7 @@ impl Cursor {
         Ok(Cursor {
             version,
             plan: PlanFingerprint::from_raw(plan),
+            world,
             entries,
         })
     }
@@ -1240,6 +1679,12 @@ impl Cursor {
     #[must_use]
     pub fn version(&self) -> u16 {
         self.version
+    }
+
+    /// The base this cursor was read against, as the database-owning layer encoded it.
+    #[must_use]
+    pub fn world(&self) -> &WorldStamp {
+        &self.world
     }
 }
 
@@ -1360,8 +1805,44 @@ impl<S: FactStore> Executor<S> {
             state,
             stack,
             depth: 0,
+            examined: Examined::default(),
+            world: WorldStamp::Unstamped,
             projection_offsets: vec![FieldOffsets::new(); nvars].into_boxed_slice(),
         }
+    }
+
+    /// **What world this run's cursor should claim to be a resume point of.**
+    ///
+    /// Set by the database-owning layer, never computed here. An embedded caller with
+    /// no notion of world keeps [`WorldStamp::Unstamped`]; one that has an identity
+    /// supplies [`WorldStamp::Stamped`].
+    #[must_use]
+    pub fn with_world_stamp(mut self, world: WorldStamp) -> Self {
+        self.world = world;
+        self
+    }
+
+    /// **The most rows this run may examine before it is stopped.**
+    ///
+    /// Examined, not produced: a residual that rejects a million rows does a
+    /// million rows of work and answers nothing, so a cap on output cannot see it.
+    /// Exceeding this is [`FjordError::ExaminedCeiling`], never a short answer —
+    /// truncating would be a wrong answer wearing a right one's shape.
+    ///
+    /// **Deployment policy, deliberately.** It does not enter a plan fingerprint,
+    /// so it cannot make a cursor refuse to resume; the consequence, which is the
+    /// intended one, is that a resumed request can be refused by a ceiling its
+    /// first page was never measured against. Scope is this executor — the server
+    /// builds one per chunk, so the ceiling is per chunk, and a ceiling on a whole
+    /// paged read is not expressible here and is not meant to be.
+    ///
+    /// Checked per row, not on [`CANCELLATION_STRIDE`]: a deadline is rebuilt per
+    /// call on the [`step`](Self::step) path, so a stride-checked ceiling would
+    /// never fire for a caller driving the machine by hand.
+    #[must_use]
+    pub fn with_examined_ceiling(mut self, ceiling: u64) -> Self {
+        self.examined.ceiling = Some(ceiling);
+        self
     }
 
     /// The bytes-only resume point: one detached row per **level**, stamped with
@@ -1398,11 +1879,17 @@ impl<S: FactStore> Executor<S> {
         Cursor {
             version: CURSOR_VERSION,
             plan: self.plan.fingerprint(),
+            world: self.world.clone(),
             entries: saved,
         }
     }
 
-    pub fn resume(store: S, plan: Plan, cursor: Cursor) -> Result<Self, FjordError> {
+    pub fn resume(
+        store: S,
+        plan: Plan,
+        cursor: Cursor,
+        world: WorldStamp,
+    ) -> Result<Self, FjordError> {
         let mut ex = Executor::new(store, plan);
 
         // A `Cursor` is bytes-only and rebuilt from the wire, so it is untrusted.
@@ -1430,6 +1917,17 @@ impl<S: FactStore> Executor<S> {
                 plan: fingerprint,
             });
         }
+
+        // Third: is this the world it was read against? An empty cursor still
+        // answers *this* world's answer, exactly as it still has to answer this
+        // plan's — so this comes before the empty-cursor shortcut below, not after
+        // it. Opaque bytes, compared whole: the engine does not know what a
+        // mismatch means, only that the database-owning layer says it is one
+        // (I4).
+        if cursor.world != world {
+            return Err(FjordError::CursorWorld);
+        }
+        ex.world = world;
 
         if cursor.entries.is_empty() {
             return Ok(ex);
@@ -1459,7 +1957,12 @@ impl<S: FactStore> Executor<S> {
         // resume replays to rebuild its registers do not show up as work the query
         // did. See [`Profile`].
         let mut replay = Profile::default();
-        let mut deadline = Deadline::new(&cancel, &mut replay);
+
+        // No ceiling, for the same reason the profile is unsized: replaying a cursor
+        // is not work the query did. Charging it would let a resumed page be refused
+        // for rows an uninterrupted run never counted, which is
+        // [I4](../../../website/content/invariants.md#i4) failing by way of a limit.
+        let mut deadline = Deadline::new(&cancel, &mut replay, Examined::default());
 
         // One forward walk over the steps, which is the design's sentence made
         // literal: **re-bind the fact-slots, recompute the value-slots**. A scan
@@ -1492,7 +1995,7 @@ impl<S: FactStore> Executor<S> {
                     frame.open(&ex.store, source, &ex.state, Some(&saved.row.bytes))?;
 
                     let row = frame
-                        .next(&ex.state, source, &mut deadline, index)?
+                        .next(&ex.store, &ex.state, source, &mut deadline, index)?
                         .ok_or(FjordError::BadResumeKey)?;
 
                     if row.fact_id != saved.row.fact_id {
@@ -1576,8 +2079,9 @@ impl<S: FactStore> Executor<S> {
         profile: &mut Profile,
     ) -> Result<Iteratee<A>, FjordError> {
         // One deadline for the whole run: the poll interval is a property of the
-        // run, not of any single level's scan.
-        let mut deadline = Deadline::new(cancellation_token, profile);
+        // run, not of any single level's scan — and so is the ceiling, which is why
+        // the tally rides along in it rather than being restarted per level.
+        let mut deadline = Deadline::new(cancellation_token, profile, self.examined);
         let mut acc = init;
 
         loop {
@@ -1658,8 +2162,14 @@ impl<S: FactStore> Executor<S> {
         // A deadline per call rather than per run: the stride it carries is a
         // cancellation optimisation, and a caller stepping by hand is not the
         // hot path the stride exists for.
-        let mut deadline = Deadline::new(cancellation_token, profile);
-        self.advance(&mut deadline)
+        //
+        // **The tally is carried in and back out, and it has to be.** A ceiling
+        // scoped to one `step` would be no ceiling: every call would start at zero,
+        // and a caller stepping a runaway plan would never reach it.
+        let mut deadline = Deadline::new(cancellation_token, profile, self.examined);
+        let transition = self.advance(&mut deadline);
+        self.examined = deadline.examined;
+        transition
     }
 
     /// [`step`](Self::step), with somebody watching the rows a residual drops.
@@ -1679,8 +2189,11 @@ impl<S: FactStore> Executor<S> {
         profile: &mut Profile,
         trace: &mut dyn Trace,
     ) -> Result<Transition, FjordError> {
-        let mut deadline = Deadline::new(cancellation_token, profile).watching(trace);
-        self.advance(&mut deadline)
+        let mut deadline =
+            Deadline::new(cancellation_token, profile, self.examined).watching(trace);
+        let transition = self.advance(&mut deadline);
+        self.examined = deadline.examined;
+        transition
     }
 
     /// How deep the machine is standing — an index into the plan's body, and
@@ -1770,7 +2283,7 @@ impl<S: FactStore> Executor<S> {
                     frame.report_opening(deadline, self.depth);
                 }
 
-                match frame.next(&self.state, source, deadline, self.depth)? {
+                match frame.next(&self.store, &self.state, source, deadline, self.depth)? {
                     Some(register) => {
                         for var_address in level.binds.iter() {
                             self.state
@@ -2497,7 +3010,8 @@ mod tests {
         loop {
             let executor = match cursor.take() {
                 Some(cursor) => {
-                    Executor::resume(store(), plan.clone(), cursor).expect("it resumes")
+                    Executor::resume(store(), plan.clone(), cursor, WorldStamp::Unstamped)
+                        .expect("it resumes")
                 }
                 None => Executor::new(store(), plan.clone()),
             };
@@ -2716,7 +3230,7 @@ mod tests {
         let cursor = restamp(cursor, &one_level);
 
         assert!(matches!(
-            Executor::resume(seed(), one_level, cursor),
+            Executor::resume(seed(), one_level, cursor, WorldStamp::Unstamped),
             Err(FjordError::CursorPlanMismatch { cursor: 2, plan: 1 })
         ));
     }
@@ -2779,7 +3293,7 @@ mod tests {
 
         assert!(
             matches!(
-                Executor::resume(seed(), no_registers, cursor),
+                Executor::resume(seed(), no_registers, cursor, WorldStamp::Unstamped),
                 Err(FjordError::AddressOutOfBounds(address)) if address == Address::new(0)
             ),
             "a level binding outside the register file must report, not panic",
@@ -2803,7 +3317,7 @@ mod tests {
 
         assert!(
             matches!(
-                Executor::resume(seed(), short, cursor),
+                Executor::resume(seed(), short, cursor, WorldStamp::Unstamped),
                 Err(FjordError::AddressOutOfBounds(address)) if address == Address::new(1)
             ),
             "a derive binding outside the register file must report, not panic",
@@ -2931,6 +3445,7 @@ mod tests {
         Cursor {
             version: CURSOR_VERSION,
             plan: plan.fingerprint(),
+            world: cursor.world,
             entries: cursor.entries,
         }
     }
@@ -3034,6 +3549,39 @@ mod tests {
         ));
     }
 
+    /// The explicit world tag is untrusted cursor input: unknown tags and an
+    /// `Unstamped` tag carrying bytes are refused by name.
+    #[test]
+    fn a_malformed_world_stamp_is_refused() {
+        let p = PredicateId(0);
+        let plan = one_level(scan_all(p, 0).sources);
+        let out = Executor::new(three_int_facts(p), plan)
+            .with_world_stamp(WorldStamp::stamped(b"world".as_slice()))
+            .enumerate(
+                (),
+                |(), _row| Ok(Stream::Suspend(())),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+        let Iteratee::Suspended((), cursor) = out else {
+            panic!("the plan was supposed to suspend");
+        };
+
+        let mut unknown = cursor.to_bytes();
+        unknown[10] = 7;
+        assert!(matches!(
+            Cursor::from_bytes(&unknown),
+            Err(FjordError::CursorWorldEncoding)
+        ));
+
+        let mut unstamped_with_bytes = cursor.to_bytes();
+        unstamped_with_bytes[10] = 0;
+        assert!(matches!(
+            Cursor::from_bytes(&unstamped_with_bytes),
+            Err(FjordError::CursorWorldEncoding)
+        ));
+    }
+
     #[test]
     fn a_cursor_round_trips_through_bytes() {
         let p = PredicateId(0);
@@ -3052,12 +3600,31 @@ mod tests {
             head: Project::FactRef(Address::new(0)),
         };
 
-        let cursor = suspend_after_first_row(store(), plan.clone());
+        const WORLD: &[u8] = b"round-trip-world";
+
+        let out = Executor::new(store(), plan.clone())
+            .with_world_stamp(WorldStamp::stamped(WORLD))
+            .enumerate(
+                (),
+                |(), _row| Ok(Stream::Suspend(())),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+        let Iteratee::Suspended((), cursor) = out else {
+            panic!("the plan was supposed to suspend");
+        };
+
         let bytes = cursor.to_bytes();
         let back = Cursor::from_bytes(&bytes).expect("it decodes");
 
         assert_eq!(back.version(), cursor.version(), "the layout version");
         assert_eq!(back.plan(), cursor.plan(), "the plan fingerprint");
+        assert_eq!(back.world(), cursor.world(), "the world stamp");
+        assert_eq!(
+            back.world().bytes(),
+            Some(WORLD),
+            "the world stamp round-trips its bytes exactly"
+        );
         assert_eq!(
             back.entries().len(),
             cursor.entries().len(),
@@ -3066,7 +3633,7 @@ mod tests {
 
         let interner = interner_with(&[]);
 
-        let direct = Executor::resume(store(), plan.clone(), cursor)
+        let direct = Executor::resume(store(), plan.clone(), cursor, WorldStamp::stamped(WORLD))
             .expect("resume")
             .enumerate(
                 Vec::new(),
@@ -3078,7 +3645,7 @@ mod tests {
             )
             .expect("run");
 
-        let through_bytes = Executor::resume(store(), plan, back)
+        let through_bytes = Executor::resume(store(), plan, back, WorldStamp::stamped(WORLD))
             .expect("resume")
             .enumerate(
                 Vec::new(),
@@ -3095,6 +3662,30 @@ mod tests {
 
         assert_eq!(want, got, "resuming through bytes answers the same rows");
         assert!(!want.is_empty(), "the resume was not vacuous");
+    }
+
+    /// Omitting a world stamp is an explicit state, not an empty byte string that
+    /// happens to compare equal to a caller-supplied empty stamp. If these encode the
+    /// same, an embedder can omit both sides of I4 without leaving any evidence it did.
+    #[test]
+    fn an_unstamped_cursor_is_not_an_empty_stamped_cursor() {
+        let p = PredicateId(0);
+        let plan = one_level(scan_all(p, 0).sources);
+
+        let unstamped = suspend_after_first_row(three_int_facts(p), plan.clone());
+        let stamped = Executor::new(three_int_facts(p), plan)
+            .with_world_stamp(WorldStamp::stamped(&[][..]))
+            .enumerate(
+                (),
+                |(), _row| Ok(Stream::Suspend(())),
+                &CancellationToken::new(),
+            )
+            .expect("run");
+        let Iteratee::Suspended((), stamped) = stamped else {
+            panic!("the plan was supposed to suspend");
+        };
+
+        assert_ne!(unstamped.to_bytes(), stamped.to_bytes());
     }
 
     /// **Bytes that are not a cursor are refused rather than half-read.**
@@ -3175,7 +3766,7 @@ mod tests {
         rebuilt.insert(p, i64_field(1), 99);
 
         assert!(matches!(
-            Executor::resume(rebuilt, plan(), cursor),
+            Executor::resume(rebuilt, plan(), cursor, WorldStamp::Unstamped),
             Err(FjordError::BadResumeKey)
         ));
     }
@@ -3197,7 +3788,7 @@ mod tests {
         let cursor = suspend_after_first_row(original, plan());
 
         assert!(matches!(
-            Executor::resume(MemStore::new(), plan(), cursor),
+            Executor::resume(MemStore::new(), plan(), cursor, WorldStamp::Unstamped),
             Err(FjordError::BadResumeKey)
         ));
     }
@@ -3681,6 +4272,7 @@ mod tests {
         let forged = Cursor {
             version,
             plan: plan_id,
+            world: cursor.world.clone(),
             entries: cursor
                 .entries
                 .into_iter()
@@ -3692,6 +4284,7 @@ mod tests {
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0)])),
             forged,
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -3746,18 +4339,21 @@ mod tests {
         // rejected by the fingerprint now, and would leave this path — a saved
         // position outside its source — with no coverage at all.
         let (version, plan_id) = (cursor.version, cursor.plan);
+        let world = cursor.world.clone();
         let resumed = Executor::resume(
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0), seek_int(p, 20, 0)])),
             Cursor {
                 version,
                 plan: plan_id,
+                world,
                 entries: cursor
                     .entries
                     .into_iter()
                     .map(|entry| Entry { source: 0, ..entry })
                     .collect(),
             },
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -3800,6 +4396,7 @@ mod tests {
             three_int_facts(p),
             plan_b(),
             suspend_after_first_row(three_int_facts(p), plan_a()),
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -3813,7 +4410,7 @@ mod tests {
             suspend_after_first_row(three_int_facts(p), plan_a()),
             &plan_b(),
         );
-        let out = Executor::resume(three_int_facts(p), plan_b(), forged)
+        let out = Executor::resume(three_int_facts(p), plan_b(), forged, WorldStamp::Unstamped)
             .expect("the fact id agrees, so nothing else objects")
             .enumerate(
                 Vec::new(),
@@ -3848,6 +4445,7 @@ mod tests {
         let elsewhere = Cursor {
             version: CURSOR_VERSION,
             plan: one_level(Box::new([seek_int(p, 10, 0)])).fingerprint(),
+            world: WorldStamp::Unstamped,
             entries: Vec::new(),
         };
 
@@ -3855,10 +4453,40 @@ mod tests {
             three_int_facts(p),
             one_level(scan_all(p, 0).sources),
             elsewhere,
+            WorldStamp::Unstamped,
         );
 
         assert!(
             matches!(resumed, Err(FjordError::CursorPlan { .. })),
+            "an empty cursor is still a cursor, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor"),
+        );
+    }
+
+    /// The world check runs **before** the empty-cursor shortcut too, for the same
+    /// reason the plan check does: restarting is still an answer to whichever world
+    /// asked ([I4](../../../website/content/invariants.md#i4)).
+    #[test]
+    fn an_empty_cursor_from_another_world_is_refused() {
+        let p = PredicateId(0);
+        let plan = one_level(scan_all(p, 0).sources);
+
+        let elsewhere = Cursor {
+            version: CURSOR_VERSION,
+            plan: plan.fingerprint(),
+            world: WorldStamp::stamped(*b"database-a"),
+            entries: Vec::new(),
+        };
+
+        let resumed = Executor::resume(
+            three_int_facts(p),
+            plan,
+            elsewhere,
+            WorldStamp::stamped(*b"database-b"),
+        );
+
+        assert!(
+            matches!(resumed, Err(FjordError::CursorWorld)),
             "an empty cursor is still a cursor, got {resumed:?}",
             resumed = resumed.map(|_| "an executor"),
         );
@@ -3888,6 +4516,7 @@ mod tests {
             three_int_facts(p),
             one_level(Box::new([seek_int(p, 10, 0)])),
             stale,
+            WorldStamp::Unstamped,
         );
 
         assert!(
@@ -4720,7 +5349,12 @@ mod tests {
         }
 
         assert!(matches!(
-            Executor::resume(moved, scan_then_fetch(person, refs, head()), cursor),
+            Executor::resume(
+                moved,
+                scan_then_fetch(person, refs, head()),
+                cursor,
+                WorldStamp::Unstamped
+            ),
             Err(FjordError::BadResumeKey),
         ));
     }
@@ -5640,7 +6274,7 @@ mod tests {
                 }
 
                 let (store, plan) = spec.build(&interner);
-                ex = Executor::resume(store, plan, cursor).expect("resume");
+                ex = Executor::resume(store, plan, cursor, WorldStamp::Unstamped).expect("resume");
             }
         }
 
@@ -5710,6 +6344,56 @@ mod tests {
         assert!(
             tag_checks > 0,
             "{RUNS} generated plans never filtered by a discriminant"
+        );
+    }
+
+    /// **The census, for fuzzy plans.** I4's generated interruption schedules
+    /// prove nothing about a new source or residual arm until the canonical plan
+    /// generator actually draws both.
+    #[test]
+    fn the_battery_reaches_a_guided_source_and_a_fuzzy_residual() {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 300;
+
+        let mut runner = TestRunner::deterministic();
+        let (mut guided, mut residual) = (0usize, 0usize);
+
+        for _ in 0..RUNS {
+            let spec = arb_plan_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let plan = spec.build_plan(&spec.interner());
+
+            for step in plan.body.iter() {
+                let Step::Level(level) = step else { continue };
+
+                for source in level.sources.iter() {
+                    guided += usize::from(matches!(source, Source::Guided { .. }));
+                    residual += source
+                        .residuals()
+                        .iter()
+                        .filter(|residual| matches!(residual.op, ResidualOp::Fuzzy { .. }))
+                        .count();
+                }
+            }
+        }
+
+        let mut missing = vec![];
+        if guided == 0 {
+            missing.push("a `Source::Guided`");
+        }
+        if residual == 0 {
+            missing.push("a `ResidualOp::Fuzzy`");
+        }
+        assert!(
+            missing.is_empty(),
+            "{RUNS} generated plans never carried {}",
+            missing.join(" or ")
         );
     }
 
@@ -5955,6 +6639,163 @@ mod tests {
         );
     }
 
+    // ---- the rows-examined ceiling -----------------------------------------
+    //
+    // The one limit this engine has on *input*. Everything else it stops for is
+    // counted at the output, and the query that most needs stopping — a scan whose
+    // residuals reject every row — produces nothing at all.
+
+    /// A scan of `rows` rows of one predicate, binding register 0.
+    fn ceiling_store(rows: u64) -> FrozenStore {
+        FrozenStore::from_keys(PredicateId(0), (1..=rows).map(|i| (i64_field(i as i64), i)))
+    }
+
+    fn ceiling_plan(residuals: Box<[Residual]>) -> Plan {
+        Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level::seek(
+                Access {
+                    predicate_id: PredicateId(0),
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                residuals,
+            ))]),
+            head: Project::FactRef(Address::new(0)),
+        }
+    }
+
+    /// **A ceiling stops a run, and stopping is an error rather than a short
+    /// answer.** Truncating would be a wrong answer wearing a right one's shape:
+    /// the caller cannot tell "these are the rows" from "these are some of them".
+    #[test]
+    fn a_ceiling_stops_a_run_that_reads_past_it() {
+        let store = ceiling_store(CANCELLATION_STRIDE as u64 * 4);
+        let executor = Executor::new(store, ceiling_plan(Box::new([])))
+            .with_examined_ceiling(CANCELLATION_STRIDE as u64);
+
+        let outcome = executor.enumerate(
+            0usize,
+            |n, _row| Ok(Stream::Continue(n + 1)),
+            &CancellationToken::new(),
+        );
+
+        match outcome.err().expect("the ceiling stops it") {
+            FjordError::ExaminedCeiling { examined, ceiling } => {
+                assert_eq!(ceiling, CANCELLATION_STRIDE as u64);
+                // Exactly one row past it. A guard that only asserted the variant
+                // would pass for a ceiling checked once at the end, after all the
+                // work it exists to prevent.
+                assert_eq!(
+                    examined,
+                    ceiling + 1,
+                    "the ceiling is checked per row, so it stops one row past itself"
+                );
+            }
+            other => panic!("wrong error: {other}"),
+        }
+    }
+
+    /// **The ceiling counts rows examined, not rows answered** — which is the whole
+    /// reason it exists. This plan's residual rejects every row, so it produces
+    /// nothing and every output-side limit reads zero while it reads the predicate.
+    #[test]
+    fn a_ceiling_counts_examined_rows_not_answered_ones() {
+        let matches_nothing = || {
+            Box::new([Residual {
+                path: FieldPath::field(0),
+                op: ResidualOp::EqConst(i64_field(-1).into_boxed_slice()),
+            }]) as Box<[Residual]>
+        };
+
+        // The control: with no ceiling this plan answers zero rows and completes,
+        // so what the ceiling below catches is invisible to any count of output.
+        let answered = count_rows(
+            ceiling_store(CANCELLATION_STRIDE as u64 * 4),
+            ceiling_plan(matches_nothing()),
+        )
+        .expect("no ceiling, so it finishes");
+        assert_eq!(answered, 0, "the residual is supposed to reject everything");
+
+        let executor = Executor::new(
+            ceiling_store(CANCELLATION_STRIDE as u64 * 4),
+            ceiling_plan(matches_nothing()),
+        )
+        .with_examined_ceiling(CANCELLATION_STRIDE as u64);
+
+        assert!(
+            matches!(
+                executor.enumerate(
+                    0usize,
+                    |n, _row| Ok(Stream::Continue(n + 1)),
+                    &CancellationToken::new()
+                ),
+                Err(FjordError::ExaminedCeiling { .. })
+            ),
+            "a run that answers nothing still examined everything"
+        );
+    }
+
+    /// A run inside its ceiling answers exactly what it would with none — and the
+    /// default is none, which is what keeps every existing caller unchanged.
+    #[test]
+    fn a_run_under_its_ceiling_answers_what_an_unlimited_one_does() {
+        let rows = CANCELLATION_STRIDE as u64 * 2;
+
+        let unlimited = count_rows(ceiling_store(rows), ceiling_plan(Box::new([])))
+            .expect("the default is no ceiling");
+        assert_eq!(unlimited as u64, rows);
+
+        let limited = Executor::new(ceiling_store(rows), ceiling_plan(Box::new([])))
+            .with_examined_ceiling(rows + 1)
+            .enumerate(
+                0usize,
+                |n, _row| Ok(Stream::Continue(n + 1)),
+                &CancellationToken::new(),
+            )
+            .expect("inside its ceiling");
+
+        match limited {
+            Iteratee::Done(n) => assert_eq!(n as u64, rows),
+            Iteratee::Suspended(..) => panic!("nothing asked it to suspend"),
+        }
+    }
+
+    /// **A ceiling holds across `step`, which runs a deadline per call.** The tally
+    /// has to be carried in and back out, or every call would start at zero and a
+    /// caller stepping a runaway plan would never reach the ceiling at all.
+    #[test]
+    fn a_ceiling_holds_across_stepping_by_hand() {
+        let mut executor = Executor::new(
+            ceiling_store(CANCELLATION_STRIDE as u64 * 4),
+            ceiling_plan(Box::new([])),
+        )
+        .with_examined_ceiling(CANCELLATION_STRIDE as u64);
+
+        let token = CancellationToken::new();
+        let mut profile = Profile::default();
+
+        let error = loop {
+            if executor.row().is_some() {
+                if !executor.resume_after_row() {
+                    panic!("the plan drained before the ceiling stopped it");
+                }
+                continue;
+            }
+
+            match executor.step(&token, &mut profile) {
+                Ok(Transition::Stepped) => continue,
+                Ok(Transition::Done) => panic!("the plan drained before the ceiling stopped it"),
+                Err(error) => break error,
+            }
+        };
+
+        assert!(
+            matches!(error, FjordError::ExaminedCeiling { .. }),
+            "wrong error: {error}"
+        );
+    }
+
     // I9 — the hot path is allocation-free per row. Scanning N rows and 2N rows
     // (over the alloc-free `FrozenStore`, without projecting) allocates the same
     // amount: the difference is only the per-row scan work, so equal counts mean
@@ -6007,6 +6848,68 @@ mod tests {
         assert_eq!(
             bytes_n, bytes_2n,
             "hot path allocates per row by volume: {bytes_n} bytes for 64 rows vs {bytes_2n} for 128"
+        );
+    }
+
+    /// **I9, for the fuzzy residual.** Its matcher is state belonging to the open
+    /// level, not scratch rebuilt for every candidate: doubling rejected rows
+    /// must therefore change neither allocation count nor allocated bytes.
+    #[test]
+    fn a_fuzzy_residual_is_alloc_free_per_row() {
+        let control = allocation_counter::measure(|| {
+            std::hint::black_box(Vec::<u8>::with_capacity(4096));
+        });
+        assert!(
+            control.count_total > 0 && control.bytes_total >= 4096,
+            "counting allocator is not installed; this guard would pass vacuously: {control:?}"
+        );
+
+        let p = PredicateId(0);
+        let store = |count: u64| {
+            FrozenStore::from_keys(
+                p,
+                (1..=count).map(|i| (str_field(&format!("candidate-{i:03}")), i)),
+            )
+        };
+        let plan = || Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::Fuzzy {
+                        term: std::sync::Arc::from("parse"),
+                        distance: 1,
+                    },
+                }]),
+            ))]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let store_n = store(64);
+        let store_2n = store(128);
+
+        let mut n1 = 0;
+        let mut n2 = 0;
+        let info_n = allocation_counter::measure(|| n1 = count_rows(store_n, plan()).unwrap());
+        let info_2n = allocation_counter::measure(|| {
+            n2 = count_rows(store_2n, plan()).unwrap();
+        });
+
+        assert_eq!((n1, n2), (0, 0), "the population must exercise rejection");
+        assert_eq!(
+            info_n.count_total, info_2n.count_total,
+            "a fuzzy residual allocates per row: {} allocs for 64 rows vs {} for 128",
+            info_n.count_total, info_2n.count_total
+        );
+        assert_eq!(
+            info_n.bytes_total, info_2n.bytes_total,
+            "a fuzzy residual allocates per row by volume: {} bytes vs {}",
+            info_n.bytes_total, info_2n.bytes_total
         );
     }
 

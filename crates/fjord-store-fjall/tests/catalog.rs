@@ -450,7 +450,7 @@ fn a_killed_create_leaves_nothing_or_a_whole_database() {
 /// Builds one database to completion — so the parent can tell a real crash from one
 /// that landed before any work — and is then aborted partway through a second.
 #[test]
-#[ignore = "spawned as a child process by a_killed_create_leaves_nothing_or_a_whole_database"]
+#[ignore = "not a guard: child process of a_killed_create_leaves_nothing_or_a_whole_database"]
 fn crashing_creator_child_process() {
     let root = std::env::var(CRASH_ROOT_VAR).expect("the parent sets the store root");
     let delay_ms: u64 = std::env::var(CRASH_DELAY_VAR)

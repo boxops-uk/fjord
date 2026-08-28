@@ -14,8 +14,8 @@
  * card grid — that arrives as the string it was written as.
  */
 
-/** A live demo: a query, and the schema it is written against. */
-export type Demo = { kind: string; schema: string; query: string }
+/** A live demo: a query, the schema it is written against, and how it is presented. */
+export type Demo = { kind: string; schema: string; query: string; guided: boolean }
 
 export type Inline =
   | { kind: 'text'; text: string }
@@ -226,13 +226,13 @@ export function render(source: string, page: { slug: string; title: string }): R
     // a live demo
     if (stripped.startsWith(':::demo')) {
       const spec = stripped.slice(':::demo'.length).trim()
-      const kind = spec.split(/\s+/)[0] || 'run'
+      const [kind = 'run', ...modifiers] = spec.split(/\s+/).filter(Boolean)
       index++
       const block: string[] = []
       while (index < lines.length && !lines[index].trim().startsWith(':::')) block.push(lines[index++])
       index++
       const { schema, query } = splitDemo(block.join('\n'))
-      blocks.push({ kind: 'demo', demo: { kind, schema, query } })
+      blocks.push({ kind: 'demo', demo: { kind, schema, query, guided: modifiers.includes('guided') } })
       prose.push(plain(query))
       continue
     }

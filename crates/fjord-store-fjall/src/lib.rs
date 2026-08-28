@@ -26,3 +26,4 @@ pub mod meta;
 pub mod schema_doc;
 pub mod store;
 pub mod ulid;
+pub mod world;

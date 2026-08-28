@@ -95,6 +95,12 @@ fjord --data-dir /var/lib/fjord serve --ready-file /run/fjord.ready
 - **A stream is a task, and one fair writer drains them round-robin**, so a long query does not
   delay a short one on the same connection.
 - **Blocking work runs on a blocking pool**, never on the reactor.
+- **Every query carries a rows-examined ceiling**: 64,000,000 rows by default, charged per row
+  pulled off a scan, on the query and count paths alike. It is the one limit on *input* — a scan
+  whose filters reject every row produces nothing while doing all the work, so a limit counting
+  rows answered would read zero on exactly the query that needs stopping. A listener may set a
+  tighter one. It refuses a run and never changes an answer, so it is policy, not semantics.
+  See [Query efficiency](query-efficiency.html#the-ceiling-is-deployment-policy).
 
 ### Systemd, roughly
 
@@ -167,6 +173,7 @@ operator is not surprised by one.
 | Provenance and properties | No field records what a database was built from. Both are safe as descriptive metadata; neither must ever become a *functional* input, because the schema is embedded and identity is content |
 | Per-stream flow control | Deferred. Bounded per-stream queues plus per-connection backpressure in the meantime |
 | A resumable deadline | A timeout unwinds terminally rather than handing back a cursor — a mid-descent position is not representable in the token as it stands |
+| A per-connection or per-user budget | The rows-examined ceiling is per *run*. Nothing sums a session's work, so a client sending many cheap-but-not-free queries is bounded only by the ceiling on each one |
 | Authentication | None, by design (`ops-I10`). The handshake has no credential field at all |
 
 ## Two operational rules worth internalising

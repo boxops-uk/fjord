@@ -222,6 +222,28 @@ database. It was not faster on a small corpus, and could not have been: the writ
 ceiling there. The number that says to add writers is the *queueing* counter; while it is near
 zero, one writer is the right answer.
 
+### A guided fuzzy seek reads a flat number of rows, not a share of the predicate
+
+`"parse"~1` over a predicate of 148,809 identifier-shaped names, guided against the same
+question asked as a filter over a full scan (`examples/e2e_fuzzy`, `MemStore`):
+
+| Query | Answers | Filtered scan | Guided | Hops |
+|---|---|---|---|---|
+| `"parse_node"~1` | 5 | 148,809 | 44 | 39 |
+| `"parse_node"~2` | 51 | 148,809 | 175 | 124 |
+| `"parse_node"~3` | 482 | 148,809 | 539 | 57 |
+| `"nosuchname"~1` | 0 | 148,809 | 19 | 19 |
+| `"pa"..` then `"parse_node"~2` | 51 | 7,416 | 156 | 105 |
+
+The shape, not the absolutes, is the finding: as the predicate grows 46 k → 228 k the filtered
+column grows with it and the guided column moves 40 → 47. A **hop** is a re-opened scan, and it
+is not free — roughly ten rows' worth on fjall — which is why the anchored row shows the
+smallest margin: the prefix had already narrowed the range, so the guide had little left to skip.
+Anchoring is still what keeps a two- or three-edit search off a whole predicate.
+
+Not yet measured against a real fjall index, and the number that would matter most there —
+hop hysteresis, since the walk currently hops on every rejection — is not built.
+
 ## Two findings that changed the design
 
 Most of the register is measurement. Three items were acted on, because leaving them would have

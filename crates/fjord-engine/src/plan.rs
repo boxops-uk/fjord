@@ -164,6 +164,33 @@ pub struct Access {
     pub seek_key: SeekKey,
 }
 
+/// **What narrows a scan from inside it** — a fuzzy match on one string field,
+/// driving a Levenshtein automaton that says where to seek next.
+///
+/// The counterpart to a [`SeekKey`], and the difference is where the narrowing
+/// happens. A seek key denotes one contiguous range and is spent before the first
+/// row arrives; a guide denotes a *set* of ranges inside that one, and is spent
+/// per row — rejecting a key, computing the smallest key that could still match,
+/// and re-opening the scan there.
+///
+/// `path` names a **string** field, and the field must be the one that ended the
+/// seek prefix: everything before it in the key is fixed, or a computed seek
+/// target would jump out of the bucket the outer fields put the scan in. Flatten
+/// is what holds that, by building a guide only while the prefix is still open —
+/// the same rule [`Const::Prefix`](crate::flatten) follows, and for the same
+/// reason.
+///
+/// `term` is an owned `str` rather than a [`Symbol`], and that is not incidental:
+/// the [`PlanFingerprint`] hashes it, and an interned name cannot be hashed
+/// because a `Symbol` is an index into a per-query interner. Two plans differing
+/// only in the term must not accept each other's resume cursors.
+#[derive(Debug, Clone)]
+pub struct Guide {
+    pub path: FieldPath,
+    pub term: std::sync::Arc<str>,
+    pub distance: u8,
+}
+
 #[derive(Debug, Clone)]
 pub enum ResidualOp {
     EqConst(Box<[u8]>),
@@ -254,6 +281,23 @@ pub enum ResidualOp {
     CmpSelfField {
         op: Compare,
         path: FieldPath,
+    },
+
+    /// **`field ~ term`** — within `distance` edits of `term`, as a filter.
+    ///
+    /// The residual form of [`Guide`], and it exists for the same reason
+    /// [`Prefix`](ResidualOp::Prefix) does beside a seek key: a fuzzy match on a
+    /// field the scan could not be narrowed by is still a perfectly good question,
+    /// and refusing it would mean `src.Decl {name = "parse"~1, module = M}` — the
+    /// first thing anybody writes — had nowhere to go.
+    ///
+    /// **It decodes.** Every other residual is a byte compare over a borrowed span;
+    /// this one reads the span as UTF-8, because edit distance over encoded bytes
+    /// is not the distance a person means — one accented character would be two
+    /// edits. The decode borrows unless the stored string contains a NUL.
+    Fuzzy {
+        term: std::sync::Arc<str>,
+        distance: u8,
     },
 }
 
@@ -365,6 +409,25 @@ pub enum Source {
         predicate_id: PredicateId,
         residuals: Box<[Residual]>,
     },
+
+    /// **A scan walked by an automaton** — the same range a [`Seek`](Source::Seek)
+    /// opens, visited by seeking rather than by draining.
+    ///
+    /// A `Source` rather than a `Step`, which is what the architecture permits: it
+    /// binds what a seek binds, takes the cursor entry a seek takes, and is a
+    /// witness for a negation exactly as a seek is. Everything downstream of the
+    /// row cannot tell the difference, which is the point.
+    ///
+    /// It carries an ordinary [`Access`], so `lo` and `hi` come from the existing
+    /// prefix machinery and the guide decides only what is visited *within* that
+    /// range. That is what makes an anchored fuzzy search — `X = "pa"..; X =
+    /// "parse"~2` — one plan rather than a special case: the prefix builds the
+    /// range, the guide walks it.
+    Guided {
+        access: Access,
+        guide: Guide,
+        residuals: Box<[Residual]>,
+    },
 }
 
 impl Source {
@@ -372,14 +435,18 @@ impl Source {
     #[must_use]
     pub fn residuals(&self) -> &[Residual] {
         match self {
-            Source::Seek { residuals, .. } | Source::Fetch { residuals, .. } => residuals,
+            Source::Seek { residuals, .. }
+            | Source::Fetch { residuals, .. }
+            | Source::Guided { residuals, .. } => residuals,
         }
     }
 
     /// The residuals, to add one to.
     pub fn residuals_mut(&mut self) -> &mut Box<[Residual]> {
         match self {
-            Source::Seek { residuals, .. } | Source::Fetch { residuals, .. } => residuals,
+            Source::Seek { residuals, .. }
+            | Source::Fetch { residuals, .. }
+            | Source::Guided { residuals, .. } => residuals,
         }
     }
 
@@ -388,7 +455,7 @@ impl Source {
     #[must_use]
     pub fn seek_key(&self) -> Option<&SeekKey> {
         match self {
-            Source::Seek { access, .. } => Some(&access.seek_key),
+            Source::Seek { access, .. } | Source::Guided { access, .. } => Some(&access.seek_key),
             Source::Fetch { .. } => None,
         }
     }
@@ -397,7 +464,7 @@ impl Source {
     #[must_use]
     pub fn predicate_id(&self) -> PredicateId {
         match self {
-            Source::Seek { access, .. } => access.predicate_id,
+            Source::Seek { access, .. } | Source::Guided { access, .. } => access.predicate_id,
             Source::Fetch { predicate_id, .. } => *predicate_id,
         }
     }
@@ -1036,6 +1103,17 @@ impl Fingerprint {
                     self.byte(10);
                     self.int(u64::from(*disc));
                 }
+                // The term and the distance both enter, because two plans
+                // searching for different terms differ in nothing else a
+                // fingerprint can see — and a cursor from one resuming into the
+                // other would answer a different question from the point it
+                // stopped. The term is owned text, so unlike an interned name it
+                // is safe to hash (see [`Guide`]).
+                ResidualOp::Fuzzy { term, distance } => {
+                    self.byte(11);
+                    self.byte(*distance);
+                    self.bytes(term.as_bytes());
+                }
             }
         }
     }
@@ -1091,6 +1169,19 @@ impl Fingerprint {
                 self.address(*reference);
                 self.path(path);
                 self.int(u64::from(predicate_id.0));
+                self.residuals(residuals);
+            }
+            Source::Guided {
+                access,
+                guide,
+                residuals,
+            } => {
+                self.byte(2);
+                self.int(u64::from(access.predicate_id.0));
+                self.seek_key(&access.seek_key);
+                self.path(&guide.path);
+                self.byte(guide.distance);
+                self.bytes(guide.term.as_bytes());
                 self.residuals(residuals);
             }
         }
@@ -1208,6 +1299,40 @@ mod tests {
             Step::Derive(_) | Step::Test(_) => panic!("step {n} is a level"),
         };
 
+        let guided = |term: &'static str, distance: u8, field: usize| {
+            with_body(&|body| {
+                let mut l = level(body, 0);
+                let access = Access {
+                    predicate_id: PredicateId(1),
+                    seek_key: SeekKey::Prefix(Box::new([1, 2])),
+                };
+                l.sources = Box::new([Source::Guided {
+                    access,
+                    guide: Guide {
+                        path: FieldPath::field(field),
+                        term: std::sync::Arc::from(term),
+                        distance,
+                    },
+                    residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                }]);
+                body[0] = Step::Level(l);
+            })
+        };
+
+        let fuzzy_residual = |term: &'static str, distance: u8| {
+            with_body(&|body| {
+                let mut l = level(body, 0);
+                *l.sources[0].residuals_mut() = Box::new([Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::Fuzzy {
+                        term: std::sync::Arc::from(term),
+                        distance,
+                    },
+                }]);
+                body[0] = Step::Level(l);
+            })
+        };
+
         let mutations: Vec<(&str, Plan)> = vec![
             ("the base plan", base()),
             ("one register fewer", Plan { nvars: 2, ..base() }),
@@ -1256,6 +1381,19 @@ mod tests {
                     body[0] = Step::Level(l);
                 }),
             ),
+            ("a guided source", guided("parse", 1, 0)),
+            (
+                "a guided source with a different term",
+                guided("parser", 1, 0),
+            ),
+            (
+                "a guided source with a different distance",
+                guided("parse", 2, 0),
+            ),
+            (
+                "a guided source at a different field",
+                guided("parse", 1, 1),
+            ),
             (
                 "a different residual constant",
                 with_body(&|body| {
@@ -1266,6 +1404,15 @@ mod tests {
                     }]);
                     body[0] = Step::Level(l);
                 }),
+            ),
+            ("a fuzzy residual", fuzzy_residual("parse", 1)),
+            (
+                "a fuzzy residual with a different term",
+                fuzzy_residual("parser", 1),
+            ),
+            (
+                "a fuzzy residual with a different distance",
+                fuzzy_residual("parse", 2),
             ),
             (
                 "the same constant at a different field",
@@ -1595,6 +1742,11 @@ mod tests {
         assert_eq!(base().fingerprint(), base().fingerprint());
     }
 
+    #[test]
+    fn a_base_plan_fingerprint_is_stable() {
+        assert_eq!(base().fingerprint().raw(), 0x2b86_9a1a_ad93_cd1c);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
@@ -1641,7 +1793,7 @@ pub mod proptest {
     use ::proptest::prelude::*;
 
     use super::{
-        Access, Address, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
+        Access, Address, FieldPath, Guide, Level, Plan, Project, Residual, ResidualOp, SeekKey,
         SeekKeyPart, Source, Step,
     };
     use crate::fixtures::{compose, i64_field, interner_with, str_field};
@@ -1668,6 +1820,15 @@ pub mod proptest {
     /// either exactly one value or all of them — never the interesting middle.
     const INTS: [i64; 4] = [0, 1, 2, 3];
     const STRS: [&str; 3] = ["a", "ab", "b"];
+
+    /// Terms to draw a fuzzy match for, at one edit against [`STRS`]: `"a"` reaches
+    /// all three, `"ac"` reaches `"a"` and `"ab"`, `"b"` reaches `"a"` and `"b"`.
+    ///
+    /// Chosen for the same reason the domain above is: a term matching everything
+    /// or nothing makes a guided walk that never seeks or never accepts, and the
+    /// interesting cursor states are the ones in between — a suspend taken while
+    /// the automaton is live but short of a match.
+    const FUZZY_TERMS: [&str; 3] = ["a", "ac", "b"];
 
     /// Upper bound (exclusive) on every "pick" draw; resolution takes it modulo
     /// however many options are legal in context.
@@ -1863,6 +2024,28 @@ pub mod proptest {
             field: usize,
             disc: u32,
         },
+        /// **This field is within `distance` edits of `term`** — drawn only for a
+        /// string field, because that is the only type the pattern has a meaning
+        /// for.
+        Fuzzy {
+            field: usize,
+            term: &'static str,
+            distance: u8,
+        },
+    }
+
+    /// A [`Source::Guided`]'s automaton, as a spec.
+    ///
+    /// Separate from [`ResidualSpec::Fuzzy`] because the two are different plan
+    /// shapes rather than one written twice: a guide decides *where the scan goes
+    /// next* and a residual decides whether a row it already produced survives.
+    /// Both take the same cursor entry, which is exactly why resume has to see
+    /// both.
+    #[derive(Debug, Clone)]
+    struct GuideSpec {
+        field: usize,
+        term: &'static str,
+        distance: u8,
     }
 
     #[derive(Debug, Clone)]
@@ -1882,6 +2065,13 @@ pub mod proptest {
         ///
         /// [the query-surface note]: ../../../website/content/query-language.md
         sources: Vec<Option<ResidualSpec>>,
+        /// The automaton this level's scan is walked by, if any — making every one
+        /// of its sources a [`Source::Guided`] rather than a [`Source::Seek`].
+        ///
+        /// All of them together, not one: the sources of a level share an
+        /// [`Access`], and a disjunction whose branches walked the same range by
+        /// different rules is a shape flatten has no way to write.
+        guide: Option<GuideSpec>,
     }
 
     #[derive(Debug, Clone)]
@@ -1972,9 +2162,8 @@ pub mod proptest {
                     let sources = spec
                         .sources
                         .iter()
-                        .map(|residual| Source::Seek {
-                            access: access.clone(),
-                            residuals: match residual {
+                        .map(|residual| {
+                            let residuals: Box<[Residual]> = match residual {
                                 None => Box::new([]) as Box<[Residual]>,
                                 Some(ResidualSpec::EqConst { field, val }) => {
                                     Box::new([Residual {
@@ -1999,7 +2188,34 @@ pub mod proptest {
                                         path: FieldPath::field(*ref_field),
                                     },
                                 }]),
-                            },
+                                Some(ResidualSpec::Fuzzy {
+                                    field,
+                                    term,
+                                    distance,
+                                }) => Box::new([Residual {
+                                    path: FieldPath::field(*field),
+                                    op: ResidualOp::Fuzzy {
+                                        term: Arc::from(*term),
+                                        distance: *distance,
+                                    },
+                                }]),
+                            };
+
+                            match &spec.guide {
+                                None => Source::Seek {
+                                    access: access.clone(),
+                                    residuals,
+                                },
+                                Some(guide) => Source::Guided {
+                                    access: access.clone(),
+                                    guide: Guide {
+                                        path: FieldPath::field(guide.field),
+                                        term: Arc::from(guide.term),
+                                        distance: guide.distance,
+                                    },
+                                    residuals,
+                                },
+                            }
                         })
                         .collect();
 
@@ -2079,6 +2295,9 @@ pub mod proptest {
         constant: u8,
         /// Whether this level gets a second [`Source`] — see [`LevelSpec::sources`].
         alternative: u8,
+        /// Whether this level's scan is walked by an automaton — see
+        /// [`LevelSpec::guide`].
+        guide: u8,
     }
 
     #[derive(Debug, Clone)]
@@ -2208,12 +2427,22 @@ pub mod proptest {
                 })
                 .flatten();
 
-            let residual = match draw.residual % 4 {
+            // A **fuzzy filter**, where the field is a string. Same shape as the
+            // tag above it: the arm falls back to the constant where the type has
+            // no such pattern, so it costs the other field types nothing.
+            let fuzzy = (fields[field] == FieldTy::Str).then(|| ResidualSpec::Fuzzy {
+                field,
+                term: FUZZY_TERMS[draw.constant as usize % FUZZY_TERMS.len()],
+                distance: 1,
+            });
+
+            let residual = match draw.residual % 5 {
                 0 => None,
                 1 => Some(constant),
                 // A tag where the field has one, and the constant otherwise — so this
                 // arm is the union's and costs the others nothing.
                 2 => Some(tag.unwrap_or(constant)),
+                3 => Some(fuzzy.unwrap_or(constant)),
                 // A cross-loop equality against a bound register — the residual
                 // form a seek can't express. Falls back to a constant when no
                 // earlier level offers a type-matching field.
@@ -2246,10 +2475,26 @@ pub mod proptest {
                 }));
             }
 
+            // A **guided source**, where the field that *ends the seek prefix* is a
+            // string: field 0 of a level that scans its predicate whole, or field 1
+            // behind a one-part seek. Nowhere else — a guide computes a seek target
+            // from the field it walks, so every key byte before that field has to be
+            // fixed or the target lands outside the range the prefix opened.
+            let guide_field = usize::from(seek.is_some());
+            let guide = (draw.guide % 3 == 0
+                && guide_field < fields.len()
+                && fields[guide_field] == FieldTy::Str)
+                .then(|| GuideSpec {
+                    field: guide_field,
+                    term: FUZZY_TERMS[draw.constant as usize % FUZZY_TERMS.len()],
+                    distance: 1,
+                });
+
             resolved.push(LevelSpec {
                 predicate,
                 seek,
                 sources,
+                guide,
             });
         }
 
@@ -2293,21 +2538,28 @@ pub mod proptest {
         (
             0u8..PICKS,
             any::<bool>(),
-            0u8..3,
+            // Every residual arm, and the range says so: drawn `0..3` against a
+            // `% 5` selector, the last arms are unreachable and the census that
+            // would have said so does not exist for this generator.
+            0u8..5,
+            0u8..PICKS,
             0u8..PICKS,
             0u8..PICKS,
             0u8..PICKS,
             0u8..PICKS,
         )
             .prop_map(
-                |(predicate, seek, residual, field, reference, constant, alternative)| LevelDraw {
-                    predicate,
-                    seek,
-                    residual,
-                    field,
-                    reference,
-                    constant,
-                    alternative,
+                |(predicate, seek, residual, field, reference, constant, alternative, guide)| {
+                    LevelDraw {
+                        predicate,
+                        seek,
+                        residual,
+                        field,
+                        reference,
+                        constant,
+                        alternative,
+                        guide,
+                    }
                 },
             )
     }

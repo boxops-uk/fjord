@@ -21,8 +21,8 @@ import { ContrastIcon } from './ContrastIcon'
  * The shell: a bar, the reading order, the page, and where you are in it.
  *
  * Responsive contract, at the frame root:
- *   > 1200px  nav 260 | prose (centred, 880) | outline 300
- *   <= 1200px the outline drops rather than squeezing the measure
+ *   > 1200px  nav 260 | page (centred, up to 1180) | outline 300
+ *   <= 1200px the outline drops rather than squeezing the page
  *   <= 768px  the side nav collapses into AppShell's mobile drawer
  *
  * Two shapes, one shell. A page of the book scrolls between the nav and its own
@@ -138,7 +138,7 @@ export function Layout({
           />
         }
         // Collapsible, not resizable: the reading order is a fixed list of
-        // twenty-one names, so the only width worth choosing is none at all.
+        // twenty-three names, so the only width worth choosing is none at all.
         sideNav={
           <SideNav collapsible>
             {GROUPS.map((group) => (

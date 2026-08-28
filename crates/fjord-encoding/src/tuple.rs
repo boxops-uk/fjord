@@ -6,7 +6,7 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 use crate::error::StoreCodecError;
 use fjord_schema::{
     id::FactId,
-    schema::{LocalInterner, PredicateId, PredicateTy, Symbol},
+    schema::{LocalInterner, PredicateId, PredicateTy, PredicateTyNamed, Symbol},
 };
 
 pub const MARK_NULL: u8 = 0x00;
@@ -309,6 +309,9 @@ fn get_escaped(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, usize), StoreCodecError> 
             return Err(StoreCodecError::UnexpectedEof);
         };
 
+        #[cfg(any(test, feature = "proptest"))]
+        string_probe::bump(null_idx + 1);
+
         let abs_null = i + null_idx;
 
         if bytes.get(abs_null + 1) == Some(&MARK_ESCAPE) {
@@ -329,6 +332,144 @@ fn get_escaped(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, usize), StoreCodecError> 
 
         out.extend_from_slice(&bytes[start..abs_null]);
         return Ok((Cow::Owned(out), abs_null + 1));
+    }
+}
+
+/// Bytes inspected while decoding terminated string contents.
+///
+/// The fuzzy guide's long-key guard uses this to distinguish a bounded automaton
+/// walk from a decoder that validates the whole stored string before handing the
+/// first character over. Thread-local for the same reason [`decode_probe`] is:
+/// concurrent tests must not charge one another's work.
+#[cfg(any(test, feature = "proptest"))]
+pub mod string_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static BYTES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Reset the inspected-byte counter to zero.
+    pub fn reset() {
+        BYTES.with(|count| count.set(0));
+    }
+
+    /// Number of bytes inspected since the last [`reset`].
+    pub fn count() -> usize {
+        BYTES.with(Cell::get)
+    }
+
+    pub(crate) fn bump(bytes: usize) {
+        BYTES.with(|count| count.set(count.get() + bytes));
+    }
+}
+
+/// The characters of a stored string, decoded one at a time.
+///
+/// The trap this exists for is in [`get_str`]: it finds the terminator before it
+/// yields anything, so reading the *first* character of a stored string costs the
+/// whole string. A fuzzy match is bounded — no candidate can match a term past
+/// `|term| + distance` characters — and paying for a 4 KiB identifier to reject it
+/// on the fourth character is exactly the cost a guided seek exists to avoid.
+///
+/// Inspects only the bytes it yields, which is what makes that bound real, and
+/// allocates nothing: an escaped NUL is yielded as a character rather than
+/// unescaped into a buffer, which is the other half of what `get_str` cannot do
+/// ([I9](../../../website/content/invariants.md#i9)).
+///
+/// Ends at the terminator; running out of bytes before one is
+/// [`UnexpectedEof`](StoreCodecError::UnexpectedEof), never a silent stop.
+pub struct StrChars<'a> {
+    bytes: &'a [u8],
+    at: usize,
+    done: bool,
+}
+
+/// The characters of the string at the start of `bytes`, lazily.
+pub fn str_chars(bytes: &[u8]) -> Result<StrChars<'_>, StoreCodecError> {
+    let Some((&mark, contents)) = bytes.split_first() else {
+        return Err(StoreCodecError::UnexpectedEof);
+    };
+
+    if mark != MARK_STRING {
+        return Err(StoreCodecError::UnexpectedMark(mark));
+    }
+
+    Ok(StrChars {
+        bytes: contents,
+        at: 0,
+        done: false,
+    })
+}
+
+/// How many bytes the UTF-8 character starting with `lead` occupies, by the
+/// leading byte alone. `None` for a byte that cannot lead one — `from_utf8` is
+/// still what validates the sequence, so this only has to be right about length.
+fn utf8_width(lead: u8) -> Option<usize> {
+    match lead {
+        0x00..=0x7F => Some(1),
+        0xC0..=0xDF => Some(2),
+        0xE0..=0xEF => Some(3),
+        0xF0..=0xF7 => Some(4),
+        _ => None,
+    }
+}
+
+impl Iterator for StrChars<'_> {
+    type Item = Result<char, StoreCodecError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        let Some(&lead) = self.bytes.get(self.at) else {
+            self.done = true;
+            return Some(Err(StoreCodecError::UnexpectedEof));
+        };
+
+        #[cfg(any(test, feature = "proptest"))]
+        string_probe::bump(1);
+
+        // A NUL is the terminator unless the escape marker follows it — the same
+        // rule `get_escaped` reads, decided one character at a time.
+        if lead == MARK_TERM {
+            if self.bytes.get(self.at + 1) != Some(&MARK_ESCAPE) {
+                self.done = true;
+                return None;
+            }
+
+            #[cfg(any(test, feature = "proptest"))]
+            string_probe::bump(1);
+
+            self.at += 2;
+            return Some(Ok('\0'));
+        }
+
+        let width = utf8_width(lead).unwrap_or(1);
+        let Some(sequence) = self.bytes.get(self.at..self.at + width) else {
+            self.done = true;
+            return Some(Err(StoreCodecError::UnexpectedEof));
+        };
+
+        #[cfg(any(test, feature = "proptest"))]
+        string_probe::bump(width - 1);
+
+        let text = match std::str::from_utf8(sequence) {
+            Ok(text) => text,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(StoreCodecError::BadString(e)));
+            }
+        };
+
+        self.at += width;
+
+        // `from_utf8` accepted a non-empty slice, so it holds a character.
+        Some(Ok(text
+            .chars()
+            .next()
+            .expect("from_utf8 accepted a non-empty slice")))
     }
 }
 
@@ -1193,21 +1334,21 @@ pub fn decode_typed(
 /// `MARK_RECORD` that was never written.
 ///
 /// [chapter 3]: ../../website/content/storage.md
-pub fn decode_key(
+pub fn decode_key<N: Copy + Into<Symbol>>(
     interner: &LocalInterner,
     bytes: &[u8],
-    ty: &PredicateTy,
+    ty: &PredicateTyNamed<N>,
 ) -> Result<Value, StoreCodecError> {
     let mut dec = TupleDecoder::new(bytes);
 
     let value = match ty {
-        PredicateTy::Record(fields) => {
+        PredicateTyNamed::Record(fields) => {
             let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
 
             for (name, field_ty) in fields.iter() {
                 let value = decode_typed_at(interner, &mut dec, field_ty)?;
 
-                let symbol = Symbol::Schema(*name);
+                let symbol: Symbol = (*name).into();
                 let field_name = interner
                     .try_resolve(symbol)
                     .ok_or(StoreCodecError::UnknownSymbol(symbol))?
@@ -1237,27 +1378,27 @@ pub fn decode_key(
     Ok(value)
 }
 
-pub fn decode_typed_at(
+pub fn decode_typed_at<N: Copy + Into<Symbol>>(
     interner: &LocalInterner,
     dec: &mut TupleDecoder<'_>,
-    ty: &PredicateTy,
+    ty: &PredicateTyNamed<N>,
 ) -> Result<Value, StoreCodecError> {
     // I5 probe: this is the single funnel for typed field/value decoding.
     #[cfg(any(test, feature = "proptest"))]
     decode_probe::bump();
 
     match ty {
-        PredicateTy::Int => {
+        PredicateTyNamed::Int => {
             let i = dec.take_i64()?;
             Ok(Value::Int(i))
         }
 
-        PredicateTy::Str => {
+        PredicateTyNamed::Str => {
             let s = dec.take_str()?;
             Ok(Value::Str(s.into_owned()))
         }
 
-        PredicateTy::Fact(predicate) => {
+        PredicateTyNamed::Fact(predicate) => {
             // A fact reference is encoded with its own marker (MARK_FACT_REF),
             // consistently with `skip` and the `FactId` codec — not the integer
             // codec.
@@ -1270,7 +1411,7 @@ pub fn decode_typed_at(
             Ok(Value::FactRef(id))
         }
 
-        PredicateTy::Record(fields) => dec.record(|dec| {
+        PredicateTyNamed::Record(fields) => dec.record(|dec| {
             let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
 
             for (name, field_ty) in fields.iter() {
@@ -1280,7 +1421,7 @@ pub fn decode_typed_at(
 
                 let value = decode_typed_at(interner, dec, field_ty)?;
 
-                let symbol = Symbol::Schema(*name);
+                let symbol: Symbol = (*name).into();
                 let field_name = interner
                     .try_resolve(symbol)
                     .ok_or(StoreCodecError::UnknownSymbol(symbol))?
@@ -1296,7 +1437,7 @@ pub fn decode_typed_at(
             Ok(Value::Record(out.into_boxed_slice()))
         }),
 
-        PredicateTy::Union(alts) => dec.union(|dec, tag| {
+        PredicateTyNamed::Union(alts) => dec.union(|dec, tag| {
             let alt = alts
                 .iter()
                 .find(|alt| u64::from(alt.disc) == tag)
@@ -1304,7 +1445,7 @@ pub fn decode_typed_at(
 
             let value = decode_typed_at(interner, dec, &alt.ty)?;
 
-            let symbol = Symbol::Schema(alt.name);
+            let symbol: Symbol = alt.name.into();
             let name = interner
                 .try_resolve(symbol)
                 .ok_or(StoreCodecError::UnknownSymbol(symbol))?
@@ -2728,6 +2869,126 @@ pub(crate) mod tests {
         ));
     }
 
+    #[test]
+    fn a_local_only_name_in_a_nested_record_resolves_to_the_local_text() {
+        use fjord_schema::schema::{PredicateTyNamed, SchemaInterner, Symbol};
+        use lasso::Rodeo;
+
+        let schema = SchemaInterner::new(Rodeo::new().into_reader());
+        let mut interner = LocalInterner::new(schema);
+
+        let field = interner.get_or_intern("query_local_inner_field");
+        assert!(
+            matches!(field, Symbol::Local(_)),
+            "the schema is empty, so the name must intern locally"
+        );
+
+        let ty: PredicateTyNamed<Symbol> =
+            PredicateTyNamed::Record(Arc::from([(field, PredicateTyNamed::Str)]));
+
+        let mut bytes = vec![MARK_RECORD];
+        put_str(&mut bytes, "x");
+        bytes.push(MARK_TERM);
+
+        let mut dec = TupleDecoder::new(&bytes);
+        let decoded =
+            decode_typed_at(&interner, &mut dec, &ty).expect("a local-tier name resolves");
+
+        assert_eq!(
+            decoded,
+            Value::Record(Box::new([(
+                "query_local_inner_field".to_owned(),
+                Value::Str("x".to_owned())
+            )]))
+        );
+    }
+
+    #[test]
+    fn a_local_only_alternative_name_in_a_union_resolves_to_the_local_text() {
+        use fjord_schema::schema::{AlternativeNamed, PredicateTyNamed, SchemaInterner, Symbol};
+        use lasso::Rodeo;
+
+        let schema = SchemaInterner::new(Rodeo::new().into_reader());
+        let mut interner = LocalInterner::new(schema);
+
+        let alt_name = interner.get_or_intern("query_local_alt");
+        assert!(
+            matches!(alt_name, Symbol::Local(_)),
+            "the schema is empty, so the name must intern locally"
+        );
+
+        let ty: PredicateTyNamed<Symbol> = PredicateTyNamed::Union(Arc::from([AlternativeNamed {
+            name: alt_name,
+            disc: 0,
+            ty: PredicateTyNamed::Str,
+        }]));
+
+        let mut bytes = Vec::new();
+        TupleEncoder::new(&mut bytes)
+            .union(0, |enc| {
+                enc.put_str("payload");
+                Ok(())
+            })
+            .unwrap();
+
+        let mut dec = TupleDecoder::new(&bytes);
+        let decoded = decode_typed_at(&interner, &mut dec, &ty)
+            .expect("a local-tier alternative name resolves");
+
+        assert_eq!(
+            decoded,
+            Value::Union {
+                disc: 0,
+                alt: "query_local_alt".to_owned(),
+                value: Box::new(Value::Str("payload".to_owned())),
+            }
+        );
+    }
+
+    #[test]
+    fn a_schema_and_local_name_sharing_a_numeric_value_do_not_alias() {
+        use fjord_schema::schema::{PredicateTyNamed, SchemaInterner, Symbol};
+        use lasso::Rodeo;
+
+        let mut schema_rodeo = Rodeo::new();
+        let schema_spur = schema_rodeo.get_or_intern("eve");
+        let schema = SchemaInterner::new(schema_rodeo.into_reader());
+
+        let mut interner = LocalInterner::new(schema);
+        let local_symbol = interner.get_or_intern("eva");
+        let Symbol::Local(local_spur) = local_symbol else {
+            panic!("\"eva\" is absent from the schema, so it must intern locally");
+        };
+        assert_eq!(
+            schema_spur, local_spur,
+            "the adversarial setup needs the two tiers to share a numeric value; \
+             two fresh interners' first name shares the same underlying index"
+        );
+
+        assert_eq!(
+            interner.try_resolve(Symbol::Schema(schema_spur)),
+            Some("eve")
+        );
+        assert_eq!(interner.try_resolve(Symbol::Local(local_spur)), Some("eva"));
+
+        let ty: PredicateTyNamed<Symbol> = PredicateTyNamed::Record(Arc::from([(
+            Symbol::Local(local_spur),
+            PredicateTyNamed::Int,
+        )]));
+
+        let mut bytes = Vec::new();
+        put_i64(&mut bytes, 3);
+
+        let decoded = decode_key(&interner, &bytes, &ty).expect("a local-tier field resolves");
+
+        assert_eq!(
+            decoded,
+            Value::Record(Box::new([("eva".to_owned(), Value::Int(3))])),
+            "the local text must win — the type names which tier this field's \
+             Spur belongs to, so the schema's same-numbered \"eve\" is never asked"
+        );
+    }
+
     proptest! {
         #[test]
         fn test_i64_roundtrip(val in any::<i64>()) {
@@ -2754,6 +3015,35 @@ pub(crate) mod tests {
             let (decoded, consumed) = get_str(&buf).unwrap();
             assert_eq!(s, decoded);
             assert_eq!(consumed, buf.len());
+        }
+
+        /// **The two string decoders must not drift.** `str_chars` reads the
+        /// escape scheme a character at a time so a bounded reader can stop
+        /// early; `get_str` reads it in one pass. A disagreement about an escaped
+        /// NUL or a multi-byte character would make a fuzzy match answer
+        /// differently from every other reader of the same field.
+        #[test]
+        fn str_chars_yields_what_get_str_decodes(s in any::<String>()) {
+            let mut buf = Vec::new();
+            put_str(&mut buf, &s);
+
+            let lazy: Result<String, _> = str_chars(&buf).unwrap().collect();
+            let (eager, _) = get_str(&buf).unwrap();
+
+            assert_eq!(lazy.unwrap(), eager);
+        }
+
+        /// A reader that stops early must consume the same prefix a full decode
+        /// would begin with — the bound is only sound if truncating it changes
+        /// nothing but where it stops.
+        #[test]
+        fn a_bounded_read_is_a_prefix_of_the_whole(s in any::<String>(), take in 0usize..8) {
+            let mut buf = Vec::new();
+            put_str(&mut buf, &s);
+
+            let bounded: Result<String, _> = str_chars(&buf).unwrap().take(take).collect();
+
+            assert!(s.starts_with(&bounded.unwrap()));
         }
 
         #[test]

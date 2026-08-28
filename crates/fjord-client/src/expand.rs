@@ -51,6 +51,16 @@
 //! [`unresolved`](Expander::unresolved) counts it rather than hiding it behind a
 //! plausible-looking row.
 //!
+//! # `fjord.db.List` is a view, and a view can move
+//!
+//! Not every reference names a *stored* fact: `X where X = fjord.db.List _` heads a row
+//! whose id is a position in a listing materialised for that query, so a database
+//! created or removed since can renumber it — the id then names a *different* row,
+//! which looks exactly like success rather than like the absence the cache would
+//! otherwise expect. [`expand`](Expander::expand) is handed the digests the row's own
+//! result carried and passes the matching predicate's digest to each fetch, so the server can
+//! refuse that case by name; see [`Connection::fetch`](crate::Connection::fetch).
+//!
 //! [settled]: ../../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
 
 use std::{
@@ -119,6 +129,18 @@ pub struct Expander {
     /// so once is the right failure; losing the rows is not. Asking once and remembering
     /// is what keeps it to one refusal per predicate per session.
     unexpandable: HashMap<PredicateId, String>,
+    /// Virtual predicate → the listing digest its cached entries were minted under.
+    ///
+    /// **A virtual id is a position in a listing, not a fact's identity.** I11 promises
+    /// an id is never reused, and a catalogue row keeps no such promise: `Catalogue::of`
+    /// numbers rows by position, so creating a database that sorts earlier renumbers
+    /// every row after it. A cache keyed by id alone therefore answers the *next*
+    /// request with the previous listing's row, which looks exactly like success.
+    ///
+    /// The fetch digest cannot catch it on its own: [`prefetch`](Expander::prefetch)
+    /// asks only for ids it does **not** already hold, so a cached virtual id is never
+    /// re-fetched and its digest never re-checked.
+    minted: HashMap<PredicateId, u64>,
     /// What to tell the person, once, when a page is done.
     notices: Vec<String>,
     fetched: u64,
@@ -132,6 +154,7 @@ impl Expander {
             schema,
             cache: HashMap::new(),
             unexpandable: HashMap::new(),
+            minted: HashMap::new(),
             notices: vec![],
             fetched: 0,
             unresolved: 0,
@@ -169,6 +192,11 @@ impl Expander {
     /// A depth of zero is the row unchanged, which is what "expansion off" costs: no
     /// walk, no round trip, the same value back.
     ///
+    /// `digests` is [`Rows::listing_digests`](crate::rows::Rows::listing_digests) of the
+    /// result `value` was read out of — carried to [`Connection::fetch`] so a virtual
+    /// id in it is checked against the listing it was actually minted from, rather
+    /// than resolved against whatever the catalogue happens to hold right now.
+    ///
     /// # Errors
     ///
     /// Whatever the fetch reports — a server that declines the ids, or a broken
@@ -179,6 +207,7 @@ impl Expander {
         connection: &mut Connection,
         value: &WireValue,
         depth: usize,
+        digests: &[(PredicateId, u64)],
     ) -> Result<WireValue, ClientError> {
         if depth == 0 {
             return Ok(value.clone());
@@ -190,10 +219,38 @@ impl Expander {
         // The bound is therefore the cap plus whatever one row names.
         if self.cache.len() > MAX_CACHED {
             self.cache.clear();
+            self.minted.clear();
         }
 
-        self.prefetch(connection, value, depth)?;
-        Ok(self.substitute(value, depth))
+        self.scope_virtual_ids(digests);
+        let mut transient = HashMap::new();
+        self.prefetch(connection, value, depth, digests, &mut transient)?;
+        Ok(self.substitute_with(value, depth, &transient))
+    }
+
+    /// Drop every cached virtual id whose listing has moved since it was minted.
+    ///
+    /// Absent counts as moved: a request that carries no digest for a virtual
+    /// predicate cannot vouch for the listing its cached rows came from, so those rows
+    /// go. That case is not hypothetical — `fjord.db.Interning` has no stable value to
+    /// digest at all, and its counters move on every write.
+    fn scope_virtual_ids(&mut self, digests: &[(PredicateId, u64)]) {
+        let moved: Vec<PredicateId> = self
+            .minted
+            .iter()
+            .filter(|(predicate, minted)| {
+                digests
+                    .iter()
+                    .find_map(|(listed, digest)| (listed == *predicate).then_some(*digest))
+                    != Some(**minted)
+            })
+            .map(|(predicate, _)| *predicate)
+            .collect();
+
+        for predicate in moved {
+            self.cache.retain(|id, _| id.predicate() != predicate);
+            self.minted.remove(&predicate);
+        }
     }
 
     /// Read every id the walk will reach, **a level at a time**.
@@ -208,6 +265,8 @@ impl Expander {
         connection: &mut Connection,
         value: &WireValue,
         depth: usize,
+        digests: &[(PredicateId, u64)],
+        transient: &mut HashMap<FactId, Option<WireValue>>,
     ) -> Result<(), ClientError> {
         let mut level: Vec<FactId> = vec![];
         references(value, &mut level);
@@ -235,15 +294,24 @@ impl Expander {
             let mut wanted: BTreeMap<PredicateId, Vec<FactId>> = BTreeMap::new();
 
             for id in &level {
-                if !self.cache.contains_key(id) && !self.unexpandable.contains_key(&id.predicate())
+                if !self.cache.contains_key(id)
+                    && !transient.contains_key(id)
+                    && !self.unexpandable.contains_key(&id.predicate())
                 {
                     wanted.entry(id.predicate()).or_default().push(*id);
                 }
             }
 
             for (predicate, ids) in wanted {
+                let digest = digests
+                    .iter()
+                    .find_map(|(listed, digest)| (*listed == predicate).then_some(*digest));
                 for batch in ids.chunks(fjord_wire::protocol::MAX_FETCH) {
-                    match connection.fetch(&self.schema, batch) {
+                    // The digest belongs to the row this walk started from, and it
+                    // travels unchanged to every level: a virtual id can only ever be
+                    // a *direct* reference in that row, since the catalogue's own
+                    // rows hold no reference fields for a deeper level to find.
+                    match connection.fetch(&self.schema, batch, digest) {
                         Ok(answers) => {
                             for (id, answer) in batch.iter().zip(answers) {
                                 self.fetched += 1;
@@ -268,15 +336,47 @@ impl Expander {
                                     Found::Unstored => None,
                                 };
 
-                                self.cache.insert(*id, key);
+                                // **A virtual id is only cacheable against a digest.**
+                                // Without one there is nothing to notice a relisting
+                                // with, so holding the row would reintroduce exactly
+                                // the staleness `scope_virtual_ids` exists to remove.
+                                match (self.schema.is_virtual(predicate), digest) {
+                                    (true, None) => {
+                                        transient.insert(*id, key);
+                                    }
+                                    (true, Some(digest)) => {
+                                        self.minted.insert(predicate, digest);
+                                        self.cache.insert(*id, key);
+                                    }
+                                    (false, _) => {
+                                        self.cache.insert(*id, key);
+                                    }
+                                }
                             }
                         }
 
-                        // **A refusal is about this predicate, not about the row.** The
-                        // rows are still worth printing with the id in them, so it is
-                        // recorded, said once, and never asked again — where propagating
-                        // would lose a page of perfectly good rows to a field nobody could
-                        // have expanded.
+                        // **A listing moving under a fetch is a fact about this moment,
+                        // not about the predicate**, and must not be cached into
+                        // `unexpandable` — doing so would silently stop expanding this
+                        // predicate for the rest of the session over a condition that
+                        // may already be gone by the next row. Only a fetch that
+                        // carried a digest can be refused this way (`fetch` checks one
+                        // only when it is given), so the caller is always in a
+                        // position to ask again with a fresh one.
+                        Err(
+                            error @ ClientError::Server {
+                                code: fjord_wire::ErrorCode::Refused,
+                                ..
+                            },
+                        ) => {
+                            return Err(error);
+                        }
+
+                        // **Every other refusal is about this predicate, not about the
+                        // row.** The rows are still worth printing with the id in them,
+                        // so it is recorded, said once, and never asked again — where
+                        // propagating would lose a page of perfectly good rows to a
+                        // field nobody could have expanded.
                         Err(ClientError::Server { message, .. }) => {
                             self.refuse(predicate, message);
                             break;
@@ -291,7 +391,7 @@ impl Expander {
 
             let mut next: Vec<FactId> = vec![];
             for id in &level {
-                if let Some(Some(key)) = self.cache.get(id) {
+                if let Some(Some(key)) = self.cache.get(id).or_else(|| transient.get(id)) {
                     references(key, &mut next);
                 }
             }
@@ -325,7 +425,12 @@ impl Expander {
     ///
     /// An id that is not cached, or cached as naming nothing, stays the id it was: the
     /// depth ran out, or the reference dangles.
-    fn substitute(&self, value: &WireValue, depth: usize) -> WireValue {
+    fn substitute_with(
+        &self,
+        value: &WireValue,
+        depth: usize,
+        transient: &HashMap<FactId, Option<WireValue>>,
+    ) -> WireValue {
         match value {
             WireValue::Int(_) | WireValue::Str(_) => value.clone(),
 
@@ -335,24 +440,26 @@ impl Expander {
             WireValue::Record(fields) => WireValue::Record(
                 fields
                     .iter()
-                    .map(|field| self.substitute(field, depth))
+                    .map(|field| self.substitute_with(field, depth, transient))
                     .collect(),
             ),
 
-            WireValue::Ref(WireRef::Id(id)) if depth > 0 => match self.cache.get(id) {
-                Some(Some(key)) => WireValue::Ref(WireRef::Nested(Box::new(WireFact {
-                    predicate: id.predicate(),
-                    key: self.substitute(key, depth - 1),
-                    value: None,
-                }))),
-                _ => value.clone(),
-            },
+            WireValue::Ref(WireRef::Id(id)) if depth > 0 => {
+                match self.cache.get(id).or_else(|| transient.get(id)) {
+                    Some(Some(key)) => WireValue::Ref(WireRef::Nested(Box::new(WireFact {
+                        predicate: id.predicate(),
+                        key: self.substitute_with(key, depth - 1, transient),
+                        value: None,
+                    }))),
+                    _ => value.clone(),
+                }
+            }
 
             // Nor is an alternative a hop, for the same reason a record's field is
             // not: the payload is this fact's own value, one constructor down.
             WireValue::Union { disc, value } => WireValue::Union {
                 disc: *disc,
-                value: Box::new(self.substitute(value, depth)),
+                value: Box::new(self.substitute_with(value, depth, transient)),
             },
 
             // Depth exhausted, or a nested reference that arrived nested — which a
@@ -361,6 +468,11 @@ impl Expander {
             // where it came from.
             WireValue::Ref(_) => value.clone(),
         }
+    }
+
+    #[cfg(test)]
+    fn substitute(&self, value: &WireValue, depth: usize) -> WireValue {
+        self.substitute_with(value, depth, &HashMap::new())
     }
 }
 
@@ -429,6 +541,22 @@ mod tests {
         for (id, key) in entries {
             expander.cache.insert(id, key);
         }
+        expander
+    }
+
+    /// `t.Named` declared virtual, so `is_virtual` answers for predicate zero.
+    fn schema_with_virtual() -> Arc<Schema> {
+        let bare = schema();
+        Arc::new(Schema::clone(&bare).with_virtual([PredicateId(0)]))
+    }
+
+    /// An expander holding one virtual row and one stored row, the virtual one minted
+    /// under `digest`.
+    fn holding_both(digest: u64) -> Expander {
+        let mut expander = Expander::new(schema_with_virtual());
+        expander.cache.insert(id(0, 1), Some(str_of("first")));
+        expander.cache.insert(id(1, 1), Some(str_of("stored")));
+        expander.minted.insert(PredicateId(0), digest);
         expander
     }
 
@@ -611,5 +739,64 @@ mod tests {
         let mut out = vec![];
         references(&value, &mut out);
         assert_eq!(out, vec![a, b]);
+    }
+
+    /// A listing that moved takes its cached rows with it. Without this, `prefetch`
+    /// never re-asks for an id it already holds, so the fetch digest never sees it.
+    #[test]
+    fn a_relisting_drops_a_cached_virtual_id() {
+        let mut expander = holding_both(7);
+        expander.scope_virtual_ids(&[(PredicateId(0), 9)]);
+
+        assert!(!expander.cache.contains_key(&id(0, 1)));
+        assert!(!expander.minted.contains_key(&PredicateId(0)));
+    }
+
+    /// The negative control for the test above: a drop that fired unconditionally would
+    /// satisfy it and delete the cache's whole reason to exist.
+    #[test]
+    fn an_unmoved_listing_keeps_its_cached_virtual_ids() {
+        let mut expander = holding_both(7);
+        expander.scope_virtual_ids(&[(PredicateId(0), 7)]);
+
+        assert_eq!(expander.cache.get(&id(0, 1)), Some(&Some(str_of("first"))));
+        assert_eq!(expander.minted.get(&PredicateId(0)), Some(&7));
+    }
+
+    /// A request carrying no digest for a virtual predicate cannot vouch for the
+    /// listing its cached rows came from — `fjord.db.Interning` never can.
+    #[test]
+    fn a_request_with_no_digest_drops_the_virtual_ids() {
+        let mut expander = holding_both(7);
+        expander.scope_virtual_ids(&[]);
+
+        assert!(!expander.cache.contains_key(&id(0, 1)));
+    }
+
+    /// The other negative control, and the one the plan calls out by name: clearing
+    /// every entry would be a correctness fix that quietly deletes the cache.
+    #[test]
+    fn a_stored_fact_survives_a_relisting() {
+        let mut expander = holding_both(7);
+        expander.scope_virtual_ids(&[(PredicateId(0), 9)]);
+
+        assert_eq!(expander.cache.get(&id(1, 1)), Some(&Some(str_of("stored"))));
+    }
+
+    /// Scoping is keyed per predicate: one listing moving must not evict another's.
+    #[test]
+    fn one_listing_moving_does_not_evict_another() {
+        let mut expander = Expander::new(Arc::new(
+            Schema::clone(&schema()).with_virtual([PredicateId(0), PredicateId(1)]),
+        ));
+        expander.cache.insert(id(0, 1), Some(str_of("listed")));
+        expander.cache.insert(id(1, 1), Some(str_of("interned")));
+        expander.minted.insert(PredicateId(0), 7);
+        expander.minted.insert(PredicateId(1), 11);
+
+        expander.scope_virtual_ids(&[(PredicateId(0), 9), (PredicateId(1), 11)]);
+
+        assert!(!expander.cache.contains_key(&id(0, 1)));
+        assert!(expander.cache.contains_key(&id(1, 1)));
     }
 }

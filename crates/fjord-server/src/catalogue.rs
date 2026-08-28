@@ -203,11 +203,15 @@ struct Table {
     predicate: PredicateId,
     /// `(predicate_id ++ key, id)` — a scan's rows, sorted as a keyspace holds them.
     rows: Arc<[(ByteView, FactId)]>,
+    /// This table's predicate id and rows, independent of every sibling table.
+    digest: u64,
 }
 
 /// Every virtual predicate this server answers, encoded and in key order.
 pub struct Catalogue {
     tables: Box<[Table]>,
+    /// A digest over every row this catalogue holds — see [`digest`](Catalogue::digest).
+    digest: u64,
 }
 
 impl Catalogue {
@@ -241,9 +245,44 @@ impl Catalogue {
             return Ok(None);
         }
 
-        Ok(Some(Catalogue {
-            tables: tables.into_boxed_slice(),
-        }))
+        let digest = digest_of(&tables);
+        let tables = tables.into_boxed_slice();
+
+        Ok(Some(Catalogue { tables, digest }))
+    }
+
+    /// **The listing this catalogue's virtual ids were minted from, as one number.**
+    ///
+    /// [`fjord.db.List`]'s rows are a view materialised per query, not a keyspace: a
+    /// database created or removed between a query and a
+    /// [`FETCH`](fjord_wire::protocol::kinds::FETCH) of one of its ids can renumber
+    /// the listing, so the id can resolve to a *different* row rather than to none —
+    /// which is silently wrong, not merely stale. A result carrying virtual ids
+    /// reports this digest with the rows, and a fetch of one of them carries it back;
+    /// the server refuses by name when the two disagree. See
+    /// [`fjord_wire::protocol::kinds::LISTING_DIGEST`].
+    ///
+    /// [`fjord.db.List`]: PREDICATE
+    #[must_use]
+    pub fn digest(&self) -> u64 {
+        self.digest
+    }
+
+    /// The digest of one virtual predicate's rows.
+    #[must_use]
+    pub fn digest_for(&self, predicate: PredicateId) -> Option<u64> {
+        self.tables
+            .iter()
+            .find(|table| table.predicate == predicate)
+            .map(|table| table.digest)
+    }
+
+    /// Every non-empty virtual table this result can have minted an id from.
+    pub fn digests(&self) -> impl Iterator<Item = (PredicateId, u64)> + '_ {
+        self.tables
+            .iter()
+            .filter(|table| !table.rows.is_empty())
+            .map(|table| (table.predicate, table.digest))
     }
 
     /// The store root's entries as rows, ready to encode.
@@ -346,11 +385,45 @@ impl Table {
         // the encoded bytes *is* sorting by the tuple ([I1]).
         encoded.sort_by(|(a, _), (b, _)| a.cmp(b));
 
+        let digest = digest_of_rows(predicate, &encoded);
+
         Ok(Some(Table {
             predicate,
             rows: Arc::from(encoded),
+            digest,
         }))
     }
+}
+
+fn digest_of_rows(predicate: PredicateId, rows: &[(ByteView, FactId)]) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&predicate.0.to_le_bytes());
+    bytes.extend_from_slice(&(rows.len() as u64).to_le_bytes());
+
+    for (key, _) in rows {
+        bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(key);
+    }
+
+    fjord_schema::fingerprint::hash(&bytes)
+}
+
+/// A digest over every table, in order — **content, not identity**: two catalogues
+/// built from equal listings agree here even though each is its own allocation.
+///
+/// Length-prefixed per row rather than a bare concatenation, because the encoded key
+/// bytes are not self-delimiting on their own — nothing downstream of this module
+/// relies on that not mattering, so this does not assume it either. `FNV-1a` rather
+/// than anything cryptographic, for the same reason [`fjord_schema::fingerprint`]
+/// picks it: this is a "did the listing move" check, not a security boundary.
+fn digest_of(tables: &[Table]) -> u64 {
+    let mut bytes = Vec::new();
+
+    for table in tables {
+        bytes.extend_from_slice(&table.digest.to_le_bytes());
+    }
+
+    fjord_schema::fingerprint::hash(&bytes)
 }
 
 /// A store that answers the catalogue from memory and everything else from `inner`.
@@ -638,6 +711,99 @@ mod tests {
             keys, sorted,
             "the listing is in key order, not listing order"
         );
+    }
+
+    /// The baseline every other digest test is a variation of: two catalogues built
+    /// from equal listings agree, so a comparison at the fetch seam is comparing the
+    /// thing this number actually means rather than which allocation produced it.
+    #[test]
+    fn two_catalogues_built_from_the_same_listing_agree() {
+        let schema = catalogue_schema();
+        let listing = listing_of(&["alpha", "beta"]);
+
+        let one = Catalogue::materialise(&schema, &listing, &[])
+            .unwrap()
+            .unwrap();
+        let two = Catalogue::materialise(&schema, &listing, &[])
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(one.digest(), two.digest());
+    }
+
+    /// A digest names one virtual predicate, not whichever other virtual tables the
+    /// query happened to read beside it. Expansion fetches predicates separately.
+    #[test]
+    fn one_tables_digest_is_independent_of_its_siblings() {
+        let schema = catalogue_schema();
+        let listing = listing_of(&["alpha", "beta"]);
+
+        let listing_only = Catalogue::materialise(&schema, &listing, &[])
+            .unwrap()
+            .unwrap();
+        let both = Catalogue::materialise(&schema, &listing, &[counters_of("alpha")])
+            .unwrap()
+            .unwrap();
+        let (listing_id, _) = schema.find_position(PREDICATE).expect("the listing id");
+
+        assert_eq!(
+            listing_only.digest_for(listing_id),
+            both.digest_for(listing_id)
+        );
+    }
+
+    /// A database created between two materialisations is exactly the race this
+    /// digest exists to catch — so the listing moving must move the number.
+    #[test]
+    fn a_changed_listing_changes_the_digest() {
+        let schema = catalogue_schema();
+
+        let before = Catalogue::materialise(&schema, &listing_of(&["alpha"]), &[])
+            .unwrap()
+            .unwrap();
+        let after = Catalogue::materialise(&schema, &listing_of(&["alpha", "beta"]), &[])
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(before.digest(), after.digest());
+    }
+
+    /// The interning counters are part of the same snapshot, so a counter moving
+    /// between two materialisations must move the digest exactly as a listing change
+    /// does — a fetch of a `fjord.db.Interning` row is as exposed to the race as one
+    /// of `fjord.db.List`.
+    #[test]
+    fn a_changed_counter_changes_the_digest() {
+        let schema = catalogue_schema();
+        let listing = listing_of(&["alpha"]);
+
+        let before = Catalogue::materialise(&schema, &listing, &[counters_of("alpha")])
+            .unwrap()
+            .unwrap();
+
+        let mut moved = counters_of("alpha");
+        moved.hits += 1;
+        let after = Catalogue::materialise(&schema, &listing, &[moved])
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(before.digest(), after.digest());
+    }
+
+    /// Two listings of the same *count* but different content must not collide —
+    /// otherwise a `create` racing a `rm` could leave the digest unmoved.
+    #[test]
+    fn same_row_count_different_content_still_moves_the_digest() {
+        let schema = catalogue_schema();
+
+        let one = Catalogue::materialise(&schema, &listing_of(&["alpha", "beta"]), &[])
+            .unwrap()
+            .unwrap();
+        let other = Catalogue::materialise(&schema, &listing_of(&["gamma", "delta"]), &[])
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(one.digest(), other.digest());
     }
 
     /// A schema that does not declare the catalogue simply has none.

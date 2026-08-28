@@ -671,7 +671,7 @@ fn a_killed_finish_leaves_a_re_runnable_database() {
 
 /// Not a guard: the crashing half of the test above.
 #[test]
-#[ignore = "spawned as a child process by a_killed_finish_leaves_a_re_runnable_database"]
+#[ignore = "not a guard: spawned as a child process by a_killed_finish_leaves_a_re_runnable_database"]
 fn crashing_finisher_child_process() {
     let root = std::env::var(CRASH_ROOT_VAR).expect("the parent sets the store root");
     let delay_ms: u64 = std::env::var(CRASH_DELAY_VAR)

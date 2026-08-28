@@ -97,6 +97,14 @@ pub fn trace(schema: &str, query: &str) -> String {
     fjord_inspect::trace_json(schema, query)
 }
 
+/// Walk one candidate through the same Levenshtein automaton a guided fuzzy
+/// seek uses, returning its capped edit-distance row after each character.
+#[wasm_bindgen]
+#[must_use]
+pub fn fuzzy(term: &str, candidate: &str, distance: u8) -> String {
+    fjord_inspect::fuzzy_json(term, candidate, distance)
+}
+
 /// **Every stored row of the demo database**, as bytes and as a fact, in the
 /// order a scan meets them.
 ///

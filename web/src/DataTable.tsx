@@ -70,6 +70,7 @@ export function DataTable({
     if (moment?.scanning) add(predicateOf(moment.scanning.fetch ?? moment.scanning.lo))
     for (const key of moment?.held ?? []) add(predicateOf(key))
     if (moment?.dropped) add(predicateOf(moment.dropped))
+    if (moment?.testing) add(predicateOf(moment.testing))
     return ids
   }, [moment])
 
@@ -197,11 +198,12 @@ function Row({ row, moment }: { row: RowBytes; moment: Moment | null }) {
   const held = moment?.held.has(row.key) ?? false
   const dropped = moment?.dropped === row.key
   const seen = moment?.droppedSoFar.has(row.key) ?? false
+  const testing = moment?.testing === row.key
   const within = inRange(row.key, moment?.scanning ?? null)
 
   return (
     <tr
-      className={[within ? 'within' : '', held ? 'held' : '', dropped ? 'dropped' : seen ? 'seen' : '']
+      className={[within ? 'within' : '', held ? 'held' : '', testing ? 'testing' : '', dropped ? 'dropped' : seen ? 'seen' : '']
         .filter(Boolean)
         .join(' ')}
     >

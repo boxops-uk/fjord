@@ -134,6 +134,13 @@ jobs:
       # edited by whoever un-ignores one, and the list is what a reviewer reads.
       - name: Invariant coverage ledger
         run: cargo test --locked -- --ignored --list
+      # The gate has an independent manifest, so deleting or inventing a source
+      # attribute disagrees with something rather than changing both sides of a
+      # self-comparison. Its mutation controls provoke every rejection path.
+      - name: The ledger gate rejects every malformed ledger
+        run: python3 -m unittest scripts/test_check_guards.py
+      - name: The ledger names an owner for every guard
+        run: python3 scripts/check-guards.py
       # **The other configuration.** `fjord-inspect` turns the engine's `trace`
       # feature on, so the workspace run above builds the engine *traced* — which
       # is what puts the alloc-free and no-value-fetch guards on the build the

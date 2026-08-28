@@ -271,6 +271,7 @@ const fn kind_name(kind: &ExprKind<NodeId>) -> &'static str {
         ExprKind::Wildcard => "Wildcard",
         ExprKind::Never => "Never",
         ExprKind::Prefix(_) => "Prefix",
+        ExprKind::Fuzzy(..) => "Fuzzy",
         ExprKind::Record(_) => "Record",
         ExprKind::Access(FieldRef::Key(_), _) => "Access",
         ExprKind::Access(FieldRef::Value, _) => "Value",
@@ -312,6 +313,7 @@ fn label_of(kind: &ExprKind<NodeId>, schema: &Schema, interner: &LocalInterner) 
         ExprKind::Lit(Literal::Str(symbol)) => Some(format!("{:?}", name(*symbol))),
         ExprKind::Var(symbol) | ExprKind::Select(symbol, _) => Some(name(*symbol)),
         ExprKind::Prefix(symbol) => Some(format!("{:?}..", name(*symbol))),
+        ExprKind::Fuzzy(symbol, distance) => Some(format!("{:?}~{distance}", name(*symbol))),
         ExprKind::Access(FieldRef::Key(symbol), _) => Some(format!(".{}", name(*symbol))),
         ExprKind::Access(FieldRef::Value, _) => Some(".value".to_owned()),
         ExprKind::Record(fields) => Some(

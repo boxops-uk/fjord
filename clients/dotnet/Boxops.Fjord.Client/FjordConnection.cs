@@ -55,7 +55,7 @@ public sealed class FjordConnection : IDisposable
     /// number changed, so a client pinned to the old one is told it speaks a different
     /// protocol rather than left to fail a comparison it cannot interpret.
     /// </remarks>
-    public const uint ProtocolVersion = 2;
+    public const uint ProtocolVersion = 3;
 
     private readonly Socket _socket;
     private readonly NetworkStream _stream;

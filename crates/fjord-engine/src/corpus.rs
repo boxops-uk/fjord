@@ -323,6 +323,69 @@ pub const CORPUS: &[Entry] = &[
         Supported("test.Name#1"),
         "string prefix against a scalar string key — ResidualOp::Prefix",
     ),
+    // ---- fuzzy matching ----------------------------------------------------
+    //
+    // `~` is the sibling of `..`: a prefix denotes one contiguous range of the key
+    // order and a fuzzy pattern denotes a set of them, so one narrows a seek and
+    // the other walks it. Both are patterns rather than values, which is why
+    // neither can be bound to a variable.
+    entry(
+        "N where test.Name N; N = \"ann\"~",
+        Supported("ann; anna"),
+        "**a guided seek** — a Levenshtein automaton walks the key order, seeking \
+         past the keys it can prove cannot match. `~` with no number is one edit",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~2",
+        Supported("abc; ann; anna"),
+        "two edits reaches further: `abc` is two substitutions from `ann`",
+    ),
+    entry(
+        "X where X = test.Name \"ann\"~1",
+        Supported("test.Name#2; test.Name#3"),
+        "written at the key field rather than as a constraint on a variable — the \
+         same plan, as `\"abc\"..` and `N = \"abc\"..` are the same plan",
+    ),
+    entry(
+        "N where test.Name N; N = \"an\"..; N = \"ann\"~2",
+        Supported("ann; anna"),
+        "**anchored**: the prefix builds the seek's range and the automaton walks \
+         inside it, so `abc` is out of range rather than out of distance. This is \
+         the spelling that keeps a two-edit search off the whole predicate",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~2; N = \"an\"..",
+        Supported("ann; anna"),
+        "and the other order is the same plan: constraints are applied by what each \
+         one can do, not by where it was written",
+    ),
+    entry(
+        "X where X = test.Foo {id = _, name = N}; N = \"ann\"~1",
+        Supported("test.Foo#1; test.Foo#3"),
+        "the field does not lead `test.Foo`'s key, so there is no seek to narrow \
+         and the same question becomes ResidualOp::Fuzzy — the split `..` makes",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~9",
+        Diagnosed(Code::RejectFuzzyDistance),
+        "the automaton is built for a bounded distance, and a plan that silently \
+         clamped would answer a question nobody asked",
+    ),
+    entry(
+        "N where test.Name N; N = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"~1",
+        Diagnosed(Code::RejectFuzzyTerm),
+        "and the **term** is bounded the same way, in the same phase. Which physical \
+         plan flatten picks decides whether a guide or a residual answers, so a \
+         limit either one held alone would refuse a leading field and answer a \
+         trailing one",
+    ),
+    entry(
+        "N where test.Name N; N != \"ann\"~1",
+        Diagnosed(Code::NyiFuzzyDenial),
+        "**denying** a fuzzy match is meaningful and deferred by name: a residual \
+         op is what a resume fingerprint tags, so it arrives when something wants \
+         it rather than for symmetry",
+    ),
     entry(
         "X where X = test.Count -42",
         Supported("test.Count#2"),
@@ -1157,6 +1220,134 @@ mod tests {
             CORPUS.len(),
             wrong.join("\n    ")
         );
+    }
+
+    #[test]
+    fn every_supported_entrys_plan_fingerprint_is_stable() {
+        use crate::compile::Compilation;
+
+        let schema = schema();
+        let fingerprints: Vec<String> = CORPUS
+            .iter()
+            .filter(|entry| matches!(entry.expect, Supported(_)))
+            .map(|entry| {
+                let mut compilation = Compilation::new(entry.source, &schema);
+                let plan = compilation
+                    .plan()
+                    .expect("a supported corpus entry produces a plan");
+                format!("{:016x}", plan.fingerprint().raw())
+            })
+            .collect();
+
+        let expected = [
+            "3db4a2f29bc37327",
+            "86b6587a68dba1a4",
+            "5995f768faa36c8a",
+            "86b6587a68dba1a4",
+            "84bee93b29cc8aaf",
+            "94c1b578bf7164fb",
+            "a84bb24b45106e90",
+            "6d4ae1de6c752f0b",
+            "dc07ab8804b80bb0",
+            "e0ed72c2c97b05b1",
+            "8cdf5589c2d6f196",
+            "8cdf5589c2d6f196",
+            "923c9335e8273f58",
+            "a0e2b4422a2ce0e3",
+            "9c43ac5c171f5125",
+            "27c627dd5c6c79f1",
+            "49fad4cae8ee0b02",
+            "3155b5c7659dec1f",
+            "1c85c5989315c598",
+            "844dbe3d1303ce6a",
+            "7b68833b82f605a9",
+            "e82f0425e053c0f2",
+            "537febb51776ac0e",
+            "bf7f4da079aa8760",
+            "9fdd3e823c7f9ad3",
+            "d6d91409bcbcf1b7",
+            "31d9924c3424bd97",
+            "cfaa5d5ecd8ffe80",
+            "2ef25f5df17bd9c5",
+            "0575fa290f4ab2fd",
+            "0575fa290f4ab2fd",
+            "f14a1b5b620c68ab",
+            "b1a21a89a4c3e1ff",
+            "25bc3be24acdb4e2",
+            "92bdf3ae6a7ec577",
+            "cdbaaf024e66ac55",
+            "cdbaaf024e66ac55",
+            "3db4a2f29bc37327",
+            "d88092d9a67a2803",
+            "ae9a2cb484c28625",
+            "4b15b12d3786162c",
+            "891eaec47c0d9c39",
+            "28b94bfe5862ec57",
+            "28b94bfe5862ec57",
+            "818f7bb0ee999afd",
+            "28b94afe5862eaa4",
+            "4e589e857b58f811",
+            "0455b8e1279660c0",
+            "ea63ad61506c46ee",
+            "b85e92cfdd344b02",
+            "b85e92cfdd344b02",
+            "13d74a09ac673378",
+            "42bcf22cf2e5f8c2",
+            "6e113876e58b810e",
+            "c0e5b43c552f92e3",
+            "b42b05ac99cd129e",
+            "27acc74bbec20d48",
+            "ba404d0af13e7043",
+            "ba404d0af13e7043",
+            "ba404d0af13e7043",
+            "8380b2573bfefefe",
+            "403111a87c66ed0a",
+            "86b6587a68dba1a4",
+            "98b0463566dbd32a",
+            "86b6587a68dba1a4",
+            "84bee93b29cc8aaf",
+            "022de69dabfcd016",
+            "600faa6ab5bc327f",
+            "958498fd4564f540",
+            "958498fd4564f540",
+            "2dd142da1c9d558f",
+            "2dd142da1c9d558f",
+            "6f0a934d9fb9e1f1",
+            "6ec539c285ca3870",
+            "6ec539c285ca3870",
+            "87f4cde294e3d5f9",
+            "20c6e0ccd33651e3",
+            "7d9081f6358f8445",
+            "10fb47580e274181",
+            "1a06fae56554c5c3",
+            "6ec539c285ca3870",
+            "958498fd4564f540",
+            "3db4a2f29bc37327",
+            "6645e951bdd44fc4",
+            "49fad4cae8ee0b02",
+            "6f0a934d9fb9e1f1",
+            "000cc07f4576d12e",
+            "8e00bcfe3487cc97",
+            "9fdd3e823c7f9ad3",
+            "71aa248d03508166",
+            "848e88bf0e1e166d",
+            "848e9dbf0e1e3a1c",
+            "657772c8af07a4a6",
+            "657772c8af07a4a6",
+            "011f90553bcb2f0d",
+            "011f90553bcb2f0d",
+            "dc384693c9750fc1",
+            "657772c8af07a4a6",
+            "876776094ee37905",
+            "022de69dabfcd016",
+            "4a8b3055952515c5",
+            "85c4e5dd9161486c",
+            "6691d6a2dc4f149f",
+            "f4c4596d4efe79ab",
+            "53f07457b5af0566",
+        ];
+
+        assert_eq!(fingerprints, expected);
     }
 
     /// Every distinct diagnostic code `source` draws, in first-seen order, and

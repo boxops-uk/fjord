@@ -11,8 +11,9 @@ The generated site in [`website/`](../website/README.md) still builds, as the
 copy that needs no toolchain and as the renderer this one is held to, and its
 reading order — `website/nav.json` — is the one this sidebar renders. What this
 site adds is that the demos are the engine: a `:::demo` block in the content is a
-running lexer, parser, typechecker, planner, executor or database table, editable
-in the page.
+running lexer, parser, typechecker, planner, executor or database table. Most are
+editable in the page; a guided run fixes its query so every transition can carry
+an exact explanation.
 
 There is also a **workbench** at `/playground`: every view of one query at once,
 which is the thing a paragraph cannot hold. A demo hands its query to it through
@@ -52,7 +53,7 @@ eyebrow and no warning.)
 
 The frame fills the viewport and the regions scroll independently, which is what
 keeps the reading order and the on-page outline in place while a page moves under
-them. The nav **collapses** rather than resizing — twenty-one names is not a
+them. The nav **collapses** rather than resizing — twenty-three names is not a
 width worth choosing — and the outline drops below 1200px rather than squeezing
 the measure. The workbench's database panel is the one region that *is*
 resizable, because which side deserves the width depends on what a reader is
@@ -100,6 +101,16 @@ is written against, for a demo that is about compiling rather than running:
 schema test { predicate Foo : { id : int, name : string } -> string }
 ---
 X where test.Foo {id = 1, name = X}
+:::
+```
+
+Add `guided` after `run` for a read-only query with its plan, executor and
+relevant database rows visible together, plus a description panel that follows
+the transport one transition at a time:
+
+```markdown
+:::demo run guided
+N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
 :::
 ```
 

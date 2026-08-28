@@ -415,7 +415,7 @@ impl Connection {
 
         self.send(kinds::OPEN_WRITE, stream, &[])?;
 
-        let (kind, _) = self.recv_on(stream)?;
+        let (kind, _) = self.recv_stream_frame(stream)?;
         if kind != FrameKind::COPY_IN_RESPONSE {
             self.open.remove(&stream.0);
             return Err(unexpected("a copy-in response", kind));
@@ -429,7 +429,7 @@ impl Connection {
 
         self.send(FrameKind::COPY_DONE, stream, &[])?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::COMPLETE {
@@ -526,7 +526,7 @@ impl Connection {
         let stream = self.claim_stream();
         self.send(kinds::QUERY_COUNT, stream, sigla.as_bytes())?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         if kind != kinds::COUNT {
             self.open.remove(&stream.0);
             return Err(unexpected("a count", kind));
@@ -542,7 +542,7 @@ impl Connection {
 
         // The stream still owes a `COMPLETE`, and reading it here is what lets the
         // id be recycled — a stream left half-read is one that never comes back.
-        let (kind, _) = self.recv_on(stream)?;
+        let (kind, _) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::COMPLETE {
@@ -571,7 +571,12 @@ impl Connection {
     pub fn served_schema(&mut self) -> Result<Schema, ClientError> {
         let source = self.served_schema_source()?;
 
+        // **Marked here, or `is_virtual` lies to every client-side consumer.** The
+        // printed form carries no virtual marker — virtuality is the reserved
+        // namespace, not syntax — so a recovered schema has nothing marked and an
+        // expander holding a catalogue row would take it for a stored fact.
         fjord_schema::syntax::recover("the schema this server serves", &source)
+            .map(Schema::with_reserved_virtual)
             .map_err(ClientError::Protocol)
     }
 
@@ -588,7 +593,7 @@ impl Connection {
         let stream = self.claim_stream();
         self.send(kinds::SCHEMA, stream, &[])?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::SCHEMA_REPLY {
@@ -624,15 +629,28 @@ impl Connection {
     /// Rows have no such problem: the server sends a descriptor and they decode against
     /// that.
     ///
+    /// # `digest` is what a virtual id's own listing is checked against
+    ///
+    /// The entry in [`Rows::listing_digests`](crate::rows::Rows::listing_digests) for
+    /// the predicate these ids name, or `None` for an id that came from anywhere else — typed
+    /// by hand, say. `fjord.db.List`'s rows are a position in a listing rather than a
+    /// stored identity, so a database created or removed since can renumber it under
+    /// an id that still *resolves*, only to the wrong row. Naming the digest lets the
+    /// server refuse that by name instead of answering it; naming none resolves as it
+    /// always did, which is the only honest answer when there is nothing to check
+    /// against.
+    ///
     /// # Errors
     ///
     /// [`ClientError::Server`] if the server declines — an id naming a predicate it does
-    /// not have, or a virtual one — or [`ClientError::Protocol`] if what comes back is
-    /// not an answer to this question.
+    /// not have, a virtual one whose listing has moved since `digest` was minted, or a
+    /// virtual one asked about with no digest reachable at all — or
+    /// [`ClientError::Protocol`] if what comes back is not an answer to this question.
     pub fn fetch(
         &mut self,
         schema: &Schema,
         ids: &[FactId],
+        digest: Option<u64>,
     ) -> Result<Vec<fjord_wire::protocol::Found>, ClientError> {
         // No round trip for nothing: a row with no references at all is the common case
         // in a query somebody narrowed by hand, and it should cost what it did before
@@ -650,10 +668,16 @@ impl Connection {
         }
 
         let stream = self.claim_stream();
-        self.send(kinds::FETCH, stream, &protocol::encode_fetch(ids))?;
+        self.send(kinds::FETCH, stream, &protocol::encode_fetch(ids, digest))?;
 
-        let answer = self.recv_on(stream);
-        self.release_stream(stream);
+        let answer = self.recv_stream_frame(stream);
+        if answer.is_ok() {
+            // `FETCHED` is the successful terminal frame. An error originating on
+            // this stream was already released by `recv_stream_frame`; a session
+            // error on stream zero says nothing about this fetch, so it must leave
+            // the id claimed here.
+            self.release_stream(stream);
+        }
 
         let (kind, payload) = match answer {
             Ok(answer) => answer,
@@ -699,7 +723,7 @@ impl Connection {
         let stream = self.claim_stream();
         self.send(kind, stream, payload)?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         if kind != FrameKind::ROW_DESCRIPTION {
             self.open.remove(&stream.0);
             return Err(unexpected("a row description", kind));
@@ -732,12 +756,22 @@ impl Connection {
 
         self.check_open(rows)?;
 
-        let (kind, payload) = self.recv_on(rows.stream())?;
+        let (kind, payload) = self.recv_row_frame(rows)?;
 
         // Sent once, just before the result ends. Taken here rather than in a
         // separate call so a caller that only pulls rows still ends up holding it.
         if kind == kinds::PROFILE {
             rows.set_profile(protocol::decode_profile(&payload)?);
+            return self.next_row(rows);
+        }
+
+        // Sent once, right after the row description — unlike `PROFILE` and
+        // `RESUME`, before the first row rather than after the last, since a row can
+        // carry a virtual id from the first one. Handled the same way regardless:
+        // transparently, so a caller that only pulls rows never sees the frame.
+        if kind == kinds::LISTING_DIGEST {
+            let (predicate, digest) = protocol::decode_listing_digest(&payload)?;
+            rows.set_listing_digest(predicate, digest)?;
             return self.next_row(rows);
         }
 
@@ -831,7 +865,7 @@ impl Connection {
         self.send(kinds::CANCEL, rows.stream(), &[])?;
 
         loop {
-            let (kind, payload) = self.recv_on(rows.stream())?;
+            let (kind, payload) = self.recv_row_frame(rows)?;
 
             match kind {
                 // Counted rather than merely dropped, so the tally at the end still
@@ -839,6 +873,10 @@ impl Connection {
                 FrameKind::DATA_ROW => rows.skip(),
                 _ if kind == kinds::PROFILE => {
                     rows.set_profile(protocol::decode_profile(&payload)?);
+                }
+                _ if kind == kinds::LISTING_DIGEST => {
+                    let (predicate, digest) = protocol::decode_listing_digest(&payload)?;
+                    rows.set_listing_digest(predicate, digest)?;
                 }
                 _ if kind == kinds::RESUME => rows.set_resume(payload),
                 _ if kind == kinds::COMPLETE => {
@@ -934,7 +972,7 @@ impl Connection {
             }),
         )?;
 
-        let (kind, payload) = self.recv_on(stream)?;
+        let (kind, payload) = self.recv_stream_frame(stream)?;
         self.release_stream(stream);
 
         if kind != kinds::CONTROL_REPLY {
@@ -1001,25 +1039,68 @@ impl Connection {
         Ok(())
     }
 
+    /// The next frame for an open **query result**, marking `rows` terminal if the
+    /// server ends it with an error.
+    ///
+    /// The stream release belongs to [`recv_stream_frame`](Self::recv_stream_frame),
+    /// because an error can arrive before a [`Rows`] exists or on a count. This layer
+    /// adds the bookmark transition that only an open row result has.
+    fn recv_row_frame(&mut self, rows: &mut Rows) -> Result<(FrameKind, Vec<u8>), ClientError> {
+        let stream = rows.stream();
+        let frame = self.recv_stream_frame(stream);
+        if frame.is_err() && !self.open.contains(&stream.0) {
+            rows.mark_errored();
+        }
+        frame
+    }
+
+    /// Receive on one claimed stream, releasing it if the server's terminal frame is
+    /// `ERROR` rather than the success frame its caller expects.
+    ///
+    /// Kept below [`Rows`]: query compilation and cursor validation can fail before a
+    /// bookmark exists, while count never has one. The originating stream is checked:
+    /// a session-level error on stream zero may surface while waiting here and does not
+    /// prove that this stream's task ended.
+    fn recv_stream_frame(&mut self, stream: StreamId) -> Result<(FrameKind, Vec<u8>), ClientError> {
+        let (origin, kind, payload) = self.recv_frame_on(stream)?;
+
+        if kind == FrameKind::ERROR && origin == stream {
+            // The kind is enough to prove this stream ended even if its payload is
+            // malformed and cannot be decoded into `ClientError::Server`.
+            self.release_stream(stream);
+        }
+
+        raise_if_error((kind, payload))
+    }
+
     /// The next frame **for `stream`**, parking anything that arrives for another.
     ///
     /// An error on stream 0 is raised wherever it lands: stream 0 is the session
     /// rather than a unit of work, so a fault there is not something to park for a
     /// reader that may never come.
     fn recv_on(&mut self, stream: StreamId) -> Result<(FrameKind, Vec<u8>), ClientError> {
+        let (_, kind, payload) = self.recv_frame_on(stream)?;
+        raise_if_error((kind, payload))
+    }
+
+    /// The next frame relevant to `stream`, retaining which stream actually sent it.
+    fn recv_frame_on(
+        &mut self,
+        stream: StreamId,
+    ) -> Result<(StreamId, FrameKind, Vec<u8>), ClientError> {
         if let Some(frame) = self.parked.get_mut(&stream.0).and_then(VecDeque::pop_front) {
-            return raise_if_error(frame);
+            return Ok((stream, frame.0, frame.1));
         }
 
         loop {
             let (header, payload) = self.recv_any()?;
 
             if header.stream == stream {
-                return raise_if_error((header.kind, payload));
+                return Ok((header.stream, header.kind, payload));
             }
 
             if header.stream == StreamId(0) && header.kind == FrameKind::ERROR {
-                return raise_if_error((header.kind, payload));
+                return Ok((header.stream, header.kind, payload));
             }
 
             self.parked
