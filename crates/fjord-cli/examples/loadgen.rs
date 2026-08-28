@@ -63,6 +63,13 @@ struct Options {
     runs: usize,
     seed: bool,
     block: usize,
+    /// The workloads to run, empty for the whole catalogue.
+    ///
+    /// What this is for is an **A/B**: comparing two builds over one question means
+    /// running that question on each, close together, and the catalogue's slowest arm
+    /// (`join on a trailing field`, 900M rows examined) makes a full pass long enough
+    /// that the two halves of a comparison are taken under different host load.
+    only: Vec<String>,
 }
 
 fn main() {
@@ -96,7 +103,8 @@ usage: loadgen [options]
   --block N            facts per block on the wire (default 1000)
   --connections C      concurrent connections for the query phase (default 8)
   --runs R             query executions per workload, spread over the connections
-  --no-seed            measure an existing database rather than writing one";
+  --no-seed            measure an existing database rather than writing one
+  --only NAME          run just this workload; repeatable, default the whole catalogue";
 
 fn parse() -> Result<Options, String> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -110,6 +118,7 @@ fn parse() -> Result<Options, String> {
     let mut runs = 200;
     let mut block = 1000;
     let mut seed = true;
+    let mut only: Vec<String> = Vec::new();
 
     let mut at = 0;
     while at < argv.len() {
@@ -140,6 +149,7 @@ fn parse() -> Result<Options, String> {
             "--runs" => runs = value()?.parse().map_err(|_| "--runs takes a number")?,
             "--block" => block = value()?.parse().map_err(|_| "--block takes a number")?,
             "--no-seed" => seed = false,
+            "--only" => only.push(value()?),
             "--help" | "-h" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -163,6 +173,7 @@ fn parse() -> Result<Options, String> {
         runs: runs.max(1),
         seed,
         block: block.max(1),
+        only,
     })
 }
 
@@ -402,7 +413,21 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
         })
     };
 
-    for workload in workload::catalogue(&pivots) {
+    let catalogue: Vec<_> = workload::catalogue(&pivots)
+        .into_iter()
+        .filter(|workload| {
+            options.only.is_empty() || options.only.iter().any(|name| name == workload.name)
+        })
+        .collect();
+
+    // A misspelt `--only` would otherwise measure nothing and report it as a table with
+    // no rows, which reads like a server that answered.
+    if catalogue.is_empty() {
+        eprintln!("loadgen: --only matched no workload in the catalogue");
+        std::process::exit(2);
+    }
+
+    for workload in catalogue {
         let Some(result) = run_workload(options, schema, &workload) else {
             rows_out.push(vec![
                 workload.name.to_owned(),
@@ -517,10 +542,12 @@ fn run_workload(options: &Options, schema: &Arc<Schema>, workload: &Workload) ->
                         let at = Instant::now();
                         let mut result = connection.query(&workload.sigla).expect("it compiles");
 
-                        // Pulled and dropped: the rows have to cross the socket and be
-                        // decoded — that is the work — but rendering them would be
-                        // measuring this program.
-                        while connection.next_row(&mut result).expect("a row").is_some() {}
+                        // Run out, not decoded: every row crosses the socket and the
+                        // server does all of its work, while this side stops short of
+                        // the one cost that is the load generator's own. Decoding here
+                        // took ~40% of the machine and the number that came out was
+                        // partly a measurement of this program.
+                        connection.discard(&mut result).expect("the rows arrive");
 
                         mine.push(at.elapsed());
                     }

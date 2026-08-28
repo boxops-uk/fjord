@@ -23,6 +23,20 @@ use clap::Parser;
 use cli::{Cli, Command, DbCommand, SchemaCommand};
 pub use fjord_cli::sample_schema;
 
+/// **The allocator every thread in this binary allocates from.**
+///
+/// `fjord serve` runs one scan per connection and the scan path allocates per chunk;
+/// on glibc those threads contend on per-arena mutexes and park inside `malloc`, so
+/// throughput stops rising with cores while nothing in the engine looks wrong — the
+/// contention is invisible to every guard above it, and only a stack sample under load
+/// shows it. See [`bench/FINDINGS.md`](../../../bench/FINDINGS.md) §18.
+///
+/// Removing this attribute silently restores that ceiling, which is what
+/// [`the_global_allocator_is_mimalloc`](tests::the_global_allocator_is_mimalloc)
+/// exists to catch.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Why a command could not run.
 ///
 /// One taxonomy for the tool, so that every exit goes through one place and no
@@ -419,5 +433,25 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             println!("removed {name}");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The attribute above is a whole-program choice with no compile-time evidence that
+    /// it took: dropping it leaves the binary building, passing and slower. mimalloc
+    /// owns the regions it hands out, so asking it whether a live allocation is one of
+    /// its own is the mechanical form of "this binary allocates from mimalloc".
+    #[test]
+    fn the_global_allocator_is_mimalloc() {
+        // Large enough that the answer cannot come from a stack buffer or a
+        // small-allocation shortcut some other allocator happened to share.
+        let owned = vec![0_u8; 1 << 16];
+
+        let claimed = unsafe {
+            libmimalloc_sys::mi_is_in_heap_region(owned.as_ptr().cast::<std::ffi::c_void>())
+        };
+
+        assert!(claimed, "this binary is not allocating from mimalloc");
     }
 }

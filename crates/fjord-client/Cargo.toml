@@ -39,3 +39,8 @@ fjord-server = { path = "../fjord-server" }
 fjord-store = { path = "../fjord-store" }
 lasso = { workspace = true }
 tempfile = "3.24.0"
+# Peak-live-bytes counting for the guard that `discard` does not hold a result
+# (`against_a_server::discarding_is_flat_in_the_length_of_the_result`). Its counters
+# are thread-local, so the server running in another thread of the same test binary
+# is not counted.
+allocation-counter = "0.8.1"

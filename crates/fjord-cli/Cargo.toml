@@ -63,6 +63,15 @@ fjord-wire = { path = "../fjord-wire" }
 clap = { version = "4.5", features = ["derive"] }
 codespan-reporting = "0.13.1"
 
+# **The allocator the tool runs on.** The scan path allocates per chunk — lz4 decode,
+# row decode, `rows::to_wire` — and under concurrent load glibc's per-arena mutexes
+# serialise exactly that: threads park in `malloc`, so the server stops scaling with
+# cores while every engine-level guard stays green. mimalloc's per-thread caches remove
+# the contention (`bench/FINDINGS.md` §18). Linked here, in the binary, because a
+# `#[global_allocator]` is a whole-program choice and `fjord serve` is the program —
+# putting it in a library crate would impose it on every consumer that linked one.
+mimalloc = "0.1.52"
+
 # Optional, and reached only through the `proptest` feature above — never linked
 # into an ordinary build. `cargo test` gets it from `[dev-dependencies]`.
 proptest = { version = "1.11.0", optional = true }
@@ -91,18 +100,19 @@ fjord-encoding = { path = "../fjord-encoding", features = ["proptest"] }
 # to `[dependencies]` would quietly give it a second way in.
 fjord-ingest = { path = "../fjord-ingest" }
 fjord-store = { path = "../fjord-store", features = ["proptest"] }
-# Allocation-counting global allocator for the I9 hot-path guard
-# (`exec::scan_is_alloc_free_per_row`). Its counters are thread-local, so it
-# survives the parallel test harness; it installs its own `#[global_allocator]`
-# unconditionally, so keeping it a dev-dependency is what confines the counting
-# allocator to test binaries.
-allocation-counter = "0.8.1"
 # The `arb_*` strategies are active under `cfg(test)` whether or not the
 # `proptest` feature is on, so the crate has to be here as well as being an
 # optional dependency.
 proptest = "1.11.0"
 # Scratch directories for the fjall store batteries (PLAN 1a+).
 tempfile = "3.24.0"
+# mimalloc's C API, for the guard that asserts the `#[global_allocator]` above is the
+# one this binary actually allocates from. The same version range `mimalloc` itself
+# depends on, so cargo unifies them onto one library — two copies would answer about
+# two heaps. No counting allocator belongs here for the same reason: a second
+# `#[global_allocator]` in a dev-dependency does not stack with this crate's, it
+# refuses to link, so the allocation guards live in the crates that own them.
+libmimalloc-sys = { version = "0.1", features = ["extended"] }
 # `examples/breakdown.rs` times the server's own hop off the reactor, which means
 # taking that hop itself. Nothing the tool ships needs a runtime, which is why this
 # is a dev-dependency and `fjord` still links none.
