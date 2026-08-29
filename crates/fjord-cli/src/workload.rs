@@ -235,6 +235,40 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
     ]
 }
 
+/// Select named workloads, after proving every requested name exists.
+///
+/// Checking the filtered result alone lets a valid name hide a misspelling beside it
+/// and silently changes an A/B's workload.
+///
+/// # Errors
+///
+/// Returns an error naming every requested workload the catalogue does not contain.
+pub fn select(catalogue: Vec<Workload>, only: &[String]) -> Result<Vec<Workload>, String> {
+    if only.is_empty() {
+        return Ok(catalogue);
+    }
+
+    let unknown: Vec<&str> = only
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !catalogue.iter().any(|workload| workload.name == *name))
+        .collect();
+
+    if !unknown.is_empty() {
+        let label = if unknown.len() == 1 {
+            "workload"
+        } else {
+            "workloads"
+        };
+        return Err(format!("unknown --only {label}: {}", unknown.join(", ")));
+    }
+
+    Ok(catalogue
+        .into_iter()
+        .filter(|workload| only.iter().any(|name| name == workload.name))
+        .collect())
+}
+
 /// Pivots sampled **over the wire**, for the instruments that have a connection rather
 /// than a store.
 ///
@@ -305,6 +339,71 @@ pub fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn workload(name: &'static str) -> Workload {
+        Workload::new(name, String::new(), "selection fixture")
+    }
+
+    #[test]
+    fn an_unknown_only_name_is_refused() {
+        let error = select(vec![workload("scan decls")], &["scan delcs".to_owned()])
+            .expect_err("the misspelling is refused");
+
+        assert_eq!(error, "unknown --only workload: scan delcs");
+    }
+
+    #[test]
+    fn every_unknown_only_name_is_reported() {
+        let error = select(
+            vec![workload("scan decls")],
+            &["scan delcs".to_owned(), "scan refs".to_owned()],
+        )
+        .expect_err("both misspellings are refused");
+
+        assert_eq!(error, "unknown --only workloads: scan delcs, scan refs");
+    }
+
+    #[test]
+    fn one_unknown_only_name_is_not_hidden_by_a_match() {
+        let error = select(
+            vec![workload("scan decls"), workload("scan refs")],
+            &["scan decls".to_owned(), "scan delcs".to_owned()],
+        )
+        .expect_err("every requested name must exist");
+
+        assert_eq!(error, "unknown --only workload: scan delcs");
+    }
+
+    #[test]
+    fn repeating_a_valid_only_name_runs_it_once() {
+        let selected = select(
+            vec![workload("scan decls"), workload("scan refs")],
+            &["scan decls".to_owned(), "scan decls".to_owned()],
+        )
+        .expect("both names exist");
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|workload| workload.name)
+                .collect::<Vec<_>>(),
+            ["scan decls"]
+        );
+    }
+
+    #[test]
+    fn no_only_names_keep_the_whole_catalogue_in_order() {
+        let selected = select(vec![workload("scan decls"), workload("scan refs")], &[])
+            .expect("nothing is filtered");
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|workload| workload.name)
+                .collect::<Vec<_>>(),
+            ["scan decls", "scan refs"]
+        );
+    }
 
     /// Every workload in the catalogue **compiles**, which is the one thing this file
     /// can check without a corpus.

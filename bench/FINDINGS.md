@@ -1211,7 +1211,7 @@ lever left on the producer side and it is `clients/dotnet`'s, not the database's
 held across memoisation lookups *and* across `Add`, so a slower sink widens a critical section
 eight threads are queued behind.
 
-## 18. The plateau was the connect and the allocator, not the engine — 27× from pooling a connection, 5–13% from mimalloc
+## 18. The plateau was the connect and the allocator, not the engine — 27× from pooling a connection, 5–10% from mimalloc
 
 **What was asked.** [Issue #19](https://github.com/boxops-uk/fjord/issues/19): heavy read load
 plateaued at ~9 of ~14 available cores, which read as an internal limit on how many scans the
@@ -1274,7 +1274,7 @@ ask fast enough, and no server-side change would have moved it.
 `fjord query` to people. `examples/loadgen.rs` and `examples/soak.rs` were already built that
 way, which is why they measure the server rather than the connect path.
 
-### 18b. mimalloc is worth 5–13% here and 38% at core saturation
+### 18b. mimalloc is worth 5–10% by workload median here and 38% at core saturation
 
 One database, eight connections, 40 runs a workload, the two binaries alternating over three
 rounds (*this box*):
@@ -1292,7 +1292,8 @@ arms never overlapping. That is what makes a single-digit claim worth making on 
 On the issue's box, fed by pooled connections at 24 concurrent heavy counts, the same swap is
 **441 → 609 q/s (+38%)** with cores in use going 13.5 → 13.9, and stacks sampled under load
 showed threads parked in `malloc` on glibc's arena mutexes. Here the generator sits on the same
-eight cores as the server and takes its share, so 5–13% is what is left of that. The direction
+eight cores as the server and takes its share, so 5–10% by workload median is what is left of
+that. The direction
 reproduces; the size is a property of the host, and neither number is what a deployment sees.
 
 **The first pass at this said the opposite, and the method is the reason.** Run as a full
@@ -1314,12 +1315,13 @@ serialises and mimalloc's per-thread caches do not.
 
 - **`Connection::discard`** — a result read to its end with no row decoded. Decoding them made
   the co-resident generator take ~40% of the box (#19's appendix), so a throughput number taken
-  with `drain` was partly a measurement of the client. Guarded by
-  `discarding_is_flat_in_the_length_of_the_result`: peak live bytes over a 4,000-row result
-  against a 1-row result, drained and discarded, asserting the held one grows with the result and
-  the discarded one does not.
-- **`loadgen --only`** — the A/B lever above, and a misspelt name exits 2 rather than reporting a
-  table with no rows.
+  with `drain` was partly a measurement of the client. `a_discard_does_not_decode_data_rows`
+  sends a frame-valid payload that cannot decode and still reaches `COMPLETE`;
+  `discarding_is_flat_in_the_length_of_the_result` measures peak live bytes over a 4,000-row
+  result against a 1-row result, drained and discarded, asserting the held one grows with the
+  result and the discarded one does not.
+- **`loadgen --only`** — the A/B lever above. Every requested name is validated independently,
+  so a misspelling exits 2 even when another `--only` names a real workload.
 - **`the_global_allocator_is_mimalloc`** — the attribute is a whole-program choice with no
   compile-time evidence that it took, so the guard asks mimalloc whether a live allocation is in
   one of its own heap regions. Its mutation control was run: comment the attribute out and the
@@ -1391,7 +1393,7 @@ serialises and mimalloc's per-thread caches do not.
   Quote ex-tail, or drop `src/tests` and re-baseline — a decision to take before the next
   measurement rather than after it.
 - **The allocator's 38% has not been reproduced on a quiet host.**
-  [§18b](#18b-mimalloc-is-worth-513-here-and-38-at-core-saturation) has two numbers for one
+  [§18b](#18b-mimalloc-is-worth-510-by-workload-median-here-and-38-at-core-saturation) has two numbers for one
   change and the difference is the load generator's share of the cores. What would settle it is
   the generator on another machine, or the server on its own cpuset — a `taskset` and a second
   box, not a new instrument.

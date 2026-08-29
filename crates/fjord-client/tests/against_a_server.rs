@@ -907,6 +907,56 @@ fn a_discard_runs_the_result_out_and_leaves_the_connection_working() {
     assert_eq!(connection.discard(&mut rows).expect("a no-op"), sent);
 }
 
+/// Peak-live allocation stays flat if every row is decoded and immediately dropped.
+/// A payload that cannot decode is the witness that `discard` never takes that path.
+#[test]
+fn a_discard_does_not_decode_data_rows() {
+    use fjord_wire::{
+        desc::{Desc, encode_desc},
+        frame::FrameKind,
+        protocol,
+    };
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let socket = dir.path().join("discard.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        ready_fake_server(&mut stream);
+
+        let (query, _) = read_frame(&mut stream);
+        assert_eq!(query.kind, protocol::kinds::QUERY);
+
+        let mut desc = vec![];
+        encode_desc(&mut desc, &Desc::Str);
+        send_frame(&mut stream, FrameKind::ROW_DESCRIPTION, query.stream, &desc);
+
+        // Empty is not an encoded string, but it is a valid frame payload. A discard
+        // counts the frame without interpreting the value inside it.
+        send_frame(&mut stream, FrameKind::DATA_ROW, query.stream, &[]);
+        send_frame(
+            &mut stream,
+            protocol::kinds::COMPLETE,
+            query.stream,
+            &protocol::encode_complete(1, 0),
+        );
+    });
+
+    let mut connection =
+        Connection::connect(&socket, "code", Arc::new(schema()), Mode::ReadOnly, false)
+            .expect("the handshake completes");
+    let mut rows = connection
+        .query("F where src.File F")
+        .expect("the result opens");
+
+    assert_eq!(connection.discard(&mut rows).expect("no row is decoded"), 1);
+    assert_eq!(rows.seen(), 1);
+    assert!(rows.finished());
+
+    server.join().expect("the fake server exits cleanly");
+}
+
 /// **The claim `discard` is for.** A result held in memory costs the client its length;
 /// one run out costs a frame at a time, and a load generator that paid the first price
 /// would be measuring itself rather than the server.
