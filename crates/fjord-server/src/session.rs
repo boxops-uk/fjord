@@ -1353,6 +1353,12 @@ fn label_step(step: &Step, schema: &Schema) -> (String, bool) {
                         full_scan |= match &access.seek_key {
                             SeekKey::Prefix(bytes) => bytes.is_empty(),
                             SeekKey::Composite(parts) => parts.is_empty(),
+                            // A bound narrows the range whether or not anything
+                            // ahead of it is pinned: `X < 7` over a scalar key pins
+                            // no field and still reads one run of the order.
+                            SeekKey::Bounded { parts, lo, hi } => {
+                                parts.is_empty() && lo.is_none() && hi.is_none()
+                            }
                         };
                     }
 

@@ -162,7 +162,10 @@ fn local_registers(
 }
 
 fn seek_key_escapes(key: &SeekKey, bound: &[(Address, PredicateId)], found: &mut Vec<Escape>) {
-    let SeekKey::Composite(parts) = key else {
+    // Both part-carrying keys, and matched together on purpose: a bounded seek is
+    // an ordinary seek with a range after its parts, so a splice hidden in one
+    // would escape unseen if this only knew about the other.
+    let (SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. }) = key else {
         return;
     };
 

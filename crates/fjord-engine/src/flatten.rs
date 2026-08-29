@@ -29,7 +29,8 @@
 //!    a register bound at an outer level (a **splice**), or filters rows as they
 //!    come (a **residual**). This is order-dependent — a variable being captured
 //!    cannot seek, because it is an output, unless a constraint says what the output
-//!    has to look like — which is why it runs after the order is fixed rather than
+//!    has to look like, or an order comparison bounds it to one run of the key order
+//!    (a **range**) — which is why it runs after the order is fixed rather than
 //!    before.
 //!
 //! # What it does not do
@@ -73,7 +74,8 @@ use crate::{
     levenshtein::FuzzyAnchor,
     plan::{
         Access, Address, Arith, Compare as CompareRel, Computed, DerivedBind, FieldPath, Guide,
-        Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        Level, Plan, Project, RangeEdge, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step,
+        Test,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     syntax::{
@@ -543,6 +545,22 @@ struct SeekBuilder {
     /// Any other field closing the seek leaves nothing for a guide to attach to,
     /// which is why this remembers the path rather than a flag.
     range_at: Option<FieldPath>,
+    /// The bounds an order comparison folded onto the field that ended the prefix.
+    ///
+    /// At most one edge per sense, and both of them on **one** field: a second
+    /// lower bound cannot narrow the seek any further without intersecting two
+    /// ranges in the key, and a bound on a later field is not one run of the key
+    /// order at all. Either stays a residual, which is what "all of them hold"
+    /// means when only one of them can move the scan.
+    lo: Option<RangeEdge>,
+    hi: Option<RangeEdge>,
+    /// Which of [`comparisons`](Flattener::comparisons) **this branch** folded, by
+    /// index.
+    ///
+    /// Reported rather than acted on, because whether a folded comparison may leave
+    /// the residual list is not one branch's decision — see
+    /// [`folded`](Flattener::folded), which is where the branches are put together.
+    folded: Vec<usize>,
 }
 
 impl SeekBuilder {
@@ -553,6 +571,9 @@ impl SeekBuilder {
             building: true,
             guide: None,
             range_at: None,
+            lo: None,
+            hi: None,
+            folded: vec![],
         }
     }
 
@@ -583,6 +604,16 @@ impl SeekBuilder {
     /// is the common case and needs no per-row work — and a composite where a
     /// register's bytes have to be spliced in each time the level is opened.
     fn seek_key(&self) -> SeekKey {
+        // A bound is the last thing in a seek and there is no byte string that says
+        // so, which is why it is a variant rather than a longer prefix.
+        if self.lo.is_some() || self.hi.is_some() {
+            return SeekKey::Bounded {
+                parts: self.parts.clone().into(),
+                lo: self.lo.clone(),
+                hi: self.hi.clone(),
+            };
+        }
+
         if self
             .parts
             .iter()
@@ -701,6 +732,7 @@ pub(crate) fn rule_dependencies(
         fetched: vec![],
         constraints: vec![],
         constrained: vec![],
+        folded: vec![],
         denials: vec![],
         comparisons: vec![],
         selects: vec![],
@@ -753,6 +785,7 @@ fn flatten_reporting(
         fetched: vec![],
         constraints: vec![],
         constrained: vec![],
+        folded: vec![],
         denials: vec![],
         comparisons: vec![],
         selects: vec![],
@@ -846,6 +879,18 @@ struct Flattener<'a> {
     /// [`denials`](Flattener::denials) are, because a comparison has two sides and
     /// neither is privileged: what it needs at application time is both, resolved.
     comparisons: Vec<Comparison>,
+    /// Which of [`comparisons`](Flattener::comparisons) a seek has already
+    /// **folded**, by index — so [`apply_comparisons`](Self::apply_comparisons)
+    /// does not also filter by them.
+    ///
+    /// The dual of [`constrained`](Flattener::constrained), and for the same reason
+    /// with one extra condition. A folded bound is *exact* — the range is the rows
+    /// and not a superset — so re-applying it as a residual would read the same
+    /// answer twice and, the day the two readings of one bound disagree, differently.
+    /// The extra condition is alternatives: a comparison leaves this list only where
+    /// **every** branch of the level folded it, because two branches are two key
+    /// layouts and a field terminal in one can sit behind a capture in the other.
+    folded: Vec<usize>,
     /// A **select's tag check**: the register, the union field's path, and the
     /// alternative that must be there.
     ///
@@ -2602,6 +2647,10 @@ impl Flattener<'_> {
                     // because they are two key layouts and a `FieldPath` means
                     // something different in each.
                     let mut first: Vec<(Symbol, Slot)> = vec![];
+                    // The comparisons folded into a seek so far — narrowed to the
+                    // ones every branch folded, and empty for a generator with no
+                    // alternative at all, which answers no rows to filter.
+                    let mut folded: Vec<usize> = vec![];
 
                     for (alternative, alt) in generator.alternatives.clone().iter().enumerate() {
                         let key_ty = self.schema.get(alt.predicate)?.key().ty.clone();
@@ -2627,9 +2676,23 @@ impl Flattener<'_> {
                             self.reconcile(alt.key, &first, branch);
                         }
 
+                        folded = match alternative {
+                            0 => current.folded.clone(),
+                            // **Every branch, or none.** A comparison one branch
+                            // folded into its seek and another left at a field
+                            // behind a closed prefix still has to filter the second
+                            // branch's rows; dropping it on the first branch's
+                            // evidence answers rows the query excluded.
+                            _ => folded
+                                .into_iter()
+                                .filter(|index| current.folded.contains(index))
+                                .collect(),
+                        };
+
                         sources.push(current.source(alt.predicate));
                     }
 
+                    self.folded.extend(folded);
                     self.bindings.extend(first);
 
                     // After the key: `X = test.Foo {id = X}` cannot typecheck, so
@@ -3623,6 +3686,7 @@ impl Flattener<'_> {
         });
 
         if patterns.is_empty() {
+            self.bound(symbol, ty, level);
             level.building = false;
             return;
         }
@@ -3642,6 +3706,84 @@ impl Flattener<'_> {
                         "this prefix is not a pattern for that variable's type",
                     );
                 }
+            }
+        }
+    }
+
+    /// Fold the **order comparisons** on this capture into the seek, as a bounded
+    /// range on the field that ends the prefix.
+    ///
+    /// This is the sargeable half of a comparison, and the reason there is one at
+    /// all: the encoding is order-preserving
+    /// ([I1](../../../website/content/invariants.md#i1)), so `Ln >= 1000; Ln < 1200` over a
+    /// fixed prefix denotes exactly one contiguous run of the key order. Applied as
+    /// a residual instead it answers the same rows by reading the bucket from its
+    /// start — the whole cost of a window late in a large one, and the difference
+    /// between offset-dependent and offset-independent.
+    ///
+    /// Called **only** where a bare capture would have closed the prefix, which is
+    /// where the three conditions hold at once: every earlier field is fixed
+    /// (`building`), nothing follows the bound in the seek (the prefix closes here),
+    /// and no other pattern is already narrowing this field. A capture the prefix
+    /// never reached is behind rows an outer field chose, so a bound on it is a
+    /// filter and stays one.
+    ///
+    /// **The field is named syntactically**, by matching `ExprKind::Var` against the
+    /// symbol being captured, rather than by resolving each side to a slot. An alias
+    /// — `A = X; A < 7` — therefore filters rather than folding, which is a plan one
+    /// step worse and never a wrong one; resolving instead would decide in *source*
+    /// order, since a level's walk sees only the bindings made before it, and two
+    /// spellings of one query must not compile to different plans. Constants are the
+    /// exception that needs no ordering: every fold is recorded before any level is
+    /// walked, so [`constant`](Self::constant) answers the same whatever the order.
+    fn bound(&self, symbol: Symbol, ty: &PredicateTy, level: &mut SeekBuilder) {
+        if !level.building {
+            return;
+        }
+
+        let names = |node: NodeId| matches!(self.ast.store().kind(node), ExprKind::Var(named) if *named == symbol);
+
+        for (index, comparison) in self.comparisons.iter().enumerate() {
+            // `3 < X` is `X > 3`: the relation is read from the *field's* side
+            // whichever side it was written, exactly as the residual form reads it.
+            let (op, value) = if names(comparison.left) {
+                (comparison.op, comparison.right)
+            } else if names(comparison.right) {
+                (comparison.op.flipped(), comparison.left)
+            } else {
+                continue;
+            };
+
+            // **A constant, and nothing else.** `X < "a".."` compares against a set
+            // rather than a value and `X < "ann"~1` against a neighbourhood; neither
+            // has an edge, and both are refused by name — by the residual pass,
+            // which owns that diagnostic. Declining quietly here is what leaves it
+            // able to.
+            let Some(Const::Bytes(bytes)) = self.constant(value, ty) else {
+                continue;
+            };
+
+            let edge = Some(RangeEdge {
+                value: bytes.into(),
+                inclusive: matches!(op, CompareOp::Le | CompareOp::Ge),
+            });
+
+            // The first edge of each sense takes the seek; a second of the same
+            // sense is left in the residual list, where it still has to hold.
+            let taken = match op {
+                CompareOp::Lt | CompareOp::Le if level.hi.is_none() => {
+                    level.hi = edge;
+                    true
+                }
+                CompareOp::Gt | CompareOp::Ge if level.lo.is_none() => {
+                    level.lo = edge;
+                    true
+                }
+                _ => false,
+            };
+
+            if taken {
+                level.folded.push(index);
             }
         }
     }
@@ -3819,11 +3961,12 @@ impl Flattener<'_> {
     /// Turn each **order comparison** into a residual on whichever side runs later.
     ///
     /// A comparison is the denial's shape with two ordered sides instead of one, and
-    /// like a denial it always filters: `A.x < B.y` reads rows and drops them. Unlike
-    /// a denial there *is* a sargeable form to look for later — an order comparison
-    /// on a leading key field denotes one contiguous run of the key order, where a
-    /// denial denotes the two runs either side of one. That form is not built; this
-    /// comment is the note that it is possible rather than a claim that it exists.
+    /// what reaches here filters as a denial does: `A.x < B.y` reads rows and drops
+    /// them. Unlike a denial there is also a **sargeable** form — one contiguous run
+    /// of the key order, where a denial denotes the two runs either side of one —
+    /// and [`bound`](Self::bound) has already taken every comparison that qualifies
+    /// out of this pass ([`folded`](Flattener::folded)). So this is the residual
+    /// half, and the split is where the two forms are decided, not what either does.
     ///
     /// **Which side carries the residual is decided by address, not by syntax.** A
     /// residual runs while one level's register holds a row and reads another's, so
@@ -3834,7 +3977,17 @@ impl Flattener<'_> {
     /// Run **after** `apply_constraints`, so a variable a constraint folded is
     /// already what it is by the time this looks it up.
     fn apply_comparisons(&mut self, body: &mut Body) {
-        for comparison in std::mem::take(&mut self.comparisons) {
+        for (index, comparison) in std::mem::take(&mut self.comparisons)
+            .into_iter()
+            .enumerate()
+        {
+            // Already in a seek, and exactly: the bound is the range rather than a
+            // narrowing of it, so filtering by it again would read the same answer
+            // twice ([`folded`](Flattener::folded)).
+            if self.folded.contains(&index) {
+                continue;
+            }
+
             self.apply_comparison(body, &comparison);
         }
     }
@@ -4957,26 +5110,40 @@ mod tests {
                         .unwrap_or("?")
                         .to_owned();
 
+                    let part_shape = |part: &SeekKeyPart| match part {
+                        SeekKeyPart::Bytes(_) => "k".to_owned(),
+                        SeekKeyPart::RegisterField { address, path } => {
+                            format!("{address}.{path}")
+                        }
+                        // `r0#` — the row's identity, not any field of it.
+                        SeekKeyPart::RegisterFactId(address) => format!("{address}#"),
+                    };
+
                     let seek = match source {
                         Source::Seek { access, .. } => match &access.seek_key {
                             SeekKey::Prefix(bytes) if bytes.is_empty() => "scan".to_owned(),
                             SeekKey::Prefix(_) => "seek[k]".to_owned(),
                             SeekKey::Composite(parts) => format!(
                                 "seek[{}]",
-                                parts
-                                    .iter()
-                                    .map(|part| match part {
-                                        SeekKeyPart::Bytes(_) => "k".to_owned(),
-                                        SeekKeyPart::RegisterField { address, path } => {
-                                            format!("{address}.{path}")
-                                        }
-                                        // `r0#` — the row's identity, not any field of it.
-                                        SeekKeyPart::RegisterFactId(address) =>
-                                            format!("{address}#"),
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(" ")
+                                parts.iter().map(part_shape).collect::<Vec<_>>().join(" ")
                             ),
+                            // The bound reads as the relation it folded: `seek[>=k
+                            // <k]` over a scalar key, `seek[r0.0 >=k]` behind a
+                            // splice. Which field it is on is the one the parts
+                            // stopped at, so it needs no name of its own.
+                            SeekKey::Bounded { parts, lo, hi } => {
+                                let mut shape: Vec<String> = parts.iter().map(part_shape).collect();
+
+                                for (edge, closed, open) in [(lo, ">=k", ">k"), (hi, "<=k", "<k")] {
+                                    if let Some(edge) = edge {
+                                        shape.push(
+                                            if edge.inclusive { closed } else { open }.to_owned(),
+                                        );
+                                    }
+                                }
+
+                                format!("seek[{}]", shape.join(" "))
+                            }
                         },
                         // The reference followed, named against the register it is
                         // read out of — `fetch[r0.1]` is "the fact field 1 of r0
@@ -5677,6 +5844,142 @@ mod tests {
         assert_eq!(
             rows("X where test.Name X; X = \"a\"..; X = \"an\".."),
             strs(&["ann", "anna", "annotate"]),
+        );
+    }
+
+    /// **The sargeable comparison**: a bound on the field that ends the seek prefix
+    /// is the range the scan opens on, not a filter over it.
+    ///
+    /// Three shapes in one place, because what separates them is *where the field
+    /// sits* and nothing else — the same rule a string prefix follows. A capture at
+    /// the field the prefix reached folds; a capture behind a closed prefix filters;
+    /// and the constant on the left flips the relation rather than adding an arm.
+    #[test]
+    fn a_bound_on_the_seek_terminal_field_folds_into_the_seek() {
+        // A scalar key: the capture *is* the prefix's end, so the bound is the
+        // whole seek and there is nothing left to filter by.
+        assert_eq!(
+            shape("X where test.Count X; X < 7"),
+            lines(&["r0 <- test.Count seek[<k]", "head r0.0:int"])
+        );
+
+        // Composite: `from` is fixed, so `to` is the field the prefix ends at.
+        assert_eq!(
+            shape("T where test.Edge {from = 1, to = T}; T > 2"),
+            lines(&["r0 <- test.Edge seek[k >k]", "head r0.1:int"])
+        );
+
+        // And the negative control: the same comparison on a field the prefix never
+        // reached, because a capture ahead of it closed the prefix.
+        assert_eq!(
+            shape("{a = F, b = T} where test.Edge {from = F, to = T}; T > 2"),
+            lines(&[
+                "r0 <- test.Edge scan where 1 > k",
+                "head {a = r0.0:int, b = r0.1:int}",
+            ])
+        );
+
+        // **A folded constant on the other side is the same bound, wherever the
+        // fold was written.** Every constant bind is recorded before any level is
+        // walked, so this is the one thing the fold may see through — and it is why
+        // it looks a constant up rather than resolving the side to a slot, which
+        // would answer in source order and give one query two plans.
+        let expected = shape("X where test.Count X; X < 7");
+
+        for source in [
+            "X where Z = 7; test.Count X; X < Z",
+            "X where test.Count X; X < Z; Z = 7",
+        ] {
+            assert_eq!(shape(source), expected, "for {source:?}");
+        }
+    }
+
+    /// `3 < X` is `X > 3` — the same seek, and one arm rather than two.
+    ///
+    /// The mirror of what the residual form does with a constant on the left, and
+    /// it has to be, or two spellings of one query would open different ranges.
+    #[test]
+    fn the_constant_on_the_left_flips_the_edge() {
+        let expected = shape("X where test.Count X; X >= 7");
+
+        assert_eq!(shape("X where test.Count X; 7 <= X"), expected);
+        assert_eq!(
+            expected,
+            lines(&["r0 <- test.Count seek[>=k]", "head r0.0:int"])
+        );
+
+        assert_eq!(rows("X where test.Count X; 7 <= X"), ints(&[7, 1000]));
+    }
+
+    /// **One edge per sense reaches the seek; the rest still hold.**
+    ///
+    /// Two bounds of opposite senses are a window, which is one range. A second
+    /// bound of a sense already spent is the intersection of two ranges, which no
+    /// single seek expresses — so it filters, exactly as a second constraint on one
+    /// variable does.
+    #[test]
+    fn a_second_bound_of_one_sense_filters() {
+        assert_eq!(
+            shape("X where test.Count X; X >= -42; X < 1000"),
+            lines(&["r0 <- test.Count seek[>=k <k]", "head r0.0:int"])
+        );
+
+        assert_eq!(
+            shape("X where test.Count X; X > -42; X > 7"),
+            lines(&["r0 <- test.Count seek[>k] where 0 > k", "head r0.0:int"])
+        );
+
+        assert_eq!(rows("X where test.Count X; X > -42; X > 7"), ints(&[1000]));
+    }
+
+    /// **A pattern outranks a bound at the same field**, and the bound then filters.
+    ///
+    /// Only one thing can end a seek prefix, and a range pattern narrows the field
+    /// to a bucket a bound could only narrow further from outside the key. Ranked
+    /// rather than raced, for the reason the patterns are ranked among themselves:
+    /// two spellings of one query must compile to one plan.
+    #[test]
+    fn a_range_pattern_takes_the_seek_and_the_bound_filters() {
+        let expected = lines(&["r0 <- test.Name seek[k] where 0 < k", "head r0.0:str"]);
+
+        assert_eq!(
+            shape("N where test.Name N; N = \"an\"..; N < \"anno\""),
+            expected
+        );
+        assert_eq!(
+            shape("N where test.Name N; N < \"anno\"; N = \"an\".."),
+            expected
+        );
+
+        assert_eq!(
+            rows("N where test.Name N; N = \"an\"..; N < \"anno\""),
+            strs(&["ann", "anna"]),
+        );
+    }
+
+    /// **A bound only every branch folded leaves the residual list.**
+    ///
+    /// The trap: two alternatives are two key layouts, so a field terminal in one
+    /// can sit behind a capture in the other. Dropping the comparison on the first
+    /// branch's evidence would answer the second branch's rows unfiltered — and the
+    /// rows it added would be exactly the ones the query excluded.
+    #[test]
+    fn a_bound_one_branch_could_not_fold_still_filters_both() {
+        // Branch 0 closes its prefix at the wildcard, so `T` is behind it; branch 1
+        // fixes `from`, so `T` ends the prefix and folds. The comparison therefore
+        // stays a residual on both — redundant on the branch that also seeks it,
+        // and the only thing keeping the other honest.
+        assert_eq!(
+            shape("T where test.Edge {from = _, to = T} | test.Edge {from = 1, to = T}; T > 2"),
+            lines(&[
+                "r0 <- test.Edge scan where 1 > k | test.Edge seek[k >k] where 1 > k",
+                "head r0.1:int",
+            ])
+        );
+
+        assert_eq!(
+            rows("T where test.Edge {from = _, to = T} | test.Edge {from = 1, to = T}; T > 2"),
+            ints(&[3, 3, 3]),
         );
     }
 
@@ -6940,7 +7243,7 @@ mod tests {
             .expect("a seek")
         {
             SeekKey::Prefix(bytes) => assert!(!bytes.is_empty(), "a constant prefix"),
-            SeekKey::Composite(parts) => assert!(
+            SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => assert!(
                 matches!(parts.first(), Some(SeekKeyPart::Bytes(_))),
                 "the fold must reach the seek prefix, got {parts:?}",
             ),
@@ -7892,6 +8195,19 @@ pub mod proptest {
         /// rows than its whole-string twin and reaches them through the same two
         /// plan arms.
         FuzzyPrefix(&'static str, u8),
+        /// `V{v} < "t"` and its three siblings — an **order comparison**, drawn
+        /// here beside the prefix for the reason the fuzzy pattern is: the two
+        /// compile down one fork, and which side of it a query lands on is decided
+        /// by where the field sits in the key. On the field that ends the seek
+        /// prefix it folds into a [`SeekKey::Bounded`]; anywhere else it is a
+        /// [`ResidualOp::CmpConst`], and one entry here reaches both.
+        ///
+        /// The `bool` is **inclusivity**, as the plan carries it: `<` and `<=`
+        /// differ by a successor at the boundary and by nothing else, which is
+        /// exactly the off-by-one a table with only the strict forms would let
+        /// through.
+        Less(&'static str, bool),
+        Greater(&'static str, bool),
     }
 
     impl Match {
@@ -7902,6 +8218,12 @@ pub mod proptest {
                 Match::NotEqual(text) => format!("V{var} != {text:?}"),
                 Match::Fuzzy(text, distance) => format!("V{var} = {text:?}~{distance}"),
                 Match::FuzzyPrefix(text, distance) => format!("V{var} = {text:?}~<{distance}"),
+                Match::Less(text, closed) => {
+                    format!("V{var} {} {text:?}", if closed { "<=" } else { "<" })
+                }
+                Match::Greater(text, closed) => {
+                    format!("V{var} {} {text:?}", if closed { ">=" } else { ">" })
+                }
             }
         }
 
@@ -7918,6 +8240,25 @@ pub mod proptest {
                 Match::Fuzzy(text, distance) => crate::levenshtein::within(text, value, distance),
                 Match::FuzzyPrefix(text, distance) => {
                     crate::levenshtein::within_prefix(text, value, distance)
+                }
+                // Rust's string order is byte-wise, and so is the encoding's over
+                // this domain — which is [I1](../../../website/content/invariants.md#i1)
+                // rather than a coincidence, and is what the fold is built on. The
+                // model says it the direct way regardless: no seek, no successor,
+                // just the two values.
+                Match::Less(text, closed) => {
+                    if closed {
+                        value <= text
+                    } else {
+                        value < text
+                    }
+                }
+                Match::Greater(text, closed) => {
+                    if closed {
+                        value >= text
+                    } else {
+                        value > text
+                    }
                 }
             }
         }
@@ -7952,7 +8293,13 @@ pub mod proptest {
     ///   whose longest string is two characters — so the pair carries the budget
     ///   across unchanged, and `= "abc"~<1` (one of three) is left out for the
     ///   reason the severe whole-string term is.
-    const MATCHES: [Match; 9] = [
+    /// - `< "b"`, `<= "ab"`, `> "a"` and `>= "ab"` each keep two of three, which is
+    ///   the same budget as everything above — and the four together are both
+    ///   senses at both inclusivities, since an edge's *sense* decides which side
+    ///   of the range it is and its *inclusivity* decides whether the boundary key
+    ///   needs a successor. A table holding only the strict forms would leave the
+    ///   successor arm to one hand-written case.
+    const MATCHES: [Match; 13] = [
         Match::Prefix(""),
         Match::Prefix("a"),
         Match::NotPrefix("a"),
@@ -7962,6 +8309,10 @@ pub mod proptest {
         Match::Fuzzy("ac", 1),
         Match::FuzzyPrefix("a", 1),
         Match::FuzzyPrefix("ac", 1),
+        Match::Less("b", false),
+        Match::Less("ab", true),
+        Match::Greater("a", false),
+        Match::Greater("ab", true),
     ];
 
     /// A generated key field's type: a scalar, a record of scalars, or a **reference**
@@ -10048,6 +10399,12 @@ mod battery {
         /// the anchored one would leave half of each path unproven.
         anchored_guide: bool,
         anchored_residual: bool,
+        /// A folded order comparison, and each sense of it separately: a battery
+        /// that only ever bounded a scan from below would leave the successor
+        /// arithmetic of the other edge unproven, and the two are not symmetric.
+        bounded_seek: bool,
+        bounded_below: bool,
+        bounded_above: bool,
     }
 
     impl Shapes {
@@ -10104,6 +10461,12 @@ mod battery {
                     self.anchored_residual,
                     "a `ResidualOp::Fuzzy` anchored to a prefix",
                 ),
+                (self.bounded_seek, "a `SeekKey::Bounded`"),
+                (self.bounded_below, "a `SeekKey::Bounded` with a lower edge"),
+                (
+                    self.bounded_above,
+                    "a `SeekKey::Bounded` with an upper edge",
+                ),
             ] {
                 if !present {
                     out.push(what);
@@ -10111,6 +10474,22 @@ mod battery {
             }
 
             out
+        }
+
+        fn observe_parts(&mut self, parts: &[SeekKeyPart]) {
+            self.multi_part_seek |= parts.len() > 1;
+
+            for part in parts.iter() {
+                match part {
+                    SeekKeyPart::Bytes(_) => self.constant_in_composite = true,
+                    SeekKeyPart::RegisterField { path, .. } => {
+                        self.nested_path |= !path.is_flat();
+                    }
+                    SeekKeyPart::RegisterFactId(_) => {
+                        self.fact_id_splice = true;
+                    }
+                }
+            }
         }
 
         fn observe(&mut self, plan: &Plan) {
@@ -10184,22 +10563,12 @@ mod battery {
                         Source::Seek { access, .. } | Source::Guided { access, .. } => {
                             match &access.seek_key {
                                 SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
-                                SeekKey::Composite(parts) => {
-                                    self.multi_part_seek |= parts.len() > 1;
-
-                                    for part in parts.iter() {
-                                        match part {
-                                            SeekKeyPart::Bytes(_) => {
-                                                self.constant_in_composite = true
-                                            }
-                                            SeekKeyPart::RegisterField { path, .. } => {
-                                                self.nested_path |= !path.is_flat();
-                                            }
-                                            SeekKeyPart::RegisterFactId(_) => {
-                                                self.fact_id_splice = true;
-                                            }
-                                        }
-                                    }
+                                SeekKey::Composite(parts) => self.observe_parts(parts),
+                                SeekKey::Bounded { parts, lo, hi } => {
+                                    self.bounded_seek = true;
+                                    self.bounded_below |= lo.is_some();
+                                    self.bounded_above |= hi.is_some();
+                                    self.observe_parts(parts);
                                 }
                             }
                         }

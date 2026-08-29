@@ -44,9 +44,10 @@ things about each. The first three narrow what is read; the fourth reads and dro
 | **seek** | The field is a constant, or a constrained range, and every field before it also narrowed | Nothing — the scan opens on a shorter range |
 | **splice** | The field's value is in a register an *earlier* level bound | Nothing — this is the join, and it is why the inner loop is not a scan |
 | **guide** | The field is a [fuzzy pattern](fuzzy-search.html) — `~` or `~<` — and the fields before it narrowed | One automaton walk per row, and a re-opened scan per dead band |
+| **bound** | The field is a **capture** an order comparison constrains, and every field before it narrowed | Nothing — the scan opens on the window rather than reading up to it |
 | **filter** (a residual) | Anything at all, once the seek prefix has closed | A row read, then dropped |
 
-The first three are what "sargeable" means here: the constraint reaches the *key order*, so
+The first four are what "sargeable" means here: the constraint reaches the *key order*, so
 the rows that cannot match are never read. A filter answers the same question and reads the
 whole range to do it.
 
@@ -65,8 +66,9 @@ filters, however specific it looks.
 | A **complete** record — `{extra = 1, inner = 2}` | **stays open** | The whole wrapped value is known |
 | A string prefix — `"a".."` | **ends it, and is the last part** | A range is one run of the order, and nothing after it in the key is that field's bytes |
 | A fuzzy pattern — `"ann"~1`, `"ann"~<1` | **ends it, and becomes the guide** | A set of ranges inside one range |
+| A **capture** an order comparison bounds — `Ln >= 1000` | **ends it, and becomes the range** | `>=`/`<` denote one run of the order, so the same rule a string prefix follows |
 | A **wildcard** — `_` | **closes it** | Nothing is known |
-| A **capture** with no constraint on it | **closes it** | The field is an output |
+| A **capture** with nothing constraining it | **closes it** | The field is an output |
 | A **partial** record — `{extra = 1, inner = A}` | **closes it** | A record keeps its wrapper inside a key, so a partial one is not a byte prefix of a complete one |
 | A computed value — `Y + 1` | **closes it** (`nyi/value-match`) | A seek compares bytes known before the run |
 
@@ -150,6 +152,49 @@ N where test.Foo {id = _, name = N}; N = "ann"~1     filter — the leading fiel
 The full walkthrough of the automaton, the bounds and the measured saving is
 [Fuzzy search](fuzzy-search.html).
 
+## An order comparison: seek or filter
+
+`<`, `<=`, `>` and `>=` against a constant follow the same fork, in the same place. On the
+field that **ends the seek prefix** the comparison is folded into the seek as a bounded range —
+a `SeekKey::Bounded`, one contiguous run of the key order — and it leaves the residual list
+entirely. Anywhere else it is a `ResidualOp::CmpConst` and reads every row in the range.
+
+```sigla
+X where test.Count X; X < 7                                    range  — the capture is the key
+{n = Ln, v = L.value}
+  where F = content.File "src/parse.rs";
+        L = content.Line {file = F, line = Ln};
+        Ln >= 1000; Ln < 1200                                  range  — `file` is fixed
+{a = F, b = T} where test.Edge {from = F, to = T}; T > 2       filter — `from` closed it first
+Y where test.Edge {from = X, to = Y}; test.Bar {id = Z}; Z < X filter — the other side is a row
+```
+
+The middle one is the case worth understanding, because it is the difference between a query
+whose cost is the window and one whose cost is the *offset*. As a filter it reads lines 1 to
+1200 of the file and discards the first thousand; as a range it opens the scan at line 1000.
+`a_bounded_seek_reads_the_window_and_not_the_offset` counts both.
+
+Four rules decide it, and each of them is a wrong answer if got wrong:
+
+1. **Terminal only.** Every field before the bound is fixed and nothing follows it in the seek
+   — a bounded field's bytes are not a single value, so a part appended after one would compare
+   the next field against bytes belonging to this one. The plan enforces it structurally: the
+   edges are fields of `SeekKey::Bounded`, not entries in its parts list.
+2. **Against a constant.** `A.x < B.y` is a comparison against another row, and `N < "a".."` is
+   a comparison against a *set* — a range has no order. Neither is a range edge; the first
+   filters and the second is refused by name.
+3. **One edge per sense.** The first lower bound and the first upper bound take the seek. A
+   second of a sense already spent is the intersection of two ranges, which no single seek
+   expresses, so it filters — and still holds.
+4. **A folded bound leaves the residual list.** The range is *exact*, so re-applying it as a
+   filter would read the same answer twice. Where a level has alternatives it leaves only if
+   **every** branch folded it: two branches are two key layouts, and a field terminal in one
+   can sit behind a capture in the other.
+
+A pattern outranks a bound at the same field — `N = "an"..; N < "anno"` is the `"an"` bucket
+seek with the bound as a filter — for the reason the patterns are ranked among themselves: only
+one thing can end a seek prefix, and two spellings of one query must compile to one plan.
+
 ## What never seeks
 
 Some things read rows by construction, and no spelling changes that:
@@ -157,7 +202,7 @@ Some things read rows by construction, and no spelling changes that:
 | Construct | Why |
 |---|---|
 | A denial — `X != "a".."`, `X != 3` | "Does not start with `a`" is the two ranges either side of one, and a seek walks one range |
-| A comparison — `<` `<=` `>` `>=` | On a leading field this *could* narrow to a run, and the arm is written to be replaced. It filters today |
+| A comparison against **another row** — `A.x < B.y` | The other side is not known until the outer row is, and a seek target is computed before the first row arrives |
 | A negation — `!(…)` | A `Step::Test`: it binds nothing and probes per row |
 | Anything reading `.value` | A value lives in the identity map, and [I6](invariants.html#i6) keeps that out of the scan loop. `.value` is fetched for rows that already survived every filter |
 | A repeated variable in one row — `{from = X, to = X}` | Refused by name (`nyi/repeated-variable`) rather than answered slowly |

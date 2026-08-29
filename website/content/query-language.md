@@ -302,8 +302,15 @@ N where test.Name N; N > "ann"               → anna; bob
 
 Strings compare for the same reason integers do: the encoding is order-preserving, so
 `"ann" < "anna"` falls out of the bytes. The constant may be on either side — the field
-carries the residual whichever way it was written, and the relation is flipped rather than a
-second code path added. Comparisons **filter**; none of them is a seek yet.
+carries the bound whichever way it was written, and the relation is flipped rather than a
+second code path added.
+
+A comparison against a constant on the field that **ends the seek prefix** is a *seek*: the
+same order-preservation makes `Ln >= 1000; Ln < 1200` one contiguous run of the key, so the
+scan opens on the window instead of reading up to it. Anywhere else — a field the prefix never
+reached, or a comparison against another row — it filters. Which one you get is where the field
+sits, never what the comparison says; [query efficiency](query-efficiency.html#an-order-comparison-seek-or-filter)
+is the walkthrough.
 
 ### Arithmetic: `+` `-`
 

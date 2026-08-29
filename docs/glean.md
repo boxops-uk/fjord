@@ -182,10 +182,10 @@ consumer, which is where this design has always put aggregation — the differen
 that it no longer costs a full result over the wire. `prim.size (all …)` as a *term*
 still needs set construction.
 
-What remains absent: **if-then-else**, and a **sargeable** comparison. The second is
-worth knowing about — an order comparison on a leading key field denotes one contiguous
-run of the key order, unlike a denial, so unlike `NotPrefix` there *is* a seek form to
-look for later. **Status: built, except aggregation-as-a-term.**
+What remains absent: **if-then-else**. The sargeable comparison is no longer on that
+list — an order comparison against a constant on the field that ends a seek prefix is
+folded to a bounded range (`SeekKey::Bounded`), which is the seek form a denial cannot
+have. **Status: built, except aggregation-as-a-term.**
 
 
 ### Missing compiler stages

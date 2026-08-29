@@ -7,6 +7,35 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### An order comparison on the seek-terminal field is a range, not a filter
+
+`X < 7`, and its three siblings, against a constant on the key field that **ends a seek
+prefix** now fold into the seek as a bounded range instead of filtering rows the scan already
+read. `{n = Ln} where F = content.File "…"; L = content.Line {file = F, line = Ln}; Ln >= 1000;
+Ln < 1200` opens the scan at line 1000 rather than at line 1 — the cost of a window stops being
+the cost of its offset. Measured on the fixture shape rather than argued: the folded plan reads
+its ten rows where the filtered one reads a hundred to answer the same ten.
+
+It is [I1](website/content/invariants.md#i1) being spent, and the half of it that had never
+been: the encoding is order-preserving, so one contiguous run of the *value* order is one
+contiguous run of the *key* order, which is what makes the range the exact answer rather than a
+superset. The registry said as much and said no query lowered one; now one does.
+
+Four rules keep it honest, each of them a wrong answer if got wrong. The bound is **terminal**
+— every field before it fixed, nothing after it in the seek — and that is structural: the edges
+are fields of `SeekKey::Bounded`, not entries in a parts list something could append to. It is
+against a **constant** only; `A.x < B.y` and `N < "a".."` still filter or are refused by name.
+The **first bound of each sense** takes the seek and a second of that sense stays a residual.
+And a folded bound **leaves** the residual list, because the range is exact — but only where
+every branch of a level folded it, since two alternatives are two key layouts and a field
+terminal in one can sit behind a capture in the other.
+
+A range is in the plan fingerprint, both edges and their inclusivity, so a resume cursor issued
+against one window is never accepted by a plan with another — and the scan's resume position is
+now checked against the range rather than against the prefix, or a bound spent by the seek
+would be given back by the resume. No `CURSOR_VERSION` bump: a fingerprint that moves is the
+mechanism, not a casualty.
+
 ### A fuzzy **prefix** match: `"parse"~<2`
 
 `~` measures the edit distance to the whole stored string, which is the wrong question for a

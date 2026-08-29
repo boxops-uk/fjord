@@ -82,6 +82,13 @@ piece:
 Splicing is how a join narrows the inner scan to rows matching the outer row. There is no join
 operator; there is a seek key with someone else's bytes in it.
 
+A seek key may also carry a **range** on the field its pieces stop at — `SeekKey::Bounded`, the
+folded form of an [order comparison](query-efficiency.html#an-order-comparison-seek-or-filter).
+The edges are fields of that variant rather than one more kind of piece, and that is the point:
+a bounded field's bytes are not a single value, so nothing may follow one, and there is no way
+to write a key that does. An edge is a value and a bit saying whether the bound is in; the
+executor turns each into a scan bound, using the same successor a prefix's upper bound uses.
+
 A **guided** source is the third shape, and it is deliberately not a fourth kind of thing: it
 carries an ordinary `Access`, so `lo` and `hi` come from the same prefix machinery, and the
 `Guide` decides only what is visited *inside* that range. A [Levenshtein
