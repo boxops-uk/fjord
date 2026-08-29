@@ -20,6 +20,7 @@
 
 use fjord_engine::{
     compile::Compilation,
+    levenshtein::FuzzyAnchor,
     syntax::{Ast, ExprKind, FieldRef, Literal, NodeId, QueryStmt, Recursive, Ty},
 };
 use fjord_schema::schema::{LocalInterner, Schema, Symbol};
@@ -313,7 +314,13 @@ fn label_of(kind: &ExprKind<NodeId>, schema: &Schema, interner: &LocalInterner) 
         ExprKind::Lit(Literal::Str(symbol)) => Some(format!("{:?}", name(*symbol))),
         ExprKind::Var(symbol) | ExprKind::Select(symbol, _) => Some(name(*symbol)),
         ExprKind::Prefix(symbol) => Some(format!("{:?}..", name(*symbol))),
-        ExprKind::Fuzzy(symbol, distance) => Some(format!("{:?}~{distance}", name(*symbol))),
+        ExprKind::Fuzzy(symbol, distance, anchor) => {
+            let op = match anchor {
+                FuzzyAnchor::Whole => "~",
+                FuzzyAnchor::Prefix => "~<",
+            };
+            Some(format!("{:?}{op}{distance}", name(*symbol)))
+        }
         ExprKind::Access(FieldRef::Key(symbol), _) => Some(format!(".{}", name(*symbol))),
         ExprKind::Access(FieldRef::Value, _) => Some(".value".to_owned()),
         ExprKind::Record(fields) => Some(

@@ -35,6 +35,38 @@ pub const MAX_DISTANCE: u8 = 3;
 
 const MAX_ROW: usize = MAX_TERM_CHARS + 1;
 
+/// **Which question the automaton is asked** — the whole stored string, or a
+/// prefix of it.
+///
+/// One type carried from the source text through to the plan rather than two
+/// pattern kinds, because everything between the two spellings treats them
+/// identically: both are string patterns, both end a seek prefix, both may guide
+/// or filter. Only three places care which — the acceptance predicate
+/// ([`Automaton::matches_anchored`]), the order two of them are applied in, and
+/// the plan fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuzzyAnchor {
+    /// `"parse"~2` — within the distance of the **whole** candidate.
+    Whole,
+    /// `"parse"~<2` — within the distance of **some prefix** of the candidate.
+    Prefix,
+}
+
+impl FuzzyAnchor {
+    /// The byte a plan fingerprint folds in.
+    ///
+    /// Not decoration: a cursor is accepted on a plan fingerprint, so two plans
+    /// differing only in which question they ask must not accept each other's —
+    /// the same reason `Prefix` and `NotPrefix` carry distinct tags.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            FuzzyAnchor::Whole => 0,
+            FuzzyAnchor::Prefix => 1,
+        }
+    }
+}
+
 /// One row of the edit-distance matrix: the state of a walk.
 ///
 /// `cells[i]` is the distance between the input consumed so far and the term's
@@ -94,10 +126,15 @@ impl Automaton {
 
     /// How many characters of a candidate can possibly matter.
     ///
-    /// A string longer than `|term| + distance` cannot be within `distance` of the
-    /// term — every extra character is one more deletion — so the walk stops there
-    /// whatever follows. This is what makes the cost of examining a row
-    /// independent of how long its key is.
+    /// **The same number for both questions**, and for the same arithmetic. A
+    /// prefix longer than `|term| + distance` has every cell of its row above the
+    /// distance — an edit distance is never below the length difference — so it
+    /// can neither be a match nor be extended into one, and the walk stops there
+    /// whatever follows. Whole-string reaches that bound by the candidate simply
+    /// being too long; anchored reaches it by every *later* prefix being too long,
+    /// an earlier one having already accepted or nothing having. Either way this
+    /// is what makes the cost of examining a row independent of how long its key
+    /// is.
     #[must_use]
     pub fn max_chars(&self) -> usize {
         self.term.len() + self.distance as usize + 1
@@ -232,6 +269,73 @@ impl Automaton {
         Ok(self.accepts(&state).is_some())
     }
 
+    /// Whether **some prefix** of `candidate` is within this automaton's distance
+    /// of its term — the anchored question, `"parse"~<1`.
+    ///
+    /// The difference from [`matches`](Self::matches) is one of *where* acceptance
+    /// is asked, and everything else about the walk is the same machine. Three
+    /// facts make that cheap, and each is load-bearing rather than incidental:
+    ///
+    /// - **The liveness exit cannot cut a match short.** If a prefix accepts then
+    ///   every prefix of *it* is live — it is its own witnessing extension — so
+    ///   the walk always reaches the first accepting one.
+    /// - **The length bound is unchanged.** A prefix longer than
+    ///   `|term| + distance` has every cell of its row above the distance, so
+    ///   [`live`](Self::live) has already stopped the walk;
+    ///   [`max_chars`](Self::max_chars) is the same number for both questions.
+    /// - **A match is upward-closed.** Once a prefix accepts, every extension of
+    ///   the candidate matches too, which is what licenses the guide to stop
+    ///   reading rather than seek.
+    ///
+    /// A term no longer than `distance` accepts the **empty** prefix and so matches
+    /// every stored string. That is the definition rather than an oversight, and
+    /// the language documents it rather than refusing it —
+    /// `a_term_no_longer_than_its_distance_matches_everything` is the test that
+    /// stops it drifting into a silent refusal.
+    ///
+    /// Allocates nothing: [`State`] is a fixed-size `Copy` value
+    /// ([I9](../../../website/content/invariants.md#i9)).
+    pub fn matches_prefix<E>(
+        &self,
+        candidate: impl Iterator<Item = Result<char, E>>,
+    ) -> Result<bool, E> {
+        let mut state = self.start();
+
+        if self.accepts(&state).is_some() {
+            return Ok(true);
+        }
+
+        for c in candidate {
+            state = self.step(&state, c?);
+
+            if self.accepts(&state).is_some() {
+                return Ok(true);
+            }
+
+            if !self.live(&state) {
+                return Ok(false);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// The answer to whichever question `anchor` names.
+    ///
+    /// The one place a caller chooses, so no path can drift into asking the other
+    /// one: the executor's residual and the compiler's constant fold both come
+    /// through here.
+    pub fn matches_anchored<E>(
+        &self,
+        anchor: FuzzyAnchor,
+        candidate: impl Iterator<Item = Result<char, E>>,
+    ) -> Result<bool, E> {
+        match anchor {
+            FuzzyAnchor::Whole => self.matches(candidate),
+            FuzzyAnchor::Prefix => self.matches_prefix(candidate),
+        }
+    }
+
     /// The smallest scalar value above `after` that the term does not contain.
     fn first_char_outside_term(&self, after: Option<char>) -> Option<char> {
         let mut c = match after {
@@ -285,6 +389,142 @@ pub fn within(term: &str, candidate: &str, distance: u8) -> bool {
             .matches(candidate.chars().map(Ok::<char, ()>))
             .unwrap_or(false)
     })
+}
+
+/// Some prefix within `distance` edits, decided directly.
+///
+/// The one-shot form of [`Automaton::matches_prefix`], and [`within`]'s anchored
+/// sibling; the same backstop applies, for the same reason — **a term the
+/// automaton will not build for is no match** rather than a wrong answer.
+#[must_use]
+pub fn within_prefix(term: &str, candidate: &str, distance: u8) -> bool {
+    Automaton::new(term, distance).is_some_and(|automaton| {
+        automaton
+            .matches_prefix(candidate.chars().map(Ok::<char, ()>))
+            .unwrap_or(false)
+    })
+}
+
+/// Canonical strategies for the matcher's two domains — a term and a candidate.
+///
+/// Drawn **together** rather than independently, which is the whole of why this
+/// module exists: two unrelated strings over any useful alphabet are almost never
+/// within three edits of one another, so an independent pair leaves every
+/// acceptance property green and saying nothing. A candidate is grown from the
+/// term by a few edits and then given a suffix — the one shape that separates an
+/// anchored match from a whole-string one.
+/// [`within`] or [`within_prefix`], as `anchor` says.
+///
+/// What the compiler folds a fuzzy match against a constant with, and what the
+/// differential model decides a row by.
+#[must_use]
+pub fn within_anchored(term: &str, candidate: &str, distance: u8, anchor: FuzzyAnchor) -> bool {
+    match anchor {
+        FuzzyAnchor::Whole => within(term, candidate, distance),
+        FuzzyAnchor::Prefix => within_prefix(term, candidate, distance),
+    }
+}
+
+#[cfg(any(test, feature = "proptest"))]
+pub mod proptest {
+    use super::MAX_DISTANCE;
+    use ::proptest::prelude::*;
+
+    /// The alphabet every generated string is drawn from.
+    ///
+    /// Deliberately small and deliberately repetitive: the interesting cases are
+    /// near-misses, and a wide alphabet draws strings that mismatch at every
+    /// character. `é` is in it because a byte-level automaton would count one
+    /// accented character as two edits, and no property here would notice.
+    const ALPHABET: [char; 8] = ['a', 'b', 'c', 'e', 'p', 'r', 's', 'é'];
+
+    /// The longest term drawn. Far below [`MAX_TERM_CHARS`](super::MAX_TERM_CHARS),
+    /// which is the refusal boundary and has its own test — a term that long has
+    /// no near-misses in a candidate this generator would ever draw.
+    const MAX_DRAWN_TERM: usize = 8;
+
+    fn letter() -> impl Strategy<Value = char> {
+        ::proptest::sample::select(ALPHABET.as_slice())
+    }
+
+    fn text(len: std::ops::Range<usize>) -> impl Strategy<Value = String> {
+        ::proptest::collection::vec(letter(), len).prop_map(|cs| cs.into_iter().collect())
+    }
+
+    /// An edit distance an automaton is built for.
+    pub fn distance() -> impl Strategy<Value = u8> {
+        1u8..=MAX_DISTANCE
+    }
+
+    /// A term an automaton is built for: never empty, never past the bound.
+    pub fn term() -> impl Strategy<Value = String> {
+        text(1..MAX_DRAWN_TERM)
+    }
+
+    /// What one of the term's characters becomes while a candidate is grown from
+    /// it.
+    #[derive(Debug, Clone, Copy)]
+    enum Edit {
+        Keep,
+        Drop,
+        Replace(char),
+        Insert(char),
+    }
+
+    fn edit() -> impl Strategy<Value = Edit> {
+        prop_oneof![
+            6 => Just(Edit::Keep),
+            1 => Just(Edit::Drop),
+            1 => letter().prop_map(Edit::Replace),
+            1 => letter().prop_map(Edit::Insert),
+        ]
+    }
+
+    /// A candidate grown from the term, plus a suffix of its own.
+    ///
+    /// The suffix is what makes the population able to tell the two questions
+    /// apart: it costs a whole-string match one deletion per character and an
+    /// anchored one nothing at all.
+    fn grown() -> impl Strategy<Value = (String, String)> {
+        term()
+            .prop_flat_map(|term| {
+                let edits = term.chars().count();
+                (
+                    Just(term),
+                    ::proptest::collection::vec(edit(), edits),
+                    text(0..10),
+                )
+            })
+            .prop_map(|(term, edits, suffix)| {
+                let mut candidate = String::new();
+
+                for (c, edit) in term.chars().zip(edits) {
+                    match edit {
+                        Edit::Keep => candidate.push(c),
+                        Edit::Drop => {}
+                        Edit::Replace(other) => candidate.push(other),
+                        Edit::Insert(other) => {
+                            candidate.push(other);
+                            candidate.push(c);
+                        }
+                    }
+                }
+
+                candidate.push_str(&suffix);
+                (term, candidate)
+            })
+    }
+
+    /// A term and a candidate to decide it against.
+    ///
+    /// Mostly grown, but not only: an unrelated pair is what keeps the rejecting
+    /// half of every property populated, and the census asserts both halves are.
+    pub fn term_and_candidate() -> impl Strategy<Value = (String, String)> {
+        prop_oneof![
+            4 => grown(),
+            1 => (term(), text(0..12)),
+        ]
+    }
 }
 
 #[cfg(test)]
@@ -557,5 +797,315 @@ mod tests {
         assert_eq!(next_scalar('\u{D7FF}'), Some('\u{E000}'));
         assert_eq!(next_scalar('a'), Some('b'));
         assert_eq!(next_scalar(char::MAX), None);
+    }
+
+    // ---- the anchored question ---------------------------------------------
+
+    /// The anchored oracle: the whole matrix against **every** prefix, taking the
+    /// best. Written over [`edit_distance`] above — which is itself independent of
+    /// the capped row — so nothing the implementation does is assumed here.
+    fn prefix_distance(term: &str, candidate: &str) -> usize {
+        let chars: Vec<char> = candidate.chars().collect();
+
+        (0..=chars.len())
+            .map(|k| edit_distance(term, &chars[..k].iter().collect::<String>()))
+            .min()
+            .expect("the empty prefix is always one of them")
+    }
+
+    #[test]
+    fn prefix_acceptance_agrees_with_an_independent_matrix() {
+        let mut accepted = 0;
+        let mut rejected = 0;
+
+        for term in WORDS {
+            for distance in 0..=MAX_DISTANCE {
+                for candidate in WORDS {
+                    let expected = prefix_distance(term, candidate) <= distance as usize;
+                    let actual = within_prefix(term, candidate, distance);
+
+                    assert_eq!(
+                        actual, expected,
+                        "{term:?} ~<{distance} against {candidate:?}"
+                    );
+
+                    if expected {
+                        accepted += 1;
+                    } else {
+                        rejected += 1;
+                    }
+                }
+            }
+        }
+
+        // A census, as for the whole-string form: anchoring accepts strictly more,
+        // so the population that could drift to vacuity here is the rejecting one.
+        assert!(
+            accepted > 100,
+            "too few matches in the population: {accepted}"
+        );
+        assert!(rejected > 100, "too few non-matches: {rejected}");
+    }
+
+    /// **The property the two questions differ by.** A whole-string match is
+    /// destroyed by a long enough suffix; an anchored one survives every suffix,
+    /// and that is what licenses a guide to stop reading a row rather than compute
+    /// a seek target from it.
+    #[test]
+    fn a_matching_prefix_survives_every_suffix() {
+        let mut witnessed = 0;
+
+        for term in WORDS {
+            for distance in 1..=MAX_DISTANCE {
+                for candidate in WORDS {
+                    if !within_prefix(term, candidate, distance) {
+                        continue;
+                    }
+
+                    for suffix in WORDS {
+                        let extended = format!("{candidate}{suffix}");
+                        assert!(
+                            within_prefix(term, &extended, distance),
+                            "{term:?} ~<{distance}: {candidate:?} matches, \
+                             but {extended:?} does not"
+                        );
+
+                        witnessed += usize::from(!suffix.is_empty());
+                    }
+                }
+            }
+        }
+
+        assert!(witnessed > 100, "too few extensions witnessed: {witnessed}");
+    }
+
+    /// Anchoring only ever accepts more, because a candidate is one of its own
+    /// prefixes. Stated as an implication rather than an equality precisely
+    /// because the converse is the feature.
+    #[test]
+    fn a_whole_string_match_is_a_prefix_match() {
+        let mut strictly_more = 0;
+
+        for term in WORDS {
+            for distance in 0..=MAX_DISTANCE {
+                for candidate in WORDS {
+                    let whole = within(term, candidate, distance);
+                    let prefix = within_prefix(term, candidate, distance);
+
+                    assert!(
+                        !whole || prefix,
+                        "{term:?} ~{distance} matches {candidate:?} but ~<{distance} does not"
+                    );
+
+                    strictly_more += usize::from(prefix && !whole);
+                }
+            }
+        }
+
+        // Without this the implication above is satisfied by a matcher that simply
+        // answers the whole-string question.
+        assert!(
+            strictly_more > 20,
+            "anchoring never reached further than the whole-string form: {strictly_more}"
+        );
+    }
+
+    /// A term no longer than the distance is within it of the **empty** prefix, so
+    /// it matches every stored string. That is the definition and not an oversight
+    /// — pinned here so it cannot drift into a silent refusal, and so the book's
+    /// paragraph about it has an owner.
+    #[test]
+    fn a_term_no_longer_than_its_distance_matches_everything() {
+        for term in ["a", "ab", "abc"] {
+            let distance = term.chars().count() as u8;
+
+            for candidate in WORDS {
+                assert!(
+                    within_prefix(term, candidate, distance),
+                    "{term:?} ~<{distance} did not match {candidate:?}"
+                );
+            }
+        }
+    }
+
+    /// The backstop [`an_oversized_residual_term_never_wraps_into_a_match`] guards
+    /// for the whole-string form: at 256 characters, casting the empty-input
+    /// distance to `u8` wraps it to zero — and the anchored form asks about the
+    /// empty prefix *first*, so it would answer `true` for every candidate.
+    #[test]
+    fn an_oversized_prefix_term_never_wraps_into_a_match() {
+        let term = "a".repeat(256);
+
+        assert!(!within_prefix(&term, "", 1));
+        assert!(!within_prefix(&term, "zzz", 1));
+    }
+
+    /// The four cases [issue #22] was filed with, pinned as examples rather than
+    /// left to the properties: the third is the one a person doubts, and the
+    /// fourth is the whole difference between anchored and substring search.
+    ///
+    /// [issue #22]: https://github.com/boxops-uk/fjord/issues/22
+    #[test]
+    fn a_misspelt_term_reaches_the_identifier_it_prefixes() {
+        assert!(within_prefix("parse", "parse_node", 1));
+        assert!(within_prefix("parsr", "parser_function", 1));
+        assert!(within_prefix("prser", "parser_function", 1));
+
+        // Anchored, not substring: the term has to reach the *start* of the key.
+        assert!(!within_prefix("parsr", "my_parser_function", 1));
+
+        // And none of them is a whole-string match, which is why `~` alone left
+        // search-as-you-type with nothing to answer.
+        for candidate in ["parse_node", "parser_function", "my_parser_function"] {
+            assert!(!within("parse", candidate, 1));
+            assert!(!within("parsr", candidate, 1));
+        }
+    }
+
+    /// A candidate reader that counts what the walk pulled out of it.
+    ///
+    /// The bound is on *decode work*, not on arithmetic: against the lazy
+    /// `StrChars` the executor hands it, a pull is a character actually decoded.
+    struct Counting<'a> {
+        chars: std::str::Chars<'a>,
+        pulled: &'a std::cell::Cell<usize>,
+    }
+
+    impl Iterator for Counting<'_> {
+        type Item = Result<char, ()>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let c = self.chars.next()?;
+            self.pulled.set(self.pulled.get() + 1);
+            Some(Ok(c))
+        }
+    }
+
+    /// **The bound a long key costs nothing beyond**, made mechanical rather than
+    /// argued. Rejection stops at the character that killed the row; acceptance
+    /// stops at the accepting prefix. Neither reads the rest, however much there
+    /// is of it.
+    #[test]
+    fn a_prefix_walk_pulls_no_more_than_the_term_can_reach() {
+        for term in ["parse", "a", "café"] {
+            for distance in 1..=MAX_DISTANCE {
+                let automaton = Automaton::new(term, distance).expect("short term");
+
+                for head in ["parse", "zzzz", "", "parsx", "café"] {
+                    let candidate = format!("{head}{}", "x".repeat(500));
+                    let pulled = std::cell::Cell::new(0);
+
+                    let walked = automaton
+                        .matches_prefix(Counting {
+                            chars: candidate.chars(),
+                            pulled: &pulled,
+                        })
+                        .expect("the reader cannot fail");
+
+                    assert_eq!(
+                        walked,
+                        within_prefix(term, &candidate, distance),
+                        "{term:?} ~<{distance} against {candidate:?}"
+                    );
+
+                    assert!(
+                        pulled.get() <= automaton.max_chars(),
+                        "{term:?} ~<{distance} pulled {} characters of {candidate:?}, \
+                         past the bound of {}",
+                        pulled.get(),
+                        automaton.max_chars()
+                    );
+                }
+            }
+        }
+    }
+
+    mod generated {
+        use super::*;
+        use crate::levenshtein::proptest::{distance, term_and_candidate};
+        use ::proptest::prelude::*;
+
+        proptest! {
+            /// The streaming walk against the offline definition. The walk exits at
+            /// the first dead state, so this is what says that exit can never cut a
+            /// match short — a claim the exhaustive corpus above can only sample.
+            #[test]
+            fn the_streaming_walk_agrees_with_the_offline_answer(
+                (term, candidate) in term_and_candidate(),
+                distance in distance(),
+            ) {
+                prop_assert_eq!(
+                    within_prefix(&term, &candidate, distance),
+                    prefix_distance(&term, &candidate) <= distance as usize,
+                    "{:?} ~<{} against {:?}", term, distance, candidate
+                );
+            }
+
+            /// Upward closure again, over generated suffixes rather than a fixed
+            /// word list — the guide's licence to stop reading is only as good as
+            /// the population this was checked over.
+            #[test]
+            fn a_generated_matching_prefix_survives_its_suffix(
+                (term, candidate) in term_and_candidate(),
+                distance in distance(),
+                suffix in "[a-z]{0,12}",
+            ) {
+                prop_assume!(within_prefix(&term, &candidate, distance));
+
+                prop_assert!(
+                    within_prefix(&term, &format!("{candidate}{suffix}"), distance),
+                    "{:?} ~<{} lost {:?} to the suffix {:?}", term, distance, candidate, suffix
+                );
+            }
+        }
+
+        /// **The census.** Every property above is satisfied by a generator that
+        /// draws nothing but rejections, and the one class that matters — a
+        /// candidate the anchored question accepts and the whole-string one does
+        /// not — is the one an unlucky alphabet would lose first.
+        #[test]
+        fn the_population_reaches_all_three_classes() {
+            use ::proptest::strategy::{Strategy, ValueTree};
+            use ::proptest::test_runner::TestRunner;
+
+            const RUNS: usize = 512;
+
+            let mut runner = TestRunner::deterministic();
+            let (mut whole, mut anchored_only, mut neither) = (0usize, 0usize, 0usize);
+
+            for _ in 0..RUNS {
+                let ((term, candidate), distance) = (term_and_candidate(), distance())
+                    .new_tree(&mut runner)
+                    .expect("a strategy with no assumptions")
+                    .current();
+
+                match (
+                    within(&term, &candidate, distance),
+                    within_prefix(&term, &candidate, distance),
+                ) {
+                    (true, _) => whole += 1,
+                    (false, true) => anchored_only += 1,
+                    (false, false) => neither += 1,
+                }
+            }
+
+            let mut missing = vec![];
+            if whole == 0 {
+                missing.push("a whole-string match");
+            }
+            if anchored_only < RUNS / 20 {
+                missing.push("enough anchored-only matches");
+            }
+            if neither == 0 {
+                missing.push("a non-match");
+            }
+
+            assert!(
+                missing.is_empty(),
+                "{RUNS} draws never reached {} \
+                 (whole {whole}, anchored-only {anchored_only}, neither {neither})",
+                missing.join(" or ")
+            );
+        }
     }
 }

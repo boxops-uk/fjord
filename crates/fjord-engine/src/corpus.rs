@@ -192,7 +192,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "N where test.Name N; N > \"ann\"",
-        Supported("anna; bob"),
+        Supported("anna; annotate; bob"),
         "**strings compare too**, and for the same reason integers do: the encoding \
          is order-preserving, so `\"ann\" < \"anna\"` falls out of the bytes",
     ),
@@ -333,7 +333,11 @@ pub const CORPUS: &[Entry] = &[
         "N where test.Name N; N = \"ann\"~",
         Supported("ann; anna"),
         "**a guided seek** — a Levenshtein automaton walks the key order, seeking \
-         past the keys it can prove cannot match. `~` with no number is one edit",
+         past the keys it can prove cannot match. `~` with no number is one edit. \
+         `annotate` is **not** here, and that is the whole of what `~` denotes: the \
+         distance is to the stored string entire, so a good prefix and a long tail \
+         is five edits away. Compare the `~<` entry below, which is the same term \
+         and the same distance",
     ),
     entry(
         "N where test.Name N; N = \"ann\"~2",
@@ -385,6 +389,84 @@ pub const CORPUS: &[Entry] = &[
         "**denying** a fuzzy match is meaningful and deferred by name: a residual \
          op is what a resume fingerprint tags, so it arrives when something wants \
          it rather than for symmetry",
+    ),
+    // ---- fuzzy prefix matching ---------------------------------------------
+    //
+    // `~<` is `~` anchored at the start of the stored string: within the distance
+    // of some **prefix** of the candidate rather than of the whole of it. The
+    // question a search box asks, and the one `~` cannot answer — a five-character
+    // term is never within three edits of a fifteen-character identifier, however
+    // well it prefixes it.
+    //
+    // Anchored is not substring: the term still has to reach the *start* of the
+    // key, which is what keeps the automaton a seek rather than a scan.
+    entry(
+        "N where test.Name N; N = \"ann\"~<",
+        Supported("ann; anna; annotate"),
+        "**the pair to read against `\"ann\"~` above**: same term, same distance, \
+         and `annotate` is the difference. Its prefix `ann` is an exact match, so \
+         the suffix costs nothing — where the whole-string form pays one deletion \
+         for every character of it",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~<2",
+        Supported("abc; ann; anna; annotate"),
+        "two edits reaches `abc` through its own prefix `ab`, exactly as the \
+         whole-string form reaches `abc` entire",
+    ),
+    entry(
+        "N where test.Name N; N = \"a\"~<1",
+        Supported("abc; ann; anna; annotate; bob"),
+        "**a term no longer than its distance matches everything**, through the \
+         empty prefix — `\"a\"` is one edit from `\"\"`, and every stored string \
+         starts with that. Recorded rather than refused: it is what the definition \
+         says, and a search box typing one character is the case it comes from",
+    ),
+    entry(
+        "X where X = test.Name \"ann\"~<1",
+        Supported("test.Name#2; test.Name#3; test.Name#4"),
+        "written at the key field rather than as a constraint on a variable — the \
+         same plan, as the `~` pair above are the same plan",
+    ),
+    entry(
+        "N where test.Name N; N = \"an\"..; N = \"ann\"~<1",
+        Supported("ann; anna; annotate"),
+        "**anchored twice, and they are different anchors**: the prefix constraint \
+         picks the range the scan opens over, and `~<` decides where inside it the \
+         term has to reach. One narrows the seek, the other walks it",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~1; N = \"anno\"~<1",
+        Supported("ann; anna"),
+        "both anchorings on one level. Only one pattern can drive the walk and the \
+         whole-string one takes it — it is the one whose automaton dies on a long \
+         key, so it is the one with dead bands to seek past. The other still has to \
+         hold, as a `ResidualOp::Fuzzy`, which is why `annotate` is absent",
+    ),
+    entry(
+        "X where X = test.Foo {id = _, name = N}; N = \"ann\"~<1",
+        Supported("test.Foo#1; test.Foo#3"),
+        "the field does not lead `test.Foo`'s key, so there is no seek to narrow \
+         and the anchored question becomes a residual — the same split `~` makes, \
+         through the same fork",
+    ),
+    entry(
+        "N where test.Name N; N = \"ann\"~<9",
+        Diagnosed(Code::RejectFuzzyDistance),
+        "the bounds are the automaton's, not the spelling's: one matcher answers \
+         both questions, so both refuse the same distances",
+    ),
+    entry(
+        "N where test.Name N; N = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"~<1",
+        Diagnosed(Code::RejectFuzzyTerm),
+        "and the term bound likewise. A limit one spelling held and the other did \
+         not would be a limit on the syntax rather than on the machine",
+    ),
+    entry(
+        "N where test.Name N; N != \"ann\"~<1",
+        Diagnosed(Code::NyiFuzzyDenial),
+        "denying the anchored match is deferred by the same name and for the same \
+         reason: it is one claim about fuzzy denial, not two",
     ),
     entry(
         "X where X = test.Count -42",
@@ -659,7 +741,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where test.Name X; X = \"a\"..",
-        Supported("abc; ann; anna"),
+        Supported("abc; ann; anna; annotate"),
         "a **pattern** on the right of a bind: a prefix denotes a range, so there is \
          nothing for `X` to be — it says what the value wherever `X` lives has to \
          look like. Applied by the level that captures `X`, so the field is an \
@@ -667,7 +749,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where X = \"a\"..; test.Name X",
-        Supported("abc; ann; anna"),
+        Supported("abc; ann; anna; annotate"),
         "the same, written before the statement that binds `X` — a constraint is \
          collected from the whole body, so it lands on the level that captures the \
          variable whatever order that level runs in",
@@ -710,7 +792,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where test.Name X; X != \"abc\"",
-        Supported("ann; anna; bob"),
+        Supported("ann; anna; annotate; bob"),
         "denying a **whole value** rather than a prefix: the residual compares the \
          field's bytes against the encoded constant instead of testing a prefix of \
          them. There is no positive form of this — `X = \"abc\"` folds and *binds* \
@@ -750,7 +832,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where X = (Y where test.Name Y; Y = \"a\"..)",
-        Supported("abc; ann; anna"),
+        Supported("abc; ann; anna; annotate"),
         "**the constraint form of the entry above, and the one that was wrong**: a \
          subquery's statements are the enclosing query's, so a constraint written \
          inside one narrows the level that captures the variable exactly as it does \
@@ -769,7 +851,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry(
         "X where X = (Y where Y = (Z where test.Name Z))",
-        Supported("abc; ann; anna; bob"),
+        Supported("abc; ann; anna; annotate; bob"),
         "a subquery **inside a subquery**, which is the claim the inliner's comment \
          always made and nothing checked: inlining is recursive because the walk it \
          calls is the one that inlines",
@@ -1266,12 +1348,19 @@ mod tests {
             "bf7f4da079aa8760",
             "9fdd3e823c7f9ad3",
             "d6d91409bcbcf1b7",
-            "31d9924c3424bd97",
-            "cfaa5d5ecd8ffe80",
-            "2ef25f5df17bd9c5",
-            "0575fa290f4ab2fd",
-            "0575fa290f4ab2fd",
-            "f14a1b5b620c68ab",
+            "d6db97d05b158f41",
+            "5c24b3eb080617e6",
+            "1e1c5619833194a7",
+            "5a2d66dc40df5089",
+            "5a2d66dc40df5089",
+            "f36ba4c7fdd56959",
+            "97f44414433a7172",
+            "e229f3eab3c43fed",
+            "fb6b77ec9cbd6edc",
+            "aa5f81506112a81a",
+            "6a908ca81cfe84bd",
+            "df98ffd6b9ef26eb",
+            "2492014dd8bca10c",
             "b1a21a89a4c3e1ff",
             "25bc3be24acdb4e2",
             "92bdf3ae6a7ec577",

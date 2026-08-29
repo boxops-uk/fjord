@@ -132,14 +132,22 @@ pub enum ExprKind<T> {
     /// The empty pattern — `never`. Deferred; typecheck reports it.
     Never,
     Prefix(Symbol),
-    /// `"parse"~2` — **within `n` edits**. The symbol is the term, the `u8` the
-    /// distance; `"parse"~` is distance 1, as `..` takes no argument either.
+    /// `"parse"~2` and `"parse"~<2` — **within `n` edits** of the whole stored
+    /// string, or of some prefix of it. The symbol is the term, the `u8` the
+    /// distance; either spelling with no number is distance 1, as `..` takes no
+    /// argument either.
     ///
     /// Beside [`Prefix`](ExprKind::Prefix) rather than folded into it because what
     /// the two *denote* differs in the one way that matters downstream: a prefix
     /// is a single contiguous range of the key order and a fuzzy match is a set of
     /// them, so one narrows a seek and the other has to walk it.
-    Fuzzy(Symbol, u8),
+    ///
+    /// The two anchorings share a variant because everything between here and the
+    /// executor treats them identically — both are string patterns, both end a
+    /// seek prefix, both may guide or filter. Splitting them would make every
+    /// `ExprKind::Fuzzy(..)` site in `flatten` a two-armed pattern, and a site
+    /// that forgot the second arm would silently answer the wrong question.
+    Fuzzy(Symbol, u8, crate::levenshtein::FuzzyAnchor),
     Record(Box<[(Symbol, T)]>),
     Access(FieldRef, T),
     /// Union select — `x.alt?`. A distinct operation from [`ExprKind::Access`]: it
@@ -470,7 +478,9 @@ impl Recursive for ExprKind<NodeId> {
             ExprKind::Var(symbol) => ExprKind::Var(*symbol),
             ExprKind::Wildcard => ExprKind::Wildcard,
             ExprKind::Prefix(symbol) => ExprKind::Prefix(*symbol),
-            ExprKind::Fuzzy(symbol, distance) => ExprKind::Fuzzy(*symbol, *distance),
+            ExprKind::Fuzzy(symbol, distance, anchor) => {
+                ExprKind::Fuzzy(*symbol, *distance, *anchor)
+            }
             ExprKind::Record(fields) => ExprKind::Record(
                 fields
                     .iter()
@@ -606,6 +616,13 @@ pub mod proptest {
         Int(i64),
         Str(String),
         Prefix(String),
+        /// `"parse"~2` and `"parse"~<2`, by term, distance and anchoring.
+        ///
+        /// The distance is drawn past what the language accepts on purpose: this
+        /// generator feeds the **printer**, not the typechecker, and a printer
+        /// that dropped a digit on a refused number would make the diagnostic
+        /// name a distance nobody typed.
+        Fuzzy(String, u8, crate::levenshtein::FuzzyAnchor),
         Record(Vec<(String, PatternSpec)>),
         Field(String, Box<PatternSpec>),
         Value(Box<PatternSpec>),
@@ -657,6 +674,13 @@ pub mod proptest {
         ]
     }
 
+    fn arb_anchor() -> impl Strategy<Value = crate::levenshtein::FuzzyAnchor> {
+        prop_oneof![
+            Just(crate::levenshtein::FuzzyAnchor::Whole),
+            Just(crate::levenshtein::FuzzyAnchor::Prefix),
+        ]
+    }
+
     fn arb_int() -> impl Strategy<Value = i64> {
         prop_oneof![
             4 => any::<i64>(),
@@ -685,6 +709,8 @@ pub mod proptest {
             arb_int().prop_map(PatternSpec::Int),
             arb_text().prop_map(PatternSpec::Str),
             arb_text().prop_map(PatternSpec::Prefix),
+            (arb_text(), 0u8..=4, arb_anchor())
+                .prop_map(|(text, distance, anchor)| PatternSpec::Fuzzy(text, distance, anchor)),
         ];
 
         leaf.prop_recursive(4, 48, 4, |inner| {
@@ -781,6 +807,9 @@ pub mod proptest {
                     ExprKind::Lit(Literal::Str(self.interner.get_or_intern(text)))
                 }
                 PatternSpec::Prefix(text) => ExprKind::Prefix(self.interner.get_or_intern(text)),
+                PatternSpec::Fuzzy(text, distance, anchor) => {
+                    ExprKind::Fuzzy(self.interner.get_or_intern(text), *distance, *anchor)
+                }
 
                 PatternSpec::Record(fields) => {
                     // Sorted by name and deduplicated, exactly as lowering leaves a

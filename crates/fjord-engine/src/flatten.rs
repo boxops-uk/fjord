@@ -70,6 +70,7 @@ use std::sync::Arc;
 
 use crate::{
     diag::{Code, Diagnostics},
+    levenshtein::FuzzyAnchor,
     plan::{
         Access, Address, Arith, Compare as CompareRel, Computed, DerivedBind, FieldPath, Guide,
         Level, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
@@ -392,12 +393,15 @@ struct Collected {
 enum Const {
     Bytes(Vec<u8>),
     Prefix(Vec<u8>),
-    /// `"parse"~2` — a **set** of ranges rather than one, which is the whole of
-    /// why it cannot be bytes like its two siblings. It ends a seek prefix as a
-    /// prefix does, and then narrows what the scan visits inside it.
+    /// `"parse"~2` and `"parse"~<2` — a **set** of ranges rather than one, which
+    /// is the whole of why it cannot be bytes like its two siblings. It ends a
+    /// seek prefix as a prefix does, and then narrows what the scan visits inside
+    /// it. The anchor rides along because it changes which keys are in the set,
+    /// not how the set is reached.
     Fuzzy {
         term: Arc<str>,
         distance: u8,
+        anchor: FuzzyAnchor,
     },
 }
 
@@ -3541,7 +3545,11 @@ impl Flattener<'_> {
             // A guide already in hand means a second fuzzy pattern on this level;
             // it filters, because only one of them can drive the walk and both
             // still have to hold.
-            Const::Fuzzy { term, distance } => {
+            Const::Fuzzy {
+                term,
+                distance,
+                anchor,
+            } => {
                 let attachable = level.building || level.range_at.as_ref() == Some(path);
 
                 if attachable && level.guide.is_none() {
@@ -3549,12 +3557,17 @@ impl Flattener<'_> {
                         path: path.clone(),
                         term,
                         distance,
+                        anchor,
                     });
                     level.building = false;
                 } else {
                     level.residuals.push(Residual {
                         path: path.clone(),
-                        op: ResidualOp::Fuzzy { term, distance },
+                        op: ResidualOp::Fuzzy {
+                            term,
+                            distance,
+                            anchor,
+                        },
                     });
                 }
             }
@@ -3596,8 +3609,15 @@ impl Flattener<'_> {
         // compile to different plans, and two spellings of one query must not:
         // the same rule that makes `Z = 1; test.Bar {id = Z}` narrow exactly as
         // `test.Bar {id = 1}` does.
+        //
+        // The two anchorings are ranked apart for the same reason, and `~` takes
+        // the guide: only one pattern can drive the walk, and a whole-string
+        // automaton dies on a longer key where an anchored one has already
+        // accepted — so it is the one with dead bands to seek past. The other
+        // still has to hold, as a residual.
         patterns.sort_by_key(|pattern| match self.ast.store().kind(*pattern) {
-            ExprKind::Fuzzy(..) => 2,
+            ExprKind::Fuzzy(_, _, FuzzyAnchor::Prefix) => 3,
+            ExprKind::Fuzzy(_, _, FuzzyAnchor::Whole) => 2,
             ExprKind::Prefix(_) => 1,
             _ => 0,
         });
@@ -3658,7 +3678,15 @@ impl Flattener<'_> {
                         Const::Prefix(bytes) | Const::Bytes(bytes) => {
                             ResidualOp::Prefix(bytes.into())
                         }
-                        Const::Fuzzy { term, distance } => ResidualOp::Fuzzy { term, distance },
+                        Const::Fuzzy {
+                            term,
+                            distance,
+                            anchor,
+                        } => ResidualOp::Fuzzy {
+                            term,
+                            distance,
+                            anchor,
+                        },
                     };
 
                     let Some(level) = body.level_mut(address) else {
@@ -3706,7 +3734,11 @@ impl Flattener<'_> {
                     // `"abc"` agreeing about the same pair.
                     let holds = match pattern_const {
                         Const::Prefix(prefix) => value.starts_with(&prefix),
-                        Const::Fuzzy { term, distance } => {
+                        Const::Fuzzy {
+                            term,
+                            distance,
+                            anchor,
+                        } => {
                             let Ok((text, _)) = get_str(&value) else {
                                 self.report(
                                     pattern,
@@ -3716,7 +3748,7 @@ impl Flattener<'_> {
                                 continue;
                             };
 
-                            crate::levenshtein::within(&term, &text, distance)
+                            crate::levenshtein::within_anchored(&term, &text, distance, anchor)
                         }
                         Const::Bytes(_) => {
                             self.report(
@@ -4318,9 +4350,10 @@ impl Flattener<'_> {
                 Some(Const::Bytes(out))
             }
 
-            (ExprKind::Fuzzy(text, distance), PredicateTy::Str) => Some(Const::Fuzzy {
+            (ExprKind::Fuzzy(text, distance, anchor), PredicateTy::Str) => Some(Const::Fuzzy {
                 term: Arc::from(self.interner.try_resolve(*text)?),
                 distance: *distance,
+                anchor: *anchor,
             }),
 
             (ExprKind::Prefix(text), PredicateTy::Str) => {
@@ -5324,7 +5357,7 @@ mod tests {
             other => panic!("expected a prefix seek, got {other:?}"),
         }
 
-        assert_eq!(rows("X where test.Name X; X = \"a\"..").len(), 3);
+        assert_eq!(rows("X where test.Name X; X = \"a\"..").len(), 4);
     }
 
     /// A constant ahead of the constrained field **extends** the seek, and the
@@ -5387,7 +5420,7 @@ mod tests {
             lines(&["r0 <- test.Name scan where 0 != k", "head r0.0:str"])
         );
 
-        assert_eq!(rows("X where test.Name X; X != \"abc\"").len(), 3);
+        assert_eq!(rows("X where test.Name X; X != \"abc\"").len(), 4);
     }
 
     /// **Where a denial is written does not matter**, which is what makes it a
@@ -5643,7 +5676,7 @@ mod tests {
 
         assert_eq!(
             rows("X where test.Name X; X = \"a\"..; X = \"an\".."),
-            strs(&["ann", "anna"]),
+            strs(&["ann", "anna", "annotate"]),
         );
     }
 
@@ -5705,6 +5738,18 @@ mod tests {
             lines(&["r0 <- never", "head \"abc\""])
         );
         assert_eq!(rows("X where X = \"abc\"; X = \"xyz\"~1"), vec![]);
+
+        // The anchored-only case: the suffix makes this fail as a whole-string
+        // match, while the exact prefix settles the anchored question.
+        assert_eq!(
+            shape("X where X = \"annotate\"; X = \"ann\"~<1"),
+            lines(&["head \"annotate\""])
+        );
+        assert_eq!(
+            rows("X where X = \"annotate\"; X = \"ann\"~<1"),
+            strs(&["annotate"])
+        );
+        assert_eq!(rows("X where X = \"annotate\"; X = \"ann\"~1"), vec![]);
     }
 
     /// A **disjunction**'s branches each bind the variable, so each narrows itself.
@@ -7498,9 +7543,9 @@ mod tests {
             ints(&[1, 7])
         );
 
-        // A string prefix, as a narrowed scan: `"ann"` and `"anna"`, not `"abc"`
-        // before them or `"bob"` after.
-        assert_eq!(rows("X where X = test.Name \"ann\"..").len(), 2);
+        // A string prefix, as a narrowed scan: `"ann"`, `"anna"` and
+        // `"annotate"`, not `"abc"` before them or `"bob"` after.
+        assert_eq!(rows("X where X = test.Name \"ann\"..").len(), 3);
 
         // A negative literal, which the seek has to encode order-preservingly.
         assert_eq!(rows("X.value where X = test.Foo _").len(), 3);
@@ -7843,6 +7888,10 @@ pub mod proptest {
         /// [`ResidualOp::Prefix`] — so one entry in this table reaches both arms,
         /// and the census is what says it did.
         Fuzzy(&'static str, u8),
+        /// `V{v} = "t"~<n` — the anchored question, which reaches strictly more
+        /// rows than its whole-string twin and reaches them through the same two
+        /// plan arms.
+        FuzzyPrefix(&'static str, u8),
     }
 
     impl Match {
@@ -7852,6 +7901,7 @@ pub mod proptest {
                 Match::NotPrefix(text) => format!("V{var} != {text:?}.."),
                 Match::NotEqual(text) => format!("V{var} != {text:?}"),
                 Match::Fuzzy(text, distance) => format!("V{var} = {text:?}~{distance}"),
+                Match::FuzzyPrefix(text, distance) => format!("V{var} = {text:?}~<{distance}"),
             }
         }
 
@@ -7866,6 +7916,9 @@ pub mod proptest {
                 // oracle built on the walk would agree with the executor by
                 // construction.
                 Match::Fuzzy(text, distance) => crate::levenshtein::within(text, value, distance),
+                Match::FuzzyPrefix(text, distance) => {
+                    crate::levenshtein::within_prefix(text, value, distance)
+                }
             }
         }
     }
@@ -7894,7 +7947,12 @@ pub mod proptest {
     ///   all-three/two-of-three pair the prefixes above are chosen for. A term
     ///   severe enough to keep one of three is deliberately absent for the reason
     ///   `= "b".."` is: applied this often it thins the whole battery.
-    const MATCHES: [Match; 7] = [
+    /// - `= "a"~<1` and `= "ac"~<1` keep the same three and the same two. The
+    ///   anchored question is more permissive in general, but not over a domain
+    ///   whose longest string is two characters — so the pair carries the budget
+    ///   across unchanged, and `= "abc"~<1` (one of three) is left out for the
+    ///   reason the severe whole-string term is.
+    const MATCHES: [Match; 9] = [
         Match::Prefix(""),
         Match::Prefix("a"),
         Match::NotPrefix("a"),
@@ -7902,6 +7960,8 @@ pub mod proptest {
         Match::NotEqual("b"),
         Match::Fuzzy("a", 1),
         Match::Fuzzy("ac", 1),
+        Match::FuzzyPrefix("a", 1),
+        Match::FuzzyPrefix("ac", 1),
     ];
 
     /// A generated key field's type: a scalar, a record of scalars, or a **reference**
@@ -9585,10 +9645,11 @@ mod battery {
         cst::CstNode,
         diag::Diagnostics,
         fixtures::{collect_rows, run_with_suspends},
+        levenshtein::FuzzyAnchor,
         lower::lower,
         parse::parse,
         plan::{
-            Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+            Guide, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
             proptest::{arb_interruption_schedule, cut_points},
         },
         ty,
@@ -9982,6 +10043,11 @@ mod battery {
         disjunctive_negation: bool,
         guided_source: bool,
         fuzzy_residual: bool,
+        /// The two anchorings, counted per plan arm rather than once: a battery
+        /// that only ever guided the whole-string question and only ever filtered
+        /// the anchored one would leave half of each path unproven.
+        anchored_guide: bool,
+        anchored_residual: bool,
     }
 
     impl Shapes {
@@ -10030,6 +10096,14 @@ mod battery {
                 ),
                 (self.guided_source, "a `Source::Guided`"),
                 (self.fuzzy_residual, "a `ResidualOp::Fuzzy`"),
+                (
+                    self.anchored_guide,
+                    "a `Source::Guided` anchored to a prefix",
+                ),
+                (
+                    self.anchored_residual,
+                    "a `ResidualOp::Fuzzy` anchored to a prefix",
+                ),
             ] {
                 if !present {
                     out.push(what);
@@ -10095,6 +10169,16 @@ mod battery {
                 // census is what says the battery saw it at all.
                 for source in level.sources.iter() {
                     self.guided_source |= matches!(source, Source::Guided { .. });
+                    self.anchored_guide |= matches!(
+                        source,
+                        Source::Guided {
+                            guide: Guide {
+                                anchor: FuzzyAnchor::Prefix,
+                                ..
+                            },
+                            ..
+                        }
+                    );
 
                     match source {
                         Source::Seek { access, .. } | Source::Guided { access, .. } => {
@@ -10132,7 +10216,10 @@ mod battery {
                         self.nested_path |= !path.is_flat();
                         match op {
                             ResidualOp::Prefix(_) => self.prefix_residual = true,
-                            ResidualOp::Fuzzy { .. } => self.fuzzy_residual = true,
+                            ResidualOp::Fuzzy { anchor, .. } => {
+                                self.fuzzy_residual = true;
+                                self.anchored_residual |= matches!(anchor, FuzzyAnchor::Prefix);
+                            }
                             ResidualOp::NotPrefix(_) => self.not_prefix_residual = true,
                             ResidualOp::NotEqConst(_) => self.not_eq_const_residual = true,
                             ResidualOp::EqRegisterField { path, .. } => {

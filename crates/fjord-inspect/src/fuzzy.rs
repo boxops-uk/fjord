@@ -29,6 +29,9 @@ pub struct FuzzyWalk {
     pub term: String,
     pub candidate: String,
     pub distance: u8,
+    /// `"parse"~<2` rather than `"parse"~2`: the walk stops at the first prefix
+    /// within the distance, because every extension of it matches too.
+    pub anchored: bool,
     pub cap: u8,
     /// The term prefixes each cell in a row measures against.
     pub columns: Vec<String>,
@@ -38,8 +41,13 @@ pub struct FuzzyWalk {
 impl FuzzyWalk {
     /// Build the view, or refuse the same unsupported term and distance the
     /// query front end refuses by name.
+    ///
+    /// **`anchored` changes where the walk stops, not what it computes.** The rows
+    /// are the same rows either way — what differs is which of them settles the
+    /// candidate, so the anchored walk ends at the first accepting state and the
+    /// whole-string one carries on to the last live one.
     #[must_use]
-    pub fn new(term: &str, candidate: &str, distance: u8) -> Option<Self> {
+    pub fn new(term: &str, candidate: &str, distance: u8, anchored: bool) -> Option<Self> {
         let automaton = Automaton::new(term, distance)?;
         let mut columns = vec!["∅".to_owned()];
         let mut prefix = String::new();
@@ -52,18 +60,23 @@ impl FuzzyWalk {
         let mut steps = vec![view_step(&automaton, &state, 0, None, String::new())];
         let mut consumed = String::new();
 
-        for (at, input) in candidate.chars().enumerate() {
-            consumed.push(input);
-            state = automaton.step(&state, input);
-            steps.push(view_step(
-                &automaton,
-                &state,
-                at + 1,
-                Some(input),
-                consumed.clone(),
-            ));
-            if !automaton.live(&state) {
-                break;
+        // Anchored matching asks the start state too: a term no longer than the
+        // distance accepts the empty prefix, so the executor reads no candidate
+        // character and neither may the view that teaches its walk.
+        if !anchored || automaton.accepts(&state).is_none() {
+            for (at, input) in candidate.chars().enumerate() {
+                consumed.push(input);
+                state = automaton.step(&state, input);
+                steps.push(view_step(
+                    &automaton,
+                    &state,
+                    at + 1,
+                    Some(input),
+                    consumed.clone(),
+                ));
+                if !automaton.live(&state) || (anchored && automaton.accepts(&state).is_some()) {
+                    break;
+                }
             }
         }
 
@@ -71,6 +84,7 @@ impl FuzzyWalk {
             term: term.to_owned(),
             candidate: candidate.to_owned(),
             distance,
+            anchored,
             cap: distance + 1,
             columns,
             steps,
@@ -80,14 +94,15 @@ impl FuzzyWalk {
 
 /// Walk one candidate through the automaton.
 #[must_use]
-pub fn fuzzy(term: &str, candidate: &str, distance: u8) -> Option<FuzzyWalk> {
-    FuzzyWalk::new(term, candidate, distance)
+pub fn fuzzy(term: &str, candidate: &str, distance: u8, anchored: bool) -> Option<FuzzyWalk> {
+    FuzzyWalk::new(term, candidate, distance, anchored)
 }
 
 /// The same view, already JSON. An unsupported walk is `null`, never clamped.
 #[must_use]
-pub fn fuzzy_json(term: &str, candidate: &str, distance: u8) -> String {
-    serde_json::to_string(&fuzzy(term, candidate, distance)).expect("a fuzzy walk serialises")
+pub fn fuzzy_json(term: &str, candidate: &str, distance: u8, anchored: bool) -> String {
+    serde_json::to_string(&fuzzy(term, candidate, distance, anchored))
+        .expect("a fuzzy walk serialises")
 }
 
 fn view_step(

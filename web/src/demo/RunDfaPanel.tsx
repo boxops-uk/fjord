@@ -18,7 +18,7 @@ export function RunDfaPanel({
 }) {
   const evaluation = frame.evaluation
   const fallback = plan.steps.flatMap((step) => step.fuzzy)[0]
-  const walk = evaluation?.walk ?? (fallback ? engine.fuzzy(fallback.term, '', fallback.distance) : null)
+  const walk = evaluation?.walk ?? (fallback ? engine.fuzzy(fallback.term, '', fallback.distance, fallback.anchored) : null)
   if (!walk) return null
 
   const dfaAt = frame.kind === 'dfa' ? frame.dfaAt : evaluation ? walk.steps.length - 1 : 0

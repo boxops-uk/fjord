@@ -2664,3 +2664,119 @@ fn a_cancel_racing_a_terminal_error_leaves_the_connection_working() {
 
     server.join().expect("the fake server exits cleanly");
 }
+
+/// **A fuzzy match, over the wire.** Both anchorings, compiled by the server and
+/// streamed back through the protocol.
+///
+/// Written here because nothing else proves it: every other fuzzy test in the tree
+/// runs the executor in-process, so "a guided seek survives a query the client
+/// asked for" was a claim about two subsystems that had never been made to meet.
+/// The viewer is the customer for `~<`, and it reaches the engine only this way.
+#[test]
+fn a_fuzzy_query_survives_the_wire() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    // `src.File`'s key is a bare string, so the pattern reaches the leading field
+    // and the compiler builds a guided source rather than a residual.
+    connection
+        .write(
+            FILE,
+            &[
+                file("encode.py"),
+                file("pars.py"),
+                file("parse"),
+                file("parse.py"),
+                file("parser.py"),
+                file("parser/tokens.py"),
+            ],
+        )
+        .expect("the files are written");
+
+    let answers = |connection: &mut Connection, query: &str| {
+        let mut rows = connection.query(query).expect("it compiles");
+        let mut got = strings(&connection.drain(&mut rows).expect("the rows arrive"));
+        got.sort();
+        got
+    };
+
+    // The whole-string question reaches the one path that *is* the term. This is
+    // the complaint the anchored operator was added for, stated as a test rather
+    // than as prose: a good prefix and a real suffix is many edits away.
+    assert_eq!(
+        answers(&mut connection, r#"F where src.File F; F = "parse"~1"#),
+        ["parse"]
+    );
+
+    assert_eq!(
+        answers(&mut connection, r#"F where src.File F; F = "parse"~<1"#),
+        [
+            "pars.py",
+            "parse",
+            "parse.py",
+            "parser.py",
+            "parser/tokens.py"
+        ]
+    );
+
+    // And the residual form: `name` is the third field of `src.Decl`'s key, so
+    // there is no seek for the pattern to narrow and it filters instead.
+    connection
+        .write(
+            DECL,
+            &[
+                decl("parser/tokens.py", 12, "key_of"),
+                decl("parser/tokens.py", 48, "keys_of_thing"),
+                decl("encode.py", 7, "encode_key"),
+            ],
+        )
+        .expect("the declarations are written");
+
+    let mut rows = connection
+        .query(r#"N where src.Decl {file = _, line = _, name = N}; N = "key"~<1"#)
+        .expect("it compiles");
+    let mut names = strings(&connection.drain(&mut rows).expect("the rows arrive"));
+    names.sort();
+
+    assert_eq!(names, ["key_of", "keys_of_thing"]);
+}
+
+/// I4 through the protocol, for the anchored guide: a paged result resumes on a
+/// token and joins seamlessly to what an uninterrupted run answers.
+///
+/// The guide keeps no cursor state of its own — it replays the saved key from the
+/// automaton's start — and this is the only test that makes it do so across a
+/// suspend the *server* took.
+#[test]
+fn a_paged_fuzzy_query_resumes_where_it_stopped() {
+    const QUERY: &str = r#"F where src.File F; F = "parse"~<1"#;
+
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let files: Vec<WireFact> = (0..20)
+        .map(|n| file(&format!("parser/mod{n:03}.py")))
+        .collect();
+    connection.write(FILE, &files).expect("they are written");
+
+    let mut whole = connection.query(QUERY).expect("it compiles");
+    let all = strings(&connection.drain(&mut whole).expect("the rows"));
+    assert_eq!(all.len(), 20, "the guide is meant to answer the whole band");
+
+    let mut paged: Vec<String> = vec![];
+    let mut token: Option<Vec<u8>> = None;
+
+    loop {
+        let mut rows = connection
+            .query_page(QUERY, 3, token.as_deref())
+            .expect("a page");
+        paged.extend(strings(&connection.drain(&mut rows).expect("the page")));
+
+        match rows.resume_token() {
+            Some(next) => token = Some(next.to_vec()),
+            None => break,
+        }
+    }
+
+    assert_eq!(paged, all, "paging dropped or repeated a row");
+}

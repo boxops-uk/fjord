@@ -20,6 +20,7 @@
 use std::fmt::Write as _;
 
 use crate::{
+    levenshtein::FuzzyAnchor,
     plan::{
         Address, Arith, Computed, FieldPath, Plan, Project, Residual, ResidualOp, SeekKey,
         SeekKeyPart, Source, Step, Test,
@@ -200,8 +201,10 @@ pub fn steps(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> Vec<Stri
 
                     let _ = write!(
                         out,
-                        " seek~[{range}{at} ~{} {:?}]",
-                        guide.distance, guide.term
+                        " seek~[{range}{at} {}{} {:?}]",
+                        anchor_op(guide.anchor),
+                        guide.distance,
+                        guide.term
                     );
                 }
 
@@ -226,8 +229,16 @@ pub fn steps(plan: &Plan, schema: &Schema, interner: &LocalInterner) -> Vec<Stri
                 let ty = field_ty(key_ty, path);
 
                 let _ = match op {
-                    ResidualOp::Fuzzy { term, distance } => {
-                        write!(out, "\n       where {at} ~{distance} {term:?}")
+                    ResidualOp::Fuzzy {
+                        term,
+                        distance,
+                        anchor,
+                    } => {
+                        write!(
+                            out,
+                            "\n       where {at} {}{distance} {term:?}",
+                            anchor_op(*anchor)
+                        )
                     }
                     ResidualOp::EqConst(bytes) => {
                         write!(
@@ -930,8 +941,15 @@ impl Printer<'_> {
             ExprKind::Never => out.push("never"),
             ExprKind::Var(symbol) => out.push(self.name(*symbol)),
 
-            ExprKind::Fuzzy(symbol, distance) => {
-                out.push(&format!("{:?}~{distance}", self.name(*symbol)));
+            // `escape`, not `{:?}`: a term is a string literal like any other, and
+            // Rust's debug escape for a control character is `\u{1}` where sigla's
+            // is `\u0001` — printing one would emit text the lexer refuses.
+            ExprKind::Fuzzy(symbol, distance, anchor) => {
+                out.push(&escape(self.name(*symbol)));
+                out.push(&match anchor {
+                    FuzzyAnchor::Whole => format!("~{distance}"),
+                    FuzzyAnchor::Prefix => format!("~<{distance}"),
+                });
             }
 
             ExprKind::Lit(Literal::Int(value)) => {
@@ -1095,8 +1113,15 @@ impl Printer<'_> {
             ExprKind::Never => out.push_str("(never)"),
             ExprKind::Error => out.push_str("(error)"),
 
-            ExprKind::Fuzzy(symbol, distance) => {
-                let _ = write!(out, "(fuzzy {:?} {distance})", self.name(*symbol));
+            // Distinct heads, because this is what the round-trip property
+            // compares: one head for both would let a printer that lost the
+            // anchoring come back green.
+            ExprKind::Fuzzy(symbol, distance, anchor) => {
+                let head = match anchor {
+                    FuzzyAnchor::Whole => "fuzzy",
+                    FuzzyAnchor::Prefix => "fuzzy-prefix",
+                };
+                let _ = write!(out, "({head} {:?} {distance})", self.name(*symbol));
             }
 
             ExprKind::Var(symbol) => {
@@ -1193,6 +1218,15 @@ impl Printer<'_> {
 /// The lexer's `String` regex admits `\" \\ \/ \b \f \n \r \t \uXXXX` and any other
 /// character that is neither a quote, a backslash, nor a control character — so
 /// control characters *must* be escaped, and everything else may be literal.
+/// How a fuzzy match is spelled in source, for a plan to be read against the
+/// query that produced it.
+const fn anchor_op(anchor: FuzzyAnchor) -> &'static str {
+    match anchor {
+        FuzzyAnchor::Whole => "~",
+        FuzzyAnchor::Prefix => "~<",
+    }
+}
+
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -1289,6 +1323,38 @@ mod tests {
         });
 
         plan(&compiled, schema, compilation.interner())
+    }
+
+    /// **A plan says which fuzzy question it asks.** The book tells a reader to
+    /// tell a guide from a residual by `seek~[…]` against `where … ~ …`, and to
+    /// tell the two anchorings apart by the operator inside them — so a rendering
+    /// that printed `~` for both would make two different plans read identically
+    /// in the one place a person looks.
+    #[test]
+    fn a_fuzzy_plan_shows_the_operator_it_was_written_with() {
+        let schema = corpus::schema();
+
+        let whole = rendered(&schema, "N where test.Name N; N = \"ann\"~2");
+        assert!(
+            whole.contains("seek~[0 ~2 \"ann\"]"),
+            "expected a whole-string guide, got:\n{whole}"
+        );
+
+        let anchored = rendered(&schema, "N where test.Name N; N = \"ann\"~<2");
+        assert!(
+            anchored.contains("seek~[0 ~<2 \"ann\"]"),
+            "expected an anchored guide, got:\n{anchored}"
+        );
+
+        // And the residual form, where the field does not lead the key.
+        let residual = rendered(
+            &schema,
+            "X where X = test.Foo {id = _, name = N}; N = \"ann\"~<1",
+        );
+        assert!(
+            residual.contains("where name ~<1 \"ann\""),
+            "expected an anchored residual, got:\n{residual}"
+        );
     }
 
     /// **A seek shows the key it seeks**, decoded back to the literals the query
@@ -2016,11 +2082,23 @@ mod generator {
             ("escaped quote", "\\\""),
             ("escaped control char", "\\u00"),
             ("parenthesised group", "("),
+            ("anchored fuzzy match", "~<"),
         ] {
             assert!(
                 text.contains(needle),
                 "the generator never produced a {what}"
             );
         }
+
+        // Counted rather than searched for, because `~<` contains `~`: a
+        // generator that had lost the whole-string spelling entirely would still
+        // satisfy a `contains("~")`.
+        let anchored = text.matches("~<").count();
+        let fuzzy = text.matches('~').count();
+        assert!(
+            fuzzy > anchored,
+            "the generator never produced a whole-string fuzzy match \
+             ({fuzzy} fuzzy patterns, all {anchored} of them anchored)"
+        );
     }
 }

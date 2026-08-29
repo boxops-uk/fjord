@@ -36,10 +36,10 @@ the only one that can see both implementations of it.
 | [I3](#i3) | The marker table is frozen on disk | `codec::marker_table_golden` | green |
 | [I4](#i4) | Resume equals an uninterrupted run | `exec::resume_equals_uninterrupted` + the fjall arm | green on both stores |
 | [I5](#i5) | A register holds the whole row; fields decode lazily | `exec::bind_is_refcount_not_decode` | green |
-| [I6](#i6) | Values never enter the scan hot loop | `exec::no_value_fetch_in_scan` | green |
+| [I6](#i6) | Values never enter the scan hot loop | `exec::no_value_fetch_in_scan` + `guided_seek::a_guided_prefix_seek_fetches_no_values` | green |
 | [I7](#i7) | The executor is a defunctionalised state machine | structural + the resume battery | green |
 | [I8](#i8) | Immutable snapshot per query, released at suspend | `i8_snapshot::snapshot_released_at_suspend` | green; a second witness pending — see [I8](#i8) |
-| [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` | green; the third escape boundary pending — see [I9](#i9) |
+| [I9](#i9) | The hot path is allocation-free per row | `exec::scan_is_alloc_free_per_row` + `a_guided_seek_is_alloc_free_per_row` and the two fuzzy-residual arms | green; the third escape boundary pending — see [I9](#i9) |
 | [I10](#i10) | Union discriminants are stable and append-only | `i10_discriminants::*` — four checks, see [I10](#i10) | green |
 | [I11](#i11) | A `FactId` is stable, unique and never reused within a database — **of a stored fact** | `store::factid_unique_monotonic` + `exhausted_sequence_space_is_an_error` | green |
 | [I12](#i12) | Both maps are written atomically — and a key names exactly one fact | `store::no_half_present_facts_after_writes` + `no_half_present_facts` (crash) + `concurrent_interning_of_one_key_creates_one_fact` | green |
@@ -253,9 +253,12 @@ out only at escape boundaries — a suspend, a string or bytes projection, and *
 into a derived relation**.
 
 *Guard:* a counting global allocator asserts that scanning N and 2N rows allocates the same count
-**and** bytes, with a positive control proving the allocator is linked. The caveat the project
-records: the guard runs a single-level plan, and opening a level allocates — so a join allocates
-once per outer row, and no guard covers that.
+**and** bytes, with a positive control proving the allocator is linked. Four of them now — a
+plain scan, a fuzzy residual at each anchoring, and a guided source — because a guided walk
+keeps scratch a residual does not: `~<` remembers each accepting prefix it meets, and a buffer
+rebuilt per acceptance would answer every query correctly. The caveat the project records: the
+guard runs a single-level plan, and opening a level allocates — so a join allocates once per
+outer row, and no guard covers that.
 
 **The third escape boundary is named rather than excluded, and that distinction is the whole
 point.** Recursion's fixpoint driver sits above `enumerate`, so nothing inside `advance` changes

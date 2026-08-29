@@ -101,8 +101,8 @@ pub fn trace(schema: &str, query: &str) -> String {
 /// seek uses, returning its capped edit-distance row after each character.
 #[wasm_bindgen]
 #[must_use]
-pub fn fuzzy(term: &str, candidate: &str, distance: u8) -> String {
-    fjord_inspect::fuzzy_json(term, candidate, distance)
+pub fn fuzzy(term: &str, candidate: &str, distance: u8, anchored: bool) -> String {
+    fjord_inspect::fuzzy_json(term, candidate, distance, anchored)
 }
 
 /// **Every stored row of the demo database**, as bytes and as a fact, in the

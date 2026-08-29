@@ -36,11 +36,18 @@ pub struct Sample {
 /// disjunction, a subquery, a nested record, a union matched as a seek and the
 /// same union matched as a residual, a select, and the value side.
 ///
-/// The fuzzy sample is on `code.File` rather than on a declaration's name, and
-/// that is what it is for: `File`'s key *is* the string, so the pattern reaches
+/// The fuzzy samples are on `code.File` rather than on a declaration's name, and
+/// that is what they are for: `File`'s key *is* the string, so the pattern reaches
 /// the key order and the plan is a **guided** access. Behind `Decl`'s leading
 /// reference the same pattern is a residual — the same question, a different
 /// plan, one edit away in the box.
+///
+/// The two fuzzy samples are a pair, and the pair is the lesson: they carry the
+/// **same** typo and differ only in whether the term runs to the end of the path.
+/// `"src/uil.rs"~2` finds two files; drop the extension and `"src/uil"~2` finds
+/// none, because the tail it no longer covers is four more edits. `"src/uil"~<2`
+/// finds the same two. Anchoring is what makes a half-typed term a question at
+/// all, which is the whole of why the operator exists.
 pub const SAMPLES: &[Sample] = &[
     Sample {
         label: "a scan",
@@ -50,6 +57,11 @@ pub const SAMPLES: &[Sample] = &[
     Sample {
         label: "a fuzzy match",
         source: "P where code.File P; P = \"src/uil.rs\"~2",
+        rows: Some(2),
+    },
+    Sample {
+        label: "a fuzzy prefix match",
+        source: "P where code.File P; P = \"src/uil\"~<2",
         rows: Some(2),
     },
     Sample {

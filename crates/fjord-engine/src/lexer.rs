@@ -54,6 +54,16 @@ pub enum Token {
     /// searching a code index will have seen.
     #[token("~")]
     Tilde,
+    /// `~<` — a **fuzzy prefix match**, `"parse"~<2`. Anchored at the start of the
+    /// stored string rather than measured against the whole of it, which is the
+    /// question a search box asks: a five-character term is never within three
+    /// edits of a fifteen-character identifier, however well it prefixes it.
+    ///
+    /// Its own token rather than `Tilde` followed by `Lt`, for the reason `!=` is
+    /// its own token: logos takes the longer match, so `~<` is never seen as a
+    /// fuzzy match of something starting with `<`.
+    #[token("~<")]
+    TildeLt,
     #[token(".")]
     Dot,
     #[token("=")]
@@ -359,6 +369,18 @@ mod tests {
         assert_eq!(tokens("X.."), [UId, DotDot]);
         assert_eq!(tokens("X.a"), [UId, Dot, LId]);
         assert_eq!(tokens("X...a"), [UId, DotDot, Dot, LId]);
+    }
+
+    /// `~<` is one token by the same maximal munch, so an anchored fuzzy match
+    /// never lexes as a fuzzy match followed by a comparison — which would parse,
+    /// and mean something else.
+    #[test]
+    fn tilde_lt_is_one_token() {
+        use Token::*;
+        assert_eq!(tokens("\"abc\"~<"), [String, TildeLt]);
+        assert_eq!(tokens("\"abc\"~<2"), [String, TildeLt, Nat]);
+        assert_eq!(tokens("\"abc\"~2"), [String, Tilde, Nat]);
+        assert_eq!(tokens("X ~ < Y"), [UId, Tilde, Lt, UId]);
     }
 
     #[test]

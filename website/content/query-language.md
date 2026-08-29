@@ -42,6 +42,7 @@ primary    ::= '_'                             wildcard
              | "text"                          a string
              | "text"..                        a string prefix — a range, not a value
              | "text"~2 | "text"~                 a fuzzy match — a set of ranges
+             | "text"~<2 | "text"~<               a fuzzy prefix match
              | '{' field '=' pattern, … '}'     a record
              | 'never'                         the empty relation
              | '(' pattern ')'                 a group
@@ -164,7 +165,7 @@ takes a register**:
 | `X = test.Foo _` | a **row bind** — a loop level | one register, one level |
 | `X = 42`, `X = {inner = 1}` | a **constant fold** — substituted at every use | nothing |
 | `Y = X.name` | an **alias** — a name for a place already in a register | nothing |
-| `X = "a"..`, `X = "ab"~1`, `X = Y` (both bound) | a **constraint** — what the value has to look like | a seek, a guide, or a residual |
+| `X = "a"..`, `X = "ab"~1`, `X = "ab"~<1`, `X = Y` (both bound) | a **constraint** — what the value has to look like | a seek, a guide, or a residual |
 
 ```sigla
 X where X = 42                               → 42
@@ -229,6 +230,40 @@ the same thing either way. Which one you got, why, and what it costs are
 
 Distance is `1` to `3` and a term is at most 63 characters; outside that the query is refused
 by name rather than quietly clamped.
+
+### A fuzzy prefix match: `~<`
+
+`~` measures the distance to the **whole** stored string, and that is usually not the question.
+A five-character term is never within three edits of a fifteen-character identifier, however
+well it prefixes it — every character of the tail is one more deletion. `~<` asks the anchored
+question instead: **is some prefix of the stored string within that many edits of the term?**
+
+```sigla
+N where test.Name N; N = "ann"~1               → ann; anna
+N where test.Name N; N = "ann"~<1              → ann; anna; annotate
+N where test.Name N; N = "ann"~<2              → abc; ann; anna; annotate
+N where test.Name N; N = "an"..; N = "ann"~<1  → ann; anna; annotate
+```
+
+`annotate` is the pair worth reading. Its prefix `ann` is an exact match, so under `~<` the
+suffix costs nothing — where `~` pays one deletion for every character of it. That is the
+whole difference, and it is why `~<` is the operator a search box wants.
+
+**Anchored is not substring.** The term still has to reach the *start* of the stored string,
+which is what keeps the pattern a set of ranges rather than a scan: `"parsr"~<1` finds
+`parser_function` and does not find `my_parser_function`.
+
+Everything else is shared. The same automaton answers both, the same bounds refuse both, and
+either may guide a seek or run as a filter depending only on where the field sits in the key.
+Where a level carries both, `~` takes the guide — its automaton dies on a long key, so it is
+the one with dead bands to seek past — and `~<` holds as a residual.
+
+:::note A short term matches everything
+A term no longer than the distance is within it of the **empty** prefix, and every stored
+string starts with that — so `"a"~<1` answers the whole predicate. That is what the definition
+says rather than an oversight, and it is left legal rather than refused: it is exactly what a
+search box does on the first keystroke. Anchor it with `..`, or type another character.
+:::
 
 ### A denial: `!=`
 
@@ -486,7 +521,7 @@ is **order-dependent**, which is why `reorder` runs first:
 |---|---|---|
 | **seek** | The field is a constant (or a constrained range) and every field before it is too | Narrows the scan to a prefix or a range |
 | **splice** | The field's value is in a register an *earlier* level bound | Narrows the inner scan to rows matching the outer row — this is the join |
-| **guide** | The field is a fuzzy pattern and every field before it narrowed | Walks the range by automaton, seeking past what its dead states prove cannot match |
+| **guide** | The field is a fuzzy pattern — `~` or `~<` — and every field before it narrowed | Walks the range by automaton, seeking past what its dead states prove cannot match |
 | **filter** (residual) | Anything after the seek prefix has closed: a capture, or a constant behind one | Read the row, then test it |
 
 The moment a key field is *captured* (bound to a variable), the seek prefix closes and
@@ -564,7 +599,7 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
 | `reject/not-a-union` | `X.alt? where X = test.Foo _` | A select on something that is not a union at all |
 | `reject/unknown-alternative` | `X where test.Tagged {what = {nosuch = X}, id = _}` | A name the union does not declare — the same class of mistake as an unknown field |
 | `reject/union-arity` | `X where test.Tagged {what = {num = X, text = _}, id = _}` | Two alternatives at once is what a *record* of two fields means, and a union cannot |
-| `reject/fuzzy-distance` | `N where test.Name N; N = "ann"~9` | The automaton is built for `1` to `3` edits, and a plan that silently clamped would answer a question nobody asked |
+| `reject/fuzzy-distance` | `N where test.Name N; N = "ann"~9` | The automaton is built for `1` to `3` edits, and a plan that silently clamped would answer a question nobody asked. `~<` is refused identically — the bound belongs to the machine, not to the spelling |
 | `reject/fuzzy-term` | a fuzzy term of 64 characters or more | 63 is what the fixed-size DP row is built for. Checked at typecheck, so a term cannot refuse on a leading field and answer on a trailing one |
 
 Each of those is a code, and each is reachable from here. `code.Nonesuch`, a field the
@@ -579,7 +614,7 @@ N where code.Decl {file = _, name = N, line = L}; L > 15
 
 | Code | Example | What is missing |
 |---|---|---|
-| `nyi/fuzzy-denial` | `N where test.Name N; N != "ann"~1` | Denying a fuzzy match: a residual op is what a resume fingerprint tags, so it arrives when something wants it rather than for symmetry |
+| `nyi/fuzzy-denial` | `N where test.Name N; N != "ann"~1` | Denying a fuzzy match, `~` or `~<`: a residual op is what a resume fingerprint tags, so it arrives when something wants it rather than for symmetry |
 | `nyi/repeated-variable` | `X where test.Edge {from = X, to = X}` | An intra-row repeat needs a same-row residual operator; rejected for now rather than adding one nothing else uses |
 | `nyi/value-match` | `Y where test.Foo {id = X}; test.Bar {id = Y + 1}` | Matching a key field against a **computed** value — a seek compares bytes known at compile time |
 | `nyi/value-match` | `X where X = test.Foo _; X.value < "b"` | A value has no residual: its bytes are in the identity map, which I6 keeps out of the scan loop |

@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::FjordError,
-    levenshtein::{Automaton, State as GuideState},
+    levenshtein::{Automaton, FuzzyAnchor, State as GuideState},
     plan::{
         Access, Address, Arith, Computed, FieldPath, Guide, Plan, PlanFingerprint, Project,
         Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
@@ -699,6 +699,9 @@ enum Verdict {
 /// characters however long it is, so neither buffer below can grow with the data.
 struct GuideWalk {
     automaton: Automaton,
+    /// Which question this walk asks. Read per row, so the two anchorings share
+    /// one walk rather than one being a copy of the other with two lines moved.
+    anchor: FuzzyAnchor,
     /// The range the level opened over. A computed seek target has to stay inside
     /// it: below `lo` it would re-read rows already emitted, and at or above `hi`
     /// there is nothing left to read.
@@ -708,12 +711,21 @@ struct GuideWalk {
     /// every one of them live. Backtracking down it is how a seek target is found.
     states: Vec<GuideState>,
     chars: Vec<char>,
-    /// The last field the automaton accepted.
+    /// The last thing the automaton accepted, encoded — **a whole field under
+    /// [`FuzzyAnchor::Whole`], the accepting prefix under
+    /// [`FuzzyAnchor::Prefix`]**.
     ///
     /// A predicate keyed `{name, to}` gives one name many rows, so a run of rows
     /// shares one string field; comparing against this turns the run into one walk
     /// and a `memcmp` rather than one walk per row. The rejecting side needs no
     /// equivalent — its seek target skips the whole run in a single move.
+    ///
+    /// **Anchored, it has to be the prefix and not the field.** Keys sharing an
+    /// accepting prefix are usually *different* keys — `parse_expr`, `parse_node`,
+    /// `parse_stmt` — so a whole-field cache would miss on every one of them, in
+    /// exactly the case anchoring exists for. Empty means "nothing cached", which
+    /// costs an accepted *empty* prefix its cache; that is the degenerate term
+    /// that matches everything anyway.
     accepted: Vec<u8>,
     candidate: Vec<u8>,
     scratch: String,
@@ -723,11 +735,17 @@ struct GuideWalk {
 }
 
 impl GuideWalk {
-    fn new(automaton: Automaton, lo: Vec<u8>, hi: Option<Vec<u8>>) -> GuideWalk {
+    fn new(
+        automaton: Automaton,
+        anchor: FuzzyAnchor,
+        lo: Vec<u8>,
+        hi: Option<Vec<u8>>,
+    ) -> GuideWalk {
         let capacity = automaton.max_chars() + 1;
 
         GuideWalk {
             automaton,
+            anchor,
             lo,
             hi,
             states: Vec::with_capacity(capacity),
@@ -737,6 +755,31 @@ impl GuideWalk {
             scratch: String::new(),
             hops: 0,
         }
+    }
+
+    /// Whether the last acceptance settles this field without walking it.
+    fn cached(&self, field: &[u8]) -> bool {
+        match self.anchor {
+            FuzzyAnchor::Whole => field == self.accepted.as_slice(),
+            FuzzyAnchor::Prefix => field.starts_with(&self.accepted),
+        }
+    }
+
+    /// Remember the prefix that just accepted, encoded as the key holds it.
+    ///
+    /// Re-encoded from the consumed characters rather than sliced out of the
+    /// field, because a decoded character is not a byte: `put_str` escapes a NUL,
+    /// so the byte the walk is standing on is not `chars.len()` into the span.
+    fn remember_prefix(&mut self) {
+        self.scratch.clear();
+        self.scratch.extend(self.chars.iter());
+
+        self.accepted.clear();
+        put_str(&mut self.accepted, &self.scratch);
+        // Without its terminator: what every string starting with it begins with
+        // ([I1](../../../website/content/invariants.md#i1)) — the same bytes the
+        // seek target below is built from.
+        self.accepted.pop();
     }
 
     /// Walk this row's field, and say what to do about it.
@@ -750,7 +793,7 @@ impl GuideWalk {
         let span = field_span(&mut offsets, &key, &guide.path)?;
         let field = &key[span.clone()];
 
-        if !self.accepted.is_empty() && field == self.accepted.as_slice() {
+        if !self.accepted.is_empty() && self.cached(field) {
             return Ok(Verdict::Accept);
         }
 
@@ -772,6 +815,15 @@ impl GuideWalk {
         self.states.clear();
         self.chars.clear();
         self.states.push(state);
+
+        let anchored = matches!(self.anchor, FuzzyAnchor::Prefix);
+
+        // The empty prefix, asked before a single character is read. A term no
+        // longer than the distance accepts here, and every key in the range is an
+        // answer — the degenerate case the language documents rather than refuses.
+        if anchored && self.automaton.accepts(&state).is_some() {
+            return Ok(Verdict::Accept);
+        }
 
         // The character the walk died on, if it died. A string longer than `max`
         // dies at `max` whatever follows, which is why a long key costs no more
@@ -795,10 +847,22 @@ impl GuideWalk {
             state = next;
             self.chars.push(c);
             self.states.push(state);
+
+            // **Anchored, the suffix is irrelevant the moment a prefix accepts.**
+            // Every key sharing this prefix is an answer, so there is nothing left
+            // to decode and nothing to seek past — returning here rather than
+            // walking on is what bounds an accepted row's decode work by its
+            // accepting prefix instead of by its length.
+            if anchored && self.automaton.accepts(&state).is_some() {
+                self.remember_prefix();
+                return Ok(Verdict::Accept);
+            }
         }
 
         if killer.is_none() {
-            return Ok(if self.automaton.accepts(&state).is_some() {
+            // Anchored, an accepting prefix has already returned above, so
+            // reaching here with the field exhausted means none of them accepted.
+            return Ok(if !anchored && self.automaton.accepts(&state).is_some() {
                 self.accepted.clear();
                 self.accepted.extend_from_slice(field);
                 Verdict::Accept
@@ -976,7 +1040,7 @@ impl<S: FactStore> StackFrame<S> {
         self.matchers.clear();
 
         for residual in source.residuals() {
-            let ResidualOp::Fuzzy { term, distance } = &residual.op else {
+            let ResidualOp::Fuzzy { term, distance, .. } = &residual.op else {
                 continue;
             };
 
@@ -1048,7 +1112,12 @@ impl<S: FactStore> StackFrame<S> {
                         },
                     )?;
 
-                    self.guide = Some(GuideWalk::new(automaton, prefix.clone(), hi.clone()));
+                    self.guide = Some(GuideWalk::new(
+                        automaton,
+                        guide.anchor,
+                        prefix.clone(),
+                        hi.clone(),
+                    ));
                 }
 
                 Rows::Scan(store.scan(lo, hi.as_deref())?)
@@ -1420,14 +1489,18 @@ impl<S: FactStore> StackFrame<S> {
                 // field costs what a short one does.
                 //
                 // [I9]: ../../website/content/invariants.md#i9
-                ResidualOp::Fuzzy { .. } => {
+                ResidualOp::Fuzzy { anchor, .. } => {
                     // One was built for every fuzzy residual on this source, and
                     // `next` cannot run before `open` — an unopened level fails
                     // above with `AdvanceAfterClose`.
                     let automaton = matchers.next().expect("one matcher per fuzzy residual");
 
+                    // The anchoring is read off the residual rather than baked
+                    // into the matcher, so `build_matchers` stays a function of
+                    // the term and the distance alone — the two things an
+                    // automaton is built from.
                     automaton
-                        .matches(str_chars(field)?)
+                        .matches_anchored(*anchor, str_chars(field)?)
                         .map_err(FjordError::Decode)?
                 }
             };
@@ -6360,7 +6433,12 @@ mod tests {
         const RUNS: usize = 300;
 
         let mut runner = TestRunner::deterministic();
-        let (mut guided, mut residual) = (0usize, 0usize);
+
+        // Counted per **anchoring as well as per arm**: the two ask different
+        // questions of the same automaton, so a battery that only ever guided one
+        // of them proves I4 for half the feature.
+        let mut seen = [[0usize; 2]; 2];
+        let slot = |anchor: FuzzyAnchor| usize::from(matches!(anchor, FuzzyAnchor::Prefix));
 
         for _ in 0..RUNS {
             let spec = arb_plan_and_store()
@@ -6373,23 +6451,29 @@ mod tests {
                 let Step::Level(level) = step else { continue };
 
                 for source in level.sources.iter() {
-                    guided += usize::from(matches!(source, Source::Guided { .. }));
-                    residual += source
-                        .residuals()
-                        .iter()
-                        .filter(|residual| matches!(residual.op, ResidualOp::Fuzzy { .. }))
-                        .count();
+                    if let Source::Guided { guide, .. } = source {
+                        seen[0][slot(guide.anchor)] += 1;
+                    }
+
+                    for residual in source.residuals().iter() {
+                        if let ResidualOp::Fuzzy { anchor, .. } = &residual.op {
+                            seen[1][slot(*anchor)] += 1;
+                        }
+                    }
                 }
             }
         }
 
-        let mut missing = vec![];
-        if guided == 0 {
-            missing.push("a `Source::Guided`");
-        }
-        if residual == 0 {
-            missing.push("a `ResidualOp::Fuzzy`");
-        }
+        let missing: Vec<&str> = [
+            (seen[0][0], "a whole-string `Source::Guided`"),
+            (seen[0][1], "an anchored `Source::Guided`"),
+            (seen[1][0], "a whole-string `ResidualOp::Fuzzy`"),
+            (seen[1][1], "an anchored `ResidualOp::Fuzzy`"),
+        ]
+        .into_iter()
+        .filter_map(|(count, what)| (count == 0).then_some(what))
+        .collect();
+
         assert!(
             missing.is_empty(),
             "{RUNS} generated plans never carried {}",
@@ -6854,8 +6938,20 @@ mod tests {
     /// **I9, for the fuzzy residual.** Its matcher is state belonging to the open
     /// level, not scratch rebuilt for every candidate: doubling rejected rows
     /// must therefore change neither allocation count nor allocated bytes.
-    #[test]
-    fn a_fuzzy_residual_is_alloc_free_per_row() {
+    /// The body of the two guards below: N rows against 2N, over a plan built for
+    /// a given anchoring, asserting the allocation totals match on **count and
+    /// bytes**.
+    ///
+    /// `answers` is asserted rather than ignored because the population is the
+    /// whole guard: a term that matched nothing would never reach the code that
+    /// remembers an accepted prefix, and a term that matched everything would
+    /// never reach the code that computes a seek target.
+    fn fuzzy_is_alloc_free_per_row(
+        plan: &dyn Fn(FuzzyAnchor) -> Plan,
+        anchor: FuzzyAnchor,
+        answers: usize,
+        what: &str,
+    ) {
         let control = allocation_counter::measure(|| {
             std::hint::black_box(Vec::<u8>::with_capacity(4096));
         });
@@ -6865,17 +6961,57 @@ mod tests {
         );
 
         let p = PredicateId(0);
+        // Half the rows share the prefix `parse` and half do not: the anchored
+        // walk accepts on the first, computes a seek target on the second, and
+        // the two halves interleave in key order so it does both repeatedly.
         let store = |count: u64| {
             FrozenStore::from_keys(
                 p,
-                (1..=count).map(|i| (str_field(&format!("candidate-{i:03}")), i)),
+                (1..=count).map(|i| {
+                    let name = if i % 2 == 0 {
+                        format!("parse_{i:03}")
+                    } else {
+                        format!("candidate-{i:03}")
+                    };
+                    (str_field(&name), i)
+                }),
             )
         };
-        let plan = || Plan {
+
+        let store_n = store(64);
+        let store_2n = store(128);
+
+        let mut n1 = 0;
+        let mut n2 = 0;
+        let info_n =
+            allocation_counter::measure(|| n1 = count_rows(store_n, plan(anchor)).unwrap());
+        let info_2n = allocation_counter::measure(|| {
+            n2 = count_rows(store_2n, plan(anchor)).unwrap();
+        });
+
+        assert_eq!(
+            (n1, n2),
+            (answers, answers * 2),
+            "{what}: the population does not exercise both halves"
+        );
+        assert_eq!(
+            info_n.count_total, info_2n.count_total,
+            "{what} allocates per row: {} allocs for 64 rows vs {} for 128",
+            info_n.count_total, info_2n.count_total
+        );
+        assert_eq!(
+            info_n.bytes_total, info_2n.bytes_total,
+            "{what} allocates per row by volume: {} bytes vs {}",
+            info_n.bytes_total, info_2n.bytes_total
+        );
+    }
+
+    fn fuzzy_residual_plan(anchor: FuzzyAnchor) -> Plan {
+        Plan {
             nvars: 1,
             body: Box::new([Step::Level(Level::seek(
                 Access {
-                    predicate_id: p,
+                    predicate_id: PredicateId(0),
                     seek_key: SeekKey::Prefix(Box::new([])),
                 },
                 Box::new([Address::new(0)]),
@@ -6884,32 +7020,79 @@ mod tests {
                     op: ResidualOp::Fuzzy {
                         term: std::sync::Arc::from("parse"),
                         distance: 1,
+                        anchor,
                     },
                 }]),
             ))]),
             head: Project::FactRef(Address::new(0)),
-        };
+        }
+    }
 
-        let store_n = store(64);
-        let store_2n = store(128);
+    fn guided_plan(anchor: FuzzyAnchor) -> Plan {
+        Plan {
+            nvars: 1,
+            body: Box::new([Step::Level(Level {
+                sources: Box::new([Source::Guided {
+                    access: Access {
+                        predicate_id: PredicateId(0),
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    guide: Guide {
+                        path: FieldPath::field(0),
+                        term: std::sync::Arc::from("parse"),
+                        distance: 1,
+                        anchor,
+                    },
+                    residuals: Box::new([]),
+                }]),
+                binds: Box::new([Address::new(0)]),
+            })]),
+            head: Project::FactRef(Address::new(0)),
+        }
+    }
 
-        let mut n1 = 0;
-        let mut n2 = 0;
-        let info_n = allocation_counter::measure(|| n1 = count_rows(store_n, plan()).unwrap());
-        let info_2n = allocation_counter::measure(|| {
-            n2 = count_rows(store_2n, plan()).unwrap();
-        });
-
-        assert_eq!((n1, n2), (0, 0), "the population must exercise rejection");
-        assert_eq!(
-            info_n.count_total, info_2n.count_total,
-            "a fuzzy residual allocates per row: {} allocs for 64 rows vs {} for 128",
-            info_n.count_total, info_2n.count_total
+    #[test]
+    fn a_fuzzy_residual_is_alloc_free_per_row() {
+        // `parse` is one edit from nothing in this population as a whole string —
+        // `parse_042` is nine — so the whole-string arm is pure rejection, which
+        // is the case its matcher was written for.
+        fuzzy_is_alloc_free_per_row(
+            &fuzzy_residual_plan,
+            FuzzyAnchor::Whole,
+            0,
+            "a fuzzy residual",
         );
-        assert_eq!(
-            info_n.bytes_total, info_2n.bytes_total,
-            "a fuzzy residual allocates per row by volume: {} bytes vs {}",
-            info_n.bytes_total, info_2n.bytes_total
+    }
+
+    /// **I9, for the anchored question.** Anchoring accepts half this population
+    /// on its prefix, so unlike the whole-string arm this one runs the accepting
+    /// path 32 times and then 64 — and it is the accepting path that gained code.
+    #[test]
+    fn a_fuzzy_prefix_residual_is_alloc_free_per_row() {
+        fuzzy_is_alloc_free_per_row(
+            &fuzzy_residual_plan,
+            FuzzyAnchor::Prefix,
+            32,
+            "an anchored fuzzy residual",
+        );
+    }
+
+    /// **I9, for the guide** — which the residual guards above do not reach at
+    /// all, and which is where the anchored walk keeps its scratch.
+    ///
+    /// [`GuideWalk::remember_prefix`] writes an accepting prefix into two buffers
+    /// the walk owns. They are level state and must reach a steady size, so
+    /// doubling the rows must not move either total; a `Vec` rebuilt per
+    /// acceptance would answer every query correctly and cost an allocation for
+    /// each row it accepted.
+    #[test]
+    fn a_guided_seek_is_alloc_free_per_row() {
+        fuzzy_is_alloc_free_per_row(&guided_plan, FuzzyAnchor::Whole, 0, "a guided seek");
+        fuzzy_is_alloc_free_per_row(
+            &guided_plan,
+            FuzzyAnchor::Prefix,
+            32,
+            "an anchored guided seek",
         );
     }
 

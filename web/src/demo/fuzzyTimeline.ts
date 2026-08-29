@@ -110,7 +110,7 @@ function makeEvaluation(
 ): FuzzyEvaluation | null {
   const text = candidate(register, pattern)
   if (text === null) return null
-  const walk = engine.fuzzy(pattern.term, text, pattern.distance)
+  const walk = engine.fuzzy(pattern.term, text, pattern.distance, pattern.anchored)
   return walk
     ? { pattern, candidate: text, key: register.key, walk, planStep, outcomeAt }
     : null

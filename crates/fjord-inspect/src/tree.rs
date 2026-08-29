@@ -176,6 +176,7 @@ const fn rule_name(rule: Rule) -> &'static str {
         Rule::Stmt => "Stmt",
         Rule::StmtList => "StmtList",
         Rule::StringFuzzyPrimary => "StringFuzzyPrimary",
+        Rule::StringFuzzyPrefixPrimary => "StringFuzzyPrefixPrimary",
         Rule::StringPrefixPrimary => "StringPrefixPrimary",
         Rule::StringPrimary => "StringPrimary",
         Rule::SubqueryPrimary => "SubqueryPrimary",

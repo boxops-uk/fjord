@@ -7,6 +7,30 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### A fuzzy **prefix** match: `"parse"~<2`
+
+`~` measures the edit distance to the whole stored string, which is the wrong question for a
+search box: a five-character term is never within three edits of a fifteen-character
+identifier, however well it prefixes it. `~<` asks whether some **prefix** of the stored string
+is within the distance instead. Over 148,809 identifier-shaped names, `"parse_node"~1` answers
+5 rows and the misspelt `"parsr"~<1` answers 7,416.
+
+It is anchored, not a substring search — `"parsr"~<1` reaches `parser_function` and not
+`my_parser_function` — which is what keeps it a set of ranges the automaton seeks between. `~`
+is unchanged in meaning, in rows and in fingerprint; the two share one machine, one pair of
+bounds (`1`–`3` edits, 63 characters) and one deferral for `!=`. Either may guide a seek or run
+as a filter, and where a level carries both, `~` takes the guide because it is the one whose
+states go dead on a long key.
+
+A term no longer than its distance matches every stored string through the empty prefix. That
+is left legal and documented rather than refused: it is what a search box does on the first
+keystroke.
+
+Anchoring is a **field on the plan**, folded into the residual and guide fingerprint tags, so a
+resume cursor taken under one question is never accepted by the other — no `CURSOR_VERSION`
+bump was needed. Two guards are new to it: an accepted row is not decoded past its accepting
+prefix, and a band of keys sharing one accepting prefix is walked once rather than per row.
+
 ### `fjord` allocates from mimalloc
 
 The tool links mimalloc as its `#[global_allocator]`, which is a whole-program choice and so

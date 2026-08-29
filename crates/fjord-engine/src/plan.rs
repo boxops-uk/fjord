@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::levenshtein::FuzzyAnchor;
 use fjord_encoding::tuple::Value;
 use fjord_schema::schema::{PredicateId, PredicateTy, Symbol};
 
@@ -189,6 +190,9 @@ pub struct Guide {
     pub path: FieldPath,
     pub term: std::sync::Arc<str>,
     pub distance: u8,
+    /// Which question the walk asks. **In the fingerprint**, so a cursor issued
+    /// against one anchoring is never accepted by the other.
+    pub anchor: FuzzyAnchor,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +302,7 @@ pub enum ResidualOp {
     Fuzzy {
         term: std::sync::Arc<str>,
         distance: u8,
+        anchor: FuzzyAnchor,
     },
 }
 
@@ -1109,8 +1114,18 @@ impl Fingerprint {
                 // other would answer a different question from the point it
                 // stopped. The term is owned text, so unlike an interned name it
                 // is safe to hash (see [`Guide`]).
-                ResidualOp::Fuzzy { term, distance } => {
+                // The anchoring folds into the tag rather than sitting beside it,
+                // as `Compare` does above: `~` and `~<` over one term at one
+                // distance differ in nothing else a fingerprint can see, and a
+                // cursor from one resuming into the other would answer a
+                // different question from the point it stopped.
+                ResidualOp::Fuzzy {
+                    term,
+                    distance,
+                    anchor,
+                } => {
                     self.byte(11);
+                    self.byte(anchor.tag());
                     self.byte(*distance);
                     self.bytes(term.as_bytes());
                 }
@@ -1180,6 +1195,7 @@ impl Fingerprint {
                 self.int(u64::from(access.predicate_id.0));
                 self.seek_key(&access.seek_key);
                 self.path(&guide.path);
+                self.byte(guide.anchor.tag());
                 self.byte(guide.distance);
                 self.bytes(guide.term.as_bytes());
                 self.residuals(residuals);
@@ -1299,7 +1315,7 @@ mod tests {
             Step::Derive(_) | Step::Test(_) => panic!("step {n} is a level"),
         };
 
-        let guided = |term: &'static str, distance: u8, field: usize| {
+        let guided = |term: &'static str, distance: u8, field: usize, anchor: FuzzyAnchor| {
             with_body(&|body| {
                 let mut l = level(body, 0);
                 let access = Access {
@@ -1312,6 +1328,7 @@ mod tests {
                         path: FieldPath::field(field),
                         term: std::sync::Arc::from(term),
                         distance,
+                        anchor,
                     },
                     residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
                 }]);
@@ -1319,7 +1336,7 @@ mod tests {
             })
         };
 
-        let fuzzy_residual = |term: &'static str, distance: u8| {
+        let fuzzy_residual = |term: &'static str, distance: u8, anchor: FuzzyAnchor| {
             with_body(&|body| {
                 let mut l = level(body, 0);
                 *l.sources[0].residuals_mut() = Box::new([Residual {
@@ -1327,6 +1344,7 @@ mod tests {
                     op: ResidualOp::Fuzzy {
                         term: std::sync::Arc::from(term),
                         distance,
+                        anchor,
                     },
                 }]);
                 body[0] = Step::Level(l);
@@ -1381,18 +1399,18 @@ mod tests {
                     body[0] = Step::Level(l);
                 }),
             ),
-            ("a guided source", guided("parse", 1, 0)),
+            ("a guided source", guided("parse", 1, 0, FuzzyAnchor::Whole)),
             (
                 "a guided source with a different term",
-                guided("parser", 1, 0),
+                guided("parser", 1, 0, FuzzyAnchor::Whole),
             ),
             (
                 "a guided source with a different distance",
-                guided("parse", 2, 0),
+                guided("parse", 2, 0, FuzzyAnchor::Whole),
             ),
             (
                 "a guided source at a different field",
-                guided("parse", 1, 1),
+                guided("parse", 1, 1, FuzzyAnchor::Whole),
             ),
             (
                 "a different residual constant",
@@ -1405,14 +1423,28 @@ mod tests {
                     body[0] = Step::Level(l);
                 }),
             ),
-            ("a fuzzy residual", fuzzy_residual("parse", 1)),
+            (
+                "a fuzzy residual",
+                fuzzy_residual("parse", 1, FuzzyAnchor::Whole),
+            ),
             (
                 "a fuzzy residual with a different term",
-                fuzzy_residual("parser", 1),
+                fuzzy_residual("parser", 1, FuzzyAnchor::Whole),
             ),
             (
                 "a fuzzy residual with a different distance",
-                fuzzy_residual("parse", 2),
+                fuzzy_residual("parse", 2, FuzzyAnchor::Whole),
+            ),
+            // **The anchoring, and nothing else.** `"parse"~1` and `"parse"~<1`
+            // are different questions over one term at one distance, so a cursor
+            // taken under either must not resume into the other.
+            (
+                "the same fuzzy residual anchored to a prefix",
+                fuzzy_residual("parse", 1, FuzzyAnchor::Prefix),
+            ),
+            (
+                "the same guide anchored to a prefix",
+                guided("parse", 1, 0, FuzzyAnchor::Prefix),
             ),
             (
                 "the same constant at a different field",
@@ -1793,8 +1825,8 @@ pub mod proptest {
     use ::proptest::prelude::*;
 
     use super::{
-        Access, Address, FieldPath, Guide, Level, Plan, Project, Residual, ResidualOp, SeekKey,
-        SeekKeyPart, Source, Step,
+        Access, Address, FieldPath, FuzzyAnchor, Guide, Level, Plan, Project, Residual, ResidualOp,
+        SeekKey, SeekKeyPart, Source, Step,
     };
     use crate::fixtures::{compose, i64_field, interner_with, str_field};
     use fjord_encoding::tuple::{MARK_TERM, UnionTag, Value};
@@ -1829,6 +1861,22 @@ pub mod proptest {
     /// interesting cursor states are the ones in between — a suspend taken while
     /// the automaton is live but short of a match.
     const FUZZY_TERMS: [&str; 3] = ["a", "ac", "b"];
+
+    /// Anchored or not, from one drawn bit.
+    ///
+    /// Both reach both plan shapes, and
+    /// [`the_battery_reaches_a_guided_source_and_a_fuzzy_residual`] is what says
+    /// so — a resume battery that only ever drew one of them would prove I4 for
+    /// half the feature.
+    ///
+    /// [`the_battery_reaches_a_guided_source_and_a_fuzzy_residual`]: crate::iter
+    const fn anchor_of(anchored: bool) -> FuzzyAnchor {
+        if anchored {
+            FuzzyAnchor::Prefix
+        } else {
+            FuzzyAnchor::Whole
+        }
+    }
 
     /// Upper bound (exclusive) on every "pick" draw; resolution takes it modulo
     /// however many options are legal in context.
@@ -2031,6 +2079,7 @@ pub mod proptest {
             field: usize,
             term: &'static str,
             distance: u8,
+            anchor: FuzzyAnchor,
         },
     }
 
@@ -2046,6 +2095,7 @@ pub mod proptest {
         field: usize,
         term: &'static str,
         distance: u8,
+        anchor: FuzzyAnchor,
     }
 
     #[derive(Debug, Clone)]
@@ -2192,11 +2242,13 @@ pub mod proptest {
                                     field,
                                     term,
                                     distance,
+                                    anchor,
                                 }) => Box::new([Residual {
                                     path: FieldPath::field(*field),
                                     op: ResidualOp::Fuzzy {
                                         term: Arc::from(*term),
                                         distance: *distance,
+                                        anchor: *anchor,
                                     },
                                 }]),
                             };
@@ -2212,6 +2264,7 @@ pub mod proptest {
                                         path: FieldPath::field(guide.field),
                                         term: Arc::from(guide.term),
                                         distance: guide.distance,
+                                        anchor: guide.anchor,
                                     },
                                     residuals,
                                 },
@@ -2298,6 +2351,13 @@ pub mod proptest {
         /// Whether this level's scan is walked by an automaton — see
         /// [`LevelSpec::guide`].
         guide: u8,
+        /// Which question this level's fuzzy patterns ask.
+        ///
+        /// One draw for the level rather than one per pattern: a level carrying
+        /// both a guide and a fuzzy residual is rare, and what the census needs is
+        /// that each anchoring reaches each *shape* — not that the two disagree
+        /// within one level.
+        anchored: bool,
     }
 
     #[derive(Debug, Clone)]
@@ -2434,6 +2494,7 @@ pub mod proptest {
                 field,
                 term: FUZZY_TERMS[draw.constant as usize % FUZZY_TERMS.len()],
                 distance: 1,
+                anchor: anchor_of(draw.anchored),
             });
 
             let residual = match draw.residual % 5 {
@@ -2488,6 +2549,7 @@ pub mod proptest {
                     field: guide_field,
                     term: FUZZY_TERMS[draw.constant as usize % FUZZY_TERMS.len()],
                     distance: 1,
+                    anchor: anchor_of(draw.anchored),
                 });
 
             resolved.push(LevelSpec {
@@ -2547,9 +2609,20 @@ pub mod proptest {
             0u8..PICKS,
             0u8..PICKS,
             0u8..PICKS,
+            any::<bool>(),
         )
             .prop_map(
-                |(predicate, seek, residual, field, reference, constant, alternative, guide)| {
+                |(
+                    predicate,
+                    seek,
+                    residual,
+                    field,
+                    reference,
+                    constant,
+                    alternative,
+                    guide,
+                    anchored,
+                )| {
                     LevelDraw {
                         predicate,
                         seek,
@@ -2559,6 +2632,7 @@ pub mod proptest {
                         constant,
                         alternative,
                         guide,
+                        anchored,
                     }
                 },
             )

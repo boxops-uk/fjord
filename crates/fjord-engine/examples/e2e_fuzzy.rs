@@ -18,6 +18,7 @@ use fjord_encoding::tuple::{Value, put_str};
 use fjord_engine::{
     compile::Compilation,
     fixtures::collect_rows,
+    levenshtein::FuzzyAnchor,
     plan::{
         Access, Address, FieldPath, Guide, Level, Plan, Project, Residual, ResidualOp, SeekKey,
         Source, Step,
@@ -206,19 +207,20 @@ fn anchored_key(anchor: &str) -> SeekKey {
     SeekKey::Prefix(bytes.into())
 }
 
-fn guided(term: &str, distance: u8, anchor: &str) -> Plan {
+fn guided(term: &str, distance: u8, range: &str, anchor: FuzzyAnchor) -> Plan {
     Plan {
         nvars: 1,
         body: Box::new([Step::Level(Level {
             sources: Box::new([Source::Guided {
                 access: Access {
                     predicate_id: NAME,
-                    seek_key: anchored_key(anchor),
+                    seek_key: anchored_key(range),
                 },
                 guide: Guide {
                     path: FieldPath::field(0),
                     term: Arc::from(term),
                     distance,
+                    anchor,
                 },
                 residuals: Box::new([]),
             }]),
@@ -228,13 +230,13 @@ fn guided(term: &str, distance: u8, anchor: &str) -> Plan {
     }
 }
 
-fn filtered(term: &str, distance: u8, anchor: &str) -> Plan {
+fn filtered(term: &str, distance: u8, range: &str, anchor: FuzzyAnchor) -> Plan {
     Plan {
         nvars: 1,
         body: Box::new([Step::Level(Level::seek(
             Access {
                 predicate_id: NAME,
-                seek_key: anchored_key(anchor),
+                seek_key: anchored_key(range),
             },
             Box::new([Address::new(0)]),
             Box::new([Residual {
@@ -242,6 +244,7 @@ fn filtered(term: &str, distance: u8, anchor: &str) -> Plan {
                 op: ResidualOp::Fuzzy {
                     term: Arc::from(term),
                     distance,
+                    anchor,
                 },
             }]),
         ))]),
@@ -299,30 +302,43 @@ fn main() {
     );
     println!("  {}", "─".repeat(80));
 
-    for (term, distance, anchor) in [
-        ("parse_node", 1, ""),
-        ("parse_node", 2, ""),
-        ("parse_node", 3, ""),
-        ("encode_key", 1, ""),
-        ("prase_node", 1, ""),
-        ("parse_node", 2, "p"),
-        ("parse_node", 2, "pa"),
-        ("parse_node", 3, "pa"),
-        ("nosuchname", 1, ""),
-        ("nosuchname", 2, ""),
+    for (term, distance, range, anchor) in [
+        ("parse_node", 1, "", FuzzyAnchor::Whole),
+        ("parse_node", 2, "", FuzzyAnchor::Whole),
+        ("parse_node", 3, "", FuzzyAnchor::Whole),
+        ("encode_key", 1, "", FuzzyAnchor::Whole),
+        ("prase_node", 1, "", FuzzyAnchor::Whole),
+        ("parse_node", 2, "p", FuzzyAnchor::Whole),
+        ("parse_node", 2, "pa", FuzzyAnchor::Whole),
+        ("parse_node", 3, "pa", FuzzyAnchor::Whole),
+        ("nosuchname", 1, "", FuzzyAnchor::Whole),
+        ("nosuchname", 2, "", FuzzyAnchor::Whole),
+        // The anchored question, over the same predicate. A short term is the
+        // whole point of it — `"parse"~1` reaches nothing here and `"parse"~<1`
+        // reaches every identifier that starts near it.
+        ("parse", 1, "", FuzzyAnchor::Prefix),
+        ("parsr", 1, "", FuzzyAnchor::Prefix),
+        ("parse_node", 1, "", FuzzyAnchor::Prefix),
+        ("parse_node", 2, "", FuzzyAnchor::Prefix),
+        ("parse", 1, "pa", FuzzyAnchor::Prefix),
+        ("nosuchname", 1, "", FuzzyAnchor::Prefix),
     ] {
-        let scan = measure(&names, filtered(term, distance, anchor), &interner);
-        let walk = measure(&names, guided(term, distance, anchor), &interner);
+        let scan = measure(&names, filtered(term, distance, range, anchor), &interner);
+        let walk = measure(&names, guided(term, distance, range, anchor), &interner);
 
         assert_eq!(
             scan.answers, walk.answers,
-            "guided and filtered disagreed on {term:?}~{distance} anchored {anchor:?}"
+            "guided and filtered disagreed on {term:?}~{distance} anchored {anchor:?} in {range:?}"
         );
 
-        let label = if anchor.is_empty() {
-            format!("{term:?}~{distance}")
+        let op = match anchor {
+            FuzzyAnchor::Whole => "~",
+            FuzzyAnchor::Prefix => "~<",
+        };
+        let label = if range.is_empty() {
+            format!("{term:?}{op}{distance}")
         } else {
-            format!("{anchor:?}.. {term:?}~{distance}")
+            format!("{range:?}.. {term:?}{op}{distance}")
         };
 
         println!(
@@ -350,8 +366,16 @@ fn main() {
 
     for size in [50_000, 100_000, 200_000, 400_000] {
         let names = corpus(size);
-        let scan = measure(&names, filtered("parse_node", 1, ""), &interner);
-        let walk = measure(&names, guided("parse_node", 1, ""), &interner);
+        let scan = measure(
+            &names,
+            filtered("parse_node", 1, "", FuzzyAnchor::Whole),
+            &interner,
+        );
+        let walk = measure(
+            &names,
+            guided("parse_node", 1, "", FuzzyAnchor::Whole),
+            &interner,
+        );
 
         println!(
             "  {:<12} {:>10} {:>12} {:>10}",

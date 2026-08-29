@@ -234,6 +234,14 @@ question asked as a filter over a full scan (`examples/e2e_fuzzy`, `MemStore`):
 | `"parse_node"~3` | 482 | 148,809 | 539 | 57 |
 | `"nosuchname"~1` | 0 | 148,809 | 19 | 19 |
 | `"pa"..` then `"parse_node"~2` | 51 | 7,416 | 156 | 105 |
+| `"parse"~<1` | 7,416 | 148,809 | 7,432 | 16 |
+| `"parse_node"~<1` | 470 | 148,809 | 500 | 30 |
+| `"pa"..` then `"parse"~<1` | 7,416 | 7,416 | 7,416 | 0 |
+
+The anchored rows read more because they *answer* more; the column to compare them by is the
+gap between "Answers" and "Guided", which stays within a few dozen rows throughout. The last
+one reads exactly its answers and hops zero times — the anchor's range and the anchored term's
+answer set are the same keys, so the guide accepts everything it meets.
 
 The shape, not the absolutes, is the finding: as the predicate grows 46 k → 228 k the filtered
 column grows with it and the guided column moves 40 → 47. A **hop** is a re-opened scan, and it

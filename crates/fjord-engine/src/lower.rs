@@ -20,6 +20,7 @@
 use crate::{
     cst::{CstKind, CstNode},
     diag::{Code, Diagnostics},
+    levenshtein::FuzzyAnchor,
     lexer::{self, LiteralError, Token},
     parser::{Rule, Span},
     syntax::{
@@ -272,11 +273,21 @@ impl Lowering<'_> {
                 Out::Pattern(id)
             }
 
-            // `"parse"~` and `"parse"~2`. An absent distance is 1, which is the
-            // one a search box wants; a distance that does not fit a `u8` is
-            // narrowed at typecheck rather than here, so the number a person
-            // typed reaches the diagnostic that refuses it.
-            Rule::StringFuzzyPrimary => {
+            // `"parse"~`, `"parse"~2`, and the anchored `~<` spellings of both.
+            // An absent distance is 1, which is the one a search box wants; a
+            // distance that does not fit a `u8` is narrowed at typecheck rather
+            // than here, so the number a person typed reaches the diagnostic that
+            // refuses it.
+            //
+            // One arm for the two anchorings so the default and the clamp cannot
+            // come to differ between the spellings — which would make `~<` refuse
+            // a number `~` accepted.
+            Rule::StringFuzzyPrimary | Rule::StringFuzzyPrefixPrimary => {
+                let anchor = match rule {
+                    Rule::StringFuzzyPrimary => FuzzyAnchor::Whole,
+                    _ => FuzzyAnchor::Prefix,
+                };
+
                 let id = match self.string_literal(&children, &span) {
                     Ok(symbol) => {
                         let distance = match token_text(&children, Token::Nat) {
@@ -287,7 +298,7 @@ impl Lowering<'_> {
                         match distance {
                             Ok(distance) => {
                                 let clamped = u8::try_from(distance).unwrap_or(u8::MAX);
-                                self.push(ExprKind::Fuzzy(symbol, clamped), &span)
+                                self.push(ExprKind::Fuzzy(symbol, clamped, anchor), &span)
                             }
                             Err(err) => self.literal_error(&span, err),
                         }
@@ -703,7 +714,12 @@ mod tests {
             ExprKind::Lit(Literal::Int(v)) => format!("{v}"),
             ExprKind::Lit(Literal::Str(s)) => format!("{:?}", name(s)),
             ExprKind::Prefix(s) => format!("prefix({:?})", name(s)),
-            ExprKind::Fuzzy(s, distance) => format!("fuzzy({:?}, {distance})", name(s)),
+            ExprKind::Fuzzy(s, distance, FuzzyAnchor::Whole) => {
+                format!("fuzzy({:?}, {distance})", name(s))
+            }
+            ExprKind::Fuzzy(s, distance, FuzzyAnchor::Prefix) => {
+                format!("fuzzy_prefix({:?}, {distance})", name(s))
+            }
             ExprKind::Var(s) => format!("var({})", name(s)),
             ExprKind::Wildcard => "_".to_owned(),
             ExprKind::Never => "never".to_owned(),

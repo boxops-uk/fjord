@@ -5,7 +5,7 @@ token UId='<uid>' LId='<lid>';
 token Wildcard='_';
 token Nat='<nat>';
 token String='<string>';
-token DotDot='..' Tilde='~';
+token DotDot='..' Tilde='~' TildeLt='~<';
 token Dot='.' Eq='=' BangEq='!=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}'
       LPar='(' RPar=')' Pipe='|' Question='?' Bang='!'
       Lt='<' Le='<=' Gt='>' Ge='>=' Plus='+';
@@ -66,6 +66,7 @@ primary:
 | '-' Nat @int_primary
 | String ('..' @string_prefix_primary
          | '~' [Nat] @string_fuzzy_primary
+         | '~<' [Nat] @string_fuzzy_prefix_primary
          | @string_primary)
 | '{' [field_list] '}' @anon_record_primary
 | 'never' @never_primary
