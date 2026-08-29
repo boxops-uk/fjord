@@ -92,6 +92,19 @@ fjord --data-dir /var/lib/fjord serve --ready-file /run/fjord.ready
 - **`--ready-file` appears after the listener accepts.** The socket path is derived rather than
   chosen, so the file only has to appear — but it has to appear *after*, or it is a race dressed as
   a signal.
+- **Connections are capped, and the cap defaults to half the soft descriptor limit**
+  (`--max-connections`). Descriptors are the resource a connection and the store compete for, so
+  the half that is not spent on sockets is what keeps the store readable and the connections
+  already accepted answerable. Past the cap a connection is told `Busy` and closed — the one
+  refusal that arrives before the handshake — and past the small budget for *saying* so, the
+  excess is closed without a word.
+- **An `accept` that fails never ends the server.** `EMFILE` is a statement about the process,
+  and a loop that propagated it would drop every live connection in order to refuse one new one.
+  Descriptor exhaustion is logged, counted and backed off by 50 ms; every other accept failure
+  ends that connection alone. What this does *not* do is reserve a place for a caller who has not
+  arrived: a flood that fills the cap is refused by name, and so is the next admin query. The
+  descriptors it reserves are for the store and for the connections already being served, and
+  offline `list`/`describe` (`ops-I7`) need no server at all.
 - **A stream is a task, and one fair writer drains them round-robin**, so a long query does not
   delay a short one on the same connection.
 - **Blocking work runs on a blocking pool**, never on the reactor.
@@ -174,6 +187,7 @@ operator is not surprised by one.
 | Per-stream flow control | Deferred. Bounded per-stream queues plus per-connection backpressure in the meantime |
 | A resumable deadline | A timeout unwinds terminally rather than handing back a cursor — a mid-descent position is not representable in the token as it stands |
 | A per-connection or per-user budget | The rows-examined ceiling is per *run*. Nothing sums a session's work, so a client sending many cheap-but-not-free queries is bounded only by the ceiling on each one |
+| Admission control past the connection cap | Concurrent *connections* are capped and excess is refused by name. Nothing caps in-flight **queries**: they queue on the blocking pool as latency rather than rejection, which is what `bench/FINDINGS.md`'s F8 measured. A queue-depth limit and a wall-clock deadline are the two halves still missing |
 | Authentication | None, by design (`ops-I10`). The handshake has no credential field at all |
 
 ## Two operational rules worth internalising

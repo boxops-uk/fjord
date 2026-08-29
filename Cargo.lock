@@ -738,6 +738,7 @@ dependencies = [
  "fjord-store-fjall",
  "fjord-wire",
  "lasso",
+ "libc",
  "tempfile",
  "thiserror",
  "tokio",

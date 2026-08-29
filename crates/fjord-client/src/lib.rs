@@ -68,8 +68,11 @@
 //!
 //! - **Reconnection, retry and timeouts.** An I/O policy belongs to the program, not to
 //!   the transport: a shell wants to tell a person, a deriver wants to retry, and a
-//!   client that chose for both would be wrong for one. The one error worth retrying
-//!   says so by its code — [`ErrorCode::InUse`](fjord_wire::ErrorCode).
+//!   client that chose for both would be wrong for one. The two errors worth retrying
+//!   say so by their codes — [`ErrorCode::InUse`](fjord_wire::ErrorCode) for a database
+//!   something else is holding, and [`ErrorCode::Busy`](fjord_wire::ErrorCode) for a
+//!   server at its connection cap, which is the one that can arrive in answer to
+//!   `open` itself rather than to anything asked over it.
 //! - **Concurrency.** Frames for other streams are parked rather than dropped, so
 //!   several results can be open at once; but one thread drives the socket. A
 //!   background reader is a different design and this one has no need of it yet.

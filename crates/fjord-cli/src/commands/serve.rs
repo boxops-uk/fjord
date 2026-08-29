@@ -11,7 +11,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use fjord_server::{Registry, registry::Schemas, server::serve_on};
+use fjord_server::{Admission, Registry, registry::Schemas, server::serve_on};
 use fjord_wire::protocol;
 
 use crate::{CliError, commands};
@@ -25,6 +25,7 @@ pub fn run(
     socket: &Path,
     listen: Option<&str>,
     ready_file: Option<&Path>,
+    max_connections: Option<usize>,
     commit_per_block: bool,
 ) -> Result<(), CliError> {
     // **`--features console`, and a developer's build only.**
@@ -67,6 +68,22 @@ pub fn run(
     println!("  data dir   {}", root.display());
     println!("  socket     {}", socket.display());
     println!("  protocol   {}", protocol::VERSION);
+    // Printed because it decides what happens under a flood, and because the default
+    // is *derived* from the descriptor limit rather than constant: an operator reading
+    // a log after a burst of refusals should not have to work out which number applied.
+    let admission = match max_connections {
+        Some(max) => Admission::with_max(max),
+        None => Admission::from_fd_limit(),
+    };
+    println!(
+        "  connections {} at once{}",
+        admission.max(),
+        if max_connections.is_some() {
+            ""
+        } else {
+            "  (half the descriptor limit; --max-connections sets it)"
+        }
+    );
     // No schema line: a server has none of its own to print. Each database is served
     // from the copy it embedded, and `fjord describe <db>` is where to read it.
     if commit_per_block {
@@ -101,6 +118,6 @@ pub fn run(
         println!("  tcp        {address}  (opted in — access control is the gateway's)");
     }
 
-    serve_on(socket, listen, ready_file, registry)?;
+    serve_on(socket, listen, ready_file, max_connections, registry)?;
     Ok(())
 }

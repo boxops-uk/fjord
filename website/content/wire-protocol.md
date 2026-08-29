@@ -199,6 +199,11 @@ parsing English; the message exists because a person reads it.
 | 8 `Internal` | Look at the server's logs |
 | 9 `InUse` | Something else holds this database — the one code worth **retrying** |
 | 10 `Refused` | A well-formed request the server will not carry out — the answer is in the message |
+| 11 `Busy` | The server is at its connection cap and never read the request — **come back**, the other code worth retrying |
+
+`Busy` arrives where no other error can: **before the handshake**, in answer to the connection
+itself rather than to anything on it. A client that has sent `STARTUP` and reads an error instead
+of `READY` has been turned away at the door, and the connection closes behind it.
 
 Two refusals are worth naming because a client can act on them. **A stale listing**: a `FETCH`
 carrying a digest the current listing no longer matches is refused whole, before any id is

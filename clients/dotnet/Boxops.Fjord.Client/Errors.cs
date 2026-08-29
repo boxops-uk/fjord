@@ -28,4 +28,12 @@ public enum FjordErrorCode : byte
     Conflict = 6,
     BadQuery = 7,
     Internal = 8,
+    InUse = 9,
+    Refused = 10,
+    /// <summary>
+    /// The server is at its connection cap and never read the request. Arrives in
+    /// answer to the connection rather than to anything sent on it, and — like
+    /// <see cref="InUse"/> — is worth retrying with a backoff.
+    /// </summary>
+    Busy = 11,
 }

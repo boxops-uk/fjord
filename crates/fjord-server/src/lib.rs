@@ -13,6 +13,7 @@
 //! have to depend on a server to speak to one
 //! ([operations §10](../../../website/content/operations.md)).
 //!
+//! - [`admission`] — the connection cap, and what a failed `accept` does.
 //! - [`session`] — one connection, from handshake to close.
 //! - [`registry`] — the store root and the databases open under it, which is what
 //!   makes `create`, `finish` and `remove` work *against a running server*.
@@ -39,7 +40,12 @@
 //! - **Authentication.** `ops-I10` again: the handshake has a reserved credential slot
 //!   and accepts anonymous. Access control is the transport's job — socket
 //!   permissions, or the gateway in front of opted-in TCP.
+//! - **A cap on in-flight *queries*.** [`admission`] caps connections, which is the
+//!   descriptor axis; the work those connections send still queues on the blocking pool
+//!   as latency rather than rejection (`bench/FINDINGS.md`'s F8). A queue-depth limit
+//!   and a wall-clock deadline are the two halves, and neither is here.
 
+pub mod admission;
 pub(crate) mod blocking;
 pub mod catalogue;
 pub mod error;
@@ -50,6 +56,7 @@ pub mod server;
 pub mod session;
 pub mod stats;
 
+pub use admission::Admission;
 pub use error::ServerError;
 pub use registry::Registry;
 pub use server::{Listener, serve_unix};
