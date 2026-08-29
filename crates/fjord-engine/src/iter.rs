@@ -9,7 +9,7 @@ use crate::{
     levenshtein::{Automaton, FuzzyAnchor, State as GuideState},
     plan::{
         Access, Address, Arith, Computed, FieldPath, Guide, Plan, PlanFingerprint, Project,
-        Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        RangeEdge, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
     },
 };
 use fjord_encoding::{
@@ -924,6 +924,62 @@ impl GuideWalk {
     }
 }
 
+/// The half-open `[lo, hi)` one opening of `seek_key` covers, given the fixed
+/// `prefix` its parts came to.
+///
+/// An unbounded seek is the bucket itself — `prefix` to its successor — and that
+/// is the same range this always opened. A bounded one moves one or both edges
+/// inwards, and the whole of the arithmetic is in one place because the two
+/// halves are not symmetric: **a stored key runs on past the bounded field**, so
+/// every row *at* the bound sorts after `prefix ++ value`. Excluding the bound
+/// below therefore needs the successor and excluding it above does not — the
+/// asymmetry an off-by-one here would look exactly like.
+///
+/// `hi` is `None` only where `strinc` has no answer, which is a range running to
+/// the end of the key space; a scan is bounded to its own predicate by the store
+/// either way ([`FactStore::scan`]).
+fn scan_bounds(prefix: &[u8], seek_key: &SeekKey) -> (Vec<u8>, Option<Vec<u8>>) {
+    let SeekKey::Bounded { lo, hi, .. } = seek_key else {
+        return (prefix.to_vec(), strinc(prefix));
+    };
+
+    let at = |edge: &RangeEdge| {
+        let mut bytes = prefix.to_vec();
+        bytes.extend_from_slice(&edge.value);
+        bytes
+    };
+
+    let low = match lo {
+        None => Some(prefix.to_vec()),
+        // `> v`: the first key that can be greater than every row at `v`, since
+        // those keys are `prefix ++ v ++ …` and all begin with it. `None` is a
+        // bound above every key there is, which is the empty range below.
+        Some(edge) if !edge.inclusive => strinc(&at(edge)),
+        Some(edge) => Some(at(edge)),
+    };
+
+    let high = match hi {
+        None => strinc(prefix),
+        // `<= v` has to include the rows *at* `v`, which extend `prefix ++ v`.
+        Some(edge) if edge.inclusive => strinc(&at(edge)),
+        Some(edge) => Some(at(edge)),
+    };
+
+    // A lower bound with no successor is a range no key is in; so is one that
+    // has overtaken the upper bound (`X >= 10; X < 5` is a query, not a fault).
+    // Handed to the store as `lo..lo` rather than as a reversed range, which is
+    // a panic inside the map rather than an empty answer.
+    let Some(low) = low else {
+        let end = high.clone().unwrap_or_else(|| prefix.to_vec());
+        return (end.clone(), Some(end));
+    };
+
+    match &high {
+        Some(high) if *high < low => (low.clone(), Some(low)),
+        _ => (low, high),
+    }
+}
+
 struct StackFrame<S: FactStore> {
     rows: Option<Rows<S>>,
     /// Which of the level's [`Source`]s is being drained.
@@ -1076,19 +1132,25 @@ impl<S: FactStore> StackFrame<S> {
         self.rows = Some(match source {
             Source::Seek { access, .. } | Source::Guided { access, .. } => {
                 let prefix = self.build_prefix(state, access)?;
-                let hi = strinc(&prefix);
-                let lo = resume_at.unwrap_or(&prefix);
+                let (start, hi) = scan_bounds(&prefix, &access.seek_key);
+                let lo = resume_at.unwrap_or(&start);
 
                 // A resume position must lie inside the range of the source it is
                 // being replayed into. It does for any cursor this executor built;
                 // it need not for one rebuilt from the wire, and the two ways it
                 // can be wrong are a panic and a wrong answer — `lo > hi` panics
-                // inside `BTreeMap`, and a `lo` below the prefix silently re-scans
+                // inside `BTreeMap`, and a `lo` below the range silently re-scans
                 // rows the level already emitted. Checked here because this is the
                 // one place a saved position becomes a scan bound, so it covers
                 // every `FactStore` at once.
+                //
+                // **Against the range, not against the prefix**, which is what a
+                // bound adds: a cursor below a lower bound is exactly the position
+                // this fold exists to stop the scan from starting at, and left
+                // unchecked the bound would be spent by the seek and then given
+                // back by the resume.
                 if resume_at.is_some_and(|at| {
-                    at < prefix.as_slice() || hi.as_deref().is_some_and(|hi| at >= hi)
+                    at < start.as_slice() || hi.as_deref().is_some_and(|hi| at >= hi)
                 }) {
                     return Err(FjordError::BadResumeKey);
                 }
@@ -1115,7 +1177,7 @@ impl<S: FactStore> StackFrame<S> {
                     self.guide = Some(GuideWalk::new(
                         automaton,
                         guide.anchor,
-                        prefix.clone(),
+                        start.clone(),
                         hi.clone(),
                     ));
                 }
@@ -1209,31 +1271,34 @@ impl<S: FactStore> StackFrame<S> {
     ) -> Result<Vec<u8>, FjordError> {
         let mut prefix = access.predicate_id.0.to_be_bytes().to_vec();
 
-        match &access.seek_key {
-            SeekKey::Prefix(bytes) => prefix.extend_from_slice(bytes.as_ref()),
-            SeekKey::Composite(parts) => {
-                for part in parts.iter() {
-                    match part {
-                        SeekKeyPart::Bytes(bytes) => prefix.extend_from_slice(bytes.as_ref()),
-                        SeekKeyPart::RegisterField {
-                            address: var_address,
-                            path,
-                        } => {
-                            let key = state.fact(*var_address)?.key();
-                            let span =
-                                get_field_span(&mut self.field_offsets, &key, *var_address, path)?;
-                            prefix.extend_from_slice(&key[span]);
-                        }
-                        // The register's *identity*, encoded as a fact-typed field
-                        // holds it — never its key bytes (see the variant).
-                        SeekKeyPart::RegisterFactId(var_address) => {
-                            let fact_id = state.fact(*var_address)?.fact_id;
-                            prefix.extend_from_slice(&fact_ref_bytes(fact_id));
-                        }
-                    }
+        let parts = match &access.seek_key {
+            SeekKey::Prefix(bytes) => {
+                prefix.extend_from_slice(bytes.as_ref());
+                return Ok(prefix);
+            }
+            SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => parts,
+        };
+
+        for part in parts.iter() {
+            match part {
+                SeekKeyPart::Bytes(bytes) => prefix.extend_from_slice(bytes.as_ref()),
+                SeekKeyPart::RegisterField {
+                    address: var_address,
+                    path,
+                } => {
+                    let key = state.fact(*var_address)?.key();
+                    let span = get_field_span(&mut self.field_offsets, &key, *var_address, path)?;
+                    prefix.extend_from_slice(&key[span]);
+                }
+                // The register's *identity*, encoded as a fact-typed field
+                // holds it — never its key bytes (see the variant).
+                SeekKeyPart::RegisterFactId(var_address) => {
+                    let fact_id = state.fact(*var_address)?.fact_id;
+                    prefix.extend_from_slice(&fact_ref_bytes(fact_id));
                 }
             }
         }
+
         Ok(prefix)
     }
 
@@ -2549,8 +2614,8 @@ mod tests {
             interner_with, run_with_suspends, str_field,
         },
         plan::{
-            Access, DerivedBind, FieldPath, Level, Plan, Project, Residual, ResidualOp, SeekKey,
-            SeekKeyPart,
+            Access, Compare, DerivedBind, FieldPath, Level, Plan, Project, RangeEdge, Residual,
+            ResidualOp, SeekKey, SeekKeyPart,
             proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
         },
     };
@@ -2975,6 +3040,194 @@ mod tests {
             "and a hundred were read to find it"
         );
         assert_eq!(profile.total(), 100);
+    }
+
+    /// **The boundary arithmetic, at the unit it lives in.**
+    ///
+    /// The metamorphic property above compares whole runs and would catch every one
+    /// of these; this says *which* byte string each edge comes to, which is what a
+    /// reader needs to check the reasoning rather than only the outcome. The pair is
+    /// the same one the field-offset cache has: a contract asserted directly, and
+    /// the same contract asserted through the executor.
+    #[test]
+    fn a_bounds_inclusivity_is_a_successor_and_its_sense_decides_which_end() {
+        let prefix = [0u8, 0, 0, 1, 7];
+        let edge = |value: u8, inclusive: bool| {
+            Some(RangeEdge {
+                value: Box::new([value]),
+                inclusive,
+            })
+        };
+        let bounded = |lo, hi| SeekKey::Bounded {
+            parts: Box::new([]),
+            lo,
+            hi,
+        };
+
+        // An unbounded seek is the bucket, which is what it always was.
+        assert_eq!(
+            scan_bounds(&prefix, &SeekKey::Prefix(Box::new([]))),
+            (prefix.to_vec(), Some(vec![0, 0, 0, 1, 8]))
+        );
+
+        // `>= 5` starts at the bound; `> 5` starts past every key extending it.
+        assert_eq!(
+            scan_bounds(&prefix, &bounded(edge(5, true), None)),
+            (vec![0, 0, 0, 1, 7, 5], Some(vec![0, 0, 0, 1, 8]))
+        );
+        assert_eq!(
+            scan_bounds(&prefix, &bounded(edge(5, false), None)),
+            (vec![0, 0, 0, 1, 7, 6], Some(vec![0, 0, 0, 1, 8]))
+        );
+
+        // And the upper edge the other way round: `< 5` stops at the bound, `<= 5`
+        // stops past the keys extending it.
+        assert_eq!(
+            scan_bounds(&prefix, &bounded(None, edge(5, false))),
+            (prefix.to_vec(), Some(vec![0, 0, 0, 1, 7, 5]))
+        );
+        assert_eq!(
+            scan_bounds(&prefix, &bounded(None, edge(5, true))),
+            (prefix.to_vec(), Some(vec![0, 0, 0, 1, 7, 6]))
+        );
+
+        // A range that crosses is empty, and is handed over as `lo..lo` — a
+        // reversed range is a panic inside the map, not an empty answer.
+        let (lo, hi) = scan_bounds(&prefix, &bounded(edge(9, true), edge(2, false)));
+        assert_eq!(Some(lo), hi, "a crossed range is empty, not reversed");
+
+        // A strict lower edge with no successor — every byte `0xff` — is a bound
+        // above every key there is. Unreachable while predicate ids are positions
+        // in a schema, and answered rather than panicked on because a `Plan` is
+        // public and hand-built.
+        let all_ones = [0xffu8; 4];
+        let (lo, hi) = scan_bounds(
+            &all_ones,
+            &bounded(
+                Some(RangeEdge {
+                    value: Box::new([0xff]),
+                    inclusive: false,
+                }),
+                None,
+            ),
+        );
+        assert_eq!(Some(lo), hi, "no successor is the empty range");
+    }
+
+    /// **A bounded seek reads the window, not the offset** — the whole claim the
+    /// fold makes, measured rather than argued.
+    ///
+    /// The two halves are the same question over the same rows: `>= 80; < 90` as a
+    /// range, and the same two bounds as filters. Both answer ten rows; the filter
+    /// reads a hundred to do it, because a residual cannot stop a scan and cannot
+    /// start it late. That gap is what a window late in a large table costs, and it
+    /// is proportional to the *offset* — which is why the folded form is the one
+    /// that makes a query offset-independent.
+    #[test]
+    fn a_bounded_seek_reads_the_window_and_not_the_offset() {
+        let p = PredicateId(0);
+        let rows = || {
+            let mut store = MemStore::new();
+
+            for n in 0..100i64 {
+                store.insert(p, compose(&[&i64_field(n)]), n as u64 + 1);
+            }
+
+            store
+        };
+
+        let head = Project::RegisterField {
+            address: Address::new(0),
+            path: FieldPath::field(0),
+            ty: PredicateTy::Int,
+        };
+
+        let bounded = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Bounded {
+                        parts: Box::new([]),
+                        lo: Some(RangeEdge {
+                            value: i64_field(80).into(),
+                            inclusive: true,
+                        }),
+                        hi: Some(RangeEdge {
+                            value: i64_field(90).into(),
+                            inclusive: false,
+                        }),
+                    },
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
+            head: head.clone(),
+        };
+
+        let filtered = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([
+                    Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpConst {
+                            op: Compare::Ge,
+                            value: i64_field(80).into(),
+                        },
+                    },
+                    Residual {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::CmpConst {
+                            op: Compare::Lt,
+                            value: i64_field(90).into(),
+                        },
+                    },
+                ]),
+            )]),
+            head,
+        };
+
+        let window: Vec<Value> = (80..90).map(Value::Int).collect();
+        let interner = interner_with(&[]);
+
+        let run = |plan: Plan| {
+            let mut profile = Profile::for_plan(&plan);
+            let outcome = Executor::new(rows(), plan)
+                .enumerate_profiled(
+                    Vec::<Value>::new(),
+                    |mut acc, mut row| {
+                        acc.push(row.to_value(&interner)?);
+                        Ok(Stream::Continue(acc))
+                    },
+                    &CancellationToken::new(),
+                    &mut profile,
+                )
+                .expect("it runs");
+
+            let Iteratee::Done(answered) = outcome else {
+                panic!("expected a finished run");
+            };
+
+            (answered, profile.total())
+        };
+
+        let (folded_rows, folded_read) = run(bounded);
+        let (filtered_rows, filtered_read) = run(filtered);
+
+        assert_eq!(folded_rows, window, "the range answers the window");
+        assert_eq!(filtered_rows, window, "and so does the filter");
+
+        assert_eq!(folded_read, 10, "a bounded seek reads its window");
+        assert_eq!(
+            filtered_read, 100,
+            "and the filter reads the predicate to answer the same ten"
+        );
     }
 
     /// A seek that narrows reads what it narrowed to, and nothing else — the same
@@ -6283,6 +6536,132 @@ mod tests {
             assert_eq!(suspends, cuts.len(), "expected one suspend per scheduled row");
             assert_eq!(rows, model, "schedule {cuts:?} changed the run");
         }
+
+        /// **A bounded seek answers what the same bounds filtered answer.**
+        ///
+        /// The metamorphic gate on the fold, and the reason it is not the resume
+        /// property: resume compares a run against itself, so a range whose edges
+        /// were off by one row would agree with its own interruption perfectly.
+        /// This compares two *different* readings of one bound — scan bounds
+        /// computed once from the encoded value against a byte compare per row —
+        /// which share the encoding and nothing else.
+        ///
+        /// What it therefore catches: an inclusivity conflated with its opposite
+        /// (the successor arm), an edge put in the wrong sense, a lower bound that
+        /// forgot the key runs on past the bounded field, and an empty range handed
+        /// to the store reversed.
+        #[test]
+        fn a_bounded_seek_answers_what_the_same_bound_filtered_answers(
+            spec in arb_plan_and_store(),
+        ) {
+            let interner = spec.interner();
+
+            let folded = collect_rows(
+                spec.build_store(),
+                spec.build_plan(&interner),
+                &interner,
+            ).unwrap();
+
+            let filtered = collect_rows(
+                spec.build_store(),
+                spec.build_plan_filtering(&interner),
+                &interner,
+            ).unwrap();
+
+            prop_assert_eq!(folded, filtered);
+        }
+    }
+
+    /// **The census for the bound.** The property above says nothing unless the
+    /// generator draws a range, and says nothing about the successor arithmetic
+    /// unless it draws each edge at each inclusivity. The empty range is counted
+    /// separately because it is the one draw that reaches the clamp — a lower bound
+    /// above the upper one, or equal edges where either side excludes the value. The
+    /// former would otherwise be a reversed range and a panic inside the map rather
+    /// than an empty answer.
+    ///
+    /// Counted over the generator rather than asserted per case, as the battery's
+    /// other census is: it is a claim about what is *drawn*.
+    #[test]
+    fn the_battery_reaches_every_shape_of_a_bounded_seek() {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 300;
+
+        let mut runner = TestRunner::deterministic();
+        let mut seen: Vec<&'static str> = vec![];
+        let mut note = |what: &'static str| {
+            if !seen.contains(&what) {
+                seen.push(what);
+            }
+        };
+
+        for _ in 0..RUNS {
+            let spec = arb_plan_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let interner = spec.interner();
+            let (_, plan) = spec.build(&interner);
+
+            for step in plan.body.iter() {
+                let Step::Level(level) = step else { continue };
+
+                for source in level.sources.iter() {
+                    let (Source::Seek { access, .. } | Source::Guided { access, .. }) = source
+                    else {
+                        continue;
+                    };
+
+                    let SeekKey::Bounded { lo, hi, .. } = &access.seek_key else {
+                        continue;
+                    };
+
+                    for (edge, closed, open) in [
+                        (lo, "a closed lower edge", "an open lower edge"),
+                        (hi, "a closed upper edge", "an open upper edge"),
+                    ] {
+                        match edge {
+                            Some(edge) if edge.inclusive => note(closed),
+                            Some(_) => note(open),
+                            None => {}
+                        }
+                    }
+
+                    if lo.is_some() && hi.is_some() {
+                        note("both edges at once");
+                    }
+
+                    if let (Some(lo), Some(hi)) = (lo, hi)
+                        && (hi.value < lo.value
+                            || (hi.value == lo.value && !(lo.inclusive && hi.inclusive)))
+                    {
+                        note("an empty range");
+                    }
+                }
+            }
+        }
+
+        let missing: Vec<&str> = [
+            "a closed lower edge",
+            "an open lower edge",
+            "a closed upper edge",
+            "an open upper edge",
+            "both edges at once",
+            "an empty range",
+        ]
+        .into_iter()
+        .filter(|what| !seen.contains(what))
+        .collect();
+
+        assert!(
+            missing.is_empty(),
+            "{RUNS} generated plans never produced: {}",
+            missing.join(", ")
+        );
     }
 
     /// **The census.** The battery above says nothing about disjunction unless

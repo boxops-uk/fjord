@@ -3138,8 +3138,14 @@ bytes on disk gets acceptance criteria, not a bullet.
   projected fields are a **prefix of the output order**, where duplicates are adjacent and
   one row of state suffices. Compile under that condition, refuse with a named diagnostic
   otherwise. `--count` with distinct is the same mechanism.
-- **A sargeable order comparison.** `<`/`>` on a leading key field denotes one contiguous run
-  of the key order — unlike a denial there *is* a seek form. Filters today.
+- **A sargeable order comparison.** ✅ Built. `<`/`>`/`<=`/`>=` against a constant on the field
+  that ends a seek prefix folds into a `SeekKey::Bounded` — one contiguous run of the key
+  order, so the scan opens on the window instead of reading up to it. Terminal-only and
+  constant-only; a bound on a later field, against another row, or of a sense already spent
+  stays a residual, as a denial always does. Guards:
+  `iter::a_bounded_seek_answers_what_the_same_bound_filtered_answers` (metamorphic, against the
+  filter form) and `iter::a_bounded_seek_reads_the_window_and_not_the_offset` (the cost claim,
+  counted). [Query efficiency](website/content/query-efficiency.md).
 - **if-then-else.** `(C; T) | (!C; E)` is the desugaring and needs no machinery.
 - **`maybe` / `enum`.** Sugar over a union (built); each waits on a *naming* decision, since
   what they desugar to enters the fingerprint.

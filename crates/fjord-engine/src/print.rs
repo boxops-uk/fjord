@@ -397,44 +397,74 @@ fn seek(
         pins.extend(decoded);
     };
 
-    match seek_key {
-        SeekKey::Prefix(bytes) => constants(&mut cursor, bytes, &mut pins),
-        SeekKey::Composite(parts) => {
-            for part in parts.iter() {
-                match part {
-                    SeekKeyPart::Bytes(bytes) => constants(&mut cursor, bytes, &mut pins),
-                    SeekKeyPart::RegisterField { address, path } => {
-                        pins.push((cursor, register_field(plan, schema, address, path)));
-                        cursor += 1;
-                    }
-                    // The register's *identity*, not any field of it — the compare a
-                    // reference is followed by ([`SeekKeyPart::RegisterFactId`]).
-                    SeekKeyPart::RegisterFactId(address) => {
-                        pins.push((cursor, format!("{address}#")));
-                        cursor += 1;
-                    }
-                }
+    let parts = match seek_key {
+        SeekKey::Prefix(bytes) => {
+            constants(&mut cursor, bytes, &mut pins);
+            &[][..]
+        }
+        SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => parts,
+    };
+
+    for part in parts.iter() {
+        match part {
+            SeekKeyPart::Bytes(bytes) => constants(&mut cursor, bytes, &mut pins),
+            SeekKeyPart::RegisterField { address, path } => {
+                pins.push((cursor, register_field(plan, schema, address, path)));
+                cursor += 1;
+            }
+            // The register's *identity*, not any field of it — the compare a
+            // reference is followed by ([`SeekKeyPart::RegisterFactId`]).
+            SeekKeyPart::RegisterFactId(address) => {
+                pins.push((cursor, format!("{address}#")));
+                cursor += 1;
             }
         }
+    }
+
+    // One entry of the rendered key: `name = pin` where the field is pinned, `name
+    // >= pin` where it is bounded, and no name at all on a **scalar** key — which
+    // has one field and no name for it, so the bare value is the whole seek.
+    let named = |index: usize, pin: &str, relation: Option<&str>| match (
+        key_field_name(schema, key_ty, index),
+        relation,
+    ) {
+        (Some(name), Some(relation)) => format!("{name} {relation} {pin}"),
+        (Some(name), None) => format!("{name} = {pin}"),
+        (None, Some(relation)) => format!("{relation} {pin}"),
+        (None, None) => pin.to_owned(),
+    };
+
+    let mut entries: Vec<String> = pins
+        .iter()
+        .map(|(index, pin)| named(*index, pin, None))
+        .collect();
+
+    // **The bounded field is one entry per edge, at the field the pins stopped at**,
+    // so `file = r0#, line >= 1000, line < 1200` reads as the three things the scan
+    // is narrowed by rather than inventing a notation for a half-open interval. It
+    // is a pin, so the `_` filler below starts after it.
+    if let SeekKey::Bounded { lo, hi, .. } = seek_key {
+        let ty = key_field_ty(key_ty, cursor);
+
+        for (edge, closed, open) in [(lo, ">=", ">"), (hi, "<=", "<")] {
+            if let Some(edge) = edge {
+                let relation = if edge.inclusive { closed } else { open };
+                let rendered = constant(schema, interner, ty, &edge.value);
+                entries.push(named(cursor, &rendered, Some(relation)));
+            }
+        }
+
+        cursor += usize::from(lo.is_some() || hi.is_some());
     }
 
     // Everything past the pins is scanned. Named rather than counted, because which
     // field the seek stopped at is the question — a seek that stops one field short
     // of the one the query cares about is the whole of what going wrong looks like.
     for index in cursor..key_arity(key_ty).unwrap_or(cursor) {
-        pins.push((index, "_".to_owned()));
+        entries.push(named(index, "_", None));
     }
 
-    pins.iter()
-        .map(
-            |(index, pin)| match key_field_name(schema, key_ty, *index) {
-                Some(name) => format!("{name} = {pin}"),
-                // A scalar key is a single field with no name of its own.
-                None => pin.clone(),
-            },
-        )
-        .collect::<Vec<_>>()
-        .join(", ")
+    entries.join(", ")
 }
 
 /// The key fields a run of **constant** seek bytes pins, from field `from`.
@@ -1415,6 +1445,43 @@ mod tests {
         assert!(
             plan.contains("test.Name seek[\"abc\"..]"),
             "expected the range, got:\n{plan}"
+        );
+    }
+
+    /// **A bounded seek shows its bounds**, at the field they are on and with the
+    /// relation spelled out.
+    ///
+    /// The rendering has to say which *sense* an edge is and whether it is closed,
+    /// because those are the two things that decide which rows are read and the two
+    /// a reader cannot recover from anywhere else on the line. A bound rendered as a
+    /// pin — `line = 1000` — would read as a point seek, which is the opposite of
+    /// what it is.
+    #[test]
+    fn a_bounded_seek_shows_the_range_it_opens_on() {
+        let schema = corpus::schema();
+
+        // A scalar key: no field name to put the relation against, so the bound
+        // stands alone.
+        let plan = rendered(&schema, "X where test.Count X; X < 7");
+        assert!(
+            plan.contains("test.Count seek[< 7]"),
+            "expected the upper bound, got:\n{plan}"
+        );
+
+        // Both edges, each its own entry, and the closed one distinguishable from
+        // the open one.
+        let plan = rendered(&schema, "X where test.Count X; X >= -42; X < 1000");
+        assert!(
+            plan.contains("test.Count seek[>= -42, < 1000]"),
+            "expected the window, got:\n{plan}"
+        );
+
+        // Composite: `from` is pinned, `to` carries the bound, and the bound is a
+        // pin — so nothing is left to name as free.
+        let plan = rendered(&schema, "T where test.Edge {from = 1, to = T}; T > 2");
+        assert!(
+            plan.contains("test.Edge seek[from = 1, to > 2]"),
+            "expected the bounded field named, got:\n{plan}"
         );
     }
 

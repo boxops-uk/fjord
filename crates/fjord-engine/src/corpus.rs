@@ -156,32 +156,35 @@ pub const CORPUS: &[Entry] = &[
     // ---- order comparisons -------------------------------------------------
     //
     // Four operators, three shapes: a field against a constant either way round, and
-    // a field against another register's field. All of them **filter** — an order
-    // comparison on a leading key field denotes one contiguous run and could narrow
-    // a seek, unlike a denial, but the sargeable form is not built.
+    // a field against another register's field. The first shape is **sargeable** on
+    // the field that ends the seek prefix — one contiguous run of the key order, so
+    // the scan opens on the window rather than reading up to it — and filters
+    // everywhere else. A denial has no such form: it denotes the two runs either
+    // side of one, and a seek walks one.
     entry(
         "X where test.Count X; X < 7",
         Supported("-9223372036854775808; -42"),
-        "a **comparison** against a constant, applied as a residual by the level \
-         that captures the variable — the same place a constraint lands",
+        "a **comparison against a constant, folded into the seek**: the capture ends \
+         the prefix, so the bound is the range the scan opens on rather than a \
+         filter over the whole predicate",
     ),
     entry(
         "X where test.Count X; X <= 7",
         Supported("-9223372036854775808; -42; 7"),
-        "`<=` includes the bound, which is the whole of what distinguishes it — and \
-         a distinct fingerprint tag, or two plans differing only here would accept \
-         each other's resume cursors",
+        "`<=` includes the bound, which is the whole of what distinguishes it — a \
+         successor at the boundary, and a distinct fingerprint, or two plans \
+         differing only here would accept each other's resume cursors",
     ),
     entry(
         "X where test.Count X; X > -42",
         Supported("7; 1000"),
         "a **negative** bound: the int encoding flips the sign bit, so the byte \
-         order is the numeric order and this compares bytes ([I1](invariants.md))",
+         order is the numeric order and the range is the bytes ([I1](invariants.md))",
     ),
     entry(
         "X where test.Count X; 7 <= X",
         Supported("7; 1000"),
-        "the constant on the **left**. The field carries the residual whichever side \
+        "the constant on the **left**. The field carries the bound whichever side \
          it was written, so the relation is flipped rather than a second arm added",
     ),
     entry(
@@ -189,6 +192,34 @@ pub const CORPUS: &[Entry] = &[
         Supported("7; 1000"),
         "and the same query written the other way round answers the same rows — \
          which is what the flip means",
+    ),
+    entry(
+        "X where test.Count X; X >= -42; X < 1000",
+        Supported("-42; 7"),
+        "**both edges**, which is the shape a window is — `[lo, hi)` of one bucket, \
+         and the query a line range in a file compiles to",
+    ),
+    entry(
+        "X where test.Count X; X > -42; X > 7",
+        Supported("1000"),
+        "**the first bound of each sense takes the seek**; a second of the same \
+         sense filters, because intersecting two ranges inside one seek is work the \
+         residual already does — and both still hold",
+    ),
+    entry(
+        "T where test.Edge {from = 1, to = T}; T > 2",
+        Supported("3"),
+        "the **composite** case, and the one that pays: `from` is fixed, so `to` is \
+         the field the prefix ends at and the bound slices that bucket. Reading it \
+         from the bucket's start instead costs the offset, which is the whole of \
+         what a window late in a large table is",
+    ),
+    entry(
+        "{a = F, b = T} where test.Edge {from = F, to = T}; T > 2",
+        Supported("{a = 1, b = 3}; {a = 2, b = 3}"),
+        "and the negative control: `from` is a **capture**, so the prefix closes \
+         before `to` and the same comparison is a filter. Which side of the fork a \
+         query lands on is where the field sits, never what it says",
     ),
     entry(
         "N where test.Name N; N > \"ann\"",
@@ -1329,12 +1360,16 @@ mod tests {
             "84bee93b29cc8aaf",
             "94c1b578bf7164fb",
             "a84bb24b45106e90",
-            "6d4ae1de6c752f0b",
-            "dc07ab8804b80bb0",
-            "e0ed72c2c97b05b1",
-            "8cdf5589c2d6f196",
-            "8cdf5589c2d6f196",
-            "923c9335e8273f58",
+            "c903d60f351ffab5",
+            "ab670ab7f0e7786a",
+            "34e2f47d8f5c18d3",
+            "131967fb636038b2",
+            "131967fb636038b2",
+            "f5b7e3f2d1e3ea8f",
+            "91c8a3d361cbd1ba",
+            "3811a071efabfde0",
+            "8230c8c70bd07b64",
+            "11212b82c51727c6",
             "a0e2b4422a2ce0e3",
             "9c43ac5c171f5125",
             "27c627dd5c6c79f1",

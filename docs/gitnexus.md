@@ -51,7 +51,7 @@ none of the five.
 | 3 | `context` | ✅ | `fjord-viewer`'s `/symbol/{name}`, shipping today |
 | 4 | `impact` | ◐ | One hop is a seek; closure is a client-side BFS |
 | 5 | `trace` | ◐ | Client-side bidirectional BFS |
-| 6 | `detect_changes` | ◐ | Line→decl containment filters rather than seeks; impact half is #4 |
+| 6 | `detect_changes` | ◐ | Line→decl containment filters under the current key layouts; impact half is #4 |
 | 7 | `check` | ◐ | Fixed-depth rules yes; reachability rules no |
 | 8 | `rename` | ◐ | Graph half is the flagship seek; substring text search is absent |
 | 9 | `cypher` | ❌ | Variable-length paths, `ORDER BY`, aggregation, `WITH` |
@@ -180,12 +180,13 @@ must be allocated above the base's at create time. So `detect_changes` compares 
 against *the commit that was indexed*, not against a continuously updated graph.
 
 Mapping a changed line to the declaration containing it is a range containment — `line <= L` and
-`L <= endLine` against `src.DeclSpan`. Comparisons exist and are byte compares, sound because
-[I1](../website/content/invariants.md#i1) makes encoded order value order, but they **filter**; a
-sargeable order comparison is on the [backlog](../PLAN.md#language-backlog). Inside a file-scoped
-seek that is fine — the scan is one file's declarations, not the database's. Worth stating
-explicitly, because the same filter over an unscoped predicate is the
-56,274-rows-examined-per-row-produced failure `schemas/code.sigla` opens by warning about.
+`L <= endLine` against `src.DeclSpan`. Comparisons are byte compares, sound because
+[I1](../website/content/invariants.md#i1) makes encoded order value order, but both **filter** under
+the current key layouts. `src.Decl.line` follows the declaration name, and
+`src.DeclSpan.endLine` follows `col`; a file-scoped containment query fixes neither intervening
+field, so its seek prefix closes before reaching either comparison. The new bounded seek would
+apply to a purpose-built index whose compared field ended the fixed prefix, but the schema does
+not carry that index today.
 
 Which processes the changed declarations affect is #4.
 
@@ -373,7 +374,6 @@ Listed so the reading has somewhere to go, roughly by ratio of features unblocke
 |---|---|---|
 | `distinct` under the prefix condition | the "which files" answer in #4, #6, #8, #13 | Additive; mechanism worked out in [glean.md §1.3a](glean.md#13a-why-we-cannot-deduplicate-yet-and-what-would-let-us), one row of cursor state |
 | A fuzzy `Source` | #8, the discovery half of #2 | Additive; the assumption this audit was run under |
-| Sargeable `<`/`>` on a leading key field | #6 | Additive; already a backlog bullet |
 | A same-row `EqField` residual | `nyi/repeated-variable`, the self-reference check in #7 | Additive; #7 is the first caller to ask for the operator |
 | Cross-database fan-out with a merge policy | #16, #17, cross-repo everything | Above the executor; designed in [glean.md §0](glean.md#0-the-question-that-opened-this-file-fact-ids-across-databases), `ops-I9` untouched |
 | Recursion / transitive closure | #4, #5, #13, #15, half of #7, part of #9 | **Machine reshape** — no longer a candidate: it has a design and a movement plan ([`PLAN.md`](../PLAN.md#recursion--query-local-relations-magic-sets-stratified-negation)) |

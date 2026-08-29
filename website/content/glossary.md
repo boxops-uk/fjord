@@ -188,12 +188,12 @@ prefix, and the order comparisons.
 per row. Deployment policy, not semantics — it refuses a run and never changes an answer.
 [Query efficiency](query-efficiency.html#the-ceiling-is-deployment-policy)
 
-**sargeable** — a key field that can narrow the scan (a seek, a splice or a guide) rather than
-being filtered afterwards. Sargeability is **order-dependent**.
+**sargeable** — a key field that can narrow the scan (a seek, a splice, a guide or a bounded
+range) rather than being filtered afterwards. Sargeability is **order-dependent**.
 [Query efficiency](query-efficiency.html)
 
-**seek / SeekKey** — the scan start position for a level, built from constant bytes and register
-splices.
+**seek / SeekKey** — the range a level's scan opens on, built from constant bytes and register
+splices, and optionally bounded at the field they stop at by a folded order comparison.
 
 **sigla** — Fjord's query and schema *language*.
 

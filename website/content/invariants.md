@@ -78,12 +78,19 @@ provoke each rejection path in `scripts/test_check_guards.py`.
 `memcmp(encode(a), encode(b)) == compare(a, b)`. What that buys, precisely: a **value-range**
 scan as a bounded seek rather than a filter, and rows in semantic order with no sort. An exact
 *prefix* scan needs only a canonical self-delimiting encoding and no ordering at all — so this is
-a deliberate divergence whose divergent half is partly unspent, since no query lowers a range
-seek yet.
+a deliberate divergence, and **both halves of it are now spent**.
 
-It is kept because it is nearly free to hold and impossible to retrofit. What **is** spent today
-is the store-level half — a scan yields rows in lexicographic key order, which resume re-seeks
-against — and that is a commitment.
+The store-level half is a scan yielding rows in lexicographic key order, which resume re-seeks
+against. The value-range half is the [sargeable order
+comparison](query-efficiency.html#an-order-comparison-seek-or-filter): `Ln >= 1000; Ln < 1200` on
+the field that ends a seek prefix is folded to a `SeekKey::Bounded`, and it is *only* this
+invariant that makes the fold sound — one contiguous run of the value order is one contiguous
+run of the key order, so the range is the answer rather than a superset of it.
+
+*Guards:* `iter::a_bounded_seek_answers_what_the_same_bound_filtered_answers` (the metamorphic
+arm — a folded bound against the same bound as a per-row byte compare, over generated
+`(plan, store)` pairs) and `iter::a_bounded_seek_reads_the_window_and_not_the_offset` (the cost
+claim, counted rather than argued).
 
 *The gate for any codec change.* [Storage → the tuple codec](storage.html#the-tuple-codec)
 

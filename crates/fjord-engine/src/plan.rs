@@ -137,6 +137,51 @@ impl fmt::Display for FieldPath {
 pub enum SeekKey {
     Prefix(Box<[u8]>),
     Composite(Box<[SeekKeyPart]>),
+    /// A fixed prefix, then **one bounded field** — the seek form of an order
+    /// comparison.
+    ///
+    /// `Ln >= 1000; Ln < 1200` on the field that ends the prefix is the half-open
+    /// byte slice `[prefix ++ enc(1000), prefix ++ enc(1200))` of that bucket, and
+    /// that is not a coincidence: the encoding is order-preserving
+    /// ([I1](../../../website/content/invariants.md#i1)), so one run of the value order
+    /// *is* one run of the key order. The filter form answers the same rows by
+    /// reading the bucket from its start and dropping everything below the bound,
+    /// which costs the offset rather than the window.
+    ///
+    /// **The bounds live here rather than in `parts` because nothing may follow
+    /// them.** A bounded field's bytes are not a single value, so a part appended
+    /// after one would compare the next field against bytes belonging to this one —
+    /// matching nothing, silently. As a variant with the edges beside the parts
+    /// there is no way to express that; as a `SeekKeyPart` it would be a rule about
+    /// position that every builder had to remember.
+    ///
+    /// Either edge may be absent — a lone `>= a` is half-open against the bucket's
+    /// own end — and an edge is *inclusive or not* rather than carrying one of the
+    /// four relations, because which sense it is comes from which field holds it.
+    /// A `Lt` in `lo` is a state the executor would have to have an answer for and
+    /// no builder should ever produce.
+    Bounded {
+        parts: Box<[SeekKeyPart]>,
+        lo: Option<RangeEdge>,
+        hi: Option<RangeEdge>,
+    },
+}
+
+/// One end of a [`SeekKey::Bounded`] range: the encoded field value, and whether
+/// the bound itself is in.
+///
+/// **The inclusivity is a successor, not a comparison.** A stored key runs on past
+/// the bounded field, so every row *at* the bound sorts after `prefix ++ value` —
+/// which makes `>= v` and `< v` the bare concatenation, and `> v` and `<= v` the
+/// same bytes put through [`strinc`](fjord_encoding::tuple::strinc), the successor a
+/// prefix's own upper bound already uses. Conflating the two is an off-by-one at
+/// the boundary and nowhere else, which is exactly the shape of bug that survives
+/// a hand-checked example.
+#[derive(Debug, Clone)]
+pub struct RangeEdge {
+    pub value: Box<[u8]>,
+    /// Whether a row equal to `value` at this field is inside the range.
+    pub inclusive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -241,11 +286,13 @@ pub enum ResidualOp {
     /// the property the whole storage model rests on, used here for the first time
     /// somewhere other than a seek. No decode, no allocation, no value read.
     ///
-    /// Filters rather than seeks, for now. An order comparison on a *leading* key
-    /// field denotes one contiguous run and could narrow the scan, unlike a denial —
-    /// so unlike `NotPrefix` there is a sargeable form to look for later. It is not
-    /// built, and this comment is the note that it is possible rather than a claim
-    /// that it exists.
+    /// **The filter form, and not the only one.** An order comparison on the field
+    /// that *ends the seek prefix* denotes one contiguous run of the key order, so
+    /// flatten folds it into a [`SeekKey::Bounded`] instead and this arm never
+    /// receives it. What reaches here is every comparison that is not sargeable —
+    /// one on a field the prefix never got to, one behind a capture that closed it,
+    /// and the second bound of a sense already spent — where the rows have to be
+    /// read and dropped, as a denial's always are.
     CmpConst {
         op: Compare,
         value: Box<[u8]>,
@@ -1016,24 +1063,57 @@ impl Fingerprint {
             }
             SeekKey::Composite(parts) => {
                 self.byte(1);
-                self.len(parts.len());
-                for part in parts.iter() {
-                    match part {
-                        SeekKeyPart::Bytes(bytes) => {
-                            self.byte(0);
-                            self.bytes(bytes);
-                        }
-                        SeekKeyPart::RegisterField { address, path } => {
-                            self.byte(1);
-                            self.address(*address);
-                            self.path(path);
-                        }
-                        SeekKeyPart::RegisterFactId(address) => {
-                            self.byte(2);
-                            self.address(*address);
-                        }
-                    }
+                self.seek_key_parts(parts);
+            }
+            // Its own tag, and both edges inside it. A cursor is accepted on a plan
+            // fingerprint and a bound is what positions the scan, so two plans
+            // differing only in a bound — `Ln < 1200` against `Ln < 1300`, or `<`
+            // against `<=` — must not accept each other's: replayed across, the
+            // saved key would resume a range it was never inside and the page would
+            // answer from the wrong place.
+            SeekKey::Bounded { parts, lo, hi } => {
+                self.byte(2);
+                self.seek_key_parts(parts);
+                self.edge(lo.as_ref());
+                self.edge(hi.as_ref());
+            }
+        }
+    }
+
+    fn seek_key_parts(&mut self, parts: &[SeekKeyPart]) {
+        self.len(parts.len());
+        for part in parts.iter() {
+            match part {
+                SeekKeyPart::Bytes(bytes) => {
+                    self.byte(0);
+                    self.bytes(bytes);
                 }
+                SeekKeyPart::RegisterField { address, path } => {
+                    self.byte(1);
+                    self.address(*address);
+                    self.path(path);
+                }
+                SeekKeyPart::RegisterFactId(address) => {
+                    self.byte(2);
+                    self.address(*address);
+                }
+            }
+        }
+    }
+
+    /// One end of a bounded seek, **present or not**.
+    ///
+    /// An absent edge is hashed as a tag of its own rather than skipped: two edges
+    /// are hashed in a fixed order, so a skipped one would let `lo` alone and `hi`
+    /// alone over the same bytes fold to the same fingerprint — two plans that read
+    /// opposite halves of a bucket.
+    fn edge(&mut self, edge: Option<&RangeEdge>) {
+        match edge {
+            None => self.byte(0),
+            Some(RangeEdge { value, inclusive }) => {
+                self.byte(1);
+                self.byte(u8::from(*inclusive));
+                self.bytes(value);
             }
         }
     }
@@ -1336,6 +1416,33 @@ mod tests {
             })
         };
 
+        // A bounded seek pinning nothing, so the only thing separating each entry
+        // below from its neighbours is the range.
+        let bounded = |lo: Option<(i64, bool)>, hi: Option<(i64, bool)>| {
+            let edge = |bound: Option<(i64, bool)>| {
+                bound.map(|(value, inclusive)| RangeEdge {
+                    value: i64_field(value).into_boxed_slice(),
+                    inclusive,
+                })
+            };
+
+            with_body(&|body| {
+                let mut l = level(body, 0);
+                l.sources = Box::new([Source::Seek {
+                    access: Access {
+                        predicate_id: PredicateId(1),
+                        seek_key: SeekKey::Bounded {
+                            parts: Box::new([]),
+                            lo: edge(lo),
+                            hi: edge(hi),
+                        },
+                    },
+                    residuals: Box::new([]),
+                }]);
+                body[0] = Step::Level(l);
+            })
+        };
+
         let fuzzy_residual = |term: &'static str, distance: u8, anchor: FuzzyAnchor| {
             with_body(&|body| {
                 let mut l = level(body, 0);
@@ -1398,6 +1505,35 @@ mod tests {
                     }]);
                     body[0] = Step::Level(l);
                 }),
+            ),
+            // **Every bounded seek differs from every other**, and that is the
+            // sharpest cursor risk the fold adds: a resume key is a position inside
+            // a range, so a token replayed against a plan whose range moved would
+            // start the page somewhere the query never was. Which sense an edge is,
+            // whether it is closed, and the bytes it is against all have to reach
+            // the fingerprint — and an absent edge has to be distinguishable from a
+            // present one, or `>= v` and `< v` over the same bytes would collide.
+            ("a lower bound", bounded(Some((7, true)), None)),
+            (
+                "the same lower bound, open",
+                bounded(Some((7, false)), None),
+            ),
+            (
+                "a lower bound at another value",
+                bounded(Some((8, true)), None),
+            ),
+            ("an upper bound", bounded(None, Some((7, true)))),
+            (
+                "the same upper bound, open",
+                bounded(None, Some((7, false))),
+            ),
+            (
+                "the same bytes as both edges",
+                bounded(Some((7, true)), Some((7, true))),
+            ),
+            (
+                "a window, closed below and open above",
+                bounded(Some((7, true)), Some((8, false))),
             ),
             ("a guided source", guided("parse", 1, 0, FuzzyAnchor::Whole)),
             (
@@ -1825,8 +1961,8 @@ pub mod proptest {
     use ::proptest::prelude::*;
 
     use super::{
-        Access, Address, FieldPath, FuzzyAnchor, Guide, Level, Plan, Project, Residual, ResidualOp,
-        SeekKey, SeekKeyPart, Source, Step,
+        Access, Address, Compare, FieldPath, FuzzyAnchor, Guide, Level, Plan, Project, RangeEdge,
+        Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step,
     };
     use crate::fixtures::{compose, i64_field, interner_with, str_field};
     use fjord_encoding::tuple::{MARK_TERM, UnionTag, Value};
@@ -2098,6 +2234,56 @@ pub mod proptest {
         anchor: FuzzyAnchor,
     }
 
+    /// A bounded seek, as a spec: the field the bound closes on and its edges.
+    ///
+    /// Both edges are drawn independently from values that occur, so an **empty**
+    /// range — a lower bound above the upper one — is an ordinary case here rather
+    /// than one somebody remembered to write. It is the case where a reversed
+    /// range would reach the store, and a reversed range is a panic inside the map
+    /// rather than an empty answer.
+    #[derive(Debug, Clone)]
+    struct BoundSpec {
+        field: usize,
+        lo: Option<EdgeSpec>,
+        hi: Option<EdgeSpec>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct EdgeSpec {
+        val: FieldVal,
+        inclusive: bool,
+    }
+
+    impl EdgeSpec {
+        fn edge(&self) -> RangeEdge {
+            RangeEdge {
+                value: self.val.encode().into_boxed_slice(),
+                inclusive: self.inclusive,
+            }
+        }
+
+        /// The same edge as the filter it replaces — the independent reading of one
+        /// bound, and the oracle
+        /// [`build_plan_filtering`](PlanAndStore::build_plan_filtering) compares
+        /// against.
+        fn residual(&self, field: usize, lower: bool) -> Residual {
+            let op = match (lower, self.inclusive) {
+                (true, true) => Compare::Ge,
+                (true, false) => Compare::Gt,
+                (false, true) => Compare::Le,
+                (false, false) => Compare::Lt,
+            };
+
+            Residual {
+                path: FieldPath::field(field),
+                op: ResidualOp::CmpConst {
+                    op,
+                    value: self.val.encode().into_boxed_slice(),
+                },
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct LevelSpec {
         predicate: usize,
@@ -2115,6 +2301,14 @@ pub mod proptest {
         ///
         /// [the query-surface note]: ../../../website/content/query-language.md
         sources: Vec<Option<ResidualSpec>>,
+        /// The range this level's scan is bounded to, if any — making its
+        /// [`SeekKey`] a [`SeekKey::Bounded`].
+        ///
+        /// On the [`Access`] beside the seek, so every source of the level shares
+        /// it, for the reason [`guide`](LevelSpec::guide) is: the sources of one
+        /// level share an access, and branches reading different ranges of one
+        /// predicate is a shape flatten has no way to write.
+        bound: Option<BoundSpec>,
         /// The automaton this level's scan is walked by, if any — making every one
         /// of its sources a [`Source::Guided`] rather than a [`Source::Seek`].
         ///
@@ -2191,29 +2385,75 @@ pub mod proptest {
         }
 
         pub fn build_plan(&self, interner: &LocalInterner) -> Plan {
+            self.plan(interner, true)
+        }
+
+        /// The same plan with every bound written as a **filter** instead — the
+        /// independent reading of a range, and the oracle a folded one is checked
+        /// against.
+        ///
+        /// Independent is the word that matters. A bounded seek turns a comparison
+        /// into two byte strings and a pair of scan bounds; a `CmpConst` residual
+        /// compares the field of each row it is handed. They share the encoding and
+        /// nothing else, so a fold that has the inclusivity backwards, mistakes
+        /// which sense an edge is, or drops a row at the boundary disagrees with
+        /// this — where a run compared against itself would not.
+        pub fn build_plan_filtering(&self, interner: &LocalInterner) -> Plan {
+            self.plan(interner, false)
+        }
+
+        fn plan(&self, interner: &LocalInterner, fold_bounds: bool) -> Plan {
             let body = self
                 .levels
                 .iter()
                 .enumerate()
                 .map(|(level, spec)| {
+                    let parts: Box<[SeekKeyPart]> = match spec.seek {
+                        None => Box::new([]),
+                        Some((ref_level, ref_field)) => Box::new([SeekKeyPart::RegisterField {
+                            address: Address::new(ref_level),
+                            path: FieldPath::field(ref_field),
+                        }]),
+                    };
+
+                    let seek_key = match (&spec.bound, fold_bounds) {
+                        (Some(bound), true) => SeekKey::Bounded {
+                            parts,
+                            lo: bound.lo.as_ref().map(EdgeSpec::edge),
+                            hi: bound.hi.as_ref().map(EdgeSpec::edge),
+                        },
+                        _ if parts.is_empty() => SeekKey::Prefix(Box::new([])),
+                        _ => SeekKey::Composite(parts),
+                    };
+
+                    // The bound as filters, for the oracle: on every source, since
+                    // a bound belongs to the access every source of the level
+                    // shares.
+                    let filters: Vec<Residual> = match (&spec.bound, fold_bounds) {
+                        (Some(bound), false) => bound
+                            .lo
+                            .iter()
+                            .map(|edge| edge.residual(bound.field, true))
+                            .chain(
+                                bound
+                                    .hi
+                                    .iter()
+                                    .map(|edge| edge.residual(bound.field, false)),
+                            )
+                            .collect(),
+                        _ => vec![],
+                    };
+
                     let access = Access {
                         predicate_id: PredicateId(spec.predicate as u32),
-                        seek_key: match spec.seek {
-                            None => SeekKey::Prefix(Box::new([])),
-                            Some((ref_level, ref_field)) => {
-                                SeekKey::Composite(Box::new([SeekKeyPart::RegisterField {
-                                    address: Address::new(ref_level),
-                                    path: FieldPath::field(ref_field),
-                                }]))
-                            }
-                        },
+                        seek_key,
                     };
 
                     let sources = spec
                         .sources
                         .iter()
                         .map(|residual| {
-                            let residuals: Box<[Residual]> = match residual {
+                            let drawn: Box<[Residual]> = match residual {
                                 None => Box::new([]) as Box<[Residual]>,
                                 Some(ResidualSpec::EqConst { field, val }) => {
                                     Box::new([Residual {
@@ -2252,6 +2492,9 @@ pub mod proptest {
                                     },
                                 }]),
                             };
+
+                            let residuals: Box<[Residual]> =
+                                filters.iter().cloned().chain(drawn.into_vec()).collect();
 
                             match &spec.guide {
                                 None => Source::Seek {
@@ -2358,6 +2601,36 @@ pub mod proptest {
         /// that each anchoring reaches each *shape* — not that the two disagree
         /// within one level.
         anchored: bool,
+        /// Whether this level's scan is bounded at all — half of them, so the
+        /// shapes the rest of the battery is about are not drowned by the new one.
+        bounded: bool,
+        /// Which edges the bound has and which of them are closed, resolved
+        /// through [`edges_of`]. Its own draw so that the seven shapes shrink
+        /// independently of whether there is a bound at all.
+        bound: u8,
+        /// The values the edges are drawn from.
+        bound_val: u8,
+    }
+
+    /// The seven ways a bound can be shaped: one edge or both, open or closed.
+    ///
+    /// A table rather than arithmetic over the draw, because every entry is a case
+    /// the executor answers differently — a closed lower edge is a bare
+    /// concatenation and an open one is a successor, and an upper edge is the
+    /// other way round. Enumerating them is what says the battery reaches all
+    /// seven rather than the two an off-by-one would survive.
+    const fn edges_of(pick: u8) -> (Option<bool>, Option<bool>) {
+        match pick % 7 {
+            0 => (Some(true), None),
+            1 => (Some(false), None),
+            2 => (None, Some(true)),
+            3 => (None, Some(false)),
+            // Both, and the canonical window first: `>= a, < b` is what a line
+            // range in a file is written as.
+            4 => (Some(true), Some(false)),
+            5 => (Some(false), Some(true)),
+            _ => (Some(true), Some(true)),
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -2552,11 +2825,38 @@ pub mod proptest {
                     anchor: anchor_of(draw.anchored),
                 });
 
+            // A **bounded scan**, on the same field a guide would walk and for the
+            // same reason: a bound narrows the field that *ends the seek prefix*,
+            // so every key byte before it has to be fixed. Unions are left out
+            // because the language cannot order one — `<` on a union is a type
+            // error, so a bound there would be a plan shape no query can reach.
+            let bound_field = usize::from(seek.is_some());
+            let bound = (draw.bounded
+                && bound_field < fields.len()
+                && fields[bound_field] != FieldTy::Union)
+                .then(|| {
+                    let (lo, hi) = edges_of(draw.bound);
+                    let ty = fields[bound_field];
+                    let edge = |inclusive: bool, pick: u8| EdgeSpec {
+                        val: constant_for(&facts[predicate], bound_field, ty, pick),
+                        inclusive,
+                    };
+
+                    BoundSpec {
+                        field: bound_field,
+                        lo: lo.map(|inclusive| edge(inclusive, draw.bound_val)),
+                        // A second, independent pick: the two edges cross often
+                        // enough that the empty range is an ordinary draw.
+                        hi: hi.map(|inclusive| edge(inclusive, draw.bound_val.wrapping_add(1))),
+                    }
+                });
+
             resolved.push(LevelSpec {
                 predicate,
                 seek,
                 sources,
                 guide,
+                bound,
             });
         }
 
@@ -2597,31 +2897,39 @@ pub mod proptest {
     }
 
     fn arb_level() -> impl Strategy<Value = LevelDraw> {
+        // Nested, because a tuple strategy stops at ten elements. The grouping is
+        // the bound's draws against everything else, which is also how they read.
         (
-            0u8..PICKS,
-            any::<bool>(),
-            // Every residual arm, and the range says so: drawn `0..3` against a
-            // `% 5` selector, the last arms are unreachable and the census that
-            // would have said so does not exist for this generator.
-            0u8..5,
-            0u8..PICKS,
-            0u8..PICKS,
-            0u8..PICKS,
-            0u8..PICKS,
-            0u8..PICKS,
-            any::<bool>(),
+            (
+                0u8..PICKS,
+                any::<bool>(),
+                // Every residual arm, and the range says so: drawn `0..3` against a
+                // `% 5` selector, the last arms are unreachable and the census that
+                // would have said so does not exist for this generator.
+                0u8..5,
+                0u8..PICKS,
+                0u8..PICKS,
+                0u8..PICKS,
+                0u8..PICKS,
+                0u8..PICKS,
+                any::<bool>(),
+            ),
+            (any::<bool>(), 0u8..7, 0u8..PICKS),
         )
             .prop_map(
                 |(
-                    predicate,
-                    seek,
-                    residual,
-                    field,
-                    reference,
-                    constant,
-                    alternative,
-                    guide,
-                    anchored,
+                    (
+                        predicate,
+                        seek,
+                        residual,
+                        field,
+                        reference,
+                        constant,
+                        alternative,
+                        guide,
+                        anchored,
+                    ),
+                    (bounded, bound, bound_val),
                 )| {
                     LevelDraw {
                         predicate,
@@ -2633,6 +2941,9 @@ pub mod proptest {
                         alternative,
                         guide,
                         anchored,
+                        bounded,
+                        bound,
+                        bound_val,
                     }
                 },
             )
