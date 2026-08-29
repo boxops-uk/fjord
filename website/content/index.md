@@ -113,6 +113,7 @@ honest list.
 <span class="pill ok">fjall store</span>
 <span class="pill ok">sigla front end</span>
 <span class="pill ok">fuzzy search</span>
+<span class="pill ok">fuzzy prefix search</span>
 <span class="pill ok">schema DSL</span>
 <span class="pill ok">union types</span>
 <span class="pill ok">wire protocol</span>

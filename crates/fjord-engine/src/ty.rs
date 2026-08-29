@@ -440,7 +440,7 @@ impl Checker<'_> {
             // `ResidualOp::Fuzzy` by where the field sits in the key, so a limit
             // held by the guide alone would make one spelling of a query refuse
             // and the other answer.
-            ExprKind::Fuzzy(text, distance) => {
+            ExprKind::Fuzzy(text, distance, _) => {
                 let distance = *distance;
                 if distance == 0 || distance > crate::levenshtein::MAX_DISTANCE {
                     self.reject(

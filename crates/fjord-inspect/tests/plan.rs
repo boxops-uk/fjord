@@ -243,6 +243,7 @@ fn fuzzy_plan_details_name_the_candidate_field_for_the_dfa_view() {
     assert!(guide.guide);
     assert_eq!(guide.term, "parse");
     assert_eq!(guide.distance, 1);
+    assert!(!guide.anchored, "`~` was exposed as an anchored guide");
     assert!(
         guide.path.is_empty(),
         "a scalar key is the candidate itself"
@@ -257,5 +258,28 @@ fn fuzzy_plan_details_name_the_candidate_field_for_the_dfa_view() {
     let fuzzy = &residual.steps[0].fuzzy[0];
     assert!(!fuzzy.guide);
     assert_eq!(fuzzy.residual, Some(0));
+    assert!(!fuzzy.anchored, "`~` was exposed as an anchored residual");
     assert_eq!(fuzzy.path, ["name"]);
+
+    let anchored_guide = lowered(
+        "schema search { predicate Name : string }",
+        "N where search.Name N; N = \"parse\"~<1",
+    )
+    .plan
+    .expect("the anchored leading string field is guided");
+    assert!(
+        anchored_guide.steps[0].fuzzy[0].anchored,
+        "`~<` lost its anchoring at the guided plan-view boundary"
+    );
+
+    let anchored_residual = lowered(
+        SCHEMA,
+        "N where code.Decl {file = _, name = N, line = _}; N = \"parse\"~<1",
+    )
+    .plan
+    .expect("the anchored trailing string field is a residual");
+    assert!(
+        anchored_residual.steps[0].fuzzy[0].anchored,
+        "`~<` lost its anchoring at the residual plan-view boundary"
+    );
 }

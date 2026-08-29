@@ -355,6 +355,12 @@ discovering later.
 - **It does not help ranking.** Edit distance is a natural relevance score and there is nowhere to
   put it. A fuzzy seek returns candidates in *key* order, not distance order — the ordering gap
   arriving immediately, inside the one feature fuzzy was supposed to rescue.
+- **Search-as-you-type needs the anchored operator, and `~` is not it.** Whole-string edit
+  distance answers "did they misspell the complete name"; a search box asks "does what they
+  have typed so far reach the start of this name". `~<` is that question, and the difference is
+  not marginal — over the 148,809-name corpus `"parse_node"~1` answers 5 rows and `"parsr"~<1`
+  answers 7,416. Both operators exist, both guide a seek, and the guide stops reading a row the
+  moment an anchored prefix accepts, because every key extending it is an answer.
 
 ---
 

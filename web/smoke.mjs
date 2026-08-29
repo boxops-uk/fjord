@@ -553,7 +553,7 @@ await openPage('Fuzzy search, step by step')
 await page.waitForSelector('.demo-dfa table', { timeout: 20_000 })
 check(
   'the fuzzy page builds every worked example from the real automaton',
-  (await page.$$('.demo-dfa')).length === 6,
+  (await page.$$('.demo-dfa')).length === 7,
 )
 check(
   'a DFA example starts at the empty candidate state',
@@ -595,6 +595,28 @@ check(
     descriptions[5].textContent,
   )).includes('every stored key beginning with “zz” can be skipped'),
 )
+// The anchored example is the seventh, and it is the one that must stop *early*:
+// `ca` accepts, so the walk never reads `ttle`. A page that had quietly kept the
+// whole-string question would run all six characters and end without accepting.
+await page.$$eval('.demo-dfa', (demos) => {
+  const buttons = demos[6].querySelectorAll('button')
+  buttons[buttons.length - 1].click()
+})
+await settle()
+check(
+  'the anchored example stops at the first accepting prefix',
+  (
+    await page.$$eval('.demo-dfa [data-testid="dfa-description"]', (descriptions) =>
+      descriptions[6].textContent,
+    )
+  ).includes('every stored key that begins with it'),
+)
+check(
+  'the anchored walk did not read past its answer',
+  (await page.$$eval('.demo-dfa [data-testid="dfa-count"]', (counts) => counts[6].textContent)) ===
+    'state 3/3',
+)
+
 check(
   'the page connects the DFA to a compiler-selected guided access',
   (await page.$eval('.demo-plan .plan', (el) => el.textContent)).includes('guided'),

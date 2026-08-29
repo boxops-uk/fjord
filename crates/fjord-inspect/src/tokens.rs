@@ -169,6 +169,7 @@ pub(crate) const fn kind(token: Token) -> &'static str {
         Token::String => "String",
         Token::DotDot => "DotDot",
         Token::Tilde => "Tilde",
+        Token::TildeLt => "TildeLt",
         Token::Dot => "Dot",
         Token::Eq => "Eq",
         Token::BangEq => "BangEq",
@@ -207,6 +208,7 @@ const fn class(token: Token) -> TokenClass {
         Token::Error | Token::EOF => TokenClass::Error,
         Token::DotDot
         | Token::Tilde
+        | Token::TildeLt
         | Token::Dot
         | Token::Eq
         | Token::BangEq

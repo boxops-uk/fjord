@@ -290,6 +290,8 @@ pub struct Fact {
 ///
 /// The rows are chosen so that each construct the corpus exercises actually *matches*
 /// something: `test.Name` holds an `"abc"` so a prefix pattern is not empty,
+/// `"annotate"` extends `"anna"` far enough that a fuzzy match and a fuzzy **prefix**
+/// match answer differently — without it the corpus cannot tell `~` from `~<` at all,
 /// `test.Count` holds `i64::MIN` and `1000` so the literal edge cases have a fact to
 /// find, and two `test.Link` rows point at one `test.Foo` so a join through a
 /// reference can return more than one row. Nothing references `test.Foo {id = 3}`, so
@@ -328,7 +330,11 @@ pub fn facts() -> Vec<Fact> {
         NESTED,
         [1i64, 7].map(|inner| record(&[int(inner)])),
     );
-    push(&mut out, NAME, ["abc", "ann", "anna", "bob"].map(string));
+    push(
+        &mut out,
+        NAME,
+        ["abc", "ann", "anna", "annotate", "bob"].map(string),
+    );
     push(&mut out, COUNT, [i64::MIN, -42, 7, 1_000].map(int));
     push(&mut out, SHADOW, [5i64].map(int));
     push(

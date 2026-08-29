@@ -116,6 +116,8 @@ export type FuzzyPlan = {
   residual: number | null
   term: string
   distance: number
+  /** Whether the plan asks the anchored question, `~<`. */
+  anchored: boolean
   /** Object keys from the decoded fact key to its candidate string. */
   path: string[]
 }
@@ -224,6 +226,9 @@ export type FuzzyWalk = {
   term: string
   candidate: string
   distance: number
+  /** `"parse"~<2` rather than `"parse"~2` — the walk ends at the first accepting
+   * prefix, because every extension of it matches too. */
+  anchored: boolean
   cap: number
   columns: string[]
   steps: FuzzyStep[]
@@ -246,7 +251,12 @@ export type Engine = {
   /** The whole run, one transition at a time. */
   trace: (schema: string, query: string) => Trace
   /** One candidate walking through the fuzzy matcher's real DFA state. */
-  fuzzy: (term: string, candidate: string, distance: number) => FuzzyWalk | null
+  fuzzy: (
+    term: string,
+    candidate: string,
+    distance: number,
+    anchored: boolean,
+  ) => FuzzyWalk | null
   /** Every stored row, as bytes and as a fact, in the order a scan meets them. */
   database: (schema: string) => Database
   /** What the site opens with — both tested in the Rust suite, not invented here. */
@@ -275,8 +285,8 @@ export function load(): Promise<Engine> {
         JSON.parse(run(schemaSource, query)) as Rows,
       trace: (schemaSource: string, query: string) =>
         JSON.parse(trace(schemaSource, query)) as Trace,
-      fuzzy: (term: string, candidate: string, distance: number) =>
-        JSON.parse(fuzzy(term, candidate, distance)) as FuzzyWalk | null,
+      fuzzy: (term: string, candidate: string, distance: number, anchored: boolean) =>
+        JSON.parse(fuzzy(term, candidate, distance, anchored)) as FuzzyWalk | null,
       database: (schemaSource: string) => JSON.parse(database(schemaSource)) as Database,
       sampleSchema: sample_schema(),
       samples: JSON.parse(samples()) as Sample[],

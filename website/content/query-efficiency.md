@@ -43,7 +43,7 @@ things about each. The first three narrow what is read; the fourth reads and dro
 |---|---|---|
 | **seek** | The field is a constant, or a constrained range, and every field before it also narrowed | Nothing — the scan opens on a shorter range |
 | **splice** | The field's value is in a register an *earlier* level bound | Nothing — this is the join, and it is why the inner loop is not a scan |
-| **guide** | The field is a [fuzzy pattern](fuzzy-search.html) and the fields before it narrowed | One automaton walk per row, and a re-opened scan per dead band |
+| **guide** | The field is a [fuzzy pattern](fuzzy-search.html) — `~` or `~<` — and the fields before it narrowed | One automaton walk per row, and a re-opened scan per dead band |
 | **filter** (a residual) | Anything at all, once the seek prefix has closed | A row read, then dropped |
 
 The first three are what "sargeable" means here: the constraint reaches the *key order*, so
@@ -64,7 +64,7 @@ filters, however specific it looks.
 | A union alternative — `{text = …}` | **stays open** | A tag is complete, self-delimiting bytes, so the payload's own walk carries on |
 | A **complete** record — `{extra = 1, inner = 2}` | **stays open** | The whole wrapped value is known |
 | A string prefix — `"a".."` | **ends it, and is the last part** | A range is one run of the order, and nothing after it in the key is that field's bytes |
-| A fuzzy pattern — `"ann"~1` | **ends it, and becomes the guide** | A set of ranges inside one range |
+| A fuzzy pattern — `"ann"~1`, `"ann"~<1` | **ends it, and becomes the guide** | A set of ranges inside one range |
 | A **wildcard** — `_` | **closes it** | Nothing is known |
 | A **capture** with no constraint on it | **closes it** | The field is an output |
 | A **partial** record — `{extra = 1, inner = A}` | **closes it** | A record keeps its wrapper inside a key, so a partial one is not a byte prefix of a complete one |
@@ -100,8 +100,9 @@ exactly what happens when the capture is behind a closed prefix and there is no 
 narrow.
 
 A variable may carry several, and they are applied by **what each one can do**, not by where
-it was written: an exact constant first, then a prefix, then a fuzzy pattern. That is what
-makes these two the same plan, one guided seek over the `"an"` bucket:
+it was written: an exact constant first, then a prefix, then a fuzzy pattern — and where both
+fuzzy spellings are present, `~` before `~<`. That is what makes these two the same plan, one
+guided seek over the `"an"` bucket:
 
 ```sigla
 N where test.Name N; N = "an"..; N = "ann"~2
@@ -111,8 +112,10 @@ N where test.Name N; N = "ann"~2; N = "an"..
 ## A fuzzy match: guide or filter
 
 `"parse"~1` works in **any** position — on a trailing field, inside a union payload at depth,
-on a row reached by a point read through a reference. What changes with position is not
-whether it answers but whether it can skip work.
+on a row reached by a point read through a reference — and so does its anchored sibling
+`"parse"~<1`. What changes with position is not whether it answers but whether it can skip
+work. What changes with *anchoring* is only which rows are answers, never where the pattern may
+sit.
 
 It becomes a **guide** — a `Source::Guided`, walking the key order and seeking past the bands
 its dead states prove cannot match — when all three hold:
@@ -121,12 +124,20 @@ its dead states prove cannot match — when all three hold:
    the fuzzy pattern is on the very field a prefix range already ended the seek on (`N =
    "pa"..; N = "parse"~2`).
 2. Nothing else on that level already took the guide. One automaton drives the walk; a second
-   fuzzy pattern on the same level filters, and both still hold.
+   fuzzy pattern on the same level filters, and both still hold. Between `~` and `~<`, the
+   whole-string one guides — it is the one whose states go dead on a long key, so it is the
+   one with bands to seek past.
 3. The level *scans*. A row reached by a fetch is one row already, so there is nothing to walk.
 
 Otherwise it is a `ResidualOp::Fuzzy` and reads every row in the range. Both forms use the same
 automaton, cost the same per row, and answer the same rows —
-`a_guided_seek_answers_what_a_filtered_scan_answers` is the property that says so.
+`a_guided_seek_answers_what_a_filtered_scan_answers` is the property that says so, and
+`a_guided_prefix_seek_answers_what_a_filtered_scan_answers` says it for the anchored question.
+
+Anchoring adds one thing the whole-string form has no use for: once a prefix accepts, every key
+extending it is an answer, so the guide stops reading the row rather than computing a seek
+target from it. That is what
+`an_accepted_long_key_is_not_decoded_past_its_accepting_prefix` measures.
 
 ```sigla
 N where test.Name N; N = "ann"~1                     guide  — the field leads the key
@@ -198,7 +209,7 @@ per step, to stderr. The plan's vocabulary is small and worth recognising on sig
 |---|---|
 | `scan` | The whole predicate |
 | `seek[…]` | A narrowed range; `= _` marks where the prefix stopped |
-| `seek~[…]` | A guided walk — a fuzzy automaton decides what is visited inside the range |
+| `seek~[…]` | A guided walk — a fuzzy automaton decides what is visited inside the range. `~<` inside it is the anchored question |
 | `fetch[r0.of]` | One row, by id — the cheapest source there is |
 | `where …` | A residual: rows read and dropped |
 

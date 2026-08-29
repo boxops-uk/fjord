@@ -12,7 +12,7 @@ import { Spinner } from '@astryxdesign/core/Spinner'
 import { useEngine } from '../engine'
 import type { FuzzyStep, FuzzyWalk } from '../wasm'
 
-type Spec = { term: string; candidate: string; distance: number }
+type Spec = { term: string; candidate: string; distance: number; anchored: boolean }
 
 /** One worked example, driven by the engine's Levenshtein automaton. */
 export function DfaDemo({ source }: { source: string }) {
@@ -20,7 +20,10 @@ export function DfaDemo({ source }: { source: string }) {
   const [at, setAt] = useState(0)
   const spec = useMemo(() => readSpec(source), [source])
   const walk = useMemo(
-    () => (engine && spec ? engine.fuzzy(spec.term, spec.candidate, spec.distance) : null),
+    () =>
+      engine && spec
+        ? engine.fuzzy(spec.term, spec.candidate, spec.distance, spec.anchored)
+        : null,
     [engine, spec],
   )
 
@@ -174,7 +177,14 @@ function readSpec(source: string): Spec | null {
       value.distance > 3
     )
       return null
-    return { term: value.term, candidate: value.candidate, distance: value.distance }
+    return {
+      term: value.term,
+      candidate: value.candidate,
+      distance: value.distance,
+      // Absent means the whole-string question, so every example written before
+      // `~<` existed keeps meaning what it meant.
+      anchored: value.anchored === true,
+    }
   } catch {
     return null
   }
@@ -191,12 +201,18 @@ function status(step: FuzzyStep): {
 }
 
 function description(walk: FuzzyWalk, step: FuzzyStep): string {
-  if (step.at === 0)
-    return `Before reading the candidate, the row counts how many letters would have to be deleted from “${walk.term}” to match an empty string.`
+  if (step.at === 0) {
+    const empty = `Before reading the candidate, the row counts how many letters would have to be deleted from “${walk.term}” to match an empty string.`
+    return walk.anchored && step.accepts !== null
+      ? `${empty} That is already within ${walk.distance}, so the empty prefix matches — and every stored string starts with it.`
+      : empty
+  }
 
   const transition = `After reading “${step.input}”, the automaton is in the state for the prefix “${step.consumed}”.`
   if (step.accepts !== null)
-    return `${transition} Its final cell is ${step.accepts}, so this prefix is already within the allowed distance of ${walk.distance}.`
+    return walk.anchored
+      ? `${transition} Its final cell is ${step.accepts}, within the allowed distance of ${walk.distance} — so “${step.consumed}” matches, and so does every stored key that begins with it. The walk stops here; the rest of the key cannot change the answer.`
+      : `${transition} Its final cell is ${step.accepts}, so this prefix is already within the allowed distance of ${walk.distance}.`
   if (step.live)
     return `${transition} At least one cell is no greater than ${walk.distance}, so adding more characters could still produce a match.`
   return `${transition} Every cell is now beyond ${walk.distance}. No suffix can rescue it, so every stored key beginning with “${step.consumed}” can be skipped.`

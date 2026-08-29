@@ -3183,6 +3183,27 @@ the reason, not rediscovering it.
   `finish` that looked like it checked this — hence ids are claimed in `meta` before use, and
   the worst outcome is back to "cannot seal". The honest statement, everywhere it appears: *a
   crash during ingest may cost the index, never its correctness.*
+- **Fuzzy prefix matching is a second operator, `~<`, not a redefinition of `~`.** The
+  complaint was real — `~` measures the distance to the whole stored string, so `"parsr"~1`
+  does not reach `parser_function`, and over 148,809 identifier-shaped names `"parse_node"~1`
+  answers five rows where `"parsr"~<1` answers 7,416. What was not real was the framing of it
+  as a defect: whole-string is what the book teaches, what the corpus records and what the
+  token's own doc comment says, and it is a question somebody asks ("did they misspell the
+  complete name"). Two reasons decided the shape. **The cursor**: a plan fingerprint is what a
+  resume token is accepted on, so redefining `~` in place would have produced a byte-identical
+  fingerprint for a semantically different plan — a client's bookmark taken before the change
+  resuming into the other question after it. A second anchoring folded into the residual tag
+  makes that impossible by construction, and cost no `CURSOR_VERSION` bump. **The blast
+  radius**: an anchoring carried as a *field* on `Guide` and `ResidualOp::Fuzzy` leaves every
+  `ExprKind::Fuzzy(..)` site in `flatten` untouched, where a second pattern kind would have
+  made each of them a two-armed match with no compiler check that the second arm was right.
+  The spelling is `~<` rather than `"term"~1..` because a distinct token is a distinct LL(1)
+  alternative, where the suffix form would have had to enter the optional-`Nat` follow set.
+  A short term — no longer than its distance — matches every stored string through the empty
+  prefix, and that is left **legal and documented** rather than refused: it is what a search
+  box does on the first keystroke, and the mitigation that suggests itself (require one
+  consumed character) does not work, since a one-character prefix is already within the
+  distance.
 - **Multiplicity — one fact per element; `nyi/array` names the decision.** Glean's array
   story works *because* stored derivation explodes an array into a seekable index; arrays
   before stored derivation ship the storage win and none of the query mitigation.

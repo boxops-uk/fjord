@@ -19,6 +19,7 @@
 //! not `body.len()` — so both counts are carried, named apart.
 
 use fjord_engine::{
+    levenshtein::FuzzyAnchor,
     plan::{FieldPath, Plan, ResidualOp, Source, Step, Test},
     print,
 };
@@ -35,6 +36,13 @@ pub struct FuzzyView {
     pub residual: Option<usize>,
     pub term: String,
     pub distance: u8,
+    /// `"parse"~<2` rather than `"parse"~2` — the walk accepts at the first
+    /// prefix within the distance instead of measuring the whole stored string.
+    ///
+    /// A `bool` rather than the engine's own `FuzzyAnchor`, for the reason
+    /// nothing here serialises an internal: a JSON contract should not move
+    /// because an enum gained a third arm.
+    pub anchored: bool,
     /// JSON object keys from the decoded fact key to the candidate string. A
     /// scalar predicate has an empty path because its key is the string.
     pub path: Vec<String>,
@@ -179,12 +187,18 @@ fn fuzzy_of(source_index: usize, source: &Source, schema: &Schema) -> Vec<FuzzyV
             residual: None,
             term: guide.term.to_string(),
             distance: guide.distance,
+            anchored: matches!(guide.anchor, FuzzyAnchor::Prefix),
             path: path_names(key_ty, &guide.path, schema),
         });
     }
 
     for (residual_index, residual) in source.residuals().iter().enumerate() {
-        let ResidualOp::Fuzzy { term, distance } = &residual.op else {
+        let ResidualOp::Fuzzy {
+            term,
+            distance,
+            anchor,
+        } = &residual.op
+        else {
             continue;
         };
         views.push(FuzzyView {
@@ -193,6 +207,7 @@ fn fuzzy_of(source_index: usize, source: &Source, schema: &Schema) -> Vec<FuzzyV
             residual: Some(residual_index),
             term: term.to_string(),
             distance: *distance,
+            anchored: matches!(anchor, FuzzyAnchor::Prefix),
             path: path_names(key_ty, &residual.path, schema),
         });
     }

@@ -98,6 +98,11 @@ register and a step. A folded bind reaches a key field exactly as a literal in p
 like a prefix, so no variable is bound to one. Distance `1` to `3`, term at most 63 characters.
 [Fuzzy search](fuzzy-search.html)
 
+**fuzzy prefix match** — `"parse"~<2`: within that many edits of *some prefix* of the stored
+string, rather than of the whole of it. Anchored at the start, so not a substring search — the
+question a search box asks, where `~` is the question "did they misspell the whole name".
+[Fuzzy search](fuzzy-search.html#5-ask-the-same-machine-a-different-question)
+
 ## G–P
 
 **generator** — a fact pattern as a statement: a loop over one predicate's rows.
@@ -105,7 +110,7 @@ like a prefix, so no variable is bound to one. Distance `1` to `3`, term at most
 **guide** — the fuzzy counterpart of a seek key: a `Source::Guided` walks the range a seek key
 opened, asking a Levenshtein automaton per row where the next possible answer is and re-opening
 the scan there. Spent per row, where a seek key is spent once.
-[Fuzzy search](fuzzy-search.html#7-where-a-fuzzy-match-can-sit)
+[Fuzzy search](fuzzy-search.html#8-where-a-fuzzy-match-can-sit)
 
 **head** — the plan's output projection, applied to the bound registers to build each row.
 
