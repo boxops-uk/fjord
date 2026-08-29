@@ -1343,9 +1343,19 @@ serialises and mimalloc's per-thread caches do not.
   everything above it, but "everything above it" is still one number covering the frame, the
   outbound mutex, the socket and the client's decode. Splitting *that* is what S4 proper —
   `breakdown.rs` extended to a data query — would do.
-- **F8** (no admission control) is *observed* rather than measured: 2048 connections were
-  accepted without complaint and nothing was ever refused, which is the predicted behaviour.
-  Latency, never rejection.
+- **F8's connection half is closed; its query half is not.** The observation stands as taken —
+  2048 connections accepted without complaint, nothing ever refused — and connections are now
+  capped (default: half the soft descriptor limit) with the excess refused by name. What that
+  changes is *this* register's own exposure: a `serve` under `ulimit -n 1024` flooded with 1500
+  idle sockets used to end the **process**, because the accept loop propagated `EMFILE`. It now
+  refuses 988 of them (64 told `Busy`, the rest closed without a word once the refusal budget was
+  full), reaches `EMFILE` zero times, and answers a fresh catalogue query in 1.1 ms as soon as
+  the flood lets go. With the cap deliberately set *above* the descriptor limit
+  (`--max-connections 4096`), the same flood produced 102 handled `EMFILE` events and a server
+  still serving — which is the crash-to-refusal change on its own, without the cap.
+  **Not measured:** what the cap costs at the knee, and the query axis — in-flight queries are
+  still unbounded and still queue as latency, which is what S6 measured and what a queue-depth
+  limit would change.
 - **F5** — blocked on finding 4, as above.
 - **The scaling curve across *corpus sizes*** rather than across predicates. What is
   published here is one 18M-fact database whose predicates span 142 → 8.58M rows, which is
@@ -1426,7 +1436,7 @@ of these is a *prediction* with the rung that settles it and the number that wou
 | **F5** ⛔ | **A chunk has no byte budget.** `CHUNK_ROWS` is row-bounded only, so 256 wide rows materialise unbounded memory on a blocking thread (`session.rs:863`). The only byte cap in the system is `MAX_PAYLOAD` = 64 MiB, and it is per frame — **not reachable from the query side: a fact's *value* cannot be read by a query at all, so the widest row buildable is three narrow key fields (§4)** | S1 / S4 — a wide-row workload, RSS at the chunk boundary |
 | **F6** | **The reader head-of-line blocks the whole connection.** `read_loop` *awaits* `handle.inbound.send(..)` on a channel of capacity **2** (`session.rs:353`); a third frame for a busy stream stalls the connection's reader — including the read that would pick up a CANCEL for a *different* stream. `write_blocks` fires every block then `COPY_DONE` without waiting (`client/connection.rs:242`) | S4 / S6 — a ≥3-block ingest against a slow funnel |
 | **F7** ✅ | **Paging is not free.** Per 256 rows: two clones, a `spawn_blocking` dispatch, a **fresh fjall snapshot**, and `Executor::resume` replaying **one seek per plan level** (`iter.rs:1116`) — deliberately uncounted by `Profile`. A 1M-row query is ~3,900 of each — **true; the snapshot is free (0.1 µs) and the replayed seek is all of it: 4–12 µs a page, ~10%. On an *uncompacted* store the same seek costs up to 790 µs, +729% (§1)** | S1 — the same plan straight through vs suspended every 256 rows |
-| **F8** ~ | **No admission control of any kind.** No connection cap, no query timeout, no max rows, no concurrency limiter. tokio defaults apply: **4** worker threads (this box), **512** blocking threads, an **unbounded** submission queue. 1000 in-flight queries means 512 running and the rest queued invisibly — latency, never rejection — **observed exactly so: 2048 connections accepted without complaint, nothing ever refused, zero errors, and the queue showed up as the expensive class's p50 rising from 43 s to 315 s while the cheap class stayed under 101 ms** | S6 — the latency distribution at the knee |
+| **F8** ~ | **No admission control of any kind** *(the connection axis has one since; see the register above)*. No connection cap, no query timeout, no max rows, no concurrency limiter. tokio defaults apply: **4** worker threads (this box), **512** blocking threads, an **unbounded** submission queue. 1000 in-flight queries means 512 running and the rest queued invisibly — latency, never rejection — **observed exactly so: 2048 connections accepted without complaint, nothing ever refused, zero errors, and the queue showed up as the expensive class's p50 rising from 43 s to 315 s while the cheap class stayed under 101 ms** | S6 — the latency distribution at the knee |
 
 Two more findings from reading that need no rung, recorded so nobody re-derives them:
 

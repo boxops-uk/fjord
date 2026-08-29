@@ -210,6 +210,7 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             socket: bind,
             listen_tcp,
             ready_file,
+            max_connections,
             commit_per_block,
         } => {
             // **The same path a client computes**, which is the whole of the
@@ -221,6 +222,7 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
                 &socket,
                 listen_tcp.as_deref(),
                 ready_file.as_deref(),
+                *max_connections,
                 *commit_per_block,
             )
         }

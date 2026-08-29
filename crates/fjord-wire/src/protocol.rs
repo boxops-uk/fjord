@@ -346,6 +346,15 @@ pub enum ErrorCode {
     /// whole point of having it: `Internal` says look at the server's logs, and this
     /// says the answer is in the message you are holding.
     Refused = 10,
+    /// The server is at a limit and never looked at the request — a connection past
+    /// the admission cap, refused so the descriptors left belong to somebody else.
+    ///
+    /// Its own code rather than [`Refused`](ErrorCode::Refused) because the two say
+    /// opposite things to a client: `Refused` means the answer is in the message and
+    /// asking again changes nothing, and this means nothing is wrong with the request
+    /// — **come back**. Like [`InUse`](ErrorCode::InUse), and unlike everything else
+    /// here, it is worth retrying with a backoff.
+    Busy = 11,
 }
 
 impl ErrorCode {
@@ -362,6 +371,7 @@ impl ErrorCode {
             8 => ErrorCode::Internal,
             9 => ErrorCode::InUse,
             10 => ErrorCode::Refused,
+            11 => ErrorCode::Busy,
             _ => return None,
         })
     }

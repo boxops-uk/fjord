@@ -67,6 +67,22 @@ pub enum Command {
         #[arg(long, value_name = "PATH")]
         ready_file: Option<PathBuf>,
 
+        /// Serve at most this many connections at once; refuse the rest.
+        ///
+        /// **Defaults to half the process's soft descriptor limit** (`ulimit -n`), and
+        /// the other half is not spare: it is the store's files and the listeners.
+        /// Without a cap a burst of connections takes every descriptor and the server
+        /// is alive and unreachable — a state that looks exactly like a crash from
+        /// outside.
+        ///
+        /// Past the cap a connection is answered with `Busy` and closed, so a client
+        /// can back off rather than guess. It is a cap, not a reservation: a flood that
+        /// fills it is refused by name, and so is the next query to arrive. Set it
+        /// below what the expected population needs if some of that headroom is meant
+        /// for you.
+        #[arg(long, value_name = "N")]
+        max_connections: Option<usize>,
+
         /// Commit a write stream's facts once per block instead of once per fact.
         ///
         /// **Faster to ingest, and a crash mid-ingest may cost the index.** Committing

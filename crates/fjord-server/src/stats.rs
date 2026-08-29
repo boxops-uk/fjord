@@ -94,6 +94,9 @@ pub struct ServerStats {
     blocking_dispatches: AtomicU64,
     blocking_wait_micros: AtomicU64,
     queue_full_waits: AtomicU64,
+    connections_refused: AtomicU64,
+    connections_dropped: AtomicU64,
+    accept_failures: AtomicU64,
     blocks_interned: AtomicU64,
     facts_created: AtomicU64,
     facts_deduped: AtomicU64,
@@ -170,7 +173,8 @@ impl ServerStats {
     /// The wait is the interesting half: a dispatch that starts immediately says the
     /// pool has room, and one that waits says the server is queueing work it cannot yet
     /// do — which is the only visibility there is into a pool with no admission control
-    /// in front of it (`F8`).
+    /// in front of it (`F8`). [`admission`](crate::admission) caps *connections*; the
+    /// queries they send still queue here as latency rather than rejection.
     pub fn blocking_dispatched(&self, waited_micros: u64) {
         self.blocking_dispatches.fetch_add(1, Relaxed);
         self.blocking_wait_micros.fetch_add(waited_micros, Relaxed);
@@ -195,6 +199,34 @@ impl ServerStats {
 
     pub fn queue_full_wait(&self) {
         self.queue_full_waits.fetch_add(1, Relaxed);
+    }
+
+    /// One connection refused at the admission cap.
+    ///
+    /// The number an operator needs to tell two very different states apart: a server
+    /// that is *busy* — refusing, and answering everything it admitted — and one that
+    /// is broken. Without it, a client's timeout is the only evidence either way.
+    pub fn connection_refused(&self) {
+        self.connections_refused.fetch_add(1, Relaxed);
+    }
+
+    /// One connection closed at the cap without being told why.
+    ///
+    /// Separate from [`connection_refused`](Self::connection_refused) because the two
+    /// are different experiences for the client: one can back off knowingly, and the
+    /// other saw a socket close. A number here that is large next to the refusals says
+    /// the burst outran the budget for answering it.
+    pub fn connection_dropped(&self) {
+        self.connections_dropped.fetch_add(1, Relaxed);
+    }
+
+    /// One `accept` that failed and was survived.
+    ///
+    /// Counted rather than only logged because this is the event the server used to
+    /// die on: a number that moves while the process stays up is the whole proof that
+    /// the loop recovers.
+    pub fn accept_failed(&self) {
+        self.accept_failures.fetch_add(1, Relaxed);
     }
 
     #[must_use]
@@ -270,6 +302,24 @@ impl ServerStats {
     #[must_use]
     pub fn queue_full_waits(&self) -> u64 {
         self.queue_full_waits.load(Relaxed)
+    }
+
+    /// Connections refused at the cap since start.
+    #[must_use]
+    pub fn connections_refused(&self) -> u64 {
+        self.connections_refused.load(Relaxed)
+    }
+
+    /// Connections closed at the cap without a refusal frame since start.
+    #[must_use]
+    pub fn connections_dropped(&self) -> u64 {
+        self.connections_dropped.load(Relaxed)
+    }
+
+    /// `accept` failures survived since start.
+    #[must_use]
+    pub fn accept_failures(&self) -> u64 {
+        self.accept_failures.load(Relaxed)
     }
 }
 

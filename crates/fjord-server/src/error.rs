@@ -112,6 +112,18 @@ pub enum ServerError {
          run the query again from the start"
     )]
     VolatileResume { predicate: String },
+
+    /// A connection past the admission cap, refused before it was read from.
+    ///
+    /// Nothing is wrong with what the client asked — it never got to ask. The cap
+    /// keeps descriptors for the connections already being served and for the query
+    /// somebody runs to find out what is happening, which is exactly what a server
+    /// that admits everybody has none of.
+    #[error(
+        "the server is at its connection limit of {max}; the connection was refused \
+         rather than queued — retry shortly"
+    )]
+    AtCapacity { max: usize },
 }
 
 impl ServerError {
@@ -163,6 +175,10 @@ impl ServerError {
 
             // Well-formed, and the answer is in the message: run the query again.
             ServerError::StaleListing | ServerError::VolatileResume { .. } => ErrorCode::Refused,
+
+            // Not a refusal of the request — a refusal to look at it yet. Its own code
+            // because the client's move is to come back, not to change what it sent.
+            ServerError::AtCapacity { .. } => ErrorCode::Busy,
         }
     }
 

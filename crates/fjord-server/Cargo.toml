@@ -32,6 +32,10 @@ fjord-store = { path = "../fjord-store" }
 # root, which is a filesystem catalog.
 fjord-store-fjall = { path = "../fjord-store-fjall" }
 fjord-wire = { path = "../fjord-wire" }
+# `getrlimit` and the accept-time errnos. The descriptor limit is the number the
+# default connection cap is a share of, and `EMFILE` has no `io::ErrorKind` of its
+# own to match on — both are the platform's, read from the platform.
+libc = "0.2"
 thiserror = { workspace = true }
 # The runtime. `rt-multi-thread` because a connection's blocking work — every fjall
 # read and write, and the executor itself — goes to `spawn_blocking`, which wants a

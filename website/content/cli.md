@@ -147,6 +147,7 @@ start if another server holds it.
 | `--socket <PATH>` | Where to bind. Defaults to the derived path above |
 | `--listen-tcp <HOST:PORT>` | **Also** listen on TCP. Flag only — no config entry, no environment variable |
 | `--ready-file <PATH>` | Written once the listener is accepting |
+| `--max-connections <N>` | Serve at most `N` connections at once; refuse the rest by name. Defaults to **half the soft descriptor limit** |
 | `--commit-per-block` | Commit a write stream's facts once per block instead of once per fact |
 
 ```bash
@@ -157,6 +158,12 @@ while [ ! -e ./ready ]; do sleep 0.1; done
 `--ready-file` appears **after** the listener accepts, so waiting on it is a signal rather than a
 race. That matters because the socket path is derived rather than chosen, so the file only has to
 appear.
+
+A cap is a cap on *connections*, and the half it does not spend is not spare: it is the store's
+files, the listeners, and the descriptors a query needs while a burst is arriving. Past the cap a
+connection is answered `Busy` and closed, so a client backs off knowing why rather than guessing;
+under a burst large enough to outrun the small budget for saying so, the excess is closed without
+a word instead — which is what the kernel would have done with it. Both are counted.
 
 :::warn `--commit-per-block` trades exactly one thing
 Committing per fact is 41% of interning, so a bulk load pays a large fixed tax for a guarantee it
