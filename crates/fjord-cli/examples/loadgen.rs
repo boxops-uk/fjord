@@ -413,19 +413,11 @@ fn measure(options: &Options, schema: &Arc<Schema>) {
         })
     };
 
-    let catalogue: Vec<_> = workload::catalogue(&pivots)
-        .into_iter()
-        .filter(|workload| {
-            options.only.is_empty() || options.only.iter().any(|name| name == workload.name)
-        })
-        .collect();
-
-    // A misspelt `--only` would otherwise measure nothing and report it as a table with
-    // no rows, which reads like a server that answered.
-    if catalogue.is_empty() {
-        eprintln!("loadgen: --only matched no workload in the catalogue");
-        std::process::exit(2);
-    }
+    let catalogue =
+        workload::select(workload::catalogue(&pivots), &options.only).unwrap_or_else(|error| {
+            eprintln!("loadgen: {error}");
+            std::process::exit(2);
+        });
 
     for workload in catalogue {
         let Some(result) = run_workload(options, schema, &workload) else {

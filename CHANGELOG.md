@@ -12,8 +12,9 @@ format stamp and the marker table enforce: nothing already written is renumbered
 The tool links mimalloc as its `#[global_allocator]`, which is a whole-program choice and so
 belongs in the binary rather than in a library every consumer would inherit it through. Under
 concurrent scans glibc serialises the scan path's per-chunk allocations on its per-arena
-mutexes; mimalloc's per-thread caches do not. Measured at 5–13% on an 8-core box with the load
-generator resident on it and +38% at core saturation on a 14-core one —
+mutexes; mimalloc's per-thread caches do not. The four workload medians improved 5–10% on an
+8-core box with the load generator resident on it; individual round-pairs ranged from 4.7–14.5%,
+and the gain was +38% at core saturation on a 14-core box —
 [`bench/FINDINGS.md` §18](bench/FINDINGS.md). `the_global_allocator_is_mimalloc` is the guard
 that catches the attribute going missing, since dropping it leaves a binary that still builds
 and passes, only slower.
