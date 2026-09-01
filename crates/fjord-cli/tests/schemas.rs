@@ -251,9 +251,7 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
     recorded.sort();
 
     let expected = [
-        // Moved by the source layer, which is a flag day — see
-        // `the_source_layer_breaks_exactly_one_predicate` and
-        // `clients/dotnet/README.md`'s checklist.
+        ("bundle.sigla", "0xc542bcb3d2c1a7d9"),
         ("code.sigla", "0xe044df7620885507"),
         ("codemarkup.sigla", "0x32adb52110a42dcc"),
         ("config.sigla", "0xac3c414ab7ff574f"),

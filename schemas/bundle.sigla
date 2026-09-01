@@ -1,0 +1,106 @@
+# The **bundler layer** — one Rspack/webpack compilation's stats: entrypoints, chunks, assets,
+# the module graph, and the byte-size map. What `typescript.sigla` filled from an Rspack plugin,
+# in a namespace of its own.
+#
+# The shape is `compilation.getStats().toJson()`, which Rspack shares with webpack — so this
+# models **bundle stats**, not one bundler, which is why the namespace is `bundle` rather than
+# `rspack`. A `Bundle` is one compilation; a multi-compiler setup emits several, so it is the
+# root everything hangs from.
+#
+# It imports `npm` because package attribution is genuinely part of what a bundler knows (it
+# resolved every `node_modules` path to get here), and the size-by-package rollup is the single
+# most-asked question of a bundle. The dependency points that way and not the other: a package
+# graph is meaningful with no bundler, a bundle is not meaningful without packages.
+#
+# ---- the two module graphs, and why they disagree --------------------------------------
+#
+# `ModuleImport` here is the **bundler's** graph — read from stats *after* resolution and
+# tree-shaking. `typescript.FileImport` is the **source** graph — read from the import
+# statements as written. They disagree, and the disagreement is usually the interesting part
+# (a module in the source graph and not in the bundle graph is one that was shaken out).
+#
+# **Identity is the key, attributes are the value.** A `Module`/`Chunk` reference costs its
+# identity alone — `{bundle, identifier}` — instead of dragging its size and type along, and the
+# import graph is nothing but references, so that thrift is the difference.
+
+schema bundle {
+
+  import src
+  import npm
+
+  # An interned name: an entrypoint, a chunk, or the build itself. Not `npm.Name` — a chunk
+  # called `main` and a package called `main` are different string spaces.
+  predicate Name : string
+
+  type MaybeName   = { nothing = 0 | just : Name   = 1 }
+  type MaybeModule = { nothing = 0 | just : Module = 1 }
+
+  # One compilation output — a single build. `name` is its identity (the build name).
+  predicate Bundle : { name : Name } -> { outputPath : src.File }
+
+  # A named entrypoint within a bundle. `bundle` leads. Key-only (its chunks, assets and size
+  # are edges and `EntrypointSize`).
+  predicate Entrypoint : { bundle : Bundle, name : Name }
+
+  # A chunk — identity is (bundle, chunk id); everything else is a value. `entry`/`initial`
+  # place it in the load graph; `size` is its module byte size; `name` is often absent.
+  predicate Chunk : { bundle : Bundle, chunkId : string } -> { name : MaybeName, size : int, entry : src.Bool, initial : src.Bool }
+
+  # An emitted output file and its byte size. Identity is (bundle, path).
+  predicate Asset : { bundle : Bundle, path : src.File } -> { size : int, emitted : src.Bool }
+
+  # A module — identity is (bundle, identifier), the bundler's stable module id (absolute path
+  # plus loaders). `name` is the display path a person searches; `moduleType` is the type string
+  # (`javascript/auto`, `css/mini-extract`); `size` is its byte size.
+  predicate Module : { bundle : Bundle, identifier : string } -> { name : MaybeName, size : int, moduleType : string }
+
+  # ---- edges (each a list flattened to one fact per element) ----------------------------
+
+  # The assets a chunk emits.
+  predicate ChunkFile : { chunk : Chunk, file : src.File }
+
+  # Which chunk a module lands in, and the reverse — a shared module is in several chunks.
+  predicate ChunkModule : { chunk : Chunk, module_ : Module }
+  predicate ModuleChunk : { module_ : Module, chunk : Chunk }
+
+  # An entrypoint's ordered chunks (load order, hence `index`) and its initial assets.
+  predicate EntrypointChunk : { entrypoint : Entrypoint, index : int } -> { chunk : Chunk }
+  predicate EntrypointAsset : { entrypoint : Entrypoint, file : src.File }
+
+  # The chunk graph: a chunk's async children, and the reverse.
+  predicate ChunkChild  : { chunk : Chunk, child : Chunk }
+  predicate ChunkParent : { chunk : Chunk, parent : Chunk }
+
+  # The module import graph. `ModuleImport` is the outgoing edge ("what this imports");
+  # `ModuleReason` the incoming ("why this is included"). `dependencyType` is the bundler's
+  # reason type (`esm import`, `cjs require`, `import()`); `request` the userRequest string.
+  # Identity is (module, index) — the i-th edge — with the edge itself on the value side.
+  predicate ModuleImport : { module_ : Module, index : int } -> { imported : Module, dependencyType : string, request : src.MaybeString }
+  predicate ModuleReason : { module_ : Module, index : int } -> { importer : MaybeModule, dependencyType : string, request : src.MaybeString }
+
+  # The module that first pulled this one in — webpack's "issuer" (`nothing` for an entry).
+  predicate ModuleIssuer : { module_ : Module } -> { issuer : MaybeModule }
+
+  # The source file a module was built from — the seam that joins the bundle graph to the
+  # source and package layers (`ModuleFile` then `npm.FilePackage`).
+  predicate ModuleFile : { module_ : Module } -> { file : src.File }
+
+  # Which package a module belongs to, and the reverse. `ModulePackage` answers "where did this
+  # byte come from"; `PackageModule` answers "what did this package contribute".
+  predicate ModulePackage : { module_ : Module } -> { locator : npm.Locator }
+  predicate PackageModule : { locator : npm.Locator, module_ : Module }
+
+  # ---- the size map --------------------------------------------------------------------
+
+  # An entrypoint's total and initial (before any async load) byte size.
+  predicate EntrypointSize : { entrypoint : Entrypoint } -> { size : int, initialSize : int }
+
+  # How many bytes, over how many modules, a package contributes to a bundle — the size map by
+  # package (a producer rolls it up; fjord has no stored derivation yet). `bundle` leads, so
+  # "the heaviest packages in this build" is a seek-then-scan.
+  predicate PackageBundleSize : { bundle : Bundle, locator : npm.Locator } -> { size : int, moduleCount : int }
+
+  # The same, scoped to one entrypoint: "what is `main` spending its bytes on, by package".
+  predicate EntrypointPackageSize : { entrypoint : Entrypoint, locator : npm.Locator } -> { size : int }
+
+}
