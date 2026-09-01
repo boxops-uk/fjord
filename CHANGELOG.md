@@ -7,6 +7,31 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### A union-typed variable can be shared by two generators
+
+`X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}` plans and runs. Two
+structurally identical unions never compared equal: `unify` had an arm for every other shape
+and a catch-all underneath, so the second mention of a union-typed variable reached the
+catch-all and the error was built from the two sides it had just failed to compare — which are
+equal, hence *"expected {…}, found {…}"* with one type printed twice. The workaround was one
+query per alternative.
+
+Alternatives are compared **as a set** of *(name, discriminant, payload)*, by discriminant and
+never zipped: they are held in declaration order and permuting a declaration moves no stored
+byte, so two orderings are one type. The name is checked as well as the discriminant, because
+the fingerprint's canonical form writes `name:type=disc` — two unions differing only in an
+alternative's spelling are different types on disk, and must be different types here.
+
+A genuine mismatch now names the alternative the two sides first differ on, in discriminant
+order, and how: an alternative only one of them declares, one discriminant with two spellings,
+or a payload that does not unify. It reports through `reject/type-mismatch` as before — a
+message improvement is not a reason for the taxonomy to grow.
+
+Nothing else moved. No schema fingerprint, no cursor, no stored byte, and no plan fingerprint
+of any query that already planned — the corpus's positional hash list gained two entries and
+changed none. `flatten` needed no work: a union-typed register splices into a key position as
+any other field does, and both sides encode a union identically.
+
 ### An order comparison on the seek-terminal field is a range, not a filter
 
 `X < 7`, and its three siblings, against a constant on the key field that **ends a seek

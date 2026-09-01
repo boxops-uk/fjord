@@ -371,6 +371,8 @@ mod tests {
             "00",
             "00",
             "00",
+            "00",
+            "00",
             "unprojectable:a head whose type is still undetermined",
             "01",
             "01",

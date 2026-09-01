@@ -441,6 +441,20 @@ Three things the examples pin:
 - **A wildcard payload is still a seek** — the tag alone is the shortest prefix an
   alternative has.
 
+**A union-typed variable can be shared by two generators.** The first mention binds it and the
+second compares a union against a union, so a join *through* a union is written once rather
+than once per alternative:
+
+```sigla
+X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}  → 20; 40; 10; 30
+```
+
+Two unions are the same type iff their alternatives agree as a **set** of *(name, discriminant,
+payload)*. A permuted declaration order is one type — declaration order is what the schema
+stores, and permuting it moves no byte. A renamed alternative or a renumbered discriminant is
+not, because the canonical form the fingerprint hashes writes all three, so they are different
+types on disk too; the diagnostic names the alternative the two sides first differ on.
+
 A select against the wrong alternative is an **error**, never another type's bytes: the
 expected discriminant is checked before any read through the payload. And rows whose
 alternative the query never mentions pass untouched — an unmentioned union field is a

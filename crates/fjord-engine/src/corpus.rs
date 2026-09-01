@@ -722,6 +722,20 @@ pub const CORPUS: &[Entry] = &[
          and a union cannot",
     ),
     entry(
+        "X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}",
+        Supported("20; 40; 10; 30"),
+        "**a union-typed variable shared by two generators** — the first mention \
+         binds a variable to a union, the second asks `unify` to compare a union \
+         with a union, and the two are separately allocated `Arc`s",
+    ),
+    entry(
+        "X where test.Tagged {what = {num = W}, id = X}; test.Label {id = _, what = {num = W}}",
+        Supported("10; 30"),
+        "the same join written the way a consumer writes it without the arm above \
+         — one query per alternative, narrowing both sides — which must keep \
+         answering what it answers today",
+    ),
+    entry(
         "X where X = never",
         Supported(""),
         "**the empty pattern**: a level with no alternative to open, which is \
@@ -1425,6 +1439,8 @@ mod tests {
             "ba404d0af13e7043",
             "ba404d0af13e7043",
             "8380b2573bfefefe",
+            "04c12d148fe1ff53",
+            "d893681e33a2b227",
             "403111a87c66ed0a",
             "86b6587a68dba1a4",
             "98b0463566dbd32a",
