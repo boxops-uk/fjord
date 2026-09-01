@@ -511,8 +511,10 @@ streams does not sweep on every frame.
 **So the mechanism is gone and the number is not retired.** Nobody has re-run this
 instrument since, so the honest statement of finding 7 today is: the cause was found, a fix
 addressing it has landed, and *the 3.5 kB per query has not been measured at zero*. Anyone
-sizing RAM for a pooled connection should re-run this before trusting either figure, and
-`crates/fjord-viewer`'s pool is exactly the shape that would show it.
+sizing RAM for a pooled connection should re-run this before trusting either figure. The
+shape that would show it is a pool of long-lived connections issuing many queries each —
+`crates/fjord-viewer`'s pool was exactly that, and it has been retired, so re-running this
+now needs one built for the purpose or the browser viewer that replaces it.
 
 What is still missing to verify it cheaply is the phase plan's own task 10f: a
 `live stream tasks` counter would turn "RSS grew" into "N tasks are live", and would have

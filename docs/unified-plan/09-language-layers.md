@@ -60,7 +60,7 @@ These five files are **118 predicates that nothing in this repository populates*
 
 - All five land in `schemas/`. The cost is low: nothing in `schemas/` is embedded in a binary except
   by an explicit `include_str!`, and the release artifact ships **no** schema files at all — only the
-  `fjord` and `fjord-viewer` binaries.
+  `fjord` binary.
 - **`csharp` and `msbuild` are the supported pair to begin with** — the ones a first-party producer
   writes and the ones the acceptance criteria below exercise end to end. `typescript`, `npm` and
   `bundle` ship beside them as declared, checked, fingerprint-recorded schemas whose producers are a

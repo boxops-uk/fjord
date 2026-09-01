@@ -53,8 +53,7 @@ gh attestation verify ./fjord --repo boxops-uk/fjord   # optional, and worth it 
 
 `fjord` needs **glibc 2.34 or newer** — Ubuntu 22.04, Debian 12, RHEL 9 and later. The
 `fjord-x86_64-linux-musl` build beside it is the same code linked statically, with no floor at
-all, for an older distro, Alpine, or a `scratch` container. `fjord-viewer` — the code-search
-site, built on nothing but the client — ships both ways too.
+all, for an older distro, Alpine, or a `scratch` container.
 
 **Linux x86_64 only.** The store root's lock is POSIX `flock` and the default transport is a
 Unix socket, so Windows is out of scope rather than untested.

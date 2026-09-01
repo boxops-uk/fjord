@@ -1,111 +1,110 @@
-# W11 · The viewer — the right unit, the style layer, and a route that is not `src.Decl`
+# W11 · The viewer is retired, and what its replacement needs from this side
 
 | | |
 |---|---|
 | **Issues** | [#36](https://github.com/boxops-uk/fjord/issues/36) Q4, [#39](https://github.com/boxops-uk/fjord/issues/39), [#42](https://github.com/boxops-uk/fjord/issues/42) item 3 |
-| **Area** | `crates/fjord-viewer` (`query.rs`, `render.rs`) |
-| **Depends on** | **W6** (`src.FileLine`, `src.FileLineStyles`), **W7** (`position-encoding`), **W8** (the routes) |
-| **Blocks** | **R9** — whose gate is the viewer answering `/symbol/{name}` against a converted index, and which W13 re-points at `codemarkup` |
-| **Invariants** | none. The viewer *"reaches nothing below `fjord_client`"* (`lib.rs:14-24`) and that stays true |
+| **Area** | `crates/fjord-viewer` (deleted), `fjord-server` (a WebSocket listener), and a new browser application |
+| **Depends on** | **W7** (`position-encoding`) for the unit rule. **W6** and **W8** for the data the new viewer reads, not for the retirement |
+| **Blocks** | **R9** — whose gate was "the viewer answers `/symbol/{name}`" and now needs another |
+| **Invariants** | `ops-I10` — a new listener is default-closed, as TCP is |
 
-## Claim
+> **This item was re-cut.** It used to be four defects in `crates/fjord-viewer`. [D11](OPEN-QUESTIONS.md)
+> retires that crate, so three of the four move to whatever renders a line next and the fourth —
+> "the line table it reads is being deleted" — stops existing. What is left is a deletion that
+> happened, and a specification for the side of the boundary this repository owns.
 
-The viewer renders a line at the column the producer meant, splices syntax runs and cross-reference
-anchors as **one** nesting, and answers its five questions against `codemarkup` — so an index it can
-serve no longer has to be a `code.sigla` index.
+## What happened
 
-## Three defects and one addition
+`fjord-viewer` is deleted: 1,950 lines across six files, a released binary, and nothing in the
+workspace depended on it. It proved what it was built to prove — a viewer is an ordinary consumer
+of the protocol, needing no privileged access to a database — and building it is what found the
+two predicates the schema was missing, `src.FileXRef` and the case-folded search index, because
+the questions a UI asks turned out not to be the questions the schema answered.
 
-**1 · The column unit is wrong for non-BMP source, silently.** `render::source`
-(`render.rs:113-164`) does:
+**Retired before W6, not migrated through it.** Two of W6's seven migration sites were in this
+crate (`query.rs:187-197` reading `src.Line`, and `tests/over_a_real_index.rs:199,209`), so the
+flag day is smaller by exactly those, and no work is spent on code that is going.
 
-```rust
-let chars: Vec<char> = text.chars().collect();
-…
-out.push_str(&escape(&chars[cursor..from].iter().collect::<String>()));
-```
+## Why a browser application rather than a better Rust one
 
-`chars()` yields one element per **Unicode scalar value**. The producer counts **UTF-16 code
-units** — `GleanFacts.cs:297` is `text.ToCharArray()` over a .NET string, whose own doc says *"A
-.NET string is UTF-16"*. A character above the BMP costs two units and one `char`, so every anchor
-after it on that line is off by one per such character. Bounds are checked, so the failure is a link
-drawn over the wrong text or dropped — never a panic, which is why it has survived. The doc comment
-at `render.rs:107` — *"1-based columns counted in characters, which is what the indexers emit"* — is
-the sentence that is wrong.
+The rendering, not the taste. A source view is a **merge of two independent sets of ranges over
+one line** — syntax runs from `src.FileLineStyles`, cross-reference anchors from
+`codemarkup.FileXRef` — split at the union of both boundaries and emitted as one correct nesting.
+Server-rendered HTML can do that once; a virtualised scroll over a 50,000-line file then cannot
+reuse any of it, and neither can a hover, a filter or a selection.
 
-**2 · Nothing declares the unit.** W7 adds `config.Setting {dimension = "position-encoding"}`; the
-viewer reads it once per database and indexes in that unit, defaulting to `utf16` and saying so.
+That is also the argument the style layer already makes for two lists of `(offset, length, kind)`
+over a pre-baked `<span>` string: the merge is only expressible if both range sets are still
+ranges when the renderer sees them.
 
-**3 · The line table it reads is being deleted.** `file_text` (`query.rs:187-197`) reads
-`src.Line`, which W6 removes in favour of `src.FileLine` — so this is not an improvement the viewer
-can decline: after W6 the query does not typecheck. `FileLine` carries `start`, `bytes` and `cstart`
-beside the text, which is what makes offset↔line and unit conversion possible without a second
-query. `tests/over_a_real_index.rs:199,209` moves with it.
+## What this repository owes it
 
-**A question this item cannot answer for itself.** If `fjord-viewer` is being retired, most of what
-follows moves rather than disappears: the position-encoding rule and the style-run merge belong to
-*whatever renders a line*, the `codemarkup` routes belong to whatever serves a symbol, and **R9 needs
-a different gate** — its acceptance is "the viewer answers `/symbol/{name}` against a converted
-index". Nothing in the tree records a decision to retire it: it is a released binary
-(`release.yml` stages `dist/fjord-viewer`), a workspace crate, and R9's stated gate. So this item
-proceeds as written, and if the viewer goes, W11 and R9's gate are re-cut together — see
-[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) D5.
+### 1 · A transport a browser can open
 
-**4 · The style layer.** `src.FileLineStyles` is a second set of ranges over the same line. Any
-renderer must split at the union of both boundaries and emit one nesting — which two lists of
-`(offset, length, kind)` do and a pre-baked `<span>` string does not, without parsing the HTML back
-out. That is the argument this batch makes for the format, and the viewer is where it is proved.
+`fjord_client`'s `Transport` is a Unix socket or TCP, and a browser can open neither. **The answer
+is a WebSocket listener on `fjord-server` carrying the same frames** — one protocol, one codec,
+one set of goldens, and in particular the .NET golden keeps meaning something. The alternative
+considered and rejected is a JSON/HTTP surface, which would be a second serialisation of every row
+and contradicts a recorded decision: *"the server never produces JSON — a decision from the
+original brief"* (`fjord_cli::rows`).
 
-## The work
+Three things it inherits rather than invents:
 
-- **A window is one prefix seek per layer**: `src.FileLine {file = F, line = a..b}` and
-  `src.FileLineStyles {file = F, line = a..b}` — the same key shape, so a virtualised viewer costs
-  two range seeks per window.
-- **One merge, not two passes.** Split at the union of the style boundaries and the anchor
-  boundaries; emit `<span class="…">` for kinds and `<a href>` for references, correctly nested.
-- **Kind → CSS class is the viewer's business.** fjord defines the letters; the stylesheet is
-  `fjord-viewer`'s and lives in its own file so it can change without re-indexing anything — which
-  is the whole argument against baked HTML.
-- **`codemarkup` routes.** The five queries move to `codemarkup.FileDefinition`,
-  `codemarkup.FileXRef`, `codemarkup.SymbolXRef`, `codemarkup.SearchEntry` / `SymbolByName` and
-  `codemarkup.Definition`. **The `src.*` routes stay**: the reference index is still a `code.sigla`
-  index, and the viewer must serve both. Which set to use is decided per database from **the schema
-  the server serves** — the viewer already fetches it on a probe connection (`lib.rs:107-116`,
-  `served_schema()`) precisely because *"a schema belongs to the database (I13)"* and compiling one
-  in *"was wrong twice"*. So the existing *"this database's schema is not a code index"* refusal
-  (`lib.rs:105`) becomes a three-way choice: `codemarkup` routes, `src.*` routes, or a refusal that
-  names what is missing. **No flag.**
+- **Default-closed**, as TCP is (`ops-I10`). Binding is an operator's decision and access control
+  is the transport's job.
+- **The same frames**, so `session.rs` is unchanged below the listener and the admission control,
+  the fair writer and the stream multiplexing all apply as they are.
+- **The same handshake**, so a browser client claims a schema fingerprint and is refused by the
+  same path everything else is.
+
+### 2 · The unit its columns count in
+
+`config.Setting {dimension = "position-encoding"}` — `utf8` or `utf16`, declared once per database
+(W7, landed). A database that does not state it is read as `utf16`.
+
+The retired viewer got this wrong and it is worth writing down as the thing not to repeat:
+`render::source` indexed by `str::chars()`, one unit per Unicode scalar value, where the producer
+counted **UTF-16 code units**. A codepoint above the BMP costs two units and one `char`, so every
+anchor after it on that line was off by one per such character. Bounds were checked, so the
+failure was a link drawn over the wrong text — never a panic, which is why it survived.
+`the_position_encodings_disagree_exactly_where_it_matters` (W7) pins the arithmetic.
+
+### 3 · Routes that do not require a `code.sigla` index
+
+`codemarkup` (W8): `Definition`, `FileDefinition`, `FileXRef`, `SymbolXRef`, `SearchEntry` /
+`SymbolByName`. The point is that an index the viewer can serve no longer has to be one this
+repository's own indexer produced — which is what makes a SCIP-converted index viewable, and what
+lets R9's converter fill six predicates rather than synthesise a whole source layer.
+
+## R9's gate, re-cut
+
+Revision 2's R9 accepts on *"the viewer answers `/symbol/{name}` against a converted index"*. There
+is no viewer to answer it, and waiting for the browser one would make a converter's acceptance
+depend on an unrelated project's schedule.
+
+**The replacement gate is the converter's output, asserted directly**: a database built by the SCIP
+converter answers a fixed set of `codemarkup` queries — go-to-definition, every reference in a
+file in position order, find-references across files, and a prefix search — with stated rows. That
+is a better gate than the old one on its own terms: it tests the converter rather than a UI, it
+fails in the converter's own test suite rather than through a web request, and it does not go red
+when somebody changes a stylesheet.
 
 ## Acceptance criteria
 
-1. **The non-BMP case is a test, not a review note.** `over_a_real_index`-style test: a fixture file
-   whose line contains a character above the BMP before a reference; the anchor covers exactly the
-   reference's text. It must fail against today's `chars()` indexing — a test that passes both ways
-   proves nothing here.
-2. **Both units are exercised.** The same fixture served from a database declaring `utf16` and one
-   declaring `utf8`, each rendering correctly; a database declaring neither renders as `utf16` and
-   the default is stated in the code and the book.
-3. **Anchors and styles merge as one nesting.** A test over a line with overlapping style and anchor
-   ranges asserts the output is well-formed and that no element crosses another's boundary — the
-   property a baked-HTML field could not have satisfied.
-4. **The style decoder round-trips**, including the omitted trailing `plain` run and an unrecognised
-   kind letter reading as `plain` (W6 c7's home).
-5. **A window is two seeks and no whole-file fetch.** A counted test — a store spy or the query
-   profile — asserting a 100-line window on a large file reads the window, on both layers.
-6. **The `codemarkup` routes answer.** Every viewer route answers against a `codemarkup`-only
-   database (no `src.Decl` anywhere in it), and every route still answers against a `code.sigla`
-   index. Two suites, one binary.
-7. **R9's gate is reachable.** `/symbol/{name}` answers against a database holding only what a SCIP
-   converter can fill — `src.File`, the line table, `codemarkup.Definition`, `FileXRef`,
-   `SymbolXRef`, `SearchEntry`. This criterion is what makes W13's re-pointing of R9 real rather
-   than a paragraph.
-8. `cargo test -p fjord-viewer`, clippy/fmt, and the book's viewer section (W10).
+1. **The crate is gone**, and with it every reference outside release history: `release.yml`'s
+   build, staging, `SHA256SUMS`, attestation and upload lists; `AGENTS.md`'s module map;
+   `building.md`, `getting-started.md`, `index.md`, `clients.md`; `README.md`. `cargo test` green,
+   `website/build.py --strict` clean, `check-docs.py` clean.
+2. **The book says it is retired and why**, in `clients.md`, along with the three things its
+   replacement needs — so a reader who knew the viewer is not left wondering where it went.
+3. **The release drops from four binaries to two**, and the notes stop naming it.
+4. **The WebSocket listener** carries the same frames, is default-closed, and is covered by the
+   existing socket battery run over the new transport — not by a second battery, which would be
+   two statements of one protocol.
+5. **R9's gate is the converter's own**, stated as queries and rows in `docs/unified-plan/13-indexer-runs-amended.md`.
 
-## Traps
+## Not in scope
 
-- **Do not read a style run's length in one unit and a column in another.** Style run lengths are in
-  the database's declared position encoding, the same as every span; the merge is only correct if
-  both range sets are in that unit before it starts.
-- **`src.Line` and `src.FileLine` must not both be read for one file.** A producer fills one; the
-  viewer picks per database, and a database holding both is a producer bug worth reporting rather
-  than merging.
+- The browser application itself. It is a project rather than a work item, and it wants a plan of
+  its own beside this one.
+- Anything about *what* the new viewer looks like. This file is the boundary, not the product.

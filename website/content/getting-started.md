@@ -25,8 +25,8 @@ directory.
 ## 1. Get the binaries
 
 :::note Prebuilt binaries
-Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord` and
-`fjord-viewer` for Linux x86_64, which skips this whole step:
+Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord` for
+Linux x86_64, which skips this whole step:
 
 ```bash
 curl -LO https://github.com/boxops-uk/fjord/releases/latest/download/fjord
@@ -45,14 +45,7 @@ first.
 cargo build --release --bin fjord
 ```
 
-That gives you `target/release/fjord`, the one command-line tool. There is a second
-binary worth knowing about — the code-search site, which step 8 uses:
-
-```bash
-cargo build --release --bin fjord-viewer
-```
-
-Use `--release`. A debug build of the executor is several times slower, and is not the
+That gives you `target/release/fjord`, the one command-line tool. Use `--release`. A debug build of the executor is several times slower, and is not the
 thing you want a first impression of. [Building from source](building.html) has the rest
 of the workspace, if you want it.
 
@@ -274,17 +267,7 @@ Merging at `finish` is not cosmetic: an unmerged tree was measured seeking at up
 a merged one, and the artifact roughly halves on disk. See
 [Performance](performance.html).
 
-## 8. Browse it
-
-```bash
-fjord-viewer ./db/fjord.sock//code --bind 127.0.0.1:8088
-```
-
-A code-search site — browse, file view with line-level cross-references, prefix search,
-symbol pages — built entirely out of ordinary queries through the ordinary client. See
-[Clients & the viewer](clients.html#the-viewer).
-
-## 9. From your own program
+## 8. From your own program
 
 Everything above is a client of the same protocol, and so is your program. One dependency,
 either language:

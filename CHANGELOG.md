@@ -7,6 +7,34 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `fjord-viewer` is retired
+
+The code-search site is gone, and a release now carries **two binaries rather than four**: `fjord`
+and `fjord-x86_64-linux-musl`. What replaces it is a browser application — React and Vite, with a
+WebAssembly client — and the reason is the rendering rather than the taste.
+
+A source view is a **merge of two independent sets of ranges over one line**: syntax runs and
+cross-reference anchors, split at the union of both boundaries and emitted as one correct nesting.
+Server-rendered HTML does that once, and then a virtualised scroll over a 50,000-line file cannot
+reuse any of it, and neither can a hover, a filter or a selection.
+
+It proved what it was built to prove — a viewer is an ordinary consumer of the protocol, needing no
+privileged access to a database — and building it is what found the two predicates the schema was
+missing, a file's cross-references keyed by file and a case-folded search index, because the
+questions a UI asks turned out not to be the questions the schema answered. Nothing in the
+workspace depended on it.
+
+**If you were running it**, there is no drop-in replacement yet. The last release that carries it
+stays on the releases page and keeps working against any database it worked against before; a
+database's schema is embedded and frozen at create, so nothing about an existing index changes
+underneath it.
+
+One thing this repository now owes the replacement, recorded so it is not discovered late: a
+browser can open neither a Unix socket nor raw TCP, and those are the whole of the client's
+transport today. The answer is a **WebSocket listener carrying the same frames** — one protocol,
+one codec, one set of goldens — rather than a second, JSON-shaped surface. It will be
+default-closed, as TCP is.
+
 ### `schemas/config.sigla` — a database says what it was built for
 
 One predicate, `config.Setting {dimension, value}`, for the question a tool holding forty

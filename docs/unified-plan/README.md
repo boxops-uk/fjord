@@ -16,10 +16,10 @@ claim and acceptance criteria that are tests and commands rather than intentions
 amends it**, and where the two disagree W13 wins. Everything else here is new and this directory is
 its specification.
 
-**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — ten put for review and all ten
-answered, with the consequence of each — plus ten corrections the plan makes to the issues and eight
-risks it carries. **One question is still open**: whether `fjord-viewer` is being retired, which
-would re-cut W11 and R9's gate.
+**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — eleven now, all answered,
+with the consequence of each — plus ten corrections the plan makes to the issues and eight risks it
+carries. D11 closed the last open one: `fjord-viewer` **is** retired, which re-cut W11 and R9's
+gate and shrank W6's flag day.
 
 ---
 
@@ -57,7 +57,7 @@ knowing is that W6/W8/W9 add predicates whose cardinalities a cost model would r
 | **W8** | [`codemarkup.sigla`](08-codemarkup-layer.md) | #40 | W6, W7 | new only | M |
 | **W9** | [The language layers and `index.sigla`](09-language-layers.md) | #40's comments | W1, W6, W8 | new only | **L** |
 | **W10** | [The book](10-the-book.md) | all | each item | no | S per item |
-| **W11** | [The viewer](11-viewer.md) | #36, #39, #42 | W6, W7, W8 | no | M |
+| **W11** | [The viewer is retired](11-viewer.md) | #36, #39, #42 | W7 | no | M |
 | **W12** | [A sealed database is its tables](12-sealed-database-journals.md) | #43 | — | no | M |
 | **W13** | [The indexer runs, amended](13-indexer-runs-amended.md) | #28–#34, #42 | W6, W7, W8, W11 | **yes — R4** | **XL** |
 | **W14** | [The flag-day inventory](14-flag-day-inventory.md) | R4e, #39 | — | it *is* the fingerprint move | S |
@@ -79,23 +79,23 @@ it needs no fixture change and no `flatten` work, and it unblocks the most — s
 Seven orderings are load-bearing. Everything else is preference.
 
 ```
-W12  sealed database is its tables ───────────┐  independent; before R7 re-measures anything
-W1   the union arm ───────────────────────────┤  smallest item, unblocks W9 and R4's descriptor
-                                              │
-W4   embedded resolution ──► W5 diagnostics   │  W4 is the gate on every schema being a *file*
-       │                                      │
-       ├──► W7 config (stands alone)          │
-       │                                      │
-       └──► W6 src ─┬─► W8 codemarkup ─► W9 language layers + index
-                    │                         │  W6 is a flag day: Breaking, `src.Line` goes
-                    └─► W11 viewer ───────────┼──► gates R9
-                                              │
-W2   exhaustiveness ──► W3 bytes ─────────────┘  parallel to the schema track throughout
+W12  sealed database is its tables            independent; before R7 re-measures anything
+W1   the union arm                            smallest item, unblocks W9 and R4's descriptor
+W11  retire fjord-viewer                      before W6, so the flag day is two sites smaller
+W2   exhaustiveness ──► W3 bytes              parallel to the schema track throughout
+
+W4   embedded resolution ──► W5 diagnostics   W4 is the gate on every schema being a *file*
+       │
+       ├──► W7 config (stands alone)
+       │
+       └──► W6 src ──► W8 codemarkup ──┬──► W9 language layers + index
+                                       │       W6 is a flag day: Breaking, `src.Line` goes
+                                       └──► gates R9
 
 R0   ledger                   R3.5 fan-out (needs W7)              R6  writer default
 R0.5 .NET test job            R3.6 delete Declared.First           R7  re-measure (reads W12)
 R1   #28 workspace load       R3.7 delete --syntax-only            R8  the seam
-R2   #29 retry                R4.0 conflict census                 R9  SCIP (needs W11)
+R2   #29 retry                R4.0 conflict census                 R9  SCIP (needs W8)
 R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)
                               R5   de-gate
 ```
@@ -109,8 +109,9 @@ R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)
 3. **W6 before R4b**, because `src.sigla` owns `src.Symbol` and identical redeclaration rejects.
 4. **W8 before R4b** if `src.ExternalRef` is to be dropped in favour of `codemarkup.SymbolXRef`;
    otherwise R4b keeps `ExternalRef` **and owes it a file-keyed twin**.
-5. **W11 before R9**, since R9's gate is the viewer answering against a converted index and this plan
-   re-points it at `codemarkup` routes.
+5. **W8 before R9**, since R9's gate is now a set of `codemarkup` queries against a converted
+   index — re-cut from "the viewer answers `/symbol/{name}`", which no longer has a viewer to
+   answer it ([D11](OPEN-QUESTIONS.md)).
 6. **W1 before W2**, so W2's type-path experiment has a real arm to protect; and W2 before W3, which
    is the issue's own ordering and the reason Part 0 is worth doing even if `bytes` is refused.
 7. **The two flag days stay separate, W6 first** ([W14](14-flag-day-inventory.md)). Both are

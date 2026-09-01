@@ -68,10 +68,11 @@ three conventions:
   *"A .NET string is UTF-16"*.
 - The `csharp` schema's `ByteSpan.start` is documented as a byte offset and **actually holds UTF-16
   code units**, for the same reason.
-- `fjord_viewer::render::source` (`render.rs:113-164`) collects `text.chars()` and indexes by
-  **Unicode scalar values**, which agrees with neither — one unit per codepoint where the producer
-  counted two for anything above the BMP. Its own doc comment says *"1-based columns counted in
-  characters, which is what the indexers emit"*, and that is the sentence that is wrong.
+- `fjord_viewer::render::source` collected `text.chars()` and indexed by **Unicode scalar
+  values**, which agrees with neither — one unit per codepoint where the producer counted two for
+  anything above the BMP. Its own doc comment said *"1-based columns counted in characters, which
+  is what the indexers emit"*, and that was the sentence that was wrong. The crate is retired
+  ([D11](OPEN-QUESTIONS.md)); the mistake is recorded because its replacement can make it again.
 
 SCIP hit this and answered it with `Index.metadata.text_document_encoding` — **one declaration per
 index, not per span**. So:

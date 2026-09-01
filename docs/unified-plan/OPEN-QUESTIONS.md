@@ -3,7 +3,7 @@
 Three lists. The first is the ten decisions put for review and **answered** — recorded with their
 consequence so the reasoning survives the sprint; the second is what the plan found to be wrong in
 the issues (recorded here so nobody re-derives it); the third is what remains risky after everything
-lands. **One question is left open, underneath D5: whether `fjord-viewer` is being retired.**
+lands. **All of them are answered now**: D11 closes the one that was left open underneath D5.
 
 ---
 
@@ -18,12 +18,13 @@ the reasoning survives the sprint.
 | **D2** | **Keep the single whole-schema fingerprint constant.** The default schema is not expected to move often; when it does, a client version bump is the cost | W14. The per-predicate handshake claim is **declined** and the reason recorded. Both schema changes in this plan are therefore flag days, executed by W14's checklist |
 | **D3** | **`bytes` is a protocol bump — accepted. JSON renders a bare lowercase hex string, untagged** | W3. The tagged form's argument was that *"a `Value` is serialised without its type"*, which is true only of the dead `impl Serialize for Value` that W2 deletes. Both live renderers hold the type: `rows::json` takes a `Desc` carrying `TAG_BYTES`, `inspect::value::json` takes a `&Schema`. The loss — a schema-less reader cannot tell `"00ff"` from a string — is documented, not paid for on every row |
 | **D4** | **The `0x…` literal lands with `bytes`**, not later | W3. Its own LL(1) alternative, never a widening of the string rule; corpus entries for the malformed forms; `print::literal` round-trips |
-| **D5** | **Delete `src.Line`.** No production consumers, so the schema gets the right shape rather than a wart plus a deprecation note | W6 becomes **Breaking** — eight added, one removed, every survivor byte-identical. Seven migration sites, all named. Re-baselines §1's line-table figures. **Open underneath it:** whether `fjord-viewer` is being retired — nothing in the tree records that, and R9's gate depends on it. See D5's note in [W11](11-viewer.md) |
+| **D5** | **Delete `src.Line`.** No production consumers, so the schema gets the right shape rather than a wart plus a deprecation note | W6 becomes **Breaking** — eight added, one removed, every survivor byte-identical. Seven migration sites, all named. Re-baselines §1's line-table figures. The question left open underneath it — whether `fjord-viewer` is being retired — is answered by **D11** |
 | **D6** | **Accept both of review #34's narrowed asks as stated** | W13. Cross-producer descriptor agreement and C6's origin requirement are recorded in revision 2's *"what this plan does not prove"* list rather than solved speculatively |
 | **D7** | **No logical fact-bytes field in `FJORD_META`** | W12. One honest on-disk number is what a packaging step asserts against |
 | **D8** | **The `bytes` prototype is closed-source and unavailable — re-derive** | W3 stands on its own criteria. The issue's account of five sequential runtime failures is evidence for W2, not a patch we can apply |
 | **D9** | **Delete `--syntax-only`.** The indexer requires successful resolution | W13's **R3.7 removes the mode** rather than specifying it — 40 occurrences across seven files. **Three published measurements (§1, §14, §15) were taken with it and become unreproducible**, which is recorded and re-run in R7 |
 | **D10** | **One sprint; the stated order is fine** | README's sequencing stands. The seven load-bearing orderings still hold inside it — in particular the two flag days stay separate commits |
+| **D11** | **`fjord-viewer` is retired, now, before W6.** A browser application replaces it — React + Vite, a WebAssembly client and a JS wrapper | W11 is re-cut from "fix the viewer" to "what the new viewer needs from this side", and the crate is deleted before the flag day rather than migrated through it. **W6 loses two of its seven migration sites**; R9 loses its stated gate and needs another; and the protocol grows a **WebSocket listener**, because a browser can open neither a Unix socket nor raw TCP and those are the whole of `Transport` today |
 
 ## 2 · Corrections this plan makes to the issues
 
@@ -74,9 +75,11 @@ correction table says was fixed. One line, in W10.
 6. **The style vocabulary's forward-compatibility rule is load-bearing and untested by anyone but
    us.** "An unrecognised kind letter reads as `plain`" is what lets a producer be richer than a
    reader; the only guard is W6 c7's round-trip and W11 c4.
-7. **R9 now depends on W11.** Re-pointing R9 at `codemarkup` shrinks the converter, and it moves R9's
-   gate behind a viewer change. If W11 slips, R9 reverts to synthesising the whole source layer —
-   which is what revision 2 already priced, so the fallback is known.
+7. **R9's gate is new and has never been run.** It was "the viewer answers `/symbol/{name}`", and
+   D11 retired the viewer; the replacement is a fixed set of `codemarkup` queries against a
+   converted index, asserted with rows. It is a better gate — it tests the converter rather than a
+   UI — but it is *written* rather than *proven*, and a gate nobody has run is a gate whose rows
+   might turn out to be the wrong ones to ask for. R9 depends on **W8** now, not on W11.
 8. **`nyi/value-field` shapes four schemas.** Every "this is in the key because a value cannot be
    projected" decision in W6, W8 and W9 becomes redundant the day value-field projection lands, and
    the keys will already be wide. That is the right trade today and worth knowing it was a trade.

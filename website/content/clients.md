@@ -118,41 +118,31 @@ of this codec against constants copied from the Rust would only prove the consta
 
 ## The viewer
 
-```bash
-fjord --data-dir ./db serve &
-fjord-viewer ./db/fjord.sock//code --bind 127.0.0.1:8088
-```
+**`fjord-viewer` is retired.** It was a code-search site over a database — server-rendered HTML,
+no assets, no framework — and it proved the thing it was built to prove: a viewer is an ordinary
+consumer of the protocol, needing no privileged access to a database. Building it is also what
+found the two predicates that had to be added, a file's cross-references keyed by file and a
+case-folded search index, because the questions a UI asks turned out not to be the questions the
+schema answered.
 
-A code-search site over a Fjord database: HTML written by hand, no assets, no framework.
+What replaces it is a browser application rather than a Rust binary, and the reason is the
+rendering rather than the taste. A source view is a **merge of two independent sets of ranges**
+over one line — syntax runs and cross-reference anchors — split at the union of both boundaries
+and emitted as one correct nesting. Server-rendered HTML can do that, and then a virtualised
+scroll over a 50,000-line file cannot reuse any of it.
 
-| Route | Page |
-|---|---|
-| `/` | Browse — the file tree |
-| `/file/{path}` | A file, with line-level cross-references |
-| `/search` | Prefix search over declaration names |
-| `/symbol/{name}` | A symbol: where it is declared, and where it is used |
-| `/health` | Liveness |
+The three things it will need from this side are already here or named:
 
-| Flag | Default | Means |
-|---|---|---|
-| *(positional)* | `code` | The address, in the usual grammar |
-| `--bind` | `127.0.0.1:8088` | Where to listen |
-| `--pool` | `8` | Idle connections to keep open to the server |
-
-Three things about it are the point rather than the implementation:
-
-- **It is an ordinary consumer of the protocol.** It depends on the client crate and nothing
-  below it, which is the claim: a viewer needs no privileged access to a database.
-- **Every question a page asks is in one place** (`query.rs`), and each says which key order
-  answers it. That is where the schema's index design becomes visible as product behaviour —
-  find-references is a seek because `src.Ref` leads with its target, and a file's cross-references
-  are a seek because `src.FileXRef` leads with the file.
-- **The pool exists because the client is blocking and a web server is not.** A recycled pool with
-  a floor rather than a ceiling: a burst opens more connections and closes them on return.
-
-Building the viewer is what found the two predicates that had to be added — a file's
-cross-references keyed by file, and a case-folded search index — because the questions a UI asks
-turned out not to be the questions the schema answered.
+- **The unit its columns count in.** `config.Setting {dimension = "position-encoding"}` declares
+  `utf8` or `utf16` once per database, and a database that does not state it is read as `utf16`.
+  The retired viewer got this wrong — it indexed by `str::chars()`, one unit per codepoint, where
+  the producer counted two for anything above the BMP.
+- **A transport a browser can open.** A browser cannot open a Unix socket or raw TCP, which is
+  the whole of the client crate's `Transport` today. The answer is a **WebSocket listener
+  carrying the same frames**, so there is one protocol, one codec and one set of goldens — not a
+  second, JSON-shaped surface. It is default-closed like TCP is (`ops-I10`).
+- **A language-independent route layer**, so an index the viewer can serve does not have to be a
+  `code.sigla` index. That is `codemarkup`.
 
 ## Writing a client
 

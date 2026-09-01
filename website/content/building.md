@@ -60,7 +60,6 @@ any more — the compiler refuses the other direction, and there is no edge poin
 | `fjord-inspect` | The JSON view of every construct — what a page renders, and what a browser receives. Depends on the engine and the schema, and never on the fjall backend. |
 | `fjord-client` | The client: `address`, `connection`, `rows` (a result as a bookmark), `expand`. Depends on `fjord-wire` and nothing else. |
 | `fjord-server` | The protocol over a Unix socket or TCP: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue`. |
-| `fjord-viewer` | The code-search site: `query`, `render`, `pool`, and the routes. An ordinary consumer of the client. |
 | `fjord-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema`, `workload`. The binary is `fjord`. |
 
 Test support spans three crates, and the split is load-bearing: `fjord_store::fixtures`
@@ -97,7 +96,6 @@ manifests and fails if that edge grows back.
 | Binary | Build | What it is |
 |---|---|---|
 | `fjord` | `cargo build --release --bin fjord` | The command line tool: create, serve, query, shell, schema, list, describe, finish, db rm |
-| `fjord-viewer` | `cargo build --release --bin fjord-viewer` | The code-search site over a database |
 
 ## Measuring instruments
 

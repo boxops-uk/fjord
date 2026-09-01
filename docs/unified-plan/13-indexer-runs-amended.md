@@ -196,13 +196,25 @@ was one, so both the corpus's size and its per-row read cost move.
 
 ### R9 — SCIP as an ingestion path
 
-**+ Re-pointed at `codemarkup` routes.** Revision 2's stated limit is that R9's gate is written
-against `src.*`-only viewer routes, *"so the converter must synthesise the whole source layer"* —
-inventing `src.Decl`, `src.Module` and `src.SearchByName` for a language it has no compiler for.
-With W11's `codemarkup` routes, the converter fills only what SCIP actually contains: `src.File`,
-the line table, `codemarkup.Definition`, `FileXRef`, `SymbolXRef`, `SearchEntry` — each a direct
-transcription of a SCIP `Occurrence` or `SymbolInformation`. **This is a reduction in R9's scope**,
-and it makes R9 depend on **W11**.
+**+ Re-pointed at `codemarkup`, and its gate is re-cut.** Revision 2's stated limit is that R9's
+gate is written against `src.*`-only viewer routes, *"so the converter must synthesise the whole
+source layer"* — inventing `src.Decl`, `src.Module` and `src.SearchByName` for a language it has
+no compiler for. With `codemarkup`, the converter fills only what SCIP actually contains:
+`src.File`, the line table, `codemarkup.Definition`, `FileXRef`, `SymbolXRef`, `SearchEntry` —
+each a direct transcription of an `Occurrence` or a `SymbolInformation`. **This is a reduction in
+R9's scope.**
+
+**And the gate itself has to move**, because `fjord-viewer` is retired
+([D11](OPEN-QUESTIONS.md)). Revision 2 accepts R9 on *"the viewer answers `/symbol/{name}` against
+a converted index"*; there is no viewer to answer it, and hanging a converter's acceptance on the
+browser replacement's schedule would be a dependency nobody chose.
+
+**The replacement gate is the converter's output, asserted directly.** A database built by the
+converter answers a fixed set of `codemarkup` queries with stated rows: go-to-definition, every
+reference in one file in position order, find-references across files, and a prefix search. Better
+than the old gate on its own terms — it tests the converter rather than a UI, it fails inside the
+converter's own suite rather than through a web request, and it does not go red because somebody
+changed a stylesheet. R9 therefore depends on **W8**, and no longer on W11.
 
 **+ A SCIP converter fills the style layer for free.** A SCIP `Occurrence` carries a symbol *and* a
 syntax kind over one span, so one pass fills both the cross-reference layer and

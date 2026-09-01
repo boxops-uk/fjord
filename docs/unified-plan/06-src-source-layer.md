@@ -89,13 +89,12 @@ consumers to protect, so the schema gets the shape it should have rather than a 
 a deprecation note nobody would act on. Two line tables in one namespace would mean a producer must
 choose and a reader must ask which one it got, forever.
 
-The migration is bounded and every site is known:
+The migration is bounded and every site is known. It was seven; `fjord-viewer` held two of them
+and has been retired ([D11](OPEN-QUESTIONS.md)), so it is five:
 
 | Site | What changes |
 |---|---|
 | `clients/dotnet/.../Indexer.cs:324,331`, `CodeIndex.cs:378` | emits `FileLine`, and must now compute `start` (UTF-8 bytes), `bytes` and `cstart` (UTF-16 code units) per line — it already counts UTF-16 for columns (`GleanFacts.cs:297`) |
-| `crates/fjord-viewer/src/query.rs:187-197` | `file_text` reads `FileLine` and projects `text` — W11 |
-| `crates/fjord-viewer/tests/over_a_real_index.rs:199,209` | the fixture writes the richer value |
 | `crates/fjord-cli/src/workload.rs:193,232` | two workload queries |
 | `crates/fjord-cli/examples/loadgen.rs:272,347` | the generated corpus |
 | `crates/fjord-client/tests/byte_identical_with_dotnet.rs:75` | the independently-stated schema |

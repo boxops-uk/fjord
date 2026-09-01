@@ -36,7 +36,6 @@ their rustdoc is built with `-D warnings` in CI.
 | `fjord-inspect` | the **JSON view** of every construct: view models that derive `Serialize`, and the mapping from the engine's internals onto them. Never `Serialize` on the internals — a `Symbol` means nothing without the interner that minted it. The precedent is `fjord_wire::desc`, and a browser is one more peer with no interner |
 | `fjord-client` | the client: `address`, `connection` (Unix socket or TCP, one `Transport` enum), `rows` (a result as a bookmark), `expand`. Depends on `wire` and nothing else |
 | `fjord-server` | the protocol over a socket: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue` (the virtual `fjord.db.*` predicates — the reserved namespace is marked virtual so a stored predicate can never collide with it) |
-| `fjord-viewer` | the code-search site. Depends on `fjord-client` and nothing below it — the claim being that a viewer is an ordinary consumer of the protocol. Binary: `fjord-viewer` |
 | `fjord-cli` | the tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema` (a **fixture**, not a default), `workload`. Binary: `fjord` |
 | `fjord-db` | the published facade crate |
 
