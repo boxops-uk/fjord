@@ -396,6 +396,40 @@ Read `schemas/code.sigla` itself if you are designing a schema: every predicate 
 comment saying which question its key order answers, and four of them exist purely because
 a derived predicate cannot yet be declared.
 
+### `schemas/config.sigla` — what a database was built for
+
+One predicate, `config.Setting {dimension, value}`, and it answers the question a tool
+holding forty handles has to ask: *which one is this*. An instance name it can only
+string-match on is not an answer, and the sharp case is a build axis that appears nowhere
+else in the index — under nearest-compatible target resolution a `netstandard2.0` project
+inside a `net9.0` index records `netstandard2.0` in its own compilation facts, correctly,
+so the resolution root is unrecoverable from the facts.
+
+**Dimension-leading, key-only and multi-valued.** Dimension first so a lookup is a seek;
+key-only so a dimension may hold several values, which `dimension -> value` could not say
+because the second write would be a conflict rather than a second fact. Both fields are
+strings and neither is a union, deliberately: a union would freeze the vocabulary's
+discriminants on the day it shipped ([I10](invariants.html#i10)) and make every new axis a
+Breaking edit to a predicate every published index carries. The schema comment carries the
+reserved list instead — `repo`, `revision`, `index-root`, `position-encoding`,
+`style-vocabulary`, `symbol-scheme`, `language`, `producer`, and the build axes.
+
+It is **per-database**, so it cannot record a per-project or per-file axis:
+`{dimension = "define", value = "DEBUG"}` says the run defined `DEBUG`, not which projects
+did. Where an axis varies inside one index, the fact that varies carries it.
+
+:::note A database that does not state its position encoding is read as `utf16`
+`position-encoding` is `utf8` or `utf16`, and it is the unit **every** offset and column in
+the database counts in — one declaration per database, as SCIP settled it, rather than a
+unit per span. A mixed-encoding database is deliberately not expressible.
+
+The default is `utf16` because that is what the compilers this set indexes actually count:
+Roslyn and the TypeScript compiler both count UTF-16 code units. Stating it is still the
+point. The unit that agrees with neither is a renderer walking `chars()`, which counts
+Unicode scalar values — one per codepoint where the producer counted two for anything above
+the BMP, and the symptom is a link drawn over the wrong text, which reads as a styling bug.
+:::
+
 There are also **virtual** predicates — `fjord.db.List` (the store root as rows) and
 `fjord.db.Interning` (the write path's own counters, per database) — declared in
 `crates/fjord-server/schemas/catalogue.sigla`, the crate that answers them. A virtual

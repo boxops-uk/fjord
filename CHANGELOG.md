@@ -7,6 +7,31 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `schemas/config.sigla` — a database says what it was built for
+
+One predicate, `config.Setting {dimension, value}`, for the question a tool holding forty
+handles has to ask: *which one is this*. An instance name it can only string-match on is not an
+answer, and the sharp case is a build axis that appears nowhere else in the index — under
+nearest-compatible target resolution a `netstandard2.0` project inside a `net9.0` index records
+`netstandard2.0` in its own compilation facts, correctly, so the resolution root is
+unrecoverable from the facts.
+
+Dimension-leading so a lookup is a seek; **key-only** so a dimension may hold several values,
+which `dimension -> value` could not say because the second write would be a conflict rather
+than a second fact. Both fields are strings and neither is a union: a union would freeze the
+vocabulary on the day it shipped (I10) and make every new axis a Breaking edit to a predicate
+every published index carries. The reserved list lives in the schema comment instead.
+
+**`position-encoding` is the one worth reading.** `utf8` or `utf16`, declared once per database
+and the unit of every offset and column in it — SCIP's answer rather than a unit per span, and a
+mixed-encoding database is deliberately not expressible. A database that does not state it is
+read as `utf16`, because that is what Roslyn and the TypeScript compiler actually count. The
+unit that agrees with neither is a renderer walking `chars()`: one per codepoint where the
+producer counted two for anything above the BMP, in range and pointing at the wrong text, which
+reads as a styling bug rather than an off-by-one.
+
+Nothing existing moves — a new namespace in a file of its own.
+
 ### `finish` writes the data to tables, which it did not
 
 `Catalog::seal` called `persist` then `compact`. `persist` fsyncs the write-ahead journal;

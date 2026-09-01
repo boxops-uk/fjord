@@ -114,6 +114,7 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
 
     let expected = [
         ("code.sigla", "0xb08eea634e866a75"),
+        ("config.sigla", "0xac3c414ab7ff574f"),
         ("demo.sigla", "0x026d61be0818f394"),
     ];
 
