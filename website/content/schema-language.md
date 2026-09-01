@@ -431,6 +431,55 @@ Three shapes in it are worth reading before designing anything similar:
   viewer's window paid ~2.4× the bytes it needed. `FileLineStyles` is a separate predicate
   for that reason, keyed identically so a window is the same seek.
 
+### `schemas/codemarkup.sigla` — one surface a UI can read
+
+Ten predicates over `src`, and the whole layer rests on one decision: **the join key is a
+string** — `src.Symbol` — and not a union over languages.
+
+The alternative is what makes the case. Key a definition on `{ csharp : … | typescript : … }`
+and a C#-only index and a C#-plus-TypeScript index carry *different* `Definition` predicates,
+because appending a union alternative is Breaking ([I10](invariants.html#i10) freezes
+discriminants, and `schema diff` reports even an append that way). One UI could then not read
+both, which is the entire purpose of a language-independent layer. That is a live test rather
+than a paragraph — appending one alternative to a union used in two keys breaks exactly those
+two — and so is the property it buys: every `codemarkup` predicate has the same fingerprint
+resolved alone or inside a composite holding two language layers.
+
+The second reason is cross-database. A `FactId` is a predicate tag plus a per-predicate
+sequence ([I11](invariants.html#i11)), so it means nothing in another database — and "who
+references this, anywhere" is a fan-out. A string survives the trip; an id does not.
+
+**Anything a consumer joins *through* is in the key**, and that is stricter than it looks: a
+value can neither be matched ([I6](invariants.html#i6)) nor read field-wise
+(`nyi/value-field`), so a reference behind the `->` is reachable only by projecting the whole
+value and issuing a second query. So `Definition` keys on the file as well as the symbol, and
+`FileXRef` is **all key** — a renderer wants every field of every row, and a value would be a
+point read per reference. A trailing key field costs the seeks nothing, which is what makes
+that free.
+
+| Vocabulary | Transcribed from | The valve |
+|---|---|---|
+| `Kind` | LSP `SymbolKind`, 1–26 verbatim | `other : string = 0`, the slot LSP does not use |
+| `Role` | SCIP `SymbolRole`, projected | `other : string = 0` |
+| `RelationKind` | Glean `codemarkup` relations | `other : string = 0` |
+
+All three are **citations rather than inventions**, and that is deliberate: they sit in keys,
+so their discriminants froze the day the layer shipped and every future value has to arrive
+through `other`. LSP's `SymbolKind` has not moved since 3.x.
+
+:::warn A bitmask is lost, and it is stated rather than hidden
+SCIP's `SymbolRole` is a bitmask — a reference can be a definition *and* an import at once. A
+sigla union cannot express that, and an `int` of flags would be a field no query could usefully
+match on. `Role` is therefore the mutually-exclusive projection a UI filters by, and a producer
+needing the full mask loses information here.
+:::
+
+Every predicate is redundant with a language layer by construction — the same facts keyed for
+the question a UI asks. In Glean these are `stored` derived predicates; here `nyi/derivation`
+means a producer writes them, so each carries the query that *would* derive it as a comment.
+While the population is by hand that comment is the specification the producer is checked
+against.
+
 ### `schemas/config.sigla` — what a database was built for
 
 One predicate, `config.Setting {dimension, value}`, and it answers the question a tool

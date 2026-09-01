@@ -7,6 +7,33 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `schemas/codemarkup.sigla` — one surface a UI can read
+
+Ten predicates over `src`, and the whole layer rests on one decision: **the join key is a
+string**, `src.Symbol`, and not a union over languages.
+
+Key a definition on `{ csharp : … | typescript : … }` and a C#-only index and a
+C#-plus-TypeScript index carry *different* `Definition` predicates, because appending a union
+alternative is Breaking — I10 freezes discriminants and `schema diff` reports even an append
+that way. One UI could then not read both, which is the entire purpose of a
+language-independent layer. Both halves of that are tests rather than paragraphs: appending one
+alternative to a union used in two keys breaks exactly those two, and every `codemarkup`
+predicate has the same fingerprint resolved alone or inside a composite holding two other
+language layers.
+
+The second reason is cross-database. A `FactId` is a predicate tag plus a per-predicate
+sequence (I11), so it means nothing in another database — and "who references this, anywhere"
+is a fan-out across several. A string survives the trip; an id does not.
+
+`Kind`, `Role` and `RelationKind` are **citations rather than inventions** — LSP's `SymbolKind`
+1–26 verbatim, SCIP's `SymbolRole` projected, Glean's relation kinds — because they sit in keys
+and their discriminants froze the day this shipped. `other : string = 0` is the only valve.
+One loss is stated rather than hidden: SCIP's `SymbolRole` is a *bitmask*, a reference can be a
+definition and an import at once, and this stores the mutually-exclusive projection a UI
+filters by.
+
+Nothing existing moves — a new namespace in a file of its own.
+
 ### `schemas/src.sigla` — one shared source layer · **breaking, and a client rebuild**
 
 `schemas/code.sigla`'s fingerprint moves from `0xb08eea634e866a75` to `0xe044df7620885507`.

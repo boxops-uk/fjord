@@ -111,9 +111,16 @@ discrepancy is a diff rather than an argument. When `derive` lands, the comment 
    query per predicate**, asserting rows: go-to-definition, the file outline in position order,
    every reference in a file in position order, find-references across files, a file-local jump, a
    case-insensitive prefix search, an exact-name search, and both relation directions.
-5. **Each "would derive as" comment is a query that compiles.** A test collects them and asserts
-   each parses and typechecks against the composite schema (execution not required — the language
-   layers are not populated by this item). A specification nothing checks is a comment.
+5. ~~**Each "would derive as" comment is a query that compiles.**~~ **Not achievable, and the
+   reason is structural rather than schedule.** The comments are written in *derivation* syntax —
+   `codemarkup.Definition {…} -> {…} where …` — which sigla does not parse at all: `derive` is
+   `nyi/derivation`. They also elide their tails with `…` and name predicates the language layers
+   declare (W9). So no form of this criterion can pass before `derive` lands, and asserting that
+   they parse would mean rewriting them into something that is not the derivation they document.
+
+   What is worth having when `derive` arrives: the comment *becomes* the body, and the test is
+   that the derived predicate answers what the hand-written one did. Recorded rather than quietly
+   dropped.
 6. **The `FileLocalXRef` claim is exercised**: a local variable's jump-to-declaration resolves
    span-to-span inside one file, costing no `src.Symbol` — proving the argument that file-local
    references need no global name, which is what makes SCIP's occurrence-ordered `local0` unnecessary

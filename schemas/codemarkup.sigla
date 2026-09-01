@@ -1,0 +1,310 @@
+# The **codemarkup layer** — one language-independent surface for a code-search UI.
+#
+# Glean's `codemarkup` schema is the layer Glass queries: per-language schemas hold what a
+# compiler knows, and `codemarkup` holds the handful of questions a *user interface* asks —
+# where is this defined, what is at this position, where is it used, what is it called, what
+# does it relate to — with a per-language file specialising each one and a union tying them
+# together. This is that layer, with one structural difference — and the difference is a choice
+# rather than a limitation.
+#
+# ---- the difference: keyed by a symbol string, not by an entity union ------------------
+#
+# Glean writes `type Entity = { hack : Hack.Entity | python : Python.Entity | … }` and derives
+# every generic predicate by dispatching on the arm. Sharing a union-typed variable between two
+# generators works here too, so that shape is **available** — and it is still the wrong one, for
+# a reason that has nothing to do with what the engine can express.
+#
+# **A union over languages makes this layer's fingerprint depend on which languages the database
+# happens to hold.** Schema identity is per-predicate, and a union edit is Breaking (I10 freezes
+# discriminants, and `schema diff` reports even an append that way). So a C#-only index and a
+# C#-plus-TypeScript index would carry *different* `codemarkup.Definition` predicates. Measured on
+# exactly that pair — one alternative appended, nothing else touched:
+#
+#     $ fjord schema diff ./cm_union1.sigla ./cm_union2.sigla
+#     Breaking (2 predicate(s))
+#       ~ cmu.Definition  (modified: aa7511ff16c71a60 → 2dafac2a61036564)
+#       ~ cmu.FileXRef    (modified: 0e68c186390e3aa4 → 15e4b4ad54604760)
+#
+# A client's per-predicate fingerprint has to match the database it connects to, so **one UI could
+# not read both indexes** — which is the entire purpose of a language-independent layer. It would
+# also be a flag day per language added, since a sealed database cannot be migrated (no `evolves`,
+# no projection layer).
+#
+# **Keyed on `src.Symbol` the fingerprint is invariant.** This file imports only `src`, so its
+# predicates hash the same alone as they do inside a composite of every language. Verified:
+#
+#     $ fjord schema diff ./codemarkup.sigla ./index.sigla
+#     Compatible (… added)        # and not one `~ codemarkup.*` line among them
+#
+# So a C# index, a TypeScript index, a Rust index converted from SCIP, and a composite of all
+# three serve the *same* `codemarkup` predicates, and one client reads every one of them. A new
+# language writes into them on day one with no schema edit anywhere.
+#
+# The second reason is one a union cannot answer at any price: **a `FactId` is per-database by
+# construction** (I11), so a union-keyed row means nothing to another index. "Who references this,
+# anywhere" is a fan-out over databases, and a fan-out needs a key that survives the trip.
+#
+# The cost is stated plainly: an interned string per symbol (~75 bytes once) plus an 8-byte
+# reference per use, against a tag and a `FactId` for a union. **That is why the language layers
+# keep their own union-keyed cross-reference predicates** — `csharp.EntityXRef`,
+# `typescript.DeclRef` — as the cheap in-database path, and why this layer is the portable one.
+# Both exist on purpose; the duplication is what portability costs, and Glean pays it too.
+#
+# ---- hand-populated now, derived later ------------------------------------------------
+#
+# Every predicate here is redundant with the language layers: it is the same facts keyed for
+# the question a UI asks. In Glean these are `stored` derived predicates; fjord has no
+# derivation (`nyi/derivation`), so a producer writes them — exactly as `code.sigla` does for
+# `src.SearchByName` and `csharp.sigla` for its codemarkup compatibility layer.
+#
+# **Each predicate below therefore carries the sigla query that would derive it, as a
+# comment.** That is not decoration: while the population is by hand, the comment is the
+# specification the producer is checked against, and a mismatch is a diff rather than an
+# argument. When `derive` lands, the comment becomes the body.
+#
+# **Field order is key order.** The pairs here are deliberate and each says which question it
+# answers: `FileXRef` is what a renderer asks once per file, `SymbolXRef` is find-references,
+# and they are the same facts twice because a predicate leads with one field.
+#
+# ---- one placement rule, and it is stricter than it looks ------------------------------
+#
+# **Anything a consumer joins *through* is in the key.** A value cannot be matched (I6) *and* a
+# field of a value cannot be projected at all — `X.value.file` is `error[nyi/value-field]`,
+# verified — so a reference behind the `->` is reachable only by projecting the whole value and
+# issuing a second query. `typescript.DeclMember` records discovering exactly this.
+#
+# This layer exists to be joined through, so its keys are wide and its values are narrow: a
+# definition's `file` is in the key because that is how the bytes and the project are reached,
+# and `FileXRef` is **all key** because a renderer wants every field of every row and a value
+# would be a point read per reference. Both are free: a *trailing* key field costs the seeks
+# nothing — it is already in the register the scan is holding — which is the argument
+# `src.Ref` makes for carrying a reference's length in its key.
+
+schema codemarkup {
+
+  import src
+
+  # ======================================================================================
+  # Vocabularies — cited, not invented
+  # ======================================================================================
+
+  # What kind of thing a symbol names. **The numbering is LSP's `SymbolKind`, 1–26,
+  # verbatim** (`vscode-languageserver-types`, `SymbolKind`).
+  #
+  # Citing a published enum rather than designing one is the only way a vocabulary in a *key*
+  # is safe here: a union edit is Breaking and a sealed database cannot be migrated, so a
+  # vocabulary that grows is a vocabulary that strands artifacts. LSP's has not moved since
+  # 3.x, every editor already has an icon per value, and a language server's output maps with
+  # no table.
+  #
+  # **`other` sits at 0, which LSP does not use**, and carries the string. That is the valve:
+  # a kind LSP has no value for — an MSBuild project, a bundler chunk, a JSX element — is
+  # `{other = "project"}` and costs no schema change. A query that wants to *match* on a kind
+  # matches a named alternative; a query that wants to *render* one reads whichever arrives.
+  type Kind =
+    { other         : string = 0
+    | file                  = 1
+    | module_               = 2
+    | namespace_            = 3
+    | package_              = 4
+    | class_                = 5
+    | method_               = 6
+    | property_             = 7
+    | field                 = 8
+    | constructor_          = 9
+    | enum_                 = 10
+    | interface_            = 11
+    | function_             = 12
+    | variable              = 13
+    | constant              = 14
+    | string_               = 15
+    | number                = 16
+    | boolean_              = 17
+    | array                 = 18
+    | object_               = 19
+    | key                   = 20
+    | null_                 = 21
+    | enumMember            = 22
+    | struct_               = 23
+    | event                 = 24
+    | operator              = 25
+    | typeParameter         = 26
+    }
+
+  # What a reference *does* with what it names — the discrimination that turns a flat xref
+  # list into an answer, and the field a UI filters on ("show me writes", "show me calls").
+  #
+  # SCIP spells the same idea as `SymbolRole`, a **bitmask** — a reference can be a definition
+  # *and* an import at once. A bitmask is not expressible as a sigla union, and an `int` of
+  # flags would be a field no query could match on usefully, so this is the mutually-exclusive
+  # projection a UI actually filters by, with the mapping stated for a SCIP producer:
+  # `Definition` → `definition`, `WriteAccess` → `write`, `ReadAccess` → `read`, `Import` →
+  # `import_`, and a role SCIP marks only as `Generated`/`Test` keeps its access role. Anything
+  # else is `{other = …}`.
+  type Role =
+    { other      : string = 0
+    | definition        = 1
+    | read              = 2
+    | write             = 3
+    | call              = 4
+    | typeRef           = 5
+    | new_              = 6
+    | import_           = 7
+    | export_           = 8
+    | heritage          = 9
+    | decorator         = 10
+    | jsx               = 11
+    }
+
+  # How two symbols relate — the panels a symbol view has beyond definition and uses.
+  # Directional: `Relation` reads "`from` <kind> `to`" (`contains`: from contains to;
+  # `extends`: from extends to).
+  type RelationKind =
+    { other       : string = 0
+    | contains           = 1
+    | extends            = 2
+    | implements         = 3
+    | overrides          = 4
+    | calls              = 5
+    | imports            = 6
+    | instantiates       = 7
+    | annotates          = 8
+    }
+
+  # ======================================================================================
+  # Definitions — "where is this, and what is it"
+  # ======================================================================================
+
+  # A symbol's declaration site and its identity in one row. The seek behind every "go to
+  # definition", and the row a cross-database fan-out returns.
+  #
+  # **`file` is the second key field, not a value.** `symbol` leads because that is the question;
+  # `file` trails it so it costs the seek nothing and is still reachable — it is what the bytes
+  # (`src.FileLine`), the project (`msbuild.SourceFileToProject`) and the package
+  # (`npm.FilePackage`) are all joined through, and behind the `->` none of those joins could be
+  # written. A symbol declared in two files (a C# partial class) is two facts, which is the truth.
+  #
+  # `qualified` is the human-readable full name (`Namespace.Type.Method`), which is *not*
+  # derivable from the symbol string without a SCIP descriptor parser — so it is stored, once,
+  # here rather than in every consumer.
+  #
+  # Would derive as (C#):
+  #   codemarkup.Definition {symbol = S, file = F} -> {span = SP, kind = K, name = N, qualified = Q}
+  #     where csharp.EntityBySymbol {symbol = S, entity = E}; E = csharp.Entity {method = M};
+  #           csharp.DefinitionLocation {definition = {method = M}, location = {file = F, span = SP}}; …
+  predicate Definition :
+    { symbol : src.Symbol, file : src.File }
+    -> { span : src.ByteSpan, kind : Kind, name : string, qualified : string }
+
+  # Everything a hover card needs and nothing a list needs — separate from `Definition` because
+  # a value is fetched whole, and a signature plus a doc comment is an order of magnitude more
+  # bytes than a name and a span. A symbol panel reads `Definition` for a hundred rows and
+  # `SymbolInfo` for the one under the cursor. Nothing joins through it, so all of it is a value.
+  #
+  # There is no `container` field here or on `FileDefinition`: containment is
+  # `Relation {from = C, kind = {contains}, to = S}`, which is joinable in both directions and
+  # does not have to be stored twice.
+  predicate SymbolInfo :
+    { symbol : src.Symbol }
+    -> { signature : string, doc : string, modifiers : string }
+
+  # **Everything declared in a file, in position order** — Glean's
+  # `codemarkup.FileDeclarations`, and the one query a symbol outline or a sticky header needs.
+  # `file` leads, `span` follows so the rows arrive in the order the panel renders them and
+  # nesting falls out of span containment with no join at all, and `symbol` trails so a follow-up
+  # ("…and how many uses has each") is a join rather than a second round trip.
+  #
+  # Would derive as:
+  #   codemarkup.FileDefinition {file = F, span = SP, symbol = S} -> {kind = K, name = N}
+  #     where D = codemarkup.Definition {symbol = S, file = F}; …
+  predicate FileDefinition :
+    { file : src.File, span : src.ByteSpan, symbol : src.Symbol }
+    -> { kind : Kind, name : string }
+
+  # ======================================================================================
+  # Cross-references — the two directions, and the local case
+  # ======================================================================================
+
+  # **Every reference in a file, in position order, with what it targets.** What a renderer
+  # asks once per file to splice links over text — and, against the eleven-query C# path this
+  # replaces, the single measurable reason this layer exists.
+  #
+  # **All key.** `file` leads, `span` follows so the rows arrive sorted the way a splice consumes
+  # them, and `target` and `role` trail — which costs the seeks nothing and buys both of the
+  # things a value side would have taken away: the target is **joinable**, so "every reference in
+  # this file, resolved to where it is defined" is one query, and nothing is a point read, so a
+  # 400-reference file is a scan of one predicate and no random access.
+  #
+  # Would derive as (TypeScript):
+  #   codemarkup.FileXRef {file = F, span = SP, target = S, role = R}
+  #     where X = typescript.XRef {file = F, span = SP}; typescript.SymbolOf {decl = D, symbol = S}; …
+  predicate FileXRef :
+    { file : src.File, span : src.ByteSpan, target : src.Symbol, role : Role }
+
+  # **The same references keyed by what they point at** — find-references, and the predicate a
+  # cross-database fan-out seeks in every database it holds. `target` leads because that is the
+  # question; `file` comes second so "this symbol's uses *in this file*" narrows too; `span`
+  # trails so a file's uses come back in position order. This is `src.Ref`'s key design, and
+  # the reason it is a second copy rather than a sort is `src.FileXRef`'s own comment: against
+  # the file-keyed predicate, find-references was a scan of the largest table in the index.
+  #
+  # Key-only: the role is on the `FileXRef` row, and a reference is not an attribute of
+  # anything.
+  predicate SymbolXRef : { target : src.Symbol, file : src.File, span : src.ByteSpan }
+
+  # **References whose target is file-local** — a local variable, a parameter, a lambda's
+  # binding, anything SCIP models as `local` and therefore has no global name for.
+  #
+  # These are the majority of references in any real corpus, and giving them symbols would be
+  # both wasteful and wrong: a SCIP `local0` is occurrence-ordered, so it changes when the
+  # file is edited, which is exactly the instability the semantic-identity argument exists to
+  # avoid. So they are answered the way a UI actually wants them — **span to span, within one
+  # file** — and cost no string at all. A jump-to-declaration for a local needs no other
+  # database, no symbol table and no second seek.
+  #
+  # All key, for `FileXRef`'s reasons; `target` here is a span in the same file, so the "join" is
+  # arithmetic a renderer already has the rows for.
+  predicate FileLocalXRef :
+    { file : src.File, span : src.ByteSpan, target : src.ByteSpan, role : Role }
+
+  # ======================================================================================
+  # Search — the lookup a search box seeks on
+  # ======================================================================================
+
+  # **The denormalised search row.** `nameLowercase` leads, so a case-insensitive prefix
+  # (`= "foo"..`) or a fuzzy match (`= "fo"~1`) is a guided seek rather than a scan; everything
+  # a hit renders trails it, so a search needs no join and no expansion.
+  #
+  # **All key**, following `csharp.SearchEntry` and `typescript.SearchEntry`, whose measured
+  # behaviour this copies: a name names many things, nothing past the prefix is matched on, and
+  # a trailing key field is already in the register the scan is holding where a value would be
+  # a point read per row (I6). For a fuzzy scan over 400,000 names that difference is the
+  # feature.
+  predicate SearchEntry :
+    { nameLowercase : string
+    , name          : string
+    , kind          : Kind
+    , symbol        : src.Symbol
+    , file          : src.File
+    , line          : int
+    }
+
+  # The case-sensitive form. A second copy rather than a replacement, for `code.sigla`'s
+  # reason: "find exactly `Parse`" and "find anything spelled like parse" are different
+  # questions, and a case-folded index cannot answer the first.
+  predicate SymbolByName : { name : string, symbol : src.Symbol }
+
+  # ======================================================================================
+  # Relations — the symbol panel's other tabs
+  # ======================================================================================
+
+  # `from` leads, then `kind`, so "everything this type implements" is a seek and "everything
+  # it relates to" is the seek one field shorter. Key-only: a relation is an edge.
+  predicate Relation : { from : src.Symbol, kind : RelationKind, to : src.Symbol }
+
+  # The other direction — "who extends *this*", "who calls *this*". Two predicates for the
+  # same reason `src.Extends` and `src.DerivesFrom` are two: a predicate leads with one field,
+  # and both fan-outs are worth a seek.
+  predicate RelationOf : { to : src.Symbol, kind : RelationKind, from : src.Symbol }
+
+}
