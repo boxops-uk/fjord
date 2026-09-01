@@ -452,9 +452,11 @@ fn schema() -> Schema {
                     (f_file, PredicateTy::Fact(FILE)),
                     (f_line, PredicateTy::Int),
                 ])),
+                // Opaque bytes: the schema does not say what encoding is in them —
+                // `config.Setting {dimension = "style-encoding"}` does.
                 value: Some(PredicateTy::Record(Arc::from([(
                     f_styles,
-                    PredicateTy::Str,
+                    PredicateTy::Bytes,
                 )]))),
             },
         ]),

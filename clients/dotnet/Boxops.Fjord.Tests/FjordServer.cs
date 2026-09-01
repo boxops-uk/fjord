@@ -33,7 +33,7 @@ public sealed class FjordServer : IDisposable
     }
 
     /// <summary>Where the repository root is, from this assembly's own location.</summary>
-    private static string RepositoryRoot
+    internal static string RepositoryRoot
     {
         get
         {

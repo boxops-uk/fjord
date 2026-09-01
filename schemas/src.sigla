@@ -122,7 +122,27 @@ schema src {
   # exactly; one past the file's last line start finds nothing.
   predicate FileLineAt : { file : File, start : int, line : int }
 
-  # Syntax highlighting for one line, as the packed run-length string `codemarkup` writes.
-  # Held per line so a viewer fetches only the window it is drawing.
-  predicate FileLineStyles : { file : File, line : int } -> { styles : string }
+  # Syntax highlighting for one line, as an opaque payload. Held per line so a viewer
+  # fetches only the window it is drawing.
+  #
+  # **The schema does not say what is in these bytes**, and that is the design. A
+  # highlighter's vocabulary is a presentation concern with its own lifecycle, so pinning
+  # one here would make every new token kind a Breaking edit to a predicate every published
+  # index carries — and styles are regenerable where the facts beside them are not.
+  #
+  # What a database holds is declared in `config.Setting {dimension = "style-encoding"}`,
+  # and a consumer that does not recognise the value renders the line plain. **fjord ships
+  # no codec and defines no vocabulary** — a producer writes whatever its tokeniser already
+  # emits, and names it.
+  #
+  # The .NET indexer is the worked example: `--styles` writes `roslyn-lsp-1`, which is LSP
+  # `SemanticTokens.data` — `[deltaLine, deltaStart, length, tokenType, tokenModifiers]` per
+  # token, varint-packed — over a legend of Roslyn's own `ClassificationTypeNames`. Nothing
+  # about it is fjord's: a consumer that speaks LSP reads it already, and Monaco takes the
+  # decoded array unchanged. A producer for another language names its own encoding and its
+  # own legend, and this predicate does not change.
+  #
+  # Absent means "not tokenised", so an index with no highlighter is a complete index and
+  # needs no sentinel.
+  predicate FileLineStyles : { file : File, line : int } -> { styles : bytes }
 }

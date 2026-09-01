@@ -249,11 +249,13 @@ fn every_predicate_of_the_source_layer_answers() {
         vec![WireFact {
             predicate: id("src.FileLineStyles"),
             key: WireValue::Record(Box::from([of_file(), WireValue::Int(1)])),
-            // `2p6k1p` — two plain, six keyword, one plain. A trailing plain run is
-            // omitted, which is the format's own rule.
-            value: Some(WireValue::Record(Box::from([WireValue::Str(
-                "2k9p".to_owned(),
-            )]))),
+            // Opaque to the schema and to this test: what a producer writes here is
+            // its business, and `config.Setting {dimension = "style-encoding"}` says
+            // what it was. These are the first bytes of an LSP semantic-tokens array —
+            // one token, delta 0/0, length 6, type 0, no modifiers.
+            value: Some(WireValue::Record(Box::from([WireValue::Bytes(vec![
+                0x00, 0x00, 0x06, 0x00, 0x00,
+            ])]))),
         }],
     ));
 
@@ -298,7 +300,8 @@ fn every_predicate_of_the_source_layer_answers() {
         (
             "the style runs",
             "X.value where X = src.FileLineStyles {file = F, line = 1}",
-            serde_json::json!({"styles": "2k9p"}),
+            // `bytes` renders as lowercase hex.
+            serde_json::json!({"styles": "0000060000"}),
         ),
     ] {
         assert_eq!(rows(&root, query), vec![expected], "{what}");

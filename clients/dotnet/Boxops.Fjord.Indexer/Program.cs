@@ -111,7 +111,7 @@ internal static class Program
                     continue;
                 }
 
-                indexer.Index(compilation, _ =>
+                indexer.Index(compilation, project.Roslyn, _ =>
                 {
                     // Every couple of seconds, not every file: a hundred thousand
                     // progress lines is not progress.

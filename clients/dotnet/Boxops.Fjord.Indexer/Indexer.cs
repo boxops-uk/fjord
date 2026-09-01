@@ -4,8 +4,10 @@ using System.Text;
 using Boxops.Fjord.Client;
 
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Classification;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 
 namespace Boxops.Fjord.Indexer;
 
@@ -168,6 +170,9 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// <summary>Lines of source written as <c>src.Line</c> facts.</summary>
     public long Lines { get; private set; }
 
+    /// <summary>Lines carrying syntax highlighting, as <c>src.FileLineStyles</c> facts.</summary>
+    public long Styled { get; private set; }
+
     /// <summary>Files no project compiles — shared source, or a checkout with no project files.</summary>
     public int Unattributed { get; private set; }
 
@@ -205,7 +210,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// backpressure rather than a cost: a write stream is one at a time anyway.
     /// </para>
     /// </remarks>
-    public void Index(Compilation compilation, Action<string>? onFile = null)
+    public void Index(Compilation compilation, Project? project, Action<string>? onFile = null)
     {
         _declarations = new Dictionary<ISymbol, Declared?>(SymbolEqualityComparer.Default);
 
@@ -234,7 +239,11 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             new ParallelOptions { MaxDegreeOfParallelism = options.Jobs },
             item =>
             {
-                IndexTree(compilation.GetSemanticModel(item.Tree), item.Tree, item.Path);
+                IndexTree(
+                    compilation.GetSemanticModel(item.Tree),
+                    item.Tree,
+                    item.Path,
+                    project?.GetDocument(item.Tree));
 
                 using (Enter())
                 {
@@ -244,7 +253,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             });
     }
 
-    private void IndexTree(SemanticModel model, SyntaxTree tree, string path)
+    private void IndexTree(SemanticModel model, SyntaxTree tree, string path, Document? document)
     {
         var syntax = tree.GetRoot();
         FjordFact file;
@@ -261,7 +270,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             here = ModuleFor(path, PrimaryNamespace(syntax));
         }
 
-        IndexLines(tree, file);
+        IndexLines(tree, file, document);
 
         foreach (var node in syntax.DescendantNodes())
         {
@@ -309,7 +318,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// all of them would serialise the walk behind the network.
     /// </para>
     /// </remarks>
-    private void IndexLines(SyntaxTree tree, FjordFact file)
+    private void IndexLines(SyntaxTree tree, FjordFact file, Document? document)
     {
         if (!options.Lines)
         {
@@ -357,6 +366,52 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             }
 
             Lines += facts.Count;
+        }
+
+        IndexStyles(document, text, file);
+    }
+
+    /// <summary>
+    /// <c>src.FileLineStyles</c> from Roslyn's own classifier — the reference client's
+    /// answer to a schema field that is deliberately opaque.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A document, not a semantic model.</b> The classifier's semantic-model overload
+    /// is obsolete, and the supported form takes a <see cref="Document"/> — so the
+    /// workspace project Buildalyzer already built is carried down to here rather than
+    /// a scratch one being invented. In syntax-only mode there is no workspace and
+    /// <paramref name="document"/> is null, so no styles are written.
+    /// </para>
+    /// <para>
+    /// A file with no tokens on a line writes no fact for it: absent means unhighlighted,
+    /// which is the common case and the reason this costs so much less than markup.
+    /// </para>
+    /// </remarks>
+    private void IndexStyles(Document? document, SourceText text, FjordFact file)
+    {
+        if (!options.Styles || document is null)
+        {
+            return;
+        }
+
+        var spans = Classifier
+            .GetClassifiedSpansAsync(document, new TextSpan(0, text.Length), CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+
+        var lines = SemanticTokens.Encode(spans, text);
+
+        using (Enter())
+        {
+            foreach (var line in lines)
+            {
+                sink.Add(
+                    CodeIndex.FileLineStyles,
+                    CodeIndex.FileLineStylesFact(file, line.Line, line.Payload));
+            }
+
+            Styled += lines.Count;
         }
     }
 

@@ -85,7 +85,7 @@ internal static class CodeIndex
     /// Carried rather than computed — see <see cref="FjordSchema"/>. A schema edit
     /// moves it, and a stale one is refused at the handshake by name.
     /// </remarks>
-    public const ulong SchemaFingerprint = 0xe044df7620885507;
+    public const ulong SchemaFingerprint = 0x32853889cb63fdd7;
 
     /// <summary>Every predicate id, in schema order — what a report iterates.</summary>
     public static readonly uint[] Predicates =
@@ -291,7 +291,10 @@ internal static class CodeIndex
         new FjordPredicate("src.FileLineStyles", FjordType.Rec(
                 ("file", FjordType.Reference(File)),
                 ("line", FjordType.Integer)),
-            FjordType.Rec(("styles", FjordType.String))),
+            // **Opaque.** The schema says `bytes` and nothing more; what this indexer
+            // puts there is LSP semantic-tokens data, declared as `roslyn-lsp-1` in
+            // `config.Setting {dimension = "style-encoding"}`.
+            FjordType.Rec(("styles", FjordType.Blob))),
     ], SchemaFingerprint);
 
     /// <summary>`{ false_ = 0 | true_ = 1 }`.</summary>
@@ -493,6 +496,21 @@ internal static class CodeIndex
     /// language its <c>Length</c> <i>is</i> the count.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// <c>src.FileLineStyles</c>: one line's syntax highlighting, as opaque bytes.
+    /// </summary>
+    /// <remarks>
+    /// The payload is whatever the producer's <c>style-encoding</c> declares. This indexer
+    /// writes LSP semantic-tokens data — see <see cref="SemanticTokens"/> — but the fact
+    /// carries bytes and the schema asks no questions about them.
+    /// </remarks>
+    public static FjordFact FileLineStylesFact(FjordFact file, long line, ReadOnlyMemory<byte> styles) =>
+        new(FileLineStyles,
+            FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(file)),
+                FjordValue.Of(line)),
+            FjordValue.Rec(FjordValue.Of(styles)));
+
     public static FjordFact FileLineFact(
         FjordFact file,
         long line,

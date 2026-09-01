@@ -251,17 +251,17 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
     recorded.sort();
 
     let expected = [
-        ("bundle.sigla", "0xc542bcb3d2c1a7d9"),
-        ("code.sigla", "0xe044df7620885507"),
-        ("codemarkup.sigla", "0x32adb52110a42dcc"),
+        ("bundle.sigla", "0xf67c15e97c486055"),
+        ("code.sigla", "0x32853889cb63fdd7"),
+        ("codemarkup.sigla", "0x71c5a26efad9c90a"),
         ("config.sigla", "0xac3c414ab7ff574f"),
-        ("csharp.sigla", "0x8368d4cbc47728d7"),
+        ("csharp.sigla", "0xcd1ded4ad8d8b187"),
         ("demo.sigla", "0x026d61be0818f394"),
-        ("index.sigla", "0x68e2ad36791ebf1b"),
-        ("msbuild.sigla", "0xbda9e53fc3c35113"),
-        ("npm.sigla", "0x56ca6b880dd50587"),
-        ("src.sigla", "0x0f2fe69be726b41d"),
-        ("typescript.sigla", "0x979cef7fc0d7fa81"),
+        ("index.sigla", "0xea69e11d083ae95f"),
+        ("msbuild.sigla", "0xd97f69e6c42cf593"),
+        ("npm.sigla", "0x89e3bbe02c94cb17"),
+        ("src.sigla", "0x76a9b57d832f5ad9"),
+        ("typescript.sigla", "0x4f2ebd3d451fc631"),
     ];
 
     assert_eq!(

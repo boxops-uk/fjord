@@ -88,6 +88,18 @@ internal sealed record Options
     /// <summary>Emit <c>src.Doc</c>: the doc comment above a declaration.</summary>
     public bool Docs { get; init; } = true;
 
+    /// <summary>
+    /// Emit <c>src.FileLineStyles</c>: syntax highlighting, from Roslyn's own classifier.
+    /// </summary>
+    /// <remarks>
+    /// <b>Off by default, because it is not free and not everyone renders.</b> Semantic
+    /// classification runs the same machinery Visual Studio colours with, per file, and an
+    /// index built to answer queries has no use for it. It is on for a viewer and off for
+    /// everything else, which is why this is a flag rather than a property of the schema —
+    /// the facts are simply absent, and absent means "not tokenised".
+    /// </remarks>
+    public bool Styles { get; init; }
+
     /// <summary>Facts per block. A block is one <c>CopyData</c> frame and one interning batch.</summary>
     public int Batch { get; init; } = 4096;
 
@@ -210,7 +222,8 @@ internal sealed record Options
           --writers <n>         concurrent write streams, one connection each (default: 1;
                                 raise it when the report's `queueing` is a real share of the run)
           --no-refs             declarations only: no src.Ref, no src.Import
-          --no-lines            do not write the line table (src.Line)
+          --no-lines            do not write the line table (src.FileLine)
+          --styles              also write syntax highlighting (src.FileLineStyles)
           --no-docs             do not write doc comments (src.Doc)
           --no-restore          do not let the design-time build restore first
           --syntax-only         skip MSBuild; glob *.cs and parse them
@@ -251,7 +264,7 @@ internal sealed record Options
         var jobs = Math.Min(4, Environment.ProcessorCount);
         int? writers = null;
         bool references = true, restore = true, syntaxOnly = false;
-        bool lines = true, docs = true;
+        bool lines = true, docs = true, styles = false;
         bool dryRun = false, smoke = true, verbose = false;
 
         for (var index = 0; index < argv.Length; index++)
@@ -301,6 +314,7 @@ internal sealed record Options
                     case "--writers": writers = Math.Max(1, Number()); break;
                     case "--no-refs": references = false; break;
                     case "--no-lines": lines = false; break;
+                    case "--styles": styles = true; break;
                     case "--no-docs": docs = false; break;
                     case "--no-restore": restore = false; break;
                     case "--syntax-only": syntaxOnly = true; break;
@@ -374,6 +388,7 @@ internal sealed record Options
             Writers = writers ?? 1,
             References = references,
             Lines = lines,
+            Styles = styles,
             Docs = docs,
             Restore = restore,
             SyntaxOnly = syntaxOnly,

@@ -17,7 +17,13 @@ namespace Boxops.Fjord.Indexer;
 /// machine indexing and a machine swapping; asked for one at a time, each is reachable
 /// only while it is being walked.
 /// </remarks>
-internal sealed record LoadedProject(string Name, Func<Compilation?> Compile);
+/// <param name="Roslyn">
+/// The workspace's project, or <c>null</c> in syntax-only mode where there is no
+/// workspace. Carried only so <c>--styles</c> can reach a <see cref="Document"/>:
+/// <see cref="Microsoft.CodeAnalysis.Classification.Classifier"/>'s semantic-model
+/// overload is obsolete, and its supported form takes a document.
+/// </param>
+internal sealed record LoadedProject(string Name, Func<Compilation?> Compile, Project? Roslyn = null);
 
 /// <summary>What there is to walk, and what compiled it.</summary>
 /// <remarks>
@@ -183,7 +189,8 @@ internal static class Loader
             .OrderBy(project => project.FilePath ?? project.Name, StringComparer.Ordinal)
             .Select(project => new LoadedProject(
                 project.Name,
-                () => project.GetCompilationAsync().GetAwaiter().GetResult()))
+                () => project.GetCompilationAsync().GetAwaiter().GetResult(),
+                project))
             .ToList();
 
         // The build layer is built from *every* project file under the source, not only

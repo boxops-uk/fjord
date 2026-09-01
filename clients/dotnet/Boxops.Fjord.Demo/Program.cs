@@ -69,7 +69,7 @@ const uint Doc = 19;
 // The schema fingerprint, as `fjord schema fingerprint` prints it — carried rather
 // than computed (see FjordSchema), so this client states the shapes independently
 // and the number only says which schema it was written against.
-const ulong SchemaFingerprint = 0xe044df7620885507;
+const ulong SchemaFingerprint = 0x32853889cb63fdd7;
 
 var schema = new FjordSchema([
     new FjordPredicate("src.File", FjordType.String, null),
