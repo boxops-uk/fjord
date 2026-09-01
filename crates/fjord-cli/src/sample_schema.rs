@@ -20,10 +20,10 @@
 //! "does the vector still say what it said" but "does the *file* still declare what the
 //! rest of the tree names" — which is what `tests` below asks.
 //!
-//! **Three layers, and the joins between them are the point.** Nine predicates are the
-//! source layer any syntax walk can fill — files, modules, declarations, references,
-//! their spans, the two search indexes — with `src.Line` holding the file's text beside
-//! them. Fifteen more are what a *compiler* and a *build system* know and a syntax walk
+//! **Three layers, and the joins between them are the point.** The source layer any
+//! syntax walk can fill — files, modules, declarations, references, their spans, the two
+//! search indexes — with the file's own text beside them in `src.FileLine`, which
+//! `src.sigla` declares and this file imports. Fifteen more are what a *compiler* and a *build system* know and a syntax walk
 //! does not: which project a file is compiled by and into which assembly, what a type
 //! extends, what a member overrides, what a parameter's type is spelled as, what the doc
 //! comment says. Those are written by
@@ -51,17 +51,19 @@ use fjord_schema::{
 /// `fjord create --schema` — which is exactly what the scripts and the two integration
 /// suites do. Compiled in here so a bench does not have to find it on disk.
 ///
-/// A *list*, and resolved rather than lowered directly, because the moment the schema
-/// set is split across files an embedded reader that lowered one block would silently
-/// read a schema missing everything the entry imports. It holds one entry today and
-/// the reader does not care how many it holds — which is the whole point of
-/// `resolve_from`, and what
-/// `crates/fjord-cli/tests/schemas.rs::the_embedded_reader_follows_imports` proves by
-/// handing the same path a genuine two-file set.
-const SOURCES: &[(&str, &str)] = &[(
-    "schemas/code.sigla",
-    include_str!("../../../schemas/code.sigla"),
-)];
+/// A *list*, and resolved rather than lowered directly: `code.sigla` imports `src`, so
+/// an embedded reader that lowered one block would silently read a schema missing
+/// everything the entry brings in — every predicate of the source layer, and the type
+/// of every field that names one.
+///
+/// The entry first, then whatever it imports, in the order the resolver should search.
+const SOURCES: &[(&str, &str)] = &[
+    (
+        "schemas/code.sigla",
+        include_str!("../../../schemas/code.sigla"),
+    ),
+    ("src.sigla", include_str!("../../../schemas/src.sigla")),
+];
 
 /// The schema everything here resolves names against: **a code index**, which is the
 /// canonical shape for a fact database — one fact per thing, and everything about a
@@ -92,7 +94,7 @@ const SOURCES: &[(&str, &str)] = &[(
 /// | `src.Param` | an `Int` in the middle of a key, so a method's parameters come back **in order** |
 /// | `src.TypeOf` · `src.Doc` | a key of one field, which is a thing an *attribute* of something else is |
 /// | `src.Attribute` | a string leading the key, so `[Obsolete]` everywhere is a seek rather than a scan |
-/// | `src.Line` | the **wide row**: a file's line table, one fact per line, the text on the value side |
+/// | `src.FileLine` | the **wide row**: a file's line table, one fact per line, the text and its offsets on the value side. Declared in `src.sigla` |
 ///
 /// **Why the field order decides the seeks, and why it is declared rather than derived.**
 /// A record's fields are stored in the order `schemas/code.sigla` lists them, that order
@@ -167,10 +169,13 @@ mod tests {
     #[test]
     fn the_schema_declares_what_the_tree_names() {
         let schema = schema();
+        // 27 before the source layer: `src.File` **moved** into `src.sigla` rather than
+        // arriving, and `src.Line` was deleted for `src.FileLine`, so it is
+        // 27 − 1 − 1 + 9.
         assert_eq!(
             schema.len(),
-            27,
-            "`schemas/code.sigla` is twenty-seven predicates"
+            34,
+            "`code.sigla` and the `src.sigla` it imports are thirty-four predicates"
         );
 
         for name in [
@@ -183,7 +188,10 @@ mod tests {
             "src.Project",
             "src.Assembly",
             "src.Package",
-            "src.Line",
+            // From the imported source layer, so this also asserts the import resolved:
+            // a reader that lowered only the entry block would find neither.
+            "src.FileLine",
+            "src.FileLineAt",
             // The five a code-search viewer needs and a syntax walk alone cannot
             // key for — three of them second key orders over data already here.
             "src.DeclSpan",
@@ -272,7 +280,32 @@ mod tests {
         ("src.Doc", &["decl"]),
         ("src.Attribute", &["attribute", "target"]),
         ("src.AttributeOf", &["target", "attribute"]),
-        ("src.Line", &["file", "line"]),
+        // `src.sigla`'s, and here for the same reason the rest are: field order is key
+        // order, and a window over a file is a range on the last key field.
+        ("src.FileLine", &["file", "line"]),
+        ("src.FileLineAt", &["file", "start", "line"]),
+        ("src.FileLineStyles", &["file", "line"]),
+        ("src.FileInfo", &["file"]),
+        ("src.FileLanguage", &["file"]),
+        ("src.FileDigest", &["file"]),
+        ("src.FileOrigin", &["file"]),
+    ];
+
+    /// **What a record *value* side holds, in declaration order.**
+    ///
+    /// Separate from [`KEY_ORDER`] because the two are different claims. A key's order is
+    /// the index design — it decides what a query can narrow on. A value's order decides
+    /// nothing about seeking and everything about *decoding*: a value is encoded
+    /// positionally against its declared type, so two fields swapped here reinterprets
+    /// every stored row of that predicate, and `nyi/value-field` means a consumer takes
+    /// the whole value or none of it.
+    const VALUE_ORDER: &[(&str, &[&str])] = &[
+        ("src.FileLanguage", &["language"]),
+        ("src.FileDigest", &["digest"]),
+        ("src.FileOrigin", &["repo", "revision"]),
+        ("src.FileInfo", &["bytes", "lines", "endsInNewline"]),
+        ("src.FileLine", &["text", "start", "bytes", "cstart"]),
+        ("src.FileLineStyles", &["styles"]),
     ];
 
     /// **A record's fields are stored in the order this file declares them.**
@@ -322,14 +355,6 @@ mod tests {
             let mut key = Vec::new();
             walk(&predicate.predicate().key, &schema, "", &mut key);
 
-            // A value side is not a key and never seeks, but a record in one would
-            // still be stored in declaration order — and there is none today, so this
-            // asserts that rather than leaving the next one unexamined.
-            assert!(
-                !matches!(predicate.predicate().value, Some(PredicateTy::Record(_))),
-                "`{name}` has a record value side, which needs a decision and an entry here"
-            );
-
             let expected = KEY_ORDER.iter().find(|(p, _)| *p == name).map(|(_, k)| *k);
 
             match expected {
@@ -341,6 +366,34 @@ mod tests {
                 None => assert!(
                     key.is_empty(),
                     "`{name}` has a record key and no entry in KEY_ORDER"
+                ),
+            }
+
+            // **A record value side is declared order too, and the source layer is the
+            // first thing here to have one.** It never seeks, so this is not the index
+            // design — it is the *codec*: a value is encoded positionally against the
+            // declared type, so swapping two fields of one silently reinterprets every
+            // stored row of that predicate. `nyi/value-field` means a consumer reads the
+            // whole value or none of it, which is what makes a silent swap total.
+            let mut value = Vec::new();
+            if let Some(ty) = &predicate.predicate().value {
+                walk(ty, &schema, "", &mut value);
+            }
+
+            let expected = VALUE_ORDER
+                .iter()
+                .find(|(p, _)| *p == name)
+                .map(|(_, v)| *v);
+
+            match expected {
+                Some(expected) => assert_eq!(
+                    value, expected,
+                    "`{name}`'s stored value is not the one VALUE_ORDER declares, \
+                     so every row of it decodes into different fields"
+                ),
+                None => assert!(
+                    value.is_empty(),
+                    "`{name}` has a record value side and no entry in VALUE_ORDER"
                 ),
             }
         }

@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use fjord_schema::fingerprint;
-use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
+use fjord_schema::schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema};
 use fjord_wire::{WireFact, WireRef, WireValue, encode_block};
 use lasso::Rodeo;
 
@@ -67,12 +67,27 @@ fn schema() -> Schema {
         sym("src.DerivesFrom"),
         sym("src.AttributeOf"),
     );
-    let (param, type_of, doc, attribute, line_of) = (
+    let (param, type_of, doc, attribute) = (
         sym("src.Param"),
         sym("src.TypeOf"),
         sym("src.Doc"),
         sym("src.Attribute"),
-        sym("src.Line"),
+    );
+    // The shared source layer, which `code.sigla` imports rather than declares. Stated
+    // here for the same reason everything else is: two independent statements of one
+    // schema is what the fingerprint is *for*, and a shared one would agree by
+    // construction.
+    let (symbol, file_language, file_digest, file_origin) = (
+        sym("src.Symbol"),
+        sym("src.FileLanguage"),
+        sym("src.FileDigest"),
+        sym("src.FileOrigin"),
+    );
+    let (file_info, file_line, file_line_at, file_line_styles) = (
+        sym("src.FileInfo"),
+        sym("src.FileLine"),
+        sym("src.FileLineAt"),
+        sym("src.FileLineStyles"),
     );
 
     let (f_at, f_col, f_file, f_from) = (sym("at"), sym("col"), sym("file"), sym("from"));
@@ -84,6 +99,58 @@ fn schema() -> Schema {
     let (f_decl, f_index, f_attribute, f_target) =
         (sym("decl"), sym("index"), sym("attribute"), sym("target"));
     let (f_length, f_end_line, f_end_col) = (sym("length"), sym("endLine"), sym("endCol"));
+    let (f_language, f_digest, f_repo, f_revision) =
+        (sym("language"), sym("digest"), sym("repo"), sym("revision"));
+    let (f_bytes, f_lines, f_ends_in_newline) = (sym("bytes"), sym("lines"), sym("endsInNewline"));
+    let (f_text, f_start, f_cstart, f_styles) =
+        (sym("text"), sym("start"), sym("cstart"), sym("styles"));
+
+    // **An alternative declared with no type is the empty record**, which is what
+    // `false_ = 0` lowers to — verified against `fjord schema fingerprint`, not assumed.
+    let unit = || PredicateTy::Record(Arc::from([]));
+    let alt = |name: lasso::Spur, disc: u32, ty: PredicateTy| Alternative { name, disc, ty };
+
+    let boolean = {
+        let (f, t) = (sym("false_"), sym("true_"));
+        PredicateTy::Union(Arc::from([alt(f, 0, unit()), alt(t, 1, unit())]))
+    };
+
+    // 21 alternatives, `other : string = 0` first and the rest contiguous from 1. Built
+    // from a table rather than written out, because a transcription slip in twenty-one
+    // hand-written structs is exactly what I10 makes permanent — and the fingerprint
+    // check below is what catches one either way.
+    let language = {
+        let other = sym("other");
+        let mut alts = vec![alt(other, 0, PredicateTy::Str)];
+        for (index, name) in [
+            "csharp",
+            "typescript",
+            "javascript",
+            "tsx",
+            "jsx",
+            "rust",
+            "python",
+            "java",
+            "cpp",
+            "c",
+            "go",
+            "json",
+            "yaml",
+            "markdown",
+            "css",
+            "html",
+            "sql",
+            "shell",
+            "xml",
+            "proto",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            alts.push(alt(sym(name), index as u32 + 1, unit()));
+        }
+        PredicateTy::Union(Arc::from(alts))
+    };
 
     Schema::new(
         rodeo.into_reader(),
@@ -261,14 +328,6 @@ fn schema() -> Schema {
                 ])),
                 value: None,
             },
-            Predicate {
-                name: line_of,
-                key: PredicateTy::Record(Arc::from([
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (f_line, PredicateTy::Int),
-                ])),
-                value: Some(PredicateTy::Str),
-            },
             // What a code-search viewer needs. Three of these are a second key order
             // over data already declared above — a predicate leads with one field, and
             // find-references and a file view want different ones.
@@ -321,6 +380,82 @@ fn schema() -> Schema {
                     (f_attribute, PredicateTy::Str),
                 ])),
                 value: None,
+            },
+            // ---- the shared source layer, appended ------------------------------
+            //
+            // **Appended, and that is deliberate.** These ids are this statement's own
+            // and the C# side's must agree with them positionally, because the golden
+            // records a block's predicate by number. Inserting them in sorted order
+            // would renumber every block above and regenerate a golden for no reason;
+            // the *fingerprint* is over the canonical form, which sorts, so it does not
+            // care where they sit here.
+            Predicate {
+                name: symbol,
+                key: PredicateTy::Str,
+                value: None,
+            },
+            Predicate {
+                name: file_language,
+                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
+                value: Some(PredicateTy::Record(Arc::from([(f_language, language)]))),
+            },
+            Predicate {
+                name: file_digest,
+                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
+                value: Some(PredicateTy::Record(Arc::from([(
+                    f_digest,
+                    PredicateTy::Str,
+                )]))),
+            },
+            Predicate {
+                name: file_origin,
+                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
+                value: Some(PredicateTy::Record(Arc::from([
+                    (f_repo, PredicateTy::Str),
+                    (f_revision, PredicateTy::Str),
+                ]))),
+            },
+            Predicate {
+                name: file_info,
+                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
+                value: Some(PredicateTy::Record(Arc::from([
+                    (f_bytes, PredicateTy::Int),
+                    (f_lines, PredicateTy::Int),
+                    (f_ends_in_newline, boolean),
+                ]))),
+            },
+            Predicate {
+                name: file_line,
+                key: PredicateTy::Record(Arc::from([
+                    (f_file, PredicateTy::Fact(FILE)),
+                    (f_line, PredicateTy::Int),
+                ])),
+                value: Some(PredicateTy::Record(Arc::from([
+                    (f_text, PredicateTy::Str),
+                    (f_start, PredicateTy::Int),
+                    (f_bytes, PredicateTy::Int),
+                    (f_cstart, PredicateTy::Int),
+                ]))),
+            },
+            Predicate {
+                name: file_line_at,
+                key: PredicateTy::Record(Arc::from([
+                    (f_file, PredicateTy::Fact(FILE)),
+                    (f_start, PredicateTy::Int),
+                    (f_line, PredicateTy::Int),
+                ])),
+                value: None,
+            },
+            Predicate {
+                name: file_line_styles,
+                key: PredicateTy::Record(Arc::from([
+                    (f_file, PredicateTy::Fact(FILE)),
+                    (f_line, PredicateTy::Int),
+                ])),
+                value: Some(PredicateTy::Record(Arc::from([(
+                    f_styles,
+                    PredicateTy::Str,
+                )]))),
             },
         ]),
     )

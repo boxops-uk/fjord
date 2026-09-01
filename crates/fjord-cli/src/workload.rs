@@ -190,7 +190,7 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         // predicate whose own order is right ([findings §2](../../../bench/FINDINGS.md)).
         Workload::new(
             "join on a leading field",
-            "L where F = src.File _; src.Line {file = F, line = L}".to_owned(),
+            "L where F = src.File _; src.FileLine {file = F, line = L}".to_owned(),
             "seekable: the reference leads the key",
         ),
         Workload::new(
@@ -229,7 +229,7 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         ),
         Workload::new(
             "scan lines",
-            "L where src.Line {line = L}".to_owned(),
+            "L where src.FileLine {line = L}".to_owned(),
             "the largest predicate",
         ),
     ]

@@ -319,16 +319,41 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         var text = tree.GetText();
         var facts = new List<FjordFact>(text.Lines.Count);
 
+        // **Three offsets per line, and only one of them is free.** Roslyn hands back
+        // UTF-16 positions, so `cstart` is `line.Start` as it stands; `start` and `bytes`
+        // are UTF-8 and have to be counted. Accumulated rather than recomputed per line,
+        // because `Encoding.UTF8.GetByteCount` over a prefix is quadratic in the file.
+        //
+        // `Clip` may shorten the text, so `bytes` is measured on what is *stored* while
+        // `start` advances by the whole line — a clipped line still occupies its full
+        // width in the file, and an offset that pretended otherwise would put every
+        // later line in the wrong place.
+        long start = 0;
+
         foreach (var line in text.Lines)
         {
-            facts.Add(CodeIndex.LineFact(file, line.LineNumber + 1, Clip(line.ToString())));
+            var whole = line.ToString();
+            var stored = Clip(whole);
+
+            facts.Add(CodeIndex.FileLineFact(
+                file,
+                line.LineNumber + 1,
+                stored,
+                start,
+                Encoding.UTF8.GetByteCount(stored),
+                line.Start));
+
+            // The line, plus its terminator. `line.EndIncludingLineBreak - line.Start` is
+            // UTF-16, so the span is re-measured in bytes rather than added to.
+            start += Encoding.UTF8.GetByteCount(
+                text.ToString(line.SpanIncludingLineBreak));
         }
 
         using (Enter())
         {
             foreach (var fact in facts)
             {
-                sink.Add(CodeIndex.Line, fact);
+                sink.Add(CodeIndex.FileLine, fact);
             }
 
             Lines += facts.Count;

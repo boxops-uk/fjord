@@ -1,0 +1,334 @@
+# The **source layer** — the primitives every other schema in this set stands on.
+#
+# This file is what `code.sigla`'s `src` namespace becomes when the parts that are *about a
+# language* are taken out of it: a path, a global name, a span, and the file's own bytes.
+# Nothing here needs a compiler. A producer that can only read files can fill all of it, and
+# a database holding only this is already useful — it is the code viewer's whole backend.
+#
+# ---- why this is one layer, imported, rather than copied per schema -------------------
+#
+# `csharp.sigla`, `typescript.sigla` and `content.sigla` each declared their own `File`,
+# their own `Bool`, their own `MaybeString` and their own `ByteSpan`, with comments saying
+# "owned here so the schema resolves standalone". The cost of that thrift is that
+# `content.File "x"` and `csharp.File "x"` are **different types naming the same file**, so
+# the join that renders a search hit — a definition in one index, the bytes in another —
+# cannot be written in sigla at all. It is written in the bridge, in JavaScript, and it holds
+# only because two producers agree on a string by convention.
+#
+# Importing costs nothing measurable and closes that gap:
+#
+#   * A named `type` is **structural** — inlined, and the name does not enter the canonical
+#     form — so lifting `Bool`/`MaybeString`/`ByteSpan` out of four schemas into this one is
+#     **fingerprint-identical**. Verified: two schemas differing only in whether `Bool` is
+#     local or imported both fingerprint `0x53a9857a412b2e7b`, and `fjord schema diff` reports
+#     `Identical`.
+#   * A predicate moved to another *file* in the same namespace is likewise
+#     fingerprint-identical, because the canonical form strips file provenance. Verified the
+#     same way (`0xb5761dc1251dc713` single-file vs split-across-two).
+#   * Sharing a *predicate* across namespaces (`src.File` where `csharp.File` was) is **not**
+#     free — it changes the reference type of every predicate that names it, so it is a
+#     Breaking change and a re-index. That is the one real cost in this set, and it is what
+#     buys a cross-schema join.
+#
+# ---- what a reader coming from Glean should know -------------------------------------
+#
+# The names follow Glean's `src` schema where Glean has the concept, so the divergences are
+# visible rather than accidental:
+#
+#   * `src.File`, `src.ByteSpan`, `src.Location` — adopted, same shape.
+#   * `src.FileLanguage`, `src.FileDigest` — adopted.
+#   * `src.FileLine` is Glean's `src.FileLines` **split into one fact per line**, because
+#     fjord has no array type (`nyi/array`) and because a windowed viewer wants a range seek
+#     rather than a whole-file value. It also carries the line's **text**, which Glean does
+#     not store at all — Glean fetches source from the repository at serve time. Storing it
+#     is the divergence this set is least willing to give up: it is what makes an index a
+#     self-contained artifact rather than a pointer into a working tree that has since moved.
+#   * `src.Symbol` is Glass's `SymbolId` idea moved from the service into the schema — see the
+#     comment on it.
+#
+# **Field order is key order, and key order is the index design.** Every predicate here leads
+# with `file`, so a file's line table, its styles and its digest are each one prefix seek, and
+# `line` trails so a window is a range on the last key field.
+
+schema src {
+
+  # ======================================================================================
+  # Identities
+  # ======================================================================================
+
+  # A path relative to the index root. Interned once; every reference to a file is a
+  # `FactId` to one of these, so a path is stored once however many facts mention it.
+  #
+  # **This is the predicate whose sharing is the point of the file.** One `src.File` means a
+  # C# definition, a TypeScript module, an MSBuild source item and a line of text can all be
+  # said to be *the same file* in a query rather than in a convention.
+  predicate File : string
+
+  # **A global name for a thing, as a string.** The cross-database join key, and the one
+  # identity in this set that survives leaving the database it was written in.
+  #
+  # A `FactId` cannot: it is a per-database sequence with a predicate tag
+  # ([I11](invariants.html#i11)), so a row carrying one is meaningless to any other database.
+  # Glass reached the same conclusion and answers it the same way — a client-facing `SymbolId`
+  # that is "reversible by *searching*, not by dereferencing" (`docs/glean.md` §0) — and
+  # `docs/gitnexus.md` §16 already specified the slot: *"a content-derived string identity
+  # with the repo as its first token"*.
+  #
+  # **The spelling is SCIP**, per the indexer-overhaul plan's Run 4b: a scheme token, a
+  # package coordinate, and a descriptor. Two properties of that choice are load-bearing:
+  #
+  #   * The **scheme token comes first**, so the string space is partitioned by producer. That
+  #     is what lets this one predicate also name things SCIP does not model — an MSBuild
+  #     project, a bundler chunk, an npm package — under their own scheme rather than by
+  #     inventing a second identity predicate per layer. Those resolve without a per-layer
+  #     symbol bridge, because the file in `codemarkup.Definition`'s key *is* their identity:
+  #     a project's `.csproj` is `msbuild.Project`'s key, and a package's `package.json` is
+  #     `npm.PackageManifest`'s.
+  #   * The **descriptor is derivable from a compiler alone**; the package coordinate needs a
+  #     resolved build. A producer that cannot resolve packages still writes a well-formed
+  #     symbol, with the coordinate empty, and the ambiguity that creates is *stated* rather
+  #     than hidden — see the `origin` note on `FileOrigin` below.
+  #
+  # What is deliberately **not** here: SCIP's `SymbolRole`, `SyntaxKind` and `SymbolKind`
+  # enums. They are protobuf enums that grow, every union edit is Breaking (I10), and a
+  # database's schema cannot be migrated — so transcribing them into sigla would make every
+  # upstream SCIP release a flag day for every published index. The *string* is stable
+  # because the SCIP grammar is; the enums are a producer's mapping problem, and
+  # `codemarkup.Kind` / `codemarkup.Role` are where this set puts its own frozen vocabularies.
+  predicate Symbol : string
+
+  # ======================================================================================
+  # The scalars fjord has no primitive for — declared once here for the whole set
+  # ======================================================================================
+
+  # `bool`. The only inhabitants, tagged once and forever.
+  type Bool = { false_ = 0 | true_ = 1 }
+
+  # `maybe T`, one named type per payload (no generics). `nothing` is the empty-payload
+  # alternative. Only the payloads this layer needs are here; a language schema declares its
+  # own for its own reference types, which is free (a type name never enters a fingerprint).
+  type MaybeString = { nothing = 0 | just : string = 1 }
+  type MaybeInt    = { nothing = 0 | just : int    = 1 }
+  type MaybeFile   = { nothing = 0 | just : File   = 1 }
+  type MaybeSymbol = { nothing = 0 | just : Symbol = 1 }
+
+  # ======================================================================================
+  # Positions
+  # ======================================================================================
+
+  # A span into a file: an offset and a length, in the **position encoding the database
+  # declares** (`config.Setting {dimension = "position-encoding"}`). Same shape as Glean's
+  # `src.ByteSpan`, and the same name, so the lineage is obvious — but the unit is *not*
+  # necessarily a byte, and pretending otherwise is a bug this set inherited.
+  #
+  # The C# and TypeScript producers both count **UTF-16 code units**, because that is what
+  # Roslyn and the TypeScript compiler count; the field called `ByteSpan.start` in the
+  # existing `csharp.sigla` therefore already holds code units. SCIP has exactly this problem
+  # and solves it exactly this way — `Index.metadata.text_document_encoding` — so the
+  # encoding is declared once per database rather than per span, and a mixed-encoding
+  # database is deliberately not expressible.
+  #
+  # `FileLine` carries **both** offsets (`start` in UTF-8 bytes, `cstart` in UTF-16 code
+  # units), which makes the line table the conversion table: a consumer that wants the other
+  # encoding converts per line, against a row it has already fetched to render.
+  type ByteSpan = { start : int, length : int }
+
+  # A span *plus the file it is in* — Glean's `src.FileLocation`, and the shape every
+  # cross-file reference in this set uses.
+  type Location = { file : File, span : ByteSpan }
+
+  # A line/column point and a line/column range, for the two consumers that genuinely think
+  # in lines: a `file:line:col` link, and an editor's selection. Both are derivable from a
+  # `ByteSpan` against `FileLine` — they are here so that a producer which only *has* lines
+  # and columns (a linter, a git blame, a diagnostic stream) does not have to fake an offset.
+  type Loc   = { line : int, col : int }
+  type Range = { lineBegin : int, colBegin : int, lineEnd : int, colEnd : int }
+
+  # ======================================================================================
+  # Facts about a file that are not its contents
+  # ======================================================================================
+
+  # A closed language vocabulary. **`other` is at discriminant 0 and carries a string**, and
+  # that is the extensibility valve for every vocabulary in this set: a union edit is
+  # Breaking and a sealed database cannot be migrated, so a vocabulary that has to grow to
+  # admit a new producer is a vocabulary that makes every published index stale. An unknown
+  # language is `{other = "kotlin"}`, and it costs no schema change, no re-fingerprint and no
+  # flag day. Named alternatives are for the ones a *query* wants to match on.
+  type Language =
+    { other      : string = 0
+    | csharp             = 1
+    | typescript         = 2
+    | javascript         = 3
+    | tsx                = 4
+    | jsx                = 5
+    | rust               = 6
+    | python             = 7
+    | java               = 8
+    | cpp                = 9
+    | c                  = 10
+    | go                 = 11
+    | json               = 12
+    | yaml               = 13
+    | markdown           = 14
+    | css                = 15
+    | html               = 16
+    | sql                = 17
+    | shell              = 18
+    | xml                = 19
+    | proto              = 20
+    }
+
+  # What language a file is, as the producer classified it. Glean's `src.FileLanguage`.
+  predicate FileLanguage : { file : File } -> { language : Language }
+
+  # A content hash of the file's bytes, as the producer spells it (`sha256:…`). Glean's
+  # `src.FileDigest`, and the field an incremental re-index compares before doing any work.
+  # It is also what lets two databases agree that they indexed the *same* file rather than the
+  # same path.
+  predicate FileDigest : { file : File } -> { digest : string }
+
+  # Where a file came from, when the database's own origin is not the answer.
+  #
+  # Cross-database identity needs a repository and a revision, and for a single-repository
+  # index the honest place for those is once per database (`config.Setting`), not once per
+  # fact — Glean puts them on the database too, and Glass carries the repo *beside* every
+  # result rather than inside it (`entityRepo`, *"vital to know which repo this came from"*).
+  #
+  # This predicate is the escape hatch for the case that breaks: an index that spans several
+  # repositories — a monorepo with vendored trees, a build that pulls sources from two
+  # checkouts. **Absent means "the database's own origin"**, so a single-repository index
+  # declares this predicate and writes nothing to it, which costs nothing (an unpopulated
+  # predicate is a name in the schema).
+  predicate FileOrigin : { file : File } -> { repo : string, revision : string }
+
+  # ======================================================================================
+  # The file's own bytes — what `content.sigla` was
+  # ======================================================================================
+
+  # A per-file summary: total byte length, line count, and whether the last byte is a
+  # newline (a trailing `\n` is a terminator, not an empty final line). With `FileLine` this
+  # reconstructs the file **exactly** — join the texts with `\n`, re-add the trailing newline
+  # only when `endsInNewline` — without storing the blob twice.
+  predicate FileInfo : { file : File } -> { bytes : int, lines : int, endsInNewline : Bool }
+
+  # **The line table: one fact per line, the text on the value side.** Glean's
+  # `src.FileLines`, unrolled — the largest predicate in this set by bytes and by count.
+  #
+  # `line` is 1-based, and trails the key, so a viewer's window (`line >= a; line < b`) is a
+  # range seek on the last key field: measured at 0.4–1.4 ms for a 100-line window at *any*
+  # offset in a 500,000-line file, which is what makes a virtualised viewer possible without
+  # ever fetching a file whole. (That property depends on the `SeekKeyPart::Range` planner
+  # fix; before it, an end-of-file window was 155 ms.)
+  #
+  #   * `text`   — the line's own bytes, *excluding* the terminating `\n` but *including* any
+  #                `\r` of a CRLF pair, so `join("\n")` round-trips the original exactly.
+  #   * `start`  — the UTF-8 **byte** offset of the line's first character in the file.
+  #   * `bytes`  — the UTF-8 byte length of `text`.
+  #   * `cstart` — the UTF-16 **code-unit** offset of the line's first character. This is the
+  #                one a cross-reference span maps against (see `ByteSpan`); `start` drifts by
+  #                one per non-ASCII byte above it.
+  #
+  # There is deliberately no `cbytes`: the text is on the same row, and in any UTF-16 host
+  # language its length *is* the count.
+  #
+  # **Nothing presentational is on this value.** The reason is not taste, it is
+  # `nyi/value-field`: a query cannot project one field of a value — `X.value.text` is
+  # `error[nyi/value-field]`, verified — so **every consumer of any field pays for all of
+  # them.** A baked-HTML field would be charged to the agent reading source, to the snippet
+  # renderer, and to every offset→line lookup. Measured on a 3,042-file / 368,783-line /
+  # 12.6 MB TypeScript corpus, `html` was 21.6 MB against 12.6 MB of text — so a window paid
+  # ~2.4× the bytes it needed. That is what `FileLineStyles` is for.
+  predicate FileLine : { file : File, line : int } -> { text : string, start : int, bytes : int, cstart : int }
+
+  # **The same line table, keyed by offset instead of by line number** — "which line is byte
+  # 12345 in", which is the question every cross-reference asks: the C# and TypeScript layers
+  # store spans as offsets, and a viewer has to turn one into a line before it can scroll to it.
+  #
+  # It is a second copy for the reason `src.SearchByName` is one: `FileLine` keys `{file, line}`,
+  # so an offset is in its *value*, and a value can neither be matched (I6) nor read field-wise
+  # (`nyi/value-field`) — so against `FileLine` alone, offset → line is not a seek at all and a
+  # consumer scans a line table it did not want.
+  #
+  # Keyed `{file, start}` it is one seek. There is no descending seek and no `LIMIT` in sigla, so
+  # the shape is a **range upward, bounded by the client**. The range is a *comparison
+  # statement* and not `start = X..` — `..` is the string-prefix operator, and an integer range
+  # is `S >= X`, which the level that captures `S` folds into the seek:
+  #
+  #     L where src.FileLineAt {file = F, start = S, line = L}; S >= X
+  #
+  # with a client-side limit of 1. Three cases, and a consumer owes all three:
+  #
+  #   * **`X` is exactly a line's start** — including the *last* line's — and the first row is
+  #     the answer.
+  #   * **`X` is mid-line**, and the first row is the line *after* the one holding `X`, so the
+  #     answer is `line - 1`. Arithmetic on a row already in hand, not a second seek.
+  #   * **`X` is past the last line's start**, and the range is **empty**. The answer is then
+  #     `FileInfo.lines`, and that fallback is not optional: it is the common case for a
+  #     reference in the last line of a file, so a consumer reading empty as "not found" fails
+  #     on every one of them.
+  #
+  # All key — three small fields, no point read.
+  #
+  # Two ints and a reference per line, and no text: on the measured corpus (368,783 lines) that
+  # is a few MB against a 212 MB content index.
+  predicate FileLineAt : { file : File, start : int, line : int }
+
+  # **The syntax-highlight layer: token runs, not rendered markup.** Keyed identically to
+  # `FileLine`, so a window is the same range seek against the same prefix, and *separate*
+  # from it for three reasons:
+  #
+  #   1. **Independent lifecycle.** Styles are regenerable and producer-dependent; content is
+  #      not. A content index with no tokeniser is a valid index — the absence of a fact
+  #      means "not tokenised", so no sentinel is needed.
+  #   2. **You don't pay for what you don't render** — `nyi/value-field` again.
+  #   3. **The `bytes` migration is contained.** When a `bytes` primitive lands (see
+  #      `docs/upstream-bytes-primitive.md`), `styles` becomes a packed varint table and this
+  #      one predicate's fingerprint moves. No consumer of `FileLine` notices.
+  #
+  # ---- the encoding, v1 (`string`) ----------------------------------------------------
+  #
+  # ASCII, left to right, a **decimal length** then a **single-letter kind**, covering the
+  # line from column 0 in the position encoding the database declares:
+  #
+  #     "2p6k1p12s"   ->   2 plain, 6 keyword, 1 plain, 12 string
+  #
+  #   * Runs are contiguous. **A trailing `plain` run may be omitted** — a renderer pads to
+  #     the line end with `plain`, so an ordinary line collapses to a few bytes and a fully
+  #     plain line to the empty string. That omission is most of the size win.
+  #   * **An unrecognised kind letter reads as `plain`.** This is the forward-compatibility
+  #     rule, and it is the reason the vocabulary is *not* declared as a sigla union: inside
+  #     an opaque payload a new kind costs nothing, whereas a union alternative would be a
+  #     Breaking edit to a predicate every published index carries. The vocabulary's version
+  #     is stated in `config.Setting {dimension = "style-vocabulary"}`.
+  #
+  # Measured against baked HTML on the same corpus: **1.52 MB vs 21.6 MB** — 14× smaller, and
+  # 0.12× the raw source. Stated honestly, that figure is from a deliberately dumb four-kind
+  # lexer at 1.81 runs/line; a tree-sitter-grade tokeniser emitting types, functions, numbers
+  # and operators would run 6–8 runs/line, so ~5 MB. Still 4× smaller than HTML, and size is
+  # the least of the three reasons.
+  #
+  # ---- the vocabulary -----------------------------------------------------------------
+  #
+  # Kind names are **LSP `SemanticTokenTypes`** wherever LSP has the concept, so a producer
+  # holding semantic tokens maps by name rather than by judgement, and a tree-sitter producer
+  # maps from its standard captures. The letters are a spelling of that table, not a second
+  # vocabulary; the numbers are what the `bytes` form will carry.
+  #
+  #     0  p  plain          (LSP: none — the default, and what an omitted run means)
+  #     1  n  namespace      2  t  type           3  C  class        4  E  enum
+  #     5  i  interface      6  S  struct         7  T  typeParameter
+  #     8  a  parameter      9  v  variable      10  r  property    11  M  enumMember
+  #    12  e  event         13  f  function      14  m  method      15  x  macro
+  #    16  k  keyword       17  w  modifier      18  c  comment     19  s  string
+  #    20  d  number        21  g  regexp        22  o  operator    23  A  decorator
+  #    24  D  docComment     25  u  punctuation   26  b  bracket     27  z  escape
+  #
+  # 1–23 are LSP's `SemanticTokenTypes` in the order the specification declares them
+  # (`vscode-languageserver-types`, `SemanticTokenTypes`); 24–27 are the four a highlighter
+  # needs and LSP does not model. Appending is free — see the unrecognised-letter rule.
+  #
+  # fjord defines the letters and their meanings. It defines **no colours**: a DOM viewer maps
+  # letter → CSS class, a canvas viewer → a fill, a terminal → an ANSI code.
+  predicate FileLineStyles : { file : File, line : int } -> { styles : string }
+
+}

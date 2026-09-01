@@ -12,22 +12,13 @@
 
 schema src {
 
-  # **The shared source layer, imported rather than declared here.** `src.File`,
-  # `src.Symbol`, the line table and the scalars every schema was copying live in
-  # `src.sigla` — one layer that this index, a TypeScript index and a SCIP-converted
-  # one all stand on, so `src.File "x"` is the same type and the same fact whichever
-  # producer wrote it. A join across two indexes is then sigla rather than a
-  # convention two producers happen to share.
-  #
-  # Exactly one file may declare a name: identical redeclaration is
-  # `reject/redeclaration`, so this is an import and not a copy.
-  import src
-
   # ---- the source layer -------------------------------------------------------
   #
-  # What a syntax walk can see, on top of what `src.sigla` already declares.
-  # `example/index.py` fills these with Python's `ast`; everything below them needs a
-  # compiler and a build system.
+  # What a syntax walk can see. `example/index.py` fills exactly these six with
+  # Python's `ast`; everything below them needs a compiler and a build system.
+
+  # A path, relative to the index root.
+  predicate File : string
 
   # The **namespace**, per file. A file declaring two namespaces is two modules: the
   # C# analogue of a Python module is not the project, because a project spans
@@ -155,5 +146,8 @@ schema src {
   # what *this* declaration is marked with.
   predicate AttributeOf : { target : Decl, attribute : string }
 
+  # The **wide row**: a file's line table, one fact per line, the text on the value
+  # side. The largest predicate by bytes and the second largest by count.
+  predicate Line : { file : File, line : int } -> string
 
 }

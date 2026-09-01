@@ -7,6 +7,45 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `schemas/src.sigla` — one shared source layer · **breaking, and a client rebuild**
+
+`schemas/code.sigla`'s fingerprint moves from `0xb08eea634e866a75` to `0xe044df7620885507`.
+**Every client carrying the old constant is refused at the handshake until it is rebuilt** —
+that is the designed failure, and the refusal names both numbers so an operator can tell a
+stale client from one pointed at the wrong database. The .NET package goes to 0.2.0 in the
+same change.
+
+`code.sigla` now **imports** `src` rather than declaring its own file layer. Three schemas
+used to declare their own `File`, each "owned here so the schema resolves standalone", and the
+cost of that came due: `content.File "x"` and `csharp.File "x"` are different types naming the
+same file, so the join that renders a search hit — a definition in one index, the bytes in
+another — could not be written in sigla at all. It was written in JavaScript, and it held only
+because two producers agreed on a string by convention.
+
+**The change is exactly eight predicates added and one removed, with every survivor
+byte-identical**, and that is asserted rather than described:
+`the_source_layer_breaks_exactly_one_predicate` fails on a second broken name or on any
+survivor whose fingerprint moved. Eight and not nine because `src.File` *moves* into
+`src.sigla` rather than arriving — a `Predicate` carries no file for the canonical form to
+read.
+
+**`src.Line` is deleted** in favour of `src.FileLine`, whose value is the line's text plus
+three offsets rather than a bare string. `start` is a UTF-8 byte offset and `cstart` a UTF-16
+code-unit offset — not the same number, because a codepoint above the BMP is four bytes and
+two code units — and which one a span means is declared once per database by
+`config.Setting {dimension = "position-encoding"}`. The line table is therefore the conversion
+table.
+
+Two errors inherited from the proposal are corrected here rather than shipped. An integer
+range is a **comparison statement** (`S >= X`) and not `start = X..`; `..` is the string-prefix
+operator. And an offset *at* the last line's start is an exact hit — only an offset **past** it
+returns nothing, which is when a consumer falls back to `FileInfo.lines`. That fallback is the
+common case for a reference in the last line of a file, so a consumer reading empty as "not
+found" fails on every one of them.
+
+`bench/FINDINGS.md` §1's `src.Line` row is marked: the seek figures are about the key, which is
+unchanged, but the byte totals are not, and the re-run is scheduled.
+
 ### `fjord-viewer` is retired
 
 The code-search site is gone, and a release now carries **two binaries rather than four**: `fjord`

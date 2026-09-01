@@ -268,13 +268,25 @@ fn import(file_index: usize, files: usize) -> WireFact {
 }
 
 fn line(file_index: usize, n: usize) -> WireFact {
+    let text = format!("    line {n} of f{file_index:07}");
+    // The generated corpus is ASCII, so the two offsets agree and the line's byte length
+    // is its character length. A real producer computes all three; here they only have to
+    // be *consistent*, because what this measures is the read path over the shape.
+    let bytes = text.len() as i64;
+    let start = (n as i64) * (bytes + 1);
+
     WireFact {
-        predicate: p("src.Line"),
+        predicate: p("src.FileLine"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(file(file_index)))),
             WireValue::Int(n as i64),
         ])),
-        value: Some(WireValue::Str(format!("    line {n} of f{file_index:07}"))),
+        value: Some(WireValue::Record(Box::from([
+            WireValue::Str(text),
+            WireValue::Int(start),
+            WireValue::Int(bytes),
+            WireValue::Int(start),
+        ]))),
     }
 }
 
@@ -344,7 +356,7 @@ fn seed(options: &Options, schema: &Arc<Schema>) {
                 .collect()
         }),
         (
-            p("src.Line"),
+            p("src.FileLine"),
             (0..options.files)
                 .flat_map(|index| (0..LINES_PER_FILE).map(move |n| line(index, n)))
                 .collect(),

@@ -67,7 +67,14 @@ taken away — open a scan at a key sampled from the middle of the keyspace, tak
 | **`src.Decl`** | 888,177 | 1 | **646.6 µs** | **4.7 µs** |
 | `src.SearchByName` | 888,177 | 1 | 4.3 µs | 8.8 µs |
 | `src.Ref` | 4,879,151 | 5 | 160.1 µs | 10.4 µs |
-| `src.Line` | 8,583,810 | 4 | 7.0 µs | 3.4 µs |
+| `src.Line` † | 8,583,810 | 4 | 7.0 µs | 3.4 µs |
+
+> **† `src.Line` no longer exists.** The source layer replaced it with `src.FileLine`, whose value
+> is four fields where this one's was one — the line's text plus its three offsets — so both the
+> corpus's size and this predicate's per-row read cost move. The *seek* figures above are about
+> the key, which is unchanged (`{file, line}`), so they are the row here least affected; the row
+> counts and the byte totals elsewhere in this section are not. Re-run scheduled in R7 against a
+> named corpus. Nothing else in this table moved.
 
 `src.Decl` and `src.SearchByName` hold **exactly the same number of rows** in the same
 database, each in a single table, and one seeks 150× slower than the other. Ruled out by
@@ -193,6 +200,10 @@ L where F = src.File _;   src.Line {file = F, line = L}      -- seeks
 D where M = src.Module _; src.Decl {module = M, name = D}    -- rescans src.Decl per module
 ```
 
+> **`src.Line` is `src.FileLine` now** — same key, `{file, line}`, so the finding above is
+> unchanged: it is about which field *leads* a key, and the leading field is still the file. The
+> workload in `workload.rs` reads `src.FileLine`; the query is written here as it was run.
+
 The second cannot narrow, so it reads all 888,177 declarations once per module — 32
 billion rows to completion, which is why the instrument caps it. `--profile` already tells
 you (`full scan` on the inner step); nothing warns you when you write it.
@@ -300,6 +311,9 @@ Two more from the same table:
 
 Found while writing the catalogue, and it bounds what any of these numbers can cover.
 
+> *(`src.Line` is `src.FileLine` now, and its value is a record of four fields rather than a
+> bare string — so the 133 MB below is a floor for what the same corpus costs today.)*
+>
 > `src.Line` is `{ file, line } -> string` and holds 8,583,810 line texts — 133 MB, the
 > largest predicate in the index. No sigla query can read one. There is no `->` in the
 > grammar, and every spelling tried is a parse error; a query binds *key fields* only,

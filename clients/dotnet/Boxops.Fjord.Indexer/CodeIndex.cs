@@ -52,16 +52,31 @@ internal static class CodeIndex
     public const uint TypeOf = 18;
     public const uint Doc = 19;
     public const uint Attribute = 20;
-    public const uint Line = 21;
 
     // What a code-search viewer needs and a syntax walk cannot key for. Three of these
     // are a *second key order* over data already above — the shape a derived predicate
     // would take if one could be declared (Phase 8b).
-    public const uint DeclSpan = 22;
-    public const uint SearchByLowerName = 23;
-    public const uint FileXRef = 24;
-    public const uint DerivesFrom = 25;
-    public const uint AttributeOf = 26;
+    public const uint DeclSpan = 21;
+    public const uint SearchByLowerName = 22;
+    public const uint FileXRef = 23;
+    public const uint DerivesFrom = 24;
+    public const uint AttributeOf = 25;
+
+    // **The shared source layer**, which `code.sigla` imports rather than declares. Its
+    // ids are *appended* and must match the Rust statement's positionally, because a
+    // golden block records its predicate by number; the fingerprint is over the
+    // canonical form, which sorts, so it does not care where they sit.
+    //
+    // `src.Line` was here at 21 and is gone — `src.FileLine` replaces it, with the
+    // line's offsets on the value beside its text.
+    public const uint Symbol = 26;
+    public const uint FileLanguage = 27;
+    public const uint FileDigest = 28;
+    public const uint FileOrigin = 29;
+    public const uint FileInfo = 30;
+    public const uint FileLine = 31;
+    public const uint FileLineAt = 32;
+    public const uint FileLineStyles = 33;
 
 /// <summary>
     /// The schema fingerprint, as <c>fjord schema fingerprint</c> prints it.
@@ -70,15 +85,17 @@ internal static class CodeIndex
     /// Carried rather than computed — see <see cref="FjordSchema"/>. A schema edit
     /// moves it, and a stale one is refused at the handshake by name.
     /// </remarks>
-    public const ulong SchemaFingerprint = 0xb08eea634e866a75;
+    public const ulong SchemaFingerprint = 0xe044df7620885507;
 
     /// <summary>Every predicate id, in schema order — what a report iterates.</summary>
     public static readonly uint[] Predicates =
     [
         File, Module, Decl, SearchByName, Ref, Import,
         Project, Assembly, Compilation, ProjectSource, ProjectRef, Package, PackageRef,
-        Member, Extends, Implements, Override, Param, TypeOf, Doc, Attribute, Line,
+        Member, Extends, Implements, Override, Param, TypeOf, Doc, Attribute,
         DeclSpan, SearchByLowerName, FileXRef, DerivesFrom, AttributeOf,
+        Symbol, FileLanguage, FileDigest, FileOrigin, FileInfo, FileLine, FileLineAt,
+        FileLineStyles,
     ];
 
     public static readonly FjordSchema Schema = new([
@@ -194,12 +211,6 @@ internal static class CodeIndex
             ("attribute", FjordType.String),
             ("target", FjordType.Reference(Decl))), null),
 
-        // A file's line table, one fact per line, because there are no arrays — and the
-        // widest row in the schema, since the value is a line of source.
-        new FjordPredicate("src.Line", FjordType.Rec(
-            ("file", FjordType.Reference(File)),
-            ("line", FjordType.Integer)), FjordType.String),
-
         // ---- the viewer's key orders -----------------------------------------------
 
         new FjordPredicate("src.DeclSpan", FjordType.Rec(
@@ -229,7 +240,98 @@ internal static class CodeIndex
         new FjordPredicate("src.AttributeOf", FjordType.Rec(
             ("target", FjordType.Reference(Decl)),
             ("attribute", FjordType.String)), null),
+
+        // ---- the shared source layer -----------------------------------------------
+        //
+        // Declared in `schemas/src.sigla`, which `code.sigla` imports. Restated here for
+        // the reason everything else is: two independent statements of one schema is
+        // what the fingerprint is for.
+
+        new FjordPredicate("src.Symbol", FjordType.String, null),
+
+        new FjordPredicate("src.FileLanguage",
+            FjordType.Rec(("file", FjordType.Reference(File))),
+            FjordType.Rec(("language", LanguageType))),
+
+        new FjordPredicate("src.FileDigest",
+            FjordType.Rec(("file", FjordType.Reference(File))),
+            FjordType.Rec(("digest", FjordType.String))),
+
+        new FjordPredicate("src.FileOrigin",
+            FjordType.Rec(("file", FjordType.Reference(File))),
+            FjordType.Rec(
+                ("repo", FjordType.String),
+                ("revision", FjordType.String))),
+
+        new FjordPredicate("src.FileInfo",
+            FjordType.Rec(("file", FjordType.Reference(File))),
+            FjordType.Rec(
+                ("bytes", FjordType.Integer),
+                ("lines", FjordType.Integer),
+                ("endsInNewline", BoolType))),
+
+        // A file's line table, one fact per line, because there are no arrays — and the
+        // widest row in the schema, since the value carries a line of source and the
+        // three offsets that locate it.
+        new FjordPredicate("src.FileLine", FjordType.Rec(
+                ("file", FjordType.Reference(File)),
+                ("line", FjordType.Integer)),
+            FjordType.Rec(
+                ("text", FjordType.String),
+                ("start", FjordType.Integer),
+                ("bytes", FjordType.Integer),
+                ("cstart", FjordType.Integer))),
+
+        // The same table keyed by offset — "which line is byte 12345 in", all key.
+        new FjordPredicate("src.FileLineAt", FjordType.Rec(
+            ("file", FjordType.Reference(File)),
+            ("start", FjordType.Integer),
+            ("line", FjordType.Integer)), null),
+
+        new FjordPredicate("src.FileLineStyles", FjordType.Rec(
+                ("file", FjordType.Reference(File)),
+                ("line", FjordType.Integer)),
+            FjordType.Rec(("styles", FjordType.String))),
     ], SchemaFingerprint);
+
+    /// <summary>`{ false_ = 0 | true_ = 1 }`.</summary>
+    /// <remarks>
+    /// An alternative declared with no type is the <b>empty record</b>, which is what the
+    /// schema language lowers `false_ = 0` to — so this is `Rec()` and not a null.
+    /// </remarks>
+    private static FjordType BoolType => FjordType.OneOf(
+        ("false_", 0u, FjordType.Rec()),
+        ("true_", 1u, FjordType.Rec()));
+
+    /// <summary>The language vocabulary — `other : string = 0`, then contiguous from 1.</summary>
+    /// <remarks>
+    /// Built from a table rather than written out twenty-one times: a transcription slip
+    /// in a discriminant is what I10 makes permanent, and the fingerprint check is what
+    /// catches one either way.
+    /// </remarks>
+    private static FjordType LanguageType
+    {
+        get
+        {
+            string[] names =
+            [
+                "csharp", "typescript", "javascript", "tsx", "jsx", "rust", "python",
+                "java", "cpp", "c", "go", "json", "yaml", "markdown", "css", "html",
+                "sql", "shell", "xml", "proto",
+            ];
+
+            var alternatives = new List<(string, uint, FjordType)>
+            {
+                ("other", 0u, FjordType.String),
+            };
+            for (var index = 0; index < names.Length; index++)
+            {
+                alternatives.Add((names[index], (uint)index + 1, FjordType.Rec()));
+            }
+
+            return FjordType.OneOf([.. alternatives]);
+        }
+    }
 
     public static string NameOf(uint predicate) => Schema[predicate].Name;
 
@@ -375,10 +477,36 @@ internal static class CodeIndex
             FjordValue.Of(attribute),
             FjordValue.Of(FjordRef.To(target))));
 
-    public static FjordFact LineFact(FjordFact file, long line, string text) =>
-        new(Line,
+    /// <summary>One line of a file: its text, and the three offsets that locate it.</summary>
+    /// <remarks>
+    /// <para>
+    /// <paramref name="start"/> is a <b>UTF-8 byte</b> offset and <paramref name="cstart"/>
+    /// a <b>UTF-16 code-unit</b> offset, and they are not the same number: a codepoint
+    /// above the BMP is four bytes and two code units. Roslyn counts UTF-16 everywhere, so
+    /// <paramref name="cstart"/> is the one a span from this indexer maps against and
+    /// <paramref name="start"/> is the new arithmetic — which is exactly where an
+    /// off-by-one hides, since every index involved stays in range.
+    /// </para>
+    /// <para>
+    /// <paramref name="bytes"/> is the UTF-8 length of <paramref name="text"/>. There is
+    /// deliberately no <c>cbytes</c>: the text is on the same row, and in a UTF-16 host
+    /// language its <c>Length</c> <i>is</i> the count.
+    /// </para>
+    /// </remarks>
+    public static FjordFact FileLineFact(
+        FjordFact file,
+        long line,
+        string text,
+        long start,
+        long bytes,
+        long cstart) =>
+        new(FileLine,
             FjordValue.Rec(
                 FjordValue.Of(FjordRef.To(file)),
                 FjordValue.Of(line)),
-            FjordValue.Of(text));
+            FjordValue.Rec(
+                FjordValue.Of(text),
+                FjordValue.Of(start),
+                FjordValue.Of(bytes),
+                FjordValue.Of(cstart)));
 }

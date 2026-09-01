@@ -69,7 +69,7 @@ const uint Doc = 19;
 // The schema fingerprint, as `fjord schema fingerprint` prints it — carried rather
 // than computed (see FjordSchema), so this client states the shapes independently
 // and the number only says which schema it was written against.
-const ulong SchemaFingerprint = 0xb08eea634e866a75;
+const ulong SchemaFingerprint = 0xe044df7620885507;
 
 var schema = new FjordSchema([
     new FjordPredicate("src.File", FjordType.String, null),
@@ -164,10 +164,6 @@ var schema = new FjordSchema([
         ("attribute", FjordType.String),
         ("target", FjordType.Reference(Decl))), null),
 
-    new FjordPredicate("src.Line", FjordType.Rec(
-        ("file", FjordType.Reference(File)),
-        ("line", FjordType.Integer)), FjordType.String),
-
     // ---- what a code-search viewer needs -----------------------------------------
     //
     // Three of these are a *second key order* over data already declared above: a
@@ -200,7 +196,80 @@ var schema = new FjordSchema([
     new FjordPredicate("src.AttributeOf", FjordType.Rec(
         ("target", FjordType.Reference(Decl)),
         ("attribute", FjordType.String)), null),
+
+    // ---- the shared source layer -------------------------------------------------
+    //
+    // `code.sigla` imports `src.sigla` rather than declaring these, and this program
+    // restates them for the reason it restates everything else: the fingerprint is over
+    // the whole schema, not over the part a client happens to use. Appended, so every id
+    // above keeps its number.
+    new FjordPredicate("src.Symbol", FjordType.String, null),
+
+    new FjordPredicate("src.FileLanguage",
+        FjordType.Rec(("file", FjordType.Reference(File))),
+        FjordType.Rec(("language", Language()))),
+
+    new FjordPredicate("src.FileDigest",
+        FjordType.Rec(("file", FjordType.Reference(File))),
+        FjordType.Rec(("digest", FjordType.String))),
+
+    new FjordPredicate("src.FileOrigin",
+        FjordType.Rec(("file", FjordType.Reference(File))),
+        FjordType.Rec(
+            ("repo", FjordType.String),
+            ("revision", FjordType.String))),
+
+    new FjordPredicate("src.FileInfo",
+        FjordType.Rec(("file", FjordType.Reference(File))),
+        FjordType.Rec(
+            ("bytes", FjordType.Integer),
+            ("lines", FjordType.Integer),
+            ("endsInNewline", FjordType.OneOf(
+                ("false_", 0u, FjordType.Rec()),
+                ("true_", 1u, FjordType.Rec()))))),
+
+    // A file's line table, one fact per line, the text and its three offsets on the
+    // value. `src.Line` was this without the offsets, and is gone.
+    new FjordPredicate("src.FileLine", FjordType.Rec(
+            ("file", FjordType.Reference(File)),
+            ("line", FjordType.Integer)),
+        FjordType.Rec(
+            ("text", FjordType.String),
+            ("start", FjordType.Integer),
+            ("bytes", FjordType.Integer),
+            ("cstart", FjordType.Integer))),
+
+    new FjordPredicate("src.FileLineAt", FjordType.Rec(
+        ("file", FjordType.Reference(File)),
+        ("start", FjordType.Integer),
+        ("line", FjordType.Integer)), null),
+
+    new FjordPredicate("src.FileLineStyles", FjordType.Rec(
+            ("file", FjordType.Reference(File)),
+            ("line", FjordType.Integer)),
+        FjordType.Rec(("styles", FjordType.String))),
+
 ], SchemaFingerprint);
+
+// The language vocabulary — `other : string = 0`, then contiguous from 1. From a table
+// rather than twenty-one literals: a slipped discriminant is what I10 makes permanent.
+static FjordType Language()
+{
+    string[] names =
+    [
+        "csharp", "typescript", "javascript", "tsx", "jsx", "rust", "python", "java",
+        "cpp", "c", "go", "json", "yaml", "markdown", "css", "html", "sql", "shell",
+        "xml", "proto",
+    ];
+
+    var alternatives = new List<(string, uint, FjordType)> { ("other", 0u, FjordType.String) };
+    for (var index = 0; index < names.Length; index++)
+    {
+        alternatives.Add((names[index], (uint)index + 1, FjordType.Rec()));
+    }
+
+    return FjordType.OneOf([.. alternatives]);
+}
 
 if (goldenPath is not null)
 {

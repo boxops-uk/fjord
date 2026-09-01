@@ -396,6 +396,41 @@ Read `schemas/code.sigla` itself if you are designing a schema: every predicate 
 comment saying which question its key order answers, and four of them exist purely because
 a derived predicate cannot yet be declared.
 
+### `schemas/src.sigla` — the shared source layer
+
+`code.sigla` imports it rather than declaring it, and that import is the point. Three
+schemas used to declare **their own `File`**, each with a comment saying "owned here so the
+schema resolves standalone" — and the cost of that thrift is that `content.File "x"` and
+`csharp.File "x"` are *different types naming the same file*, so the join that renders a
+search hit (a definition in one index, the bytes in another) cannot be written in sigla at
+all. It gets written in the bridge, in JavaScript, and holds only because two producers
+agree on a string by convention.
+
+Nine predicates — `File`, `Symbol`, `FileLanguage`, `FileDigest`, `FileOrigin`, `FileInfo`,
+`FileLine`, `FileLineAt`, `FileLineStyles` — plus the scalars every schema was copying.
+Every one leads with `file`, so a file's line table, its styles and its digest are each one
+prefix seek, and `line` trails so a **window is a range on the last key field**.
+
+Three shapes in it are worth reading before designing anything similar:
+
+- **`FileLine` carries both offsets.** `start` is a UTF-8 byte offset and `cstart` a UTF-16
+  code-unit offset, and they are not the same number — a codepoint above the BMP is four
+  bytes and two code units. Which one a span means is declared once per database by
+  `config.Setting {dimension = "position-encoding"}`, and the line table is therefore the
+  conversion table: a consumer converts against a row it has already fetched to render.
+- **`FileLineAt` is the same table keyed by offset**, and it exists because a value can
+  neither be matched ([I6](invariants.html#i6)) nor read field-wise — so "which line is byte
+  12345 in" against `FileLine` alone is a scan. Keyed `{file, start}` it is one seek, and
+  because sigla has no descending seek and no `LIMIT` the shape is a range upward with a
+  client-side limit of 1. The third of its three cases is the one that bites: an offset
+  **past the last line's start** returns nothing, and the answer is then `FileInfo.lines`.
+  That is the common case for a reference in the last line of a file, not an edge.
+- **Nothing presentational is on `FileLine`'s value.** Not taste — `nyi/value-field` means a
+  query cannot project one field of a value, so *every consumer of any field pays for all of
+  them*. A baked-HTML field measured 21.6 MB against 12.6 MB of text on a real corpus, so a
+  viewer's window paid ~2.4× the bytes it needed. `FileLineStyles` is a separate predicate
+  for that reason, keyed identically so a window is the same seek.
+
 ### `schemas/config.sigla` — what a database was built for
 
 One predicate, `config.Setting {dimension, value}`, and it answers the question a tool
