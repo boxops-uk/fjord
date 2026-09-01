@@ -1,5 +1,12 @@
 # The indexer overhaul — write path, seam, discrimination, and symbol identity (revision 2)
 
+> **Amended.** Issues #36–#43 change several of the runs below — the descriptor's type, who
+> declares `src.Symbol`, what becomes of `src.ExternalRef`, what Run 3.5 records, what Run 9's
+> gate is written against, and the CI job Run 0.5 needs. The amendments are
+> [`docs/unified-plan/13-indexer-runs-amended.md`](unified-plan/13-indexer-runs-amended.md), and
+> **where that file and this one disagree, that file wins**. This document remains the body of
+> Runs 0–9. Start at [`docs/unified-plan/README.md`](unified-plan/README.md).
+
 ## What this plan is
 
 Five issues (#28–#32) are open against `clients/dotnet`. This plan reads them together with
