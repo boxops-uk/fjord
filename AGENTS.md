@@ -115,6 +115,13 @@ cargo check -p fjord-engine --target wasm32-unknown-unknown   # the browser buil
 (cd web && npm run smoke)           # that demo, driven in a real browser
 ```
 
+`scripts/check-exhaustive.sh {schema|engine}` is **not** in that list and must not be: it
+adds a throwaway variant to `PredicateTyNamed` or to `fjord_engine::syntax::Ty` and asserts
+the build *fails*, naming every site that must handle a new scalar family. Run it when
+adding one, or when changing a match that dispatches on a type — a shorter list than
+[`bench/FINDINGS.md`](bench/FINDINGS.md) §19's is a regression. It restores the file it
+edited on the way out, so run it on a clean tree.
+
 **The `+1.97.1` is not decoration.** CI's lint gate runs on that pinned toolchain and the
 suite runs on `stable`, because a required check that can go red because an upstream released
 is a check that blocks merges for a reason nobody chose. Clippy and rustfmt change between

@@ -1329,6 +1329,43 @@ serialises and mimalloc's per-thread caches do not.
   the same allocator — and that build now needs a C compiler for musl in CI, because mimalloc is
   a C library and a pure-Rust cross build never wanted one.
 
+## 19. A new scalar family: a compile error at 21 sites, and at 13 before the restructure
+
+Not a measurement of the running system — a measurement of the *compiler*, taken because
+the claim "adding a scalar family is a compiler-guided change" is the whole of
+[W2](../docs/unified-plan/02-exhaustiveness-gap.md) and was not true when it was written.
+
+**Method.** Add a throwaway `Probe` variant to the enum, build the workspace with
+`--all-targets`, and record every site the compiler names. Silence one site per file with
+`_ => todo!(),` and build again, until it compiles; the union of every pass is the answer.
+`scripts/check-exhaustive.sh {schema|engine}` applies the variant and runs the first pass.
+**It fails the build by design and is not wired into CI.**
+
+**`PredicateTyNamed` — before: 13 sites.** `fingerprint::type_form`, `fingerprint::walk`,
+`syntax::print::ty`, `tuple::decode_typed_at`, `desc::of`, `value::decode_value`,
+`value::Tape::value`, `fact::describe`, `local_identity::reject_local_field_type`,
+`plan::ty`, `ty::schema_ty`, `flatten::render_ty`, `sample_schema::walk`. Every one of
+them a `match ty` over a single enum — and **not one of them one of the six** that
+absorb a family silently. `fjord-ingest` and `fjord-server` were named nowhere at all.
+
+**After: 21.** The same 13, plus the six restructured functions — `syntax::print::same_ty`,
+`wire::value::encode_value`, `store::fact::checked`, `ingest::intern::resolve`,
+`server::rows::to_wire`, `encoding::tuple::encode_typed_at` — plus the two halves of the
+generator census (`tuple::tests::family` and its walk), which is what stops a family being
+added to `PredicateTy`, handled everywhere, and then never *drawn*.
+
+**`fjord_engine::syntax::Ty` — 8 sites**, `unify_shapes` among them, where before the
+restructure it was 7 and `unify` was not: `ty::unify_shapes`, `ty::zonk`, `ty::occurs`,
+`ty::Checker::render`, `ty::tests::render`, `inspect::lowered::render`,
+`server::rows::desc_of`, `cli::prompt::render_ty`. Nothing that merely passes a `Ty`
+through is named, which is the other half of the claim. `ty::schema_ty` is named by the
+*first* experiment rather than this one: it reads a `PredicateTy` and only constructs a
+`Ty`.
+
+A shorter list than either of these is a regression.
+
+---
+
 ## What is still open
 
 - **Finding 7's number, after its fix.** The per-query retention had a cause, the cause has a
