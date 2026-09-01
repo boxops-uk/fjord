@@ -163,13 +163,14 @@ test pins every marker so a renumber breaks loudly.
 | `0x49–0x50` | `MARK_INT_POS` | positive integers, width 1 … 8 | width in marker |
 | `0x51` | `MARK_FACT_REF` | a reference to a fact | fixed, 8 bytes |
 | `0x52` | `MARK_UNION` | a tagged alternative — discriminant, one payload, terminator | nested |
-| `0x53–0xFE` | *reserved* | | |
+| `0x53` | `MARK_BYTES` | uninterpreted bytes | terminator walk |
+| `0x54–0xFE` | *reserved* | | |
 | `0xFF` | `MARK_ESCAPE` | escapes a null element | — |
 
 Reading the integer band: zero is the centre at `0x48`; positives climb as width grows, so
 larger positives sort higher; negatives fall as width grows, so more-negative sorts lower.
-The type ordering `null < string < record < integers < fact-ref < union` falls out of the
-table.
+The type ordering `null < string < record < integers < fact-ref < union < bytes` falls out of
+the table.
 
 A union was **appended** at `0x52` — which is what I3 permits, and the only thing it permits:
 the table below it does not move. Highest in the table, so a union sorts after every other
@@ -180,6 +181,39 @@ its arity of one would make the terminator redundant, so "is a group" stays a si
 — terminated, null-escaping, depth-counted — and `skip` needs no notion of a value still
 owed. A stored tag that no alternative declares is refused at decode
 (`UnknownDiscriminant`), never read as whichever alternative sat nearby.
+
+### `bytes`, and why it sorts where it does
+
+A `bytes` field holds **uninterpreted bytes**. Its encoding is a string's minus the UTF-8
+validation — the marker, then the same escaped run — and *not performing that validation is
+the whole of the type*. The escape scheme is what makes that sound: a `0x00` in the payload
+becomes `0x00 0xFF` and a bare `0x00` terminates, so `memcmp` of two encoded runs agrees with
+`memcmp` of the payloads. A length prefix would not: it sorts by length first, which is not an
+order anybody means, and it is why the empty run and `0x00` are the pair a test pins.
+
+It was **appended** at `0x53`, so it sorts *after* a union rather than beside a string. That
+reads oddly, and it is not taste: I3 freezes the table, and [I15](invariants.html#i15) checks
+the format stamp for **equality** at open — so renumbering to put `bytes` beside `string` is a
+`codec` bump, and a `codec` bump makes every database written by an earlier build unopenable.
+Take the wart.
+
+The odd ordering is also **unobservable**. A field has one declared type, a union
+discriminates by tag before any payload is compared, and a record's fields are positional — so
+there is no query that can put a `bytes` and a `string` on the two sides of one comparison. A
+`string` pattern against a `bytes` field is `reject/type-mismatch`, and the corpus says so.
+
+Written in a query as `0x…` — lowercase, two hex digits a byte, its own literal rather than a
+widening of the string rule. It is what makes a digest lookup expressible
+(`FileDigest {digest = 0x2f0a…}`), and it is the form the printer emits, so what comes out of
+`fjord query` is text sigla parses back. A malformed one is diagnosed by name:
+`lit/bytes-empty` for a bare `0x`, `lit/bytes-odd-digits` for an odd count, `lit/bytes-digit`
+for a character that is not hex.
+
+**In JSON it is a bare lowercase hex string, untagged** — `"00ffff0080c0"`, not
+`{"$bytes": …}`. Both renderers hold the type when they render, so every consumer that can
+interpret the field has the schema too. The one that loses is a reader of detached JSON text
+with no schema, for whom `"00ff"` is indistinguishable from a string whose content happens to
+be hex. That is the stated cost, rather than a tag paid for by every consumer on every row.
 
 A fact reference has its **own** fixed-width marker rather than sharing the integer encoding,
 so a value's bytes are self-describing without the schema and the `Int`/`Fact` distinction is

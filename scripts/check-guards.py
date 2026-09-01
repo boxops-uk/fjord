@@ -101,6 +101,7 @@ EXPECTED_NON_GUARDS = {
     "crashing_creator_child_process",
     "crashing_finisher_child_process",
     "print_the_union_schema_fingerprint",
+    "print_the_bytes_schema_fingerprint",
 }
 
 GUARD = re.compile(r"^guard: (?P<claim>.+?), owned by Movement (?P<owner>\d+)$")

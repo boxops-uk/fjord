@@ -7,6 +7,50 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### A `bytes` scalar family, and the `0x…` literal
+
+A schema can declare a field holding **uninterpreted bytes**: `predicate FileDigest : { file :
+src.File, digest : bytes }`. Not validated as anything — that is the whole of the type — and
+ordered by `memcmp` over the payload, which is what the storage codec's escaping already
+bought and what a length prefix would have thrown away.
+
+Written in a query as `0x…`, lowercase, two hex digits a byte. Its own literal rather than a
+widening of the string rule, which would have made every existing string literal ambiguous,
+and lexed permissively so `0xzz` is one token with a named diagnostic — `lit/bytes-digit`,
+beside `lit/bytes-empty` and `lit/bytes-odd-digits` — rather than a caret between two tokens.
+The literal lands with the family rather than later because a digest lookup is the reason
+anybody wants the type, and because `print::literal` emits `0x…`: without the lexer rule that
+would be the one place the printer produces text sigla cannot read back.
+
+**`MARK_BYTES` is `0x53`, appended, so `bytes` sorts after a union rather than beside a
+string.** That reads oddly and is not taste: [I3](website/content/invariants.md#i3) freezes the
+marker table and I15 checks the format stamp for *equality* at open, so renumbering is a
+`codec` bump and a `codec` bump makes every database written by 0.1.0 unopenable. The wart is
+taken, and the ordering is unobservable — a field has one declared type, a union discriminates
+by tag before any payload is compared, and a record's fields are positional, so no query can
+put a `bytes` and a `string` on the two sides of one comparison.
+
+Four tag tables each took their own next free number, none derived from another and none
+shared with `string`: the wire descriptor 5, the content identity 9, and the plan fingerprint
+5 for a type and 6 for a value. Sharing the identity hash's number would fold `"ab"` and
+`0x6162` together, so two databases holding different data would hash alike.
+
+**It is a protocol bump.** A peer built before this meets descriptor tag 5, has no case for
+it, and refuses the stream rather than reading the field as a `string` and handing its caller
+bytes that are not text. The .NET client ships the type in the same change, with a third
+golden corpus of its own — and `blocks.txt` and `unions.txt` came back byte-identical from a
+full regeneration, so nothing already on the wire moved.
+
+In JSON it is a bare lowercase hex string, **untagged**. Both live renderers hold the type
+when they render, so every consumer that can interpret the field has the schema too; the one
+that loses is a reader of detached JSON text with no schema, for whom `"00ff"` is
+indistinguishable from a string whose content happens to be hex. Stated, rather than paid for
+by every consumer on every row.
+
+Nothing existing moved: `schemas/code.sigla` is still `0xb08eea634e866a75`, the format stamp
+is still codec 1 / storage 1, and the corpus's positional plan-fingerprint list took pure
+insertions.
+
 ### A union-typed variable can be shared by two generators
 
 `X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}` plans and runs. Two

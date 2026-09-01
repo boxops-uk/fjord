@@ -53,7 +53,7 @@ item        ::= 'import' ns
               | 'predicate' UpperName ':' type [ '->' type ] [ 'stored' ]
               | 'derive' name [ 'stored' ]          (parses, not available)
 
-type        ::= 'int' | 'string'                    builtin
+type        ::= 'int' | 'string' | 'bytes'          builtin
               | UpperName | qualified.UpperName     a predicate or a named type
               | '{' fields '}'                      a record — or a sum, see below
               | '(' type ')'
@@ -68,8 +68,13 @@ field       ::= name [':' type] ['=' nat]           `= nat` is a discriminant
 ns          ::= a dotted lowercase name — `src`, `lang.rust`
 ```
 
-Two things about the shape:
+Three things about the shape:
 
+- **`bytes` holds a run this language will not look inside.** Not validated as anything —
+  that is what the type is — and ordered by `memcmp` over the payload, which the storage
+  codec's escaping preserves ([storage](storage.html)). It is what a digest, a hash or a
+  packed table belongs in, and it is written in a query as `0x…`. A `string` against a
+  `bytes` field is a type error, so the two never meet in a comparison.
 - **A record and a sum share their braces**, and are told apart by the separator after the
   first field: `,` continues a record, `|` starts a sum. That is one token of lookahead, and
   it is Angle's shape too.
