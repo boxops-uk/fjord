@@ -112,6 +112,44 @@ a producer.
 order-preserving, self-delimiting and frozen on disk; none of that is on the wire, and
 a client never sees it.
 
+## The flag day: what to do when `schemas/code.sigla` moves
+
+A client sends **one** whole-schema fingerprint and the server checks it for equality, so
+any edit to that file refuses every client until each one is rebuilt. The protocol carries
+an alternative — per-predicate containment, which would make an *additive* change free —
+and it is deliberately not used: the default schema is not expected to move often, and a
+version bump is the accepted cost of the simpler client. That decision is the reason this
+section exists.
+
+Run `scripts/flag-day.sh check` at any point; it walks the steps below in order and stops
+at the first stale one, because the expensive failure here is discovering step 3 after
+step 7. `scripts/flag-day.sh regen` does the parts a machine can.
+
+1. **Edit `schemas/code.sigla`.**
+2. **Read the new number** — `fjord schema check schemas/code.sigla`.
+3. **Paste it into both C# constants**: `Boxops.Fjord.Indexer/CodeIndex.cs` and
+   `Boxops.Fjord.Demo/Program.cs`. Two, restated independently on purpose;
+   `the_dotnet_clients_carry_the_fingerprint_the_schema_has` checks both, so a missed one
+   is a red suite rather than a refused handshake at somebody's site.
+4. **Regenerate the goldens** — `./clients/dotnet/emit-golden.sh`. This needs a .NET SDK,
+   and it is the step most often forgotten because the Rust test that depends on it
+   *looks* like a Rust problem.
+5. **Check the Rust side still agrees** — `cargo test -p fjord-client byte_identical`.
+6. **Update `crates/fjord-cli/src/sample_schema.rs`**: the predicate count, `KEY_ORDER`,
+   and the name lookups.
+7. **Update `clients/dotnet/glean/fjbench.angle`**, the Glean translation of the same
+   shapes. Nothing checks this one; the script warns.
+8. **Bump the .NET package version** in the same commit that re-pastes the constant. A
+   moved fingerprint *is* a client release, and an un-upgraded client's refusal is the
+   designed failure — `a_schema_mismatch_is_refused_at_the_handshake` asserts it names
+   both numbers, so an operator can tell a stale client from one pointed at the wrong
+   database.
+9. **`cargo test` and the pinned lint gate.**
+
+A schema *re-keying* — changing a predicate's key rather than adding one — is a bigger
+job than this: every query and every producer that reads the predicate moves with it, and
+no script can find them. Rehearse it end to end on a branch first.
+
 ## What is not implemented
 
 The client mirrors the server, so it stops where the server does. Streams are issued

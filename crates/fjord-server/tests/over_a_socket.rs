@@ -388,17 +388,36 @@ fn a_record_head_of_undeclared_names_holding_a_reference() {
 
 /// **A wrong schema fingerprint is refused before any data flows** — the cheap early
 /// mismatch detection §6 is after, and the reason the handshake carries one.
+///
+/// This is also **the flag day's own failure**, and the reason it is a flag day. A
+/// client carrying one whole-schema constant and claiming no predicates — which is what
+/// the .NET client sends, deliberately — takes this branch the moment
+/// `schemas/code.sigla` moves, and stays refused until it is rebuilt. So the message has
+/// to carry **both numbers**: an operator seeing only "schema mismatch" cannot tell a
+/// stale client from a client pointed at the wrong database, and those have different
+/// fixes.
 #[test]
 fn a_schema_mismatch_is_refused_at_the_handshake() {
     let serving = start();
     let mut client = Client::connect(&serving);
 
-    let (header, payload) = client.hello(serving.fingerprint ^ 0xFF, Mode::ReadWrite);
+    let stale = serving.fingerprint ^ 0xFF;
+    let (header, payload) = client.hello(stale, Mode::ReadWrite);
 
     assert_eq!(header.kind, FrameKind::ERROR);
     let (code, message) = protocol::decode_error(&payload).expect("an error frame");
     assert_eq!(code, ErrorCode::SchemaMismatch);
     assert!(message.contains("schema mismatch"), "{message}");
+
+    assert!(
+        message.contains(&format!("{stale:x}")),
+        "the refusal must name what the client claimed, or a stale client and a client \
+         on the wrong database read the same: {message}"
+    );
+    assert!(
+        message.contains(&format!("{:x}", serving.fingerprint)),
+        "the refusal must name what the database has: {message}"
+    );
 }
 
 /// Zero means "do not check", which is what a reader or a client written against

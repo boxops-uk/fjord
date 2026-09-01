@@ -122,6 +122,13 @@ The `--no-default-features` line is what makes "the embedded schema path touches
 filesystem" mechanical: `fs` is a default-on feature, so without it `FsSources` is not
 compiled and a call to it from `resolve_from` is a compile error rather than a code review.
 
+`scripts/flag-day.sh check` is the other one worth knowing: it walks every artifact that
+moves when `schemas/code.sigla` does — two independently-pasted C# constants, the checked-in
+goldens, the fixture reader, the Glean translation — and stops at the first stale one,
+because the expensive failure there is discovering step 3 after step 7. Read-only, so it is
+safe to run at any time; `regen` does the parts a machine can. The checklist it walks is in
+[`clients/dotnet/README.md`](clients/dotnet/README.md).
+
 `scripts/check-exhaustive.sh {schema|engine}` is **not** in that list and must not be: it
 adds a throwaway variant to `PredicateTyNamed` or to `fjord_engine::syntax::Ty` and asserts
 the build *fails*, naming every site that must handle a new scalar family. Run it when
