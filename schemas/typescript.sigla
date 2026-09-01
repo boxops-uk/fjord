@@ -1,0 +1,453 @@
+# The **TypeScript index** — what the TypeScript compiler and its type checker can see: every
+# declared symbol, the ES module graph that binds files into a program, every identifier use
+# resolved to what it declares, the call graph, the tsconfig program layer, and the React/JSX
+# layer as written. The sibling of `csharp.sigla`, and filled by the same kind of producer: a
+# walk over the compiler's AST holding a checker.
+#
+# **Three layers it used to carry have moved out.** Its own header said "two producers, one
+# schema" and then a third arrived; the schema now follows the producers:
+#
+#   * The **Yarn workspace and dependency graph** is `npm.sigla` (a Yarn/npm/pnpm plugin fills
+#     it, and it is the same graph for a repository with no TypeScript in it).
+#   * The **bundler stats layer** is `bundle.sigla` (an Rspack/webpack plugin fills it, and it
+#     is bundle stats rather than a language).
+#   * The **search and lookup layer** — `Entity`, `SearchByName`, `SearchEntry`, `FileDecl`,
+#     `DeclByName`, `DeclByNameLower` — is `codemarkup.sigla`, shared with every other language.
+#     Its own comment called it "the codemarkup analogue".
+#
+# The joins across those layers all go through **`src.File`**, which is why the source layer is
+# imported rather than owned: `PackageImport` reaches `npm.Locator`, `bundle.ModuleFile` reaches
+# back to a file this schema also has declarations for, and neither would typecheck if each
+# namespace kept its own `File`.
+#
+# One predicate is **deleted rather than moved**: the pass-2 `Declaration
+# {file, name, kind} -> {span, exported, typeText}`. `Decl {file, span}` says the same thing with
+# a total identity — exactly one declaration begins at a given position — where `Declaration`'s
+# key cannot tell two same-named declarations in one file apart, and silently merged them.
+# `codemarkup.FileDefinition` answers what it was reached for ("this file's declarations, in
+# order"), so it was a duplicate identity for one thing, which is the defect this set exists to
+# remove.
+#
+# ---- modelling rules -----------------------------------------------------------------
+#
+# The translations of csharp.sigla carry over unchanged:
+#   * `bool` → `src.Bool`; `maybe T` → a `MaybeX` union `{ nothing = 0 | just : T = 1 }`.
+#   * enums → a union of empty-payload alternatives with explicit, append-only, **lowercase**
+#     discriminants (trailing `_` on any that collides with a keyword: `false_`, `module_`).
+#   * a **list** → one fact per element, an edge predicate carrying an `index : int` where
+#     order matters (`DeclMember`, `SigParameter`).
+#   * an id fjord cannot key on structurally rides as a `string`.
+#
+# And **identity is the key, attributes are the value**: a predicate's key is only what
+# identifies the fact, and a reference costs that identity alone.
+#
+# **Field order is key order, and key order is the index design** — each predicate leads
+# with the field a query seeks on.
+
+schema typescript {
+
+  import src
+  import npm
+
+  # ======================================================================================
+  # The TypeScript syntax & React layer (pass 2) — the analogue of C#'s Class/Method/Field.
+  # It captures both the **TS type information** (the checker's rendered types) and the
+  # **syntax** (the JSX as written): the components a file declares, the props they accept,
+  # where each component is rendered, the props passed at each use site, and inline styles.
+  # A producer walking the TypeScript compiler's AST + type checker fills it.
+  #
+  # `Component`, `JsxElement` and the props are keyed on `src.File`, so this layer joins to the
+  # bundle and package layers through it (`bundle.ModuleFile`, `npm.FilePackage`).
+  # ======================================================================================
+
+  # What a declaration is. 0–7 are the top-level kinds the original pass-2 `Declaration`
+  # predicate was written against; 8–15 are what the semantic core needs to name every symbol
+  # rather than only the file-level ones. Appended, never renumbered — discriminants are frozen
+  # on disk (I10), so this order is the order forever.
+  type DeclKind =
+    { function_     = 0
+    | class_        = 1
+    | interface_    = 2
+    | typeAlias     = 3
+    | enum_         = 4
+    | variable      = 5
+    | method_       = 6
+    | property_     = 7
+    | getter        = 8
+    | setter        = 9
+    | constructor_  = 10
+    | enumMember    = 11
+    | parameter     = 12
+    | typeParameter = 13
+    | module_       = 14
+    | importAlias   = 15
+    }
+
+  # How a React component is written — the four idioms plus a plain arrow.
+  type ComponentKind =
+    { function_  = 0
+    | arrow      = 1
+    | class_     = 2
+    | memo       = 3
+    | forwardRef = 4
+    }
+
+  # The syntactic form of a JSX attribute's value: `x="s"`, `x={expr}`, bare `x`, `{...spread}`.
+  type AttrValueKind =
+    { stringLiteral = 0
+    | expression    = 1
+    | boolean_      = 2
+    | spread        = 3
+    | none_         = 4
+    }
+
+  type MaybeComponent = { nothing = 0 | just : Component = 1 }
+
+  # A React component. `name` leads for search; `file` disambiguates. `propsTypeText` is the
+  # checker's rendered props type; the individual props are `Prop` facts keyed on this.
+  predicate Component :
+    { file : src.File, name : string }
+    -> { kind : ComponentKind, span : src.ByteSpan, propsTypeText : string }
+
+  # A prop a component accepts — the headline of this layer. `component` then `name` lead, so
+  # "the props of X" is a seek. `typeText` is the resolved prop type; `optional`/`hasDefault`
+  # are what the signature says; `defaultText` is the default value's source, if any.
+  predicate Prop :
+    { component : Component, name : string }
+    -> { typeText : string, optional : src.Bool, hasDefault : src.Bool, defaultText : string }
+
+  # A JSX element as written. Identity is (file, span) — one use site. `tag` is the source
+  # name (`Button`, `div`); `component` resolves it to a local `Component` when it is one;
+  # `container` is the component whose render this element sits inside; `selfClosing` as written.
+  predicate JsxElement :
+    { file : src.File, span : src.ByteSpan }
+    -> { tag : string, component : MaybeComponent, container : MaybeComponent, selfClosing : src.Bool }
+
+  # A prop passed at a use site. `element` then `name` lead. `valueText` is the source of the
+  # value; `typeText` is the checker's type of that value when it can resolve one.
+  predicate JsxAttribute :
+    { element : JsxElement, name : string }
+    -> { valueKind : AttrValueKind, valueText : string, typeText : string }
+
+  # An inline style: one fact per CSS property of a `style={{…}}`. "Where are inline styles
+  # used" is this predicate joined `element` → `file`; `name` is the CSS property (camelCased
+  # as written), `value` its source text.
+  predicate InlineStyleProp :
+    { element : JsxElement, name : string }
+    -> { value : string }
+
+  # A `className` on an element, and its value — a literal, or the expression's source.
+  predicate ClassName : { element : JsxElement } -> { value : string, valueKind : AttrValueKind }
+
+  # The JSX composition tree: an element rendered directly inside another. `parent` leads:
+  # "what does this element render".
+  predicate JsxChild : { parent : JsxElement, child : JsxElement }
+
+  # Every use site of a component — the reverse of `JsxElement.component`. `component` leads:
+  # "where is <Button> used".
+  predicate ComponentUse : { component : Component, element : JsxElement }
+
+  # ======================================================================================
+  # The TypeScript semantic core (pass 3) — the analogue of csharp.sigla's Class/Method/
+  # Field/xref layer, and the layer whose absence the header above called "a later pass".
+  #
+  # What Roslyn is to `csharp.sigla`, the TypeScript checker is to this: every declared
+  # symbol, the **module graph** that binds files into a program, every identifier use
+  # resolved to what it declares, and the call graph.
+  #
+  # ---- where this follows csharp.sigla, and where it does not -------------------------
+  #
+  # The five translation rules carry over unchanged (src.Bool, MaybeX, lowercase append-only
+  # enum discriminants, a list as one fact per element with an `index`, ids that cannot be
+  # keyed on riding as strings), as does the rule that **field order is key order is the
+  # index design** and that reverse questions are separate predicates.
+  #
+  # Two deliberate divergences:
+  #
+  #   * **One `Decl` predicate, not seven.** C# splits a definition across Class, Interface,
+  #     Record, Struct, Method, Field, Property, Parameter, TypeParameter and Local because
+  #     each carries different attributes. TypeScript's kinds share one shape — a named
+  #     thing, at a span, with a type the checker can render — so they share one predicate
+  #     and `DeclKind` says which. This is why there is no `Definition` union here: a
+  #     reference to "any symbol" is just a `Decl` reference, which is cheaper than an
+  #     inlined tag plus FactId and removes the "wrong alternative" error class entirely.
+  #
+  #   * **Identity is (file, span), not a signature.** C# needs `docId` because a Glean
+  #     `Method` is identified by its signature, which fjord cannot put in a key. TypeScript
+  #     needs no such trick: exactly one declaration begins at a given position in a given
+  #     file, so (file, span) is a total identity — overloads, shadowed locals and two
+  #     same-named types in one file all fall out for free. `name` and `kind` sit on the
+  #     value side, and the questions that seek on them get their own lookup predicates
+  #     (`DeclByName`, `FileDecl`), exactly as C#'s codemarkup layer does.
+  #
+  # What is here that `csharp.sigla` has no need of: the **ES module graph**. C# resolves
+  # names through namespaces and assembly references, so a file-to-file import edge does not
+  # exist to be captured. TypeScript's does, it is the backbone of how a repository is
+  # actually wired, and `PackageImport` joins it straight to the Yarn layer above — so
+  # "which version of which package does this file pull in" is one query across both.
+  #
+  # Note the name collision to keep straight: `ModuleImport` (above) is the **bundler's**
+  # graph, read from compilation stats after resolution and tree-shaking. `FileImport` here
+  # is the **source** graph, read from the import statements as written. They disagree, and
+  # the disagreement is often the interesting part.
+
+  # ---- optionals and vocabularies for this layer ---------------------------------------
+
+  type MaybeDecl    = { nothing = 0 | just : Decl    = 1 }
+  type MaybeLocator = { nothing = 0 | just : npm.Locator = 1 }
+
+  # TypeScript's member visibility. `notApplicable` is the common case — a plain function or
+  # a top-level `const` has no access modifier at all.
+  type Accessibility = { notApplicable = 0 | public = 1 | protected = 2 | private = 3 }
+
+  # How a module is pulled in. `sideEffect` is a bare `import './x'`; `require` and `dynamic`
+  # are the two non-static forms, kept apart because only the static ones are tree-shakeable.
+  type ImportKind =
+    { named       = 0
+    | default_    = 1
+    | namespace_  = 2
+    | sideEffect  = 3
+    | require     = 4
+    | dynamic     = 5
+    }
+
+  # How a name leaves a module. `star` is `export * from`; `namespaceReExport` is
+  # `export * as ns from`; `assignment` is the CommonJS `export =` / `module.exports`.
+  type ExportKind =
+    { named             = 0
+    | default_          = 1
+    | star              = 2
+    | namespaceReExport = 3
+    | assignment        = 4
+    }
+
+  # What a reference *does* with what it names — the discrimination that turns a flat xref
+  # list into an answer. `write` is an assignment target, `typeRef` a use in type position,
+  # `heritage` an `extends`/`implements` clause, `jsx` a tag.
+  type RefKind =
+    { read      = 0
+    | write     = 1
+    | call      = 2
+    | typeRef   = 3
+    | new_      = 4
+    | jsx       = 5
+    | import_   = 6
+    | export_   = 7
+    | heritage  = 8
+    | decorator = 9
+    }
+
+  # A call site's form. `hook` is a React hook call — syntactically an ordinary call, but
+  # the thing a reader of a React codebase actually wants to seek on, so it is its own arm.
+  type CallKind = { call = 0 | new_ = 1 | taggedTemplate = 2 | decorator = 3 | hook = 4 }
+
+  # ---- the symbol layer ----------------------------------------------------------------
+
+  # A declared symbol: a function, class, interface, type, enum, variable, member, parameter
+  # or type parameter. Identity is (file, span) — see the divergence note above. `container`
+  # is the declaration this one is nested in (a method's class, a local's function), which
+  # makes the whole symbol tree walkable upward from any node; `DeclMember` walks it down.
+  # `typeText` is the checker's rendered type: the type information beside the syntax.
+  predicate Decl :
+    { file : src.File, span : src.ByteSpan }
+    -> { name          : string
+       , kind          : DeclKind
+       , container     : MaybeDecl
+       , exported      : src.Bool
+       , isDefault     : src.Bool
+       , accessibility : Accessibility
+       , isStatic      : src.Bool
+       , isAbstract    : src.Bool
+       , isReadonly    : src.Bool
+       , isOptional    : src.Bool
+       , isAsync       : src.Bool
+       , typeText      : string
+       , docComment    : string
+       }
+
+  # A declaration's members, in source order — a class's methods, an enum's members, an
+  # interface's properties. `parent` leads: "what does this declare".
+  #
+  # All three fields are key, following csharp.sigla's `TypeTypeParameter` rather than this
+  # schema's own `EntrypointChunk`. The reason is not symmetry but reachability: a value can be
+  # *projected* but not *matched* (I6), and fjord cannot yet read a field of a value at all — so
+  # a `member` behind the `->` cannot be joined through, and the containment tree would be
+  # walkable only by projecting one level and issuing another query. In the key it is a seek.
+  predicate DeclMember : { parent : Decl, index : int, member : Decl }
+
+  # ---- signatures ----------------------------------------------------------------------
+
+  # The callable shape of a function, method, or constructor. Separate from `Decl` because
+  # most declarations are not callable, and a value side is paid for on every row.
+  predicate Signature :
+    { decl : Decl }
+    -> { returnTypeText : string, isGenerator : src.Bool, paramCount : int, requiredCount : int }
+
+  # Ordered parameters of a callable. `decl` then `index`, so one seek returns the signature
+  # in declaration order — csharp.sigla's `MethodParameter`, with the type as rendered text.
+  predicate SigParameter :
+    { decl : Decl, index : int }
+    -> { name : string, typeText : string, optional : src.Bool, rest : src.Bool, defaultText : string, param : MaybeDecl }
+
+  # Ordered type parameters of a generic declaration — `MethodTypeParameter`'s analogue, and
+  # it serves generic classes, interfaces and type aliases too.
+  predicate SigTypeParameter :
+    { decl : Decl, index : int }
+    -> { name : string, constraintText : string, defaultText : string }
+
+  # ---- the type hierarchy --------------------------------------------------------------
+
+  # A base type in an `extends` clause. Ordered because `interface A extends B, C` is a list.
+  # `base` resolves to the declaration when it is one this index holds; `typeText` always
+  # carries what was written, so an unresolved base (a `.d.ts` in node_modules) is still an
+  # answer rather than a hole.
+  predicate Extends : { decl : Decl, index : int } -> { typeText : string, base : MaybeDecl }
+
+  # An interface in an `implements` clause. csharp.sigla's `Implements`, kept ordered.
+  predicate Implements : { decl : Decl, index : int } -> { typeText : string, interface_ : MaybeDecl }
+
+  # The reverse of both — "who extends or implements this". C# leaves this direction to a
+  # future predicate; a repository-wide index is exactly where it gets asked, so it is here.
+  predicate DerivedFrom : { base : Decl, derived : Decl }
+
+  # ---- the module graph ----------------------------------------------------------------
+
+  # One import statement, as written. Identity is (file, span). `resolved` is the file the
+  # specifier resolves to when it is inside the index; `specifier` is always the raw text.
+  predicate Import :
+    { file : src.File, span : src.ByteSpan }
+    -> { specifier : string, resolved : src.MaybeFile, kind : ImportKind, typeOnly : src.Bool }
+
+  # One binding an import statement introduces: `import { a as b }` is one fact with
+  # localName `b` and importedName `a`. `target` is the declaration it resolves to — this is
+  # the edge that follows a barrel file through to the thing it re-exports.
+  predicate ImportBinding :
+    { import_ : Import, localName : string }
+    -> { importedName : string, target : MaybeDecl }
+
+  # The file-to-file import edge, deduplicated: **the module graph**. `count` is how many
+  # import statements produce it, `typeOnly` true only when every one of them is type-only
+  # (so a false here means the edge survives to runtime). `file` leads: "what does this
+  # import".
+  predicate FileImport : { file : src.File, imported : src.File } -> { typeOnly : src.Bool, count : int }
+
+  # The reverse — "who imports this file". Key-only, and the direction most refactors ask in.
+  predicate FileImportedBy : { imported : src.File, file : src.File }
+
+  # An import that leaves the repository, keyed on the bare specifier. `locator` joins to the
+  # Yarn layer above, so "which version of `@mui/material` does this file import" is one
+  # query across the package and semantic layers.
+  predicate PackageImport : { file : src.File, specifier : string } -> { locator : MaybeLocator, count : int }
+
+  # A name a module exports. `file` then `exportedName` lead: "this module's public surface".
+  # `local` is the declaration behind the name, absent for a re-export the index cannot follow.
+  predicate Export :
+    { file : src.File, exportedName : string }
+    -> { kind : ExportKind, local : MaybeDecl, span : src.ByteSpan, typeOnly : src.Bool }
+
+  # A re-export statement — `export { X } from './y'`, `export * from './y'`. Barrel files
+  # are how this repository presents its packages, so the hop is worth its own predicate
+  # rather than being flattened into `Export`. `exportedName` is empty for a bare `export *`.
+  predicate ReExport :
+    { file : src.File, span : src.ByteSpan }
+    -> { specifier : string, resolved : src.MaybeFile, exportedName : string, kind : ExportKind }
+
+  # ---- references ----------------------------------------------------------------------
+
+  # Every identifier use, and what it resolves to — csharp.sigla's `FileEntityXRefs`, with
+  # the reference's `kind` added because in TypeScript a name in type position and the same
+  # name in value position are different questions. `file` then `span`, so a file's
+  # references come back in position order for a renderer to splice.
+  predicate XRef : { file : src.File, span : src.ByteSpan } -> { target : Decl, kind : RefKind, name : string }
+
+  # The reverse — "where is this used". `target` leads, then the file, so both "everywhere"
+  # and "everywhere in this file" are one seek. Key-only: the kind is on the `XRef` row.
+  predicate DeclRef : { target : Decl, file : src.File, span : src.ByteSpan }
+
+  # ---- the call graph ------------------------------------------------------------------
+
+  # A call site inside a declaration. `caller` leads: "what does this function call", in
+  # source order. `callee` is absent when the target is not a declaration this index holds
+  # (a library function, a call through a value); `calleeText` always says what was written.
+  predicate Call :
+    { caller : Decl, index : int }
+    -> { callee : MaybeDecl, calleeText : string, span : src.ByteSpan, kind : CallKind }
+
+  # The reverse — "who calls this". Key-only, deduplicated over call sites.
+  predicate CalledBy : { callee : Decl, caller : Decl }
+
+  # ======================================================================================
+  # The program layer — tsconfig, and the inter-project references that were missing.
+  #
+  # This is the TypeScript analogue of `msbuild.sigla`, and it is small because tsconfig is
+  # small. It matters for two questions no other layer can answer:
+  #
+  #   * **Which program compiled this file** — a monorepo has one tsconfig per package, and a
+  #     file's diagnostics, its module resolution and its emitted output all depend on which one
+  #     claimed it. `npm.FilePackage` answers "which package"; that is not the same question,
+  #     because a package can hold several tsconfigs (`tsconfig.json`, `tsconfig.build.json`).
+  #   * **The project reference graph** — `references` in a tsconfig is TypeScript's own
+  #     inter-project edge, the thing `tsc --build` topologically sorts. It was missing here for
+  #     the same reason `<ProjectReference>` was missing from the C# schema: the outer layer
+  #     modelled containment and not dependency.
+  # ======================================================================================
+
+  # A tsconfig, identified by its file. `composite`/`incremental` are what make a project
+  # referenceable at all; `rootDir`/`outDir` are what map a source path to an emitted one, which
+  # is how a stack trace in build output is traced back to source.
+  predicate TsConfig :
+    { file : src.File }
+    -> { extends_     : src.MaybeFile
+       , rootDir      : src.MaybeString
+       , outDir       : src.MaybeString
+       , composite    : src.Bool
+       , incremental  : src.Bool
+       , moduleKind   : string
+       , target       : string
+       , strict       : src.Bool
+       , jsx          : src.MaybeString
+       }
+
+  # A `references` entry: `from` builds against `to`. `from` leads: "what does this project
+  # depend on". The reverse follows, for the direction a refactor asks in.
+  predicate TsConfigReference     : { from : TsConfig, to : TsConfig }
+  predicate TsConfigReferencedBy  : { to : TsConfig, from : TsConfig }
+
+  # Which program claimed a file. `file` leads — one open file, one lookup. A file included by
+  # two tsconfigs is two facts, which is the truth and is worth being able to see.
+  predicate FileTsConfig : { file : src.File, config : TsConfig }
+
+  # The include set from the other side: "what does this program compile".
+  predicate TsConfigFile : { config : TsConfig, file : src.File }
+
+  # A `paths` alias — the mapping that makes `@internal/foo` resolve inside a monorepo without a
+  # published package. `config` then `pattern` lead, so a resolver walks a program's aliases in
+  # one seek; `index` orders the substitution list, which tsc tries in order.
+  #
+  # This is the seam where **module resolution stops being derivable from the source alone**: an
+  # `Import.specifier` of `@internal/foo` is resolvable only against these facts plus
+  # `npm.Locator`, and storing them is what lets a consumer explain a resolution rather than
+  # guess at it.
+  predicate PathAlias :
+    { config : TsConfig, pattern : string, index : int }
+    -> { substitution : string }
+
+  # ======================================================================================
+  # The bridge to the language-independent layer.
+  #
+  # Two predicates, and no wrapper — the contrast with `csharp.sigla` is the point. C# needs a
+  # nominal `Entity` predicate to make its `Definition` union joinable; TypeScript has **one**
+  # `Decl` predicate, so a reference to "any symbol" is already nominal and already unifies.
+  # That is the divergence noted at the head of the semantic core paying off a second time.
+  # ======================================================================================
+
+  # This declaration's global name — the SCIP symbol. `decl` leads: "what is this called
+  # everywhere else". Key-only, so the symbol stays joinable — see `codemarkup.sigla`'s
+  # placement rule.
+  predicate SymbolOf : { decl : Decl, symbol : src.Symbol }
+
+  # The reverse: **given a symbol from another index, the declaration it names here.** `symbol`
+  # leads, so it is a seek. Key-only.
+  predicate DeclBySymbol : { symbol : src.Symbol, decl : Decl }
+
+}

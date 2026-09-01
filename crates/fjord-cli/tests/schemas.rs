@@ -260,6 +260,7 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
         ("msbuild.sigla", "0xbda9e53fc3c35113"),
         ("npm.sigla", "0x56ca6b880dd50587"),
         ("src.sigla", "0x0f2fe69be726b41d"),
+        ("typescript.sigla", "0x979cef7fc0d7fa81"),
     ];
 
     assert_eq!(
