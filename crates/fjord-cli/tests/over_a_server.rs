@@ -255,6 +255,138 @@ fn query_speaks_to_the_server_and_renders_client_side() {
     assert!(stderr.contains("nope"), "{stderr}");
 }
 
+/// **`bytes` holds what a `string` cannot, end to end.**
+///
+/// `0x00 0xFF 0xFF 0x00 0x80 0xC0` — a NUL, the storage codec's escape byte, and two
+/// UTF-8 continuation bytes — through every layer that has an opinion about it: a
+/// sigla schema file, `create` over the socket, the wire's value codec, the storage
+/// codec's escaped run, a **range** seek narrowed by a `0x…` constant, and the
+/// printer. Written as one test because each layer alone is already covered by a
+/// property; what is not, is that the six of them agree on one payload.
+///
+/// The range is the part worth having: `memcmp` over the payload is what the escape
+/// scheme buys, and a seek that used a length prefix would answer this one wrongly.
+#[test]
+fn bytes_holds_what_a_string_cannot() {
+    use std::sync::Arc;
+
+    use fjord_client::{Connection, Mode};
+    use fjord_schema::schema::PredicateId;
+    use fjord_wire::{WireFact, WireValue};
+
+    const PAYLOAD: [u8; 6] = [0x00, 0xFF, 0xFF, 0x00, 0x80, 0xC0];
+
+    let (dir, root) = scratch();
+
+    let schema_path = dir.path().join("blob.sigla");
+    std::fs::write(
+        &schema_path,
+        "schema blob {\n  predicate Digest : { digest : bytes }\n}\n",
+    )
+    .expect("a schema file");
+    let schema_path = schema_path.to_str().expect("a utf-8 path");
+
+    // It checks as a *file* first, which is what `print::ty` round-tripping `bytes`
+    // buys — `create` refuses a schema it cannot write down and read back.
+    let checked = ok(&root, &["schema", "check", schema_path]);
+    assert!(checked.contains("1 predicate(s)"), "{checked}");
+
+    let _serving = serve(&root);
+    ok(&root, &["create", "blob", "--schema", schema_path]);
+
+    // **The schema the client claims is the one the server serves**, fetched on a
+    // probe connection rather than restated here — which is the same reason the viewer
+    // fetches it: a schema belongs to the database (I13).
+    let socket = root.join("fjord.sock");
+    let endpoint = fjord_client::Endpoint::Unix(socket);
+    let mut probe = Connection::open(
+        &endpoint,
+        "blob",
+        Arc::new(fjord_cli::sample_schema::schema()),
+        Mode::ReadOnly,
+        false,
+    )
+    .expect("a probe connection");
+    let served = Arc::new(probe.served_schema().expect("the served schema"));
+    drop(probe);
+
+    let mut writer = Connection::open(
+        &endpoint,
+        "blob",
+        Arc::clone(&served),
+        Mode::ReadWrite,
+        true,
+    )
+    .expect("a write connection");
+
+    // Three facts, so the range below has something to exclude at both ends.
+    let facts: Vec<WireFact> = [vec![0x00u8], PAYLOAD.to_vec(), vec![0xFF, 0xFF, 0xFF]]
+        .into_iter()
+        .map(|payload| WireFact {
+            predicate: PredicateId(0),
+            key: WireValue::Record(Box::from([WireValue::Bytes(payload)])),
+            value: None,
+        })
+        .collect();
+
+    let written = writer
+        .write(PredicateId(0), &facts)
+        .expect("the facts are accepted");
+    assert_eq!(written.created, 3, "{written:?}");
+    drop(writer);
+
+    // **The whole payload, through the printer.** Hex, lowercase, untagged.
+    let json = ok(
+        &root,
+        &[
+            "query",
+            "blob",
+            "X where blob.Digest {digest = X}",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).expect("valid JSON"),
+        serde_json::json!(["00", "00ffff0080c0", "ffffff"]),
+        "{json}"
+    );
+
+    // **The `0x…` constant as a seek**, which is the reason the literal is not
+    // deferred: this is a digest lookup.
+    assert_eq!(
+        ok(
+            &root,
+            &[
+                "query",
+                "blob",
+                "Y where Y = blob.Digest {digest = 0x00ffff0080c0}",
+                "--format",
+                "count"
+            ]
+        ),
+        "1\n"
+    );
+
+    // **A range over the payload**, and it is `memcmp` order rather than length
+    // order: `0x00` sorts before the six-byte run, which sorts before `0xffffff`.
+    let json = ok(
+        &root,
+        &[
+            "query",
+            "blob",
+            "X where blob.Digest {digest = X}; X >= 0x00ff; X < 0xffffff",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).expect("valid JSON"),
+        serde_json::json!(["00ffff0080c0"]),
+        "{json}"
+    );
+}
+
 /// **§2 rule 1 has no fallback.** With nothing listening, a query says what to do
 /// about it — it never opens the directory, because a server might be holding it.
 #[test]

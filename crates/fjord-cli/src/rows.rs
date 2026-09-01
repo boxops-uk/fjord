@@ -560,6 +560,12 @@ mod tests {
                 Value::Record(Box::from([("f".to_owned(), Value::Int(1))])),
             ),
             (
+                "bytes",
+                PredicateTy::Bytes,
+                WireValue::Bytes(vec![0x00, 0xff, 0xff, 0x00, 0x80, 0xc0]),
+                Value::Bytes(vec![0x00, 0xff, 0xff, 0x00, 0x80, 0xc0]),
+            ),
+            (
                 "a union",
                 PredicateTy::Union(Arc::from([Alternative {
                     name: alt,
@@ -591,6 +597,15 @@ mod tests {
                 shape(&theirs),
                 "{what}: {rendered} against {theirs}"
             );
+
+            // **`bytes` is a bare string in both, and the decision is pinned here
+            // rather than in a paragraph.** A tagged form — `{"$bytes": …}` — would
+            // make the shape of a row depend on which endpoint served it the moment
+            // one renderer adopted it and the other did not.
+            if what == "bytes" {
+                assert_eq!(ours, serde_json::Value::from("00ffff0080c0"));
+                assert_eq!(theirs, serde_json::Value::from("00ffff0080c0"));
+            }
         }
     }
 

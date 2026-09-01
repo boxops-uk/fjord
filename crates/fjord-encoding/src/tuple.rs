@@ -3626,6 +3626,103 @@ pub(crate) mod tests {
         );
     }
 
+    /// **The census, for this family in particular.** A leaf the generator never
+    /// reaches is a law that passes vacuously, and adding a variant while forgetting
+    /// the strategy looks identical to proving it correct.
+    ///
+    /// Non-UTF-8 specifically, because a `bytes` generator that only ever drew
+    /// text would leave the ordering law saying exactly what a string's already says.
+    #[test]
+    fn the_generator_draws_bytes_including_non_utf8() {
+        use self::proptest::{arb_typed_pair, materialize_pair_fixture};
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 400;
+
+        fn walk(value: &Value, seen: &mut (bool, bool, bool)) {
+            match value {
+                Value::Bytes(payload) => {
+                    seen.0 = true;
+                    seen.1 |= std::str::from_utf8(payload).is_err();
+                    seen.2 |= payload.contains(&0x00);
+                }
+                Value::Record(fields) => {
+                    for (_, field) in fields.iter() {
+                        walk(field, seen);
+                    }
+                }
+                Value::Union { value, .. } => walk(value, seen),
+                Value::Null | Value::Int(_) | Value::Str(_) | Value::FactRef(_) => {}
+            }
+        }
+
+        let mut runner = TestRunner::deterministic();
+        let mut seen = (false, false, false);
+
+        for _ in 0..RUNS {
+            let spec = arb_typed_pair().new_tree(&mut runner).unwrap().current();
+            let fixture = materialize_pair_fixture(spec);
+            walk(&fixture.a, &mut seen);
+            walk(&fixture.b, &mut seen);
+        }
+
+        assert!(seen.0, "{RUNS} draws produced no `bytes` value at all");
+        assert!(
+            seen.1,
+            "{RUNS} draws produced no `bytes` value a `String` could not have held"
+        );
+        assert!(
+            seen.2,
+            "{RUNS} draws produced no `bytes` value holding a NUL — the byte the \
+             escape scheme is about"
+        );
+    }
+
+    /// **Encoded `memcmp` order is payload `memcmp` order, at every pair** — over
+    /// payloads a `String` cannot hold.
+    ///
+    /// The escape scheme is what makes this true: a `0x00` becomes `0x00 0xFF` and a
+    /// bare `0x00` terminates. A length prefix would sort by length first, and the
+    /// empty-against-`0x00` and `0x00` -against-`0x0000` pairs below are what would
+    /// catch it.
+    #[test]
+    fn bytes_ordering_edges() {
+        let payloads: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0x00],
+            vec![0x00, 0x00],
+            vec![0x00, 0xFF],
+            vec![0x01],
+            vec![0x7F],
+            vec![0x80],
+            vec![0x80, 0x00],
+            vec![0xC0],
+            vec![0xED, 0xA0, 0x80], // the UTF-8 encoding of a lone surrogate
+            vec![0xFE],
+            vec![0xFF],
+            vec![0xFF, 0x00],
+            vec![0xFF, 0xFF],
+        ];
+
+        for a in &payloads {
+            for b in &payloads {
+                let (ea, eb) = (
+                    encode_typed(&PredicateTy::Bytes, &Value::Bytes(a.clone())).expect("encodes"),
+                    encode_typed(&PredicateTy::Bytes, &Value::Bytes(b.clone())).expect("encodes"),
+                );
+
+                assert_eq!(
+                    ea.cmp(&eb),
+                    a.cmp(b),
+                    "encoded order disagrees with payload order for {a:02x?} against {b:02x?}"
+                );
+            }
+        }
+    }
+
     /// A value of the wrong **family** says so, rather than reporting as a bad
     /// record — which at a scalar field misdirects, there being no record.
     ///
