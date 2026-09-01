@@ -777,6 +777,138 @@ fn unions_are_byte_identical_with_the_dotnet_client() {
     }
 }
 
+/// The `bytes` corpus's schema, stated independently of the C# side's.
+///
+/// Its own schema for the reason the union corpus has one: a `bytes` field in
+/// `schemas/code.sigla` would move that schema's fingerprint and every block in
+/// `blocks.txt` with it.
+fn bytes_schema() -> Schema {
+    let mut rodeo = Rodeo::new();
+    let mut sym = |name: &str| rodeo.get_or_intern(name);
+
+    let (digest_p, blob_p) = (sym("blob.Digest"), sym("blob.Blob"));
+    let (f_digest, f_path, f_id) = (sym("digest"), sym("path"), sym("id"));
+
+    Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![
+            Predicate {
+                name: digest_p,
+                key: PredicateTy::Record(Arc::from([
+                    (f_digest, PredicateTy::Bytes),
+                    (f_path, PredicateTy::Str),
+                ])),
+                value: None,
+            },
+            // A `bytes` **value side** as well as a key field, so the same run goes
+            // through both paths.
+            Predicate {
+                name: blob_p,
+                key: PredicateTy::Record(Arc::from([(f_id, PredicateTy::Int)])),
+                value: Some(PredicateTy::Bytes),
+            },
+        ]),
+    )
+}
+
+/// The same facts the C# side writes, restated here rather than shared.
+fn bytes_corpus() -> Vec<(&'static str, PredicateId, Vec<WireFact>)> {
+    let digest = |payload: &[u8], path: &str| WireFact {
+        predicate: PredicateId(0),
+        key: WireValue::Record(Box::from([
+            WireValue::Bytes(payload.to_vec()),
+            WireValue::Str(path.to_owned()),
+        ])),
+        value: None,
+    };
+
+    let blob = |id: i64, payload: &[u8]| WireFact {
+        predicate: PredicateId(1),
+        key: WireValue::Record(Box::from([WireValue::Int(id)])),
+        value: Some(WireValue::Bytes(payload.to_vec())),
+    };
+
+    vec![
+        (
+            "blob.Digest",
+            PredicateId(0),
+            vec![
+                digest(b"", "empty"),
+                digest(&[0x00], "nul"),
+                digest(
+                    &[0x00, 0xFF, 0xFF, 0x00, 0x80, 0xC0],
+                    "everything a string cannot",
+                ),
+                digest(&[0xFF, 0xFF, 0xFF], "escape bytes"),
+            ],
+        ),
+        (
+            "blob.Blob",
+            PredicateId(1),
+            vec![blob(1, &[0xED, 0xA0, 0x80]), blob(2, b"")],
+        ),
+    ]
+}
+
+/// **The two clients produce the same bytes for a `bytes` field**, on the key side and
+/// the value side, for runs no `String` could hold.
+///
+/// What this pins that the union golden could not: that neither client validates the
+/// run, and that both spend a length prefix and the payload and nothing else. A client
+/// that reused its string path would produce the same bytes *here* — the escaping is
+/// storage's business, not this wire's — and the wrong ones on disk, which is why the
+/// storage side has `bytes_ordering_edges` of its own.
+#[test]
+fn bytes_are_byte_identical_with_the_dotnet_client() {
+    let golden = golden_at(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../clients/dotnet/golden/bytes.txt"
+    ));
+    let schema = bytes_schema();
+
+    assert_eq!(
+        fingerprint::of(&schema),
+        golden.fingerprint,
+        "the two clients' `bytes` schemas disagree, so their blocks were never going \
+         to match"
+    );
+
+    let corpus = bytes_corpus();
+    assert_eq!(
+        corpus.len(),
+        golden.blocks.len(),
+        "the corpora have drifted: {} blocks here, {} in the golden",
+        corpus.len(),
+        golden.blocks.len()
+    );
+
+    for ((name, predicate, facts), (golden_name, golden_predicate, expected)) in
+        corpus.iter().zip(&golden.blocks)
+    {
+        assert_eq!(name, golden_name, "the corpora are in different orders");
+        assert_eq!(predicate.0, *golden_predicate, "{name}");
+
+        let mut block = vec![];
+        encode_block(&mut block, &schema, *predicate, facts).expect("it encodes");
+
+        assert_eq!(
+            hex(&block),
+            hex(expected),
+            "`{name}` differs between the Rust and C# clients"
+        );
+    }
+}
+
+/// The `bytes` corpus's fingerprint, for the C# side to carry.
+#[test]
+#[ignore = "not a guard: prints the bytes corpus's schema fingerprint, for the C# client to carry"]
+fn print_the_bytes_schema_fingerprint() {
+    println!(
+        "bytes schema fingerprint {:016x}",
+        fingerprint::of(&bytes_schema())
+    );
+}
+
 /// The fingerprint the C# side has to **carry**, printed rather than asserted.
 ///
 /// A client carries the number instead of computing it (chapter 6's D2), so somebody

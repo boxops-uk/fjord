@@ -23,6 +23,7 @@ var address = FjordAddress
 // EmitGolden below for why that file exists.
 var goldenPath = Args("--golden");
 var unionGoldenPath = Args("--golden-unions");
+var bytesGoldenPath = Args("--golden-bytes");
 
 string? Args(string flag)
 {
@@ -204,6 +205,12 @@ var schema = new FjordSchema([
 if (goldenPath is not null)
 {
     EmitGolden(goldenPath);
+    return;
+}
+
+if (bytesGoldenPath is not null)
+{
+    EmitBytesGolden(bytesGoldenPath);
     return;
 }
 
@@ -544,10 +551,78 @@ void EmitUnionGolden(string path)
     Console.WriteLine($"wrote {blocks.Length} golden union blocks to {path}");
 }
 
+void EmitBytesGolden(string path)
+{
+    const uint Digest = 0;
+    const uint Blob = 1;
+
+    // **Payloads no `string` could hold**, which is the whole reason the type exists:
+    // a NUL, the storage codec's escape byte, and two UTF-8 continuation bytes. On
+    // this wire they cost their own length and nothing else — the escaping is
+    // storage's business — so a client that reused its string path would produce the
+    // same bytes here and the wrong ones on disk. What this golden pins is that both
+    // clients agree on the *length prefix and the run*, and that neither validates it.
+    var bytesSchema = new FjordSchema(
+        [
+            new FjordPredicate("blob.Digest", FjordType.Rec(
+                ("digest", FjordType.Blob),
+                ("path", FjordType.String)), null),
+            // A `bytes` value side as well as a key field, so the same run goes through
+            // both paths.
+            new FjordPredicate("blob.Blob",
+                FjordType.Rec(("id", FjordType.Integer)),
+                FjordType.Blob),
+        ],
+        // Carried, not computed — `print_the_bytes_schema_fingerprint`'s job on the
+        // Rust side.
+        0x7cf603845973ed44UL);
+
+    FjordFact Digest_(byte[] digest, string path) =>
+        new(Digest, FjordValue.Rec(FjordValue.Of(digest), FjordValue.Of(path)));
+
+    (string Name, uint Predicate, IReadOnlyList<FjordFact> Facts)[] blocks =
+    [
+        ("blob.Digest", Digest,
+        [
+            // The empty run, which a length prefix of zero is the whole encoding of.
+            Digest_([], "empty"),
+            Digest_([0x00], "nul"),
+            Digest_([0x00, 0xFF, 0xFF, 0x00, 0x80, 0xC0], "everything a string cannot"),
+            Digest_([0xFF, 0xFF, 0xFF], "escape bytes"),
+        ]),
+
+        ("blob.Blob", Blob,
+        [
+            new(Blob, FjordValue.Rec(FjordValue.Of(1L)), FjordValue.Of(new byte[] { 0xED, 0xA0, 0x80 })),
+            new(Blob, FjordValue.Rec(FjordValue.Of(2L)), FjordValue.Of(Array.Empty<byte>())),
+        ]),
+    ];
+
+    List<string> lines =
+    [
+        "# `bytes` blocks produced by the .NET client, as hex. `fjord-client` encodes the",
+        "# same facts and must produce the same bytes.",
+        "#",
+        "# A schema of its own, so a `bytes` field costs `schemas/code.sigla` no flag day.",
+        "# Regenerate with ./clients/dotnet/emit-golden.sh.",
+        $"schema-fingerprint {bytesSchema.Fingerprint:x16}",
+    ];
+
+    foreach (var (name, predicate, facts) in blocks)
+    {
+        var bytes = Block.Encode(bytesSchema, predicate, facts);
+        lines.Add($"block {name} {predicate} {Convert.ToHexString(bytes).ToLowerInvariant()}");
+    }
+
+    System.IO.File.WriteAllLines(path, lines);
+    Console.WriteLine($"wrote {blocks.Length} golden bytes blocks to {path}");
+}
+
 static string Describe(FjordType type) => type switch
 {
     FjordType.Int => "int",
     FjordType.Str => "string",
+    FjordType.Bytes => "bytes",
     FjordType.Fact fact => $"fact({fact.Predicate})",
     FjordType.Record record =>
         "{" + string.Join(", ", record.Fields.Select(f => $"{f.Name} : {Describe(f.Type)}")) + "}",
@@ -561,6 +636,7 @@ static string Render(FjordValue value) => value switch
 {
     FjordValue.Int n => n.Value.ToString(),
     FjordValue.Str s => $"\"{s.Value}\"",
+    FjordValue.Bytes b => "0x" + Convert.ToHexString(b.Value.Span).ToLowerInvariant(),
     FjordValue.Ref { Value: FjordRef.Id id } => $"#{id.FactId >> 40}:{id.FactId & 0xFFFFFFFFFF}",
     FjordValue.Ref { Value: FjordRef.Nested nested } => $"<{Render(nested.Fact.Key)}>",
     FjordValue.Record record => "{" + string.Join(", ", record.Fields.Select(Render)) + "}",

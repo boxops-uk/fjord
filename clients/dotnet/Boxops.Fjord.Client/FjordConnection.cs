@@ -338,6 +338,12 @@ public static class RowDescriptor
             case 1:
                 return FjordType.String;
 
+            // Appended after the union's tag 4, on the same argument: a client built
+            // before this type meets tag 5, has no case for it, and refuses the stream
+            // rather than reading the field as a string.
+            case 5:
+                return FjordType.Blob;
+
             case 2:
                 return FjordType.Reference((uint)Varint.Read(bytes, ref at));
 

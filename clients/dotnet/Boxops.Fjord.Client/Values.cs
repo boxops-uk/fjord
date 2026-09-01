@@ -14,6 +14,9 @@ public abstract record FjordValue
 
     public sealed record Str(string Value) : FjordValue;
 
+    /// <summary>Uninterpreted bytes.</summary>
+    public sealed record Bytes(ReadOnlyMemory<byte> Value) : FjordValue;
+
     public sealed record Ref(FjordRef Value) : FjordValue;
 
     public sealed record Record(IReadOnlyList<FjordValue> Fields) : FjordValue;
@@ -29,6 +32,8 @@ public abstract record FjordValue
     public static FjordValue Of(long value) => new Int(value);
 
     public static FjordValue Of(string value) => new Str(value);
+
+    public static FjordValue Of(ReadOnlyMemory<byte> value) => new Bytes(value);
 
     public static FjordValue Of(FjordRef value) => new Ref(value);
 
@@ -128,6 +133,14 @@ public static class ValueCodec
                 var utf8 = Encoding.UTF8.GetBytes(s.Value);
                 Varint.Write(sink, (ulong)utf8.Length);
                 sink.Write(utf8);
+                break;
+            }
+
+            // The same blob, unvalidated.
+            case (FjordType.Bytes, FjordValue.Bytes payload):
+            {
+                Varint.Write(sink, (ulong)payload.Value.Length);
+                sink.Write(payload.Value.Span);
                 break;
             }
 
@@ -259,6 +272,19 @@ public static class ValueCodec
                 var text = Encoding.UTF8.GetString(bytes.Slice(at, (int)length));
                 at += (int)length;
                 return new FjordValue.Str(text);
+            }
+
+            case FjordType.Bytes:
+            {
+                var length = Varint.Read(bytes, ref at);
+                if (length > (ulong)(bytes.Length - at))
+                {
+                    throw new FjordProtocolException("bytes run past the end of the payload");
+                }
+
+                var payload = bytes.Slice(at, (int)length).ToArray();
+                at += (int)length;
+                return new FjordValue.Bytes(payload);
             }
 
             case FjordType.Fact fact:

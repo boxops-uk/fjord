@@ -1,0 +1,8 @@
+# `bytes` blocks produced by the .NET client, as hex. `fjord-client` encodes the
+# same facts and must produce the same bytes.
+#
+# A schema of its own, so a `bytes` field costs `schemas/code.sigla` no flag day.
+# Regenerate with ./clients/dotnet/emit-golden.sh.
+schema-fingerprint 7cf603845973ed44
+block blob.Digest 0 ffffffffffffffffffff464a424b0b0000000400000040000000cd015388626c6f622e4469676573740005656d7074790100036e756c0600ffff0080c01a65766572797468696e67206120737472696e672063616e6e6f7403ffffff0c657363617065206279746573
+block blob.Blob 1 ffffffffffffffffffff464a424b090000000200000007000000339b92c8626c6f622e426c6f620203eda0800400
