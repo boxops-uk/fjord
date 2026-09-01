@@ -229,10 +229,39 @@ Resolution semantics, in four lines:
   the blocks. A namespace is open, so the union is the text put end to end.
 - **Cycles are harmless by construction.** A file already read is not read again, so `a`
   importing `b` importing `a` terminates. Diamonds dedup for free.
-- **The real error is genuine redeclaration** — two *different* definitions of one
-  fully-qualified name, as opposed to the same file reached twice.
+- **One name declared twice is a rejection, whether or not the two agree.** The same
+  *file* reached twice is deduped by file identity and costs nothing; two declarations of
+  one fully-qualified name are `reject/redeclaration` even when they are byte-identical.
+  That is the right behaviour rather than a wart: a namespace split across files has
+  exactly one declaration site per predicate, which is what makes an import worth having.
+- **The file found has to be the file meant.** A file is located from the import name
+  alone — resolution never inspects the `schema <name>` head it finds there — so
+  `import ob` answered by a file declaring `schema base` is `reject/namespace-mismatch`,
+  reported *at the import*. Without it the two files resolve and then every reference into
+  the namespace fails `reject/unknown-name`, which reports the symptom everywhere and the
+  cause nowhere.
 - **Transitive visibility is accepted, not fought.** An import is not an encapsulation
   boundary; what `a` imports, anything importing `a` can see.
+
+### Resolving without a filesystem
+
+Resolution is one algorithm over a **source provider**, and the filesystem is one
+implementation of it. An embedder — a producer with its schema in `include_str!`, or a
+browser, which has no filesystem at all — hands
+`fjord_schema::syntax::resolve::resolve_from` an ordered list of `(name, text)`, the entry
+first, and gets the same union back:
+
+```rust
+let schema = fjord_db::read_schema([
+    ("app.sigla", include_str!("../schemas/app.sigla")),
+    ("base.sigla", include_str!("../schemas/base.sigla")),
+])?;
+```
+
+The list's **order is the search order**, as the roots are for a file: where two sources
+claim one import name, the first wins. The two paths are held together by a differential —
+every multi-file case in the corpus is resolved both ways and must agree on every
+predicate, every fingerprint and every diagnostic — because two algorithms would drift.
 
 ## Identity: canonical form and fingerprints
 

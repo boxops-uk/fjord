@@ -42,6 +42,36 @@ pub struct Entry {
     pub about: &'static str,
     pub source: &'static str,
     pub verdict: Verdict,
+    /// **The files this entry's `import`s resolve against**, as `(name, text)`.
+    ///
+    /// Empty for a single-source entry, which is almost all of them: `source` is then
+    /// parsed and lowered directly. A non-empty set makes the entry a *resolution*
+    /// case, and there was no way to state one until resolution stopped needing a
+    /// filesystem — which is why no cross-file behaviour was in this table at all.
+    pub imports: &'static [(&'static str, &'static str)],
+    /// What the entry source is **called**, for a spanning entry.
+    ///
+    /// It has to be a name an `import` could match, because a cycle imports the entry
+    /// back — and `about` is prose.
+    pub name: &'static str,
+}
+
+impl Entry {
+    /// Every source this entry resolves over, the entry first.
+    ///
+    /// # Panics
+    ///
+    /// If a spanning entry has no name, which would make its own file unimportable.
+    pub fn sources(&self) -> impl Iterator<Item = (&str, &str)> {
+        assert!(
+            self.imports.is_empty() || !self.name.is_empty(),
+            "`{}` spans files and has no name",
+            self.about
+        );
+
+        std::iter::once((self.name, self.source))
+            .chain(self.imports.iter().map(|(name, text)| (*name, *text)))
+    }
 }
 
 const fn entry(about: &'static str, source: &'static str, verdict: Verdict) -> Entry {
@@ -49,6 +79,26 @@ const fn entry(about: &'static str, source: &'static str, verdict: Verdict) -> E
         about,
         source,
         verdict,
+        imports: &[],
+        name: "",
+    }
+}
+
+/// An entry whose `import`s resolve against `imports`, the entry itself first and
+/// named `name`.
+const fn spanning(
+    about: &'static str,
+    name: &'static str,
+    source: &'static str,
+    imports: &'static [(&'static str, &'static str)],
+    verdict: Verdict,
+) -> Entry {
+    Entry {
+        about,
+        source,
+        verdict,
+        imports,
+        name,
     }
 }
 
@@ -103,6 +153,84 @@ pub const CORPUS: &[Entry] = &[
     entry(
         "a nested record inside a key",
         "schema src { predicate File : string\n          predicate Ref : { at : { line : int, col : int }, file : File } }",
+        Verdict::Lowers,
+    ),
+    // ---- across files: what resolution comes to ----------------------------------
+    //
+    // None of this was in the table before, for a mechanical reason rather than an
+    // oversight: stating a cross-file case needed a filesystem, and a corpus that wrote
+    // temp directories is a corpus nobody runs. `resolve_from` is what made these cheap.
+    spanning(
+        "an import brings in what it names, and a reference crosses the boundary",
+        "app.sigla",
+        "schema app { import base\n predicate Use : { of : base.Thing } }",
+        &[("base.sigla", "schema base { predicate Thing : string }")],
+        Verdict::Lowers,
+    ),
+    spanning(
+        "a named type moved into an imported file — the split every later schema rests on",
+        "app.sigla",
+        "schema app { import base\n predicate P : { flag : base.Flag } }",
+        &[(
+            "base.sigla",
+            "schema base { type Flag = { no : {} = 0 | yes : {} = 1 } }",
+        )],
+        Verdict::Lowers,
+    ),
+    // **Both of these need the imported file to declare the namespace the import
+    // named** — otherwise the namespace check below fires first, which is itself the
+    // point of having it. A file holds several blocks, so `other.sigla` declares the
+    // namespace it is fetched as *and* a second block in `app`, which is where the
+    // second definition of `app.P` lives.
+    spanning(
+        "**identical** redeclaration across two files, which is still a redeclaration",
+        "app.sigla",
+        "schema app { import other\n predicate P : int }",
+        &[(
+            "other.sigla",
+            "schema other { predicate Q : int }\nschema app { predicate P : int }",
+        )],
+        Verdict::Diagnosed(Code::RejectRedeclaration),
+    ),
+    spanning(
+        "a genuinely different redeclaration across two files",
+        "app.sigla",
+        "schema app { import other\n predicate P : int }",
+        &[(
+            "other.sigla",
+            "schema other { predicate Q : int }\nschema app { predicate P : string }",
+        )],
+        Verdict::Diagnosed(Code::RejectRedeclaration),
+    ),
+    spanning(
+        "a file whose namespace is not the one the import named",
+        "app.sigla",
+        "schema app { import ob\n predicate P : { t : ob.Thing } }",
+        &[("ob.sigla", "schema base { predicate Thing : string }")],
+        Verdict::Diagnosed(Code::RejectNamespaceMismatch),
+    ),
+    spanning(
+        "a cycle of imports, which dedup by identity makes harmless",
+        "a.sigla",
+        "schema a { import b\n predicate A : { b : b.B } }",
+        &[("b.sigla", "schema b { import a\n predicate B : string }")],
+        Verdict::Lowers,
+    ),
+    spanning(
+        "a diamond, where the shared file is read once",
+        "app.sigla",
+        "schema app { import left\n import right }",
+        &[
+            (
+                "left.sigla",
+                "schema left { import base\n predicate L : { b : base.B } }",
+            ),
+            (
+                "right.sigla",
+                "schema right { import base\n predicate R : { b : base.B } }",
+            ),
+            ("base.sigla", "schema base { predicate B : string }"),
+        ],
         Verdict::Lowers,
     ),
     // ---- unions (8.6) -------------------------------------------------------------
@@ -233,16 +361,48 @@ mod tests {
         *,
     };
 
-    /// Every code a source draws, sorted and deduplicated.
-    fn codes(source: &str) -> Vec<String> {
-        let mut diags = vec![];
+    /// Every code an entry draws, sorted and deduplicated.
+    ///
+    /// A **spanning** entry goes through resolution, which reports by rendering rather
+    /// than into a sink — so its codes are read back out of the rendered block, where
+    /// `codespan` writes them as `error[reject/…]`. That is the form a person sees, and
+    /// reading the code out of it is what keeps this gate asserting on the taxonomy
+    /// rather than on wording.
+    fn codes(entry: &Entry) -> Vec<String> {
+        let mut codes: Vec<String> = if entry.imports.is_empty() {
+            let mut diags = vec![];
+            if let Some(cst) = parse(entry.source, &mut diags) {
+                // The schema itself is not the question here — the diagnostics are.
+                let _ = lower(&cst, &mut diags);
+            }
+            diags.into_iter().filter_map(|d| d.code).collect()
+        } else {
+            match crate::syntax::resolve::resolve_from(entry.sources()) {
+                Ok(_) => vec![],
+                Err(rendered) => {
+                    let found: Vec<String> = rendered
+                        .lines()
+                        .filter_map(|line| {
+                            let open = line.find("error[")? + "error[".len();
+                            let close = line[open..].find(']')? + open;
+                            Some(line[open..close].to_owned())
+                        })
+                        .collect();
 
-        if let Some(cst) = parse(source, &mut diags) {
-            // The schema itself is not the question here — the diagnostics are.
-            let _ = lower(&cst, &mut diags);
-        }
+                    // **A refusal that carries no code has to fail loudly.** Resolution
+                    // reports some faults as plain strings — an import nothing answers,
+                    // a source that cannot be read — and returning an empty set for
+                    // those would read as "lowered cleanly", which is how an entry
+                    // whose fixture is simply wrong passes without asserting anything.
+                    if found.is_empty() {
+                        vec![format!("<no code in: {}>", rendered.trim())]
+                    } else {
+                        found
+                    }
+                }
+            }
+        };
 
-        let mut codes: Vec<String> = diags.into_iter().filter_map(|d| d.code).collect();
         codes.sort();
         codes.dedup();
         codes
@@ -251,20 +411,22 @@ mod tests {
     /// **The gate**: every entry comes to exactly what it says it does.
     #[test]
     fn every_entry_is_classified_as_the_table_says() {
-        for Entry {
-            about,
-            source,
-            verdict,
-        } in CORPUS
-        {
+        for entry in CORPUS {
+            let Entry {
+                about,
+                source,
+                verdict,
+                ..
+            } = entry;
+
             match verdict {
                 Verdict::Lowers => assert!(
-                    codes(source).is_empty(),
+                    codes(entry).is_empty(),
                     "`{about}` should lower cleanly, and drew {:?}:\n  {source}",
-                    codes(source)
+                    codes(entry)
                 ),
                 Verdict::Diagnosed(code) => assert_eq!(
-                    codes(source),
+                    codes(entry),
                     vec![code.as_str().to_owned()],
                     "`{about}` should draw exactly `{}`:\n  {source}",
                     code.as_str()
@@ -285,6 +447,7 @@ mod tests {
             about,
             source,
             verdict,
+            ..
         } in CORPUS
         {
             let mut diags = vec![];

@@ -109,6 +109,28 @@ opinion. `h` is the answer, and it is what lets a client describe the right pred
 a query before sending it, and show a plan. **Virtual predicates are included**, because the
 question is what may be asked rather than what the database holds.
 
+### Where a predicate id comes from, and the one place it can bite a consumer
+
+Ids are assigned at `create`, by **sorted fully-qualified name with the reserved `fjord.*`
+namespace last**, and then embedded — not by declaration order and not by file position. The
+map is append-only for the life of the database ([I13](invariants.html#i13)), so an existing
+database's numbering never moves.
+
+Adding a predicate to a *schema* is another matter: because the rule is a sort, a name that
+sorts early **inserts** an id rather than appending one, and every predicate above it is
+numbered one higher in databases created after the change.
+
+That never leaves the database on this wire. A block header carries the predicate's **name**,
+and a row carries no predicate at all — so a client keeps no table that could fall out of step,
+and this is one of the reasons the header spends the bytes on a name.
+
+:::warn A `FactId`'s tag is the *database's* numbering
+The one place the numbering is visible to a consumer. A `FactId` packs its owning predicate's
+id in its high bits ([I11](invariants.html#i11)), so a consumer that decodes a returned
+reference's tag against a **hardcoded** table reads the wrong predicate the day the numbering
+moves. Ask the schema — `h` above — or treat an id as opaque and hand it back to `F`.
+:::
+
 ## A query stream
 
 ```text

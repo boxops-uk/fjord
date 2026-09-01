@@ -7,6 +7,33 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `import ob` answered by a file declaring `schema base` says so
+
+A file is located from the import name alone — resolution never inspects the `schema <name>`
+head it finds there — so a mismatch used to resolve both files and then fail
+`reject/unknown-name` at every reference into the namespace, reporting the symptom everywhere
+and the cause nowhere. It is now `reject/namespace-mismatch`, reported **at the import**, and
+it names both: *"`ob.sigla` declares no namespace `ob` — it declares `base`"*.
+
+The schema corpus can state a **cross-file** case, which it could not before: doing so needed a
+filesystem, and a corpus that writes temp directories is a corpus nobody runs. `resolve_from`
+made them cheap, and seven arrived at once — an import that brings in what it names, a named
+type moved into an imported file, identical *and* differing redeclaration across two files, a
+namespace mismatch, a cycle, and a diamond.
+
+**Two corrections to what the book said.** Identical redeclaration across two files rejects —
+the book said it did not — and that is the right behaviour rather than a wart, because a
+namespace split across files has exactly one declaration site per predicate. And the
+wire-protocol page now says where a predicate id comes from: sorted fully-qualified name,
+`fjord.*` last, assigned at create and append-only for life. A predicate whose name sorts early
+therefore *inserts* an id rather than appending one. That never leaves the database — a block
+header carries the name — with one exception, now written down: a `FactId` packs its predicate's
+id in its high bits, so a consumer decoding a returned reference's tag against a hardcoded table
+reads the wrong predicate the day the numbering moves.
+
+`predicate_ids_are_assigned_by_sorted_qualified_name` is the test that rule never had, and
+every schema file added from here on relies on it.
+
 ### A schema that spans files, resolved without a filesystem
 
 `fjord_db::read_schema` now takes the **set** of sources, the entry first, and follows the

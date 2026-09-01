@@ -377,7 +377,16 @@ mod tests {
                 continue;
             }
 
-            let schema = read(entry.source, false);
+            // **A cross-file schema round-trips too**, and it is the case where the
+            // claim is worth most: what comes back is one block per namespace with the
+            // file boundaries gone, which is exactly what a database embeds.
+            let schema = if entry.imports.is_empty() {
+                read(entry.source, false)
+            } else {
+                crate::syntax::resolve::resolve_from(entry.sources())
+                    .unwrap_or_else(|reason| panic!("{}: {reason}", entry.about))
+                    .schema
+            };
             let printed = print(&schema);
             let back = read(&printed, true);
 

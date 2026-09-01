@@ -258,7 +258,7 @@ fn build(cst: &Cst<'_>, diags: &mut Vec<Diagnostic>, numbering: Numbering) -> Op
 /// cannot ask lowering what to fetch. Parsing is enough to answer it, and this is that
 /// answer.
 #[must_use]
-pub fn imports(cst: &Cst<'_>) -> Vec<String> {
+pub fn imports(cst: &Cst<'_>) -> Vec<(String, Span)> {
     let mut out = vec![];
 
     for decl in kids(cst, NodeRef::ROOT) {
@@ -268,14 +268,29 @@ pub fn imports(cst: &Cst<'_>) -> Vec<String> {
 
         for item in kids(cst, decl) {
             if rule(cst, item) == Some(Rule::ImportItem)
-                && let Some(ns) = first_text(cst, item, Rule::Ns)
+                && let Some(ns) = kids(cst, item).find(|n| rule(cst, *n) == Some(Rule::Ns))
             {
-                out.push(ns.to_owned());
+                // **The span, not only the name.** A namespace mismatch is reported
+                // against the `import` that named it; without a span it would have to
+                // be reported against the whole file, which is the caret that says
+                // nothing.
+                out.push((cst.source()[cst.span(ns)].to_owned(), cst.span(ns)));
             }
         }
     }
 
     out
+}
+
+/// The namespaces a source's blocks declare.
+///
+/// What [`imports`] is checked against: a file is located from the import name alone,
+/// so this is the only thing that can say the file found is the file meant.
+pub fn namespaces(cst: &Cst<'_>) -> Vec<String> {
+    kids(cst, NodeRef::ROOT)
+        .filter(|decl| rule(cst, *decl) == Some(Rule::SchemaDecl))
+        .filter_map(|decl| first_text(cst, decl, Rule::Ns).map(str::to_owned))
+        .collect()
 }
 
 /// One item of a schema block.

@@ -92,6 +92,15 @@ struct Source {
     identity: String,
 }
 
+/// The `import` that asked for a source, so a namespace mismatch is reported where it
+/// was written rather than where it is felt.
+struct Asked {
+    import: String,
+    by_name: String,
+    by_text: String,
+    span: crate::syntax::parser::Span,
+}
+
 /// Where a resolver's sources come from.
 trait SchemaSources {
     /// The source for an import name, or `None` if this provider has none.
@@ -205,8 +214,9 @@ fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Res
 
     // The frontier, as (source, who asked for it). The second half is the whole of a
     // useful "unresolved import" message: a namespace with no source is only ever a
-    // problem in the source that named it.
-    let mut pending: Vec<(Source, Option<String>)> = vec![(
+    // problem in the source that named it — and it is what lets a namespace mismatch
+    // point at the `import` rather than at every use site downstream.
+    let mut pending: Vec<(Source, Option<Asked>)> = vec![(
         Source {
             name: entry.0.to_owned(),
             text: entry.1.to_owned(),
@@ -215,7 +225,7 @@ fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Res
         None,
     )];
 
-    while let Some((source, _asked_by)) = pending.pop() {
+    while let Some((source, asked_by)) = pending.pop() {
         // **Dedup by identity, not by name** — see [`Source::identity`].
         if !seen.insert(source.identity.clone()) {
             continue;
@@ -231,7 +241,42 @@ fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Res
             return Err(diag::render(&name, &text, &diags));
         }
 
-        for namespace in lower::imports(&cst) {
+        // **The file found is the file meant.** A source is located from the import
+        // name alone — nothing above looks at the `schema <name>` head — so without
+        // this the mismatch surfaces as `reject/unknown-name` at every reference into
+        // the namespace and as nothing at the import that caused it.
+        if let Some(asked) = &asked_by {
+            let declared = lower::namespaces(&cst);
+
+            if !declared.contains(&asked.import) {
+                let says = if declared.is_empty() {
+                    "no namespace at all".to_owned()
+                } else {
+                    format!(
+                        "`{}`",
+                        declared
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join("`, `")
+                    )
+                };
+
+                return Err(diag::render(
+                    &asked.by_name,
+                    &asked.by_text,
+                    &[diag::Code::RejectNamespaceMismatch.at(
+                        asked.span.clone(),
+                        format!(
+                            "`{name}` declares no namespace `{}` — it declares {says}",
+                            asked.import
+                        ),
+                    )],
+                ));
+            }
+        }
+
+        for (namespace, span) in lower::imports(&cst) {
             let found = sources.find(&namespace)?.ok_or_else(|| {
                 format!(
                     "{name}: nothing on the schema path declares `{namespace}` — looked for \
@@ -241,7 +286,15 @@ fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Res
                 )
             })?;
 
-            pending.push((found, Some(name.clone())));
+            pending.push((
+                found,
+                Some(Asked {
+                    import: namespace,
+                    by_name: name.clone(),
+                    by_text: text.clone(),
+                    span,
+                }),
+            ));
         }
 
         texts.push(text);
@@ -464,7 +517,23 @@ mod tests {
                     "main.sigla",
                     "schema app { import other\n predicate P : int }",
                 ),
-                ("other.sigla", "schema app { predicate P : int }"),
+                // `other.sigla` declares the namespace it is fetched as **and** a
+                // second block in `app`; without the first this is a namespace
+                // mismatch rather than the redeclaration this case is about.
+                (
+                    "other.sigla",
+                    "schema other { predicate Q : int }\nschema app { predicate P : int }",
+                ),
+            ],
+        ),
+        (
+            "a file whose namespace is not the one the import named",
+            &[
+                (
+                    "main.sigla",
+                    "schema app { import ob\n predicate P : { t : ob.Thing } }",
+                ),
+                ("ob.sigla", "schema base { predicate Thing : string }"),
             ],
         ),
         (
@@ -660,18 +729,64 @@ mod tests {
     /// fully-qualified name, which no dedup can excuse.
     #[test]
     fn two_definitions_of_one_name_are_refused() {
+        // `other.sigla` declares the namespace it is fetched as **and** a second block
+        // in `app` — a file holds several blocks, and without the first one this is a
+        // namespace mismatch rather than a redeclaration.
         let (_dir, resolved) = resolving(&[
             (
                 "main.sigla",
                 "schema app { import other\n predicate P : string }",
             ),
-            ("other.sigla", "schema app { predicate P : int }"),
+            (
+                "other.sigla",
+                "schema other { predicate Q : int }\nschema app { predicate P : int }",
+            ),
         ]);
 
         let Err(failed) = resolved else {
             panic!("one name, two definitions");
         };
         assert!(failed.contains("app.P"), "{failed}");
+    }
+
+    /// **Ids are assigned by sorted fully-qualified name, with `fjord.*` last** — not
+    /// by file position, and not by declaration order.
+    ///
+    /// A `sort_by` in `lower` with no test naming it, and every schema file added from
+    /// here on relies on it: adding a predicate whose name sorts early does not *append*
+    /// an id, it **inserts** one and renumbers everything above. Existing databases keep
+    /// the map they embedded (I13), the wire carries names, and the one place it is not
+    /// free is a `FactId`'s tag — which is the database's numbering, so a consumer
+    /// decoding a returned reference against a hardcoded table reads the wrong
+    /// predicate.
+    #[test]
+    fn predicate_ids_are_assigned_by_sorted_qualified_name() {
+        // The *file* order and the sorted order disagree at every position, and the
+        // reserved namespace is declared first so that "last" is a claim rather than an
+        // accident of where it was written.
+        let (_dir, resolved) = resolving(&[
+            (
+                "main.sigla",
+                "schema zeta { import alpha\n import mid\n predicate Z : string }",
+            ),
+            ("alpha.sigla", "schema alpha { predicate A : string }"),
+            ("mid.sigla", "schema mid { predicate M : string }"),
+        ]);
+
+        let resolved = resolved.expect("it resolves");
+
+        assert_eq!(
+            names(&resolved.schema),
+            ["alpha.A", "mid.M", "zeta.Z"],
+            "ids follow the sorted qualified name, not the order the files were read"
+        );
+
+        // And the entry file's own predicate is *not* first, which is the reading the
+        // sorted rule is most often confused with.
+        assert_ne!(
+            names(&resolved.schema).first().map(String::as_str),
+            Some("zeta.Z")
+        );
     }
 
     /// An import nothing answers says which file asked and where it looked.
