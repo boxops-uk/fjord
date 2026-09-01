@@ -162,6 +162,15 @@ public static class ValueCodec
                 break;
             }
 
+            // **A new scalar family reaches this at run time, and there is no way to
+            // make it a compile error here.** The Rust side dispatches on the declared
+            // type exhaustively so the compiler names every site (`bench/FINDINGS.md`
+            // §19); C# `switch` over a tuple of two type hierarchies has no equivalent,
+            // and an analyser that could see it does not exist. So the mechanism on
+            // this side is the flag-day checklist — the schema fingerprint moves, this
+            // client is refused by name at the handshake until it is rebuilt, and the
+            // rebuild is where this arm is revisited. `GleanFacts.WriteValue` has the
+            // same shape and the same absence.
             default:
                 throw new FjordProtocolException(
                     $"value {value.GetType().Name} does not fit type {type.GetType().Name}");
