@@ -24,14 +24,23 @@
 //!   works this way too, and documenting it is cheaper than a scoping rule nobody asked
 //!   for.
 
-//! # One algorithm, two providers
+//! # Two entry points, one algorithm
 //!
 //! Everything above is about *what* resolution does, and none of it is about where the
-//! text came from. [`resolve_with`] is the algorithm over a [`SchemaSources`]; the
-//! filesystem is one implementation of that trait and an in-memory list is another, so
-//! a browser can open a schema with an `import` in it and a binary can embed one with
-//! `include_str!`. Two algorithms would drift, and
-//! `resolving_from_memory_matches_resolving_from_disk` is what says they have not.
+//! text came from. [`resolve`] reads files; [`resolve_from`] takes a list of
+//! `(name, text)` pairs. Both run one walk over a private provider trait, so two
+//! algorithms cannot drift, and `resolving_from_memory_matches_resolving_from_disk` is
+//! what says they have not.
+//!
+//! **The in-memory form is for holding sigla *text* without a filesystem, which is a
+//! narrower need than it sounds.** A client does not resolve at all — a database
+//! embeds its schema when it is created and serves it already resolved, so a peer
+//! receives a [`crate::schema::Schema`] rather than source. What needs this
+//! are the three places that hold source and have nowhere to put it: the diagnostic
+//! corpus, whose multi-file fixtures would otherwise need a temp directory per case;
+//! `include_str!`-embedded schemas like the CLI's sample; and a browser editing sigla,
+//! which is authoring rather than consuming. The provider trait itself is private,
+//! because nothing outside this module has ever needed a third provider.
 //!
 //! The filesystem provider is behind the default-on `fs` feature, which is what makes
 //! "the embedded path touches no filesystem" mechanical rather than a promise: with
@@ -70,21 +79,21 @@ pub struct Resolved {
 }
 
 /// One source a resolver read.
-pub struct Source {
+struct Source {
     /// What a diagnostic names — a path from the filesystem, an import name from an
     /// embedded set.
-    pub name: String,
-    pub text: String,
+    name: String,
+    text: String,
     /// **The dedup key, and it differs by provider.** `canonicalize` for the
     /// filesystem, because two roots may spell one file two ways and a diamond reaches
     /// it twice; the import name for an embedded set, which has no paths to
     /// canonicalise. Reading one source twice would turn every declaration in it into a
     /// redeclaration of itself.
-    pub identity: String,
+    identity: String,
 }
 
 /// Where a resolver's sources come from.
-pub trait SchemaSources {
+trait SchemaSources {
     /// The source for an import name, or `None` if this provider has none.
     ///
     /// **The search order is part of the contract**, because it decides which of two
@@ -105,7 +114,7 @@ pub trait SchemaSources {
 /// has after a handful of `include_str!`s.
 ///
 /// The dedup identity is the **name**, so two entries with one name are one source.
-pub struct MemorySources<'a> {
+struct MemorySources<'a> {
     sources: Vec<(&'a str, &'a str)>,
 }
 
@@ -167,12 +176,13 @@ fn relative_name(namespace: &str) -> String {
 
 /// Resolve an in-memory set of sources, the entry first.
 ///
-/// The convenience an embedder wants; [`resolve_with`] is the same algorithm over any
-/// [`SchemaSources`].
+/// The form for source held in memory rather than on disk — an `include_str!`ed
+/// schema, a corpus fixture that spans files, a browser editing sigla. Same algorithm
+/// as [`resolve`].
 ///
 /// # Errors
 ///
-/// As [`resolve_with`], plus an empty list.
+/// A rendered diagnostic for anything resolution refuses, and for an empty list.
 pub fn resolve_from<'a>(
     sources: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<Resolved, String> {
@@ -188,7 +198,7 @@ pub fn resolve_from<'a>(
 /// A rendered reason: a source that cannot be read, an import nothing resolves, a
 /// syntax error in any source, or anything lowering refuses about the union — a
 /// redeclaration most of all.
-pub fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Resolved, String> {
+fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Resolved, String> {
     let mut files: Vec<String> = vec![];
     let mut texts: Vec<String> = vec![];
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -303,7 +313,7 @@ pub fn resolve(entry: &Path, roots: &[PathBuf]) -> Result<Resolved, String> {
 
 /// The filesystem provider: an import name is a path under one of the roots.
 #[cfg(feature = "fs")]
-pub struct FsSources {
+struct FsSources {
     /// Searched in order, first match wins.
     pub search: Vec<PathBuf>,
 }

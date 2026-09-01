@@ -109,6 +109,8 @@ python3 -m unittest scripts/test_check_guards.py  # the ledger gate's mutation c
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps \
+  -p fjord-schema -p fjord-wire -p fjord-client -p fjord-db   # the published crates' rustdoc
 
 cargo check -p fjord-engine --target wasm32-unknown-unknown   # the browser build
 cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown  # no filesystem
