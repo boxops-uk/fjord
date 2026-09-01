@@ -1,72 +1,46 @@
-# **What a database was built for** — the axes it was resolved against, stated inside it.
+# What a database was built for: the axes it was resolved against, stated inside it.
 #
-# A tool holding forty database handles has to be able to ask *which one is this*, and an
-# instance name it can only string-match on is not an answer. The sharp case is a build
-# axis that appears nowhere else in the index: under nearest-compatible target resolution
-# a `netstandard2.0` project inside a `net9.0` index records `netstandard2.0` in its own
-# compilation facts — correctly, because that is what it compiled as — so the *resolution
-# root* is unrecoverable from the facts. This is where it goes.
-#
-# Nothing here is derived. A producer writes these, and a consumer that finds none reads
-# a database that predates the layer rather than a database with no axes.
+# Nothing here is derived — a producer writes these. A consumer that finds none is reading
+# a database that predates the layer, not one with no axes.
 
 schema config {
 
-  # **Dimension-leading, key-only, multi-valued.**
+  # One axis of the index, as a dimension and a value.
   #
-  # Dimension first so "what framework is this database" is a seek rather than a scan.
-  # Key-only so one dimension may hold several values — two defines, two languages —
-  # which a record-shaped predicate could not say: a key is an identity, so
-  # `{dimension, value}` as a key makes each pair its own fact and a repeated dimension
-  # legal, where `dimension -> value` would make the second write a conflict.
+  # Key-only and multi-valued: `{dimension, value}` is the whole key, so one dimension may
+  # hold several values (two defines, two languages). Both fields are strings rather than
+  # unions so a new dimension costs nothing; the price is that spelling is unchecked, and
+  # the table below is the registry.
   #
-  # Both fields are strings and neither is a union. A union would freeze this
-  # vocabulary's discriminants on the day it shipped (I10) and make every new axis a
-  # Breaking edit to a predicate every published index carries; the whole point of
-  # dimension/value is that a new axis costs nothing. What that gives up is any check
-  # that a dimension is spelled the way the reader expects — so the list below is the
-  # registry, and it is a comment on purpose.
+  # ## Reserved dimensions
   #
-  # ## The reserved dimensions
+  # A consumer may assume the meaning of these. Anything else belongs to its producer, and
+  # an unrecognised dimension is ignored.
   #
-  # A consumer may assume the meaning of these. Anything else is a producer's own, and a
-  # consumer that does not recognise a dimension ignores it.
-  #
-  # | dimension | what a reader may assume |
+  # | dimension | meaning |
   # |---|---|
-  # | `repo`, `revision` | cross-database identity. A SCIP symbol carries a package coordinate, not an origin, so this is the only thing that says which checkout. `src.FileOrigin` overrides it per file where an index spans several |
-  # | `index-root` | what every `src.File` path is relative to. The C# index's own provenance had to be *inferred* once, from which checkout happened to be the only one under `$HOME`; this closes that |
-  # | `position-encoding` | `utf8` or `utf16` — the unit every offset and column in this database counts in. See below |
+  # | `repo`, `revision` | which checkout this database was built from. `src.FileOrigin` overrides it per file where an index spans several |
+  # | `index-root` | what every `src.File` path is relative to |
+  # | `position-encoding` | `utf8` or `utf16` — the unit every offset and column in this database counts in |
   # | `style-vocabulary` | which revision of the `src.FileLineStyles` kind table was written, e.g. `fjord-1` |
-  # | `symbol-scheme` | the scheme token(s) `src.Symbol` strings use here. What a fan-out checks before trusting a string match across databases |
+  # | `symbol-scheme` | the scheme token(s) this database's `src.Symbol` strings use |
   # | `language` | multi-valued; what this database holds facts about |
   # | `producer` | one fact per producer and version, so a partial index says which layers exist |
-  # | `framework`, `configuration`, `define`, `target-triple`, `feature` | the build axes the index was resolved against. **The facts are the truth and the flavour name is the convenience** |
+  # | `framework`, `configuration`, `define`, `target-triple`, `feature` | the build axes the index was resolved against |
   #
-  # ## What this is not
+  # ## Scope
   #
-  # **Per-database, so it cannot record a per-project or per-file axis.**
+  # Per-database, so it cannot record a per-project or per-file axis.
   # `{dimension = "define", value = "DEBUG"}` says the run defined `DEBUG`, not which
-  # projects did. Where an axis genuinely varies inside one index, the fact that varies
-  # carries it: a compilation's own target framework on `msbuild.Compilation`, a file's
-  # repository of origin on `src.FileOrigin`. Reaching for this predicate to record one
-  # of those is the misuse to expect, which is why it is written down here.
+  # projects did. Where an axis varies inside one index, the fact that varies carries it:
+  # a compilation's target framework on `msbuild.Compilation`, a file's origin on
+  # `src.FileOrigin`.
   #
-  # ## Position encoding, and why one declaration beats a field per span
+  # ## Position encoding
   #
-  # Three units coexist in the wild and they disagree only on text nobody tests with.
-  # Roslyn and the TypeScript compiler count **UTF-16 code units**; a byte offset counts
-  # **UTF-8 bytes**; and a renderer walking `str::chars()` counts **Unicode scalar
-  # values**, which agrees with neither — one unit per codepoint where the producer
-  # counted two for anything above the BMP. The symptom is a link drawn over the wrong
-  # text, which reads as a styling bug.
-  #
-  # SCIP settled this with one declaration per index rather than a unit per span
-  # (`Index.metadata.text_document_encoding`) and so does this: `position-encoding` is
-  # the unit of every offset and column in the database, and a mixed-encoding database is
-  # deliberately not expressible.
-  #
-  # **A database that does not state it is read as `utf16`**, because that is what the
-  # compilers this set indexes actually count. Stating it is still the point.
+  # Roslyn and the TypeScript compiler count UTF-16 code units; a byte offset counts UTF-8
+  # bytes; a renderer walking `str::chars()` counts scalar values and agrees with neither.
+  # `position-encoding` is declared once for the whole database — a mixed-encoding database
+  # is not expressible — and a database that does not state it is read as `utf16`.
   predicate Setting : { dimension : string, value : string }
 }

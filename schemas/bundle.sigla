@@ -1,27 +1,18 @@
-# The **bundler layer** — one Rspack/webpack compilation's stats: entrypoints, chunks, assets,
-# the module graph, and the byte-size map. What `typescript.sigla` filled from an Rspack plugin,
-# in a namespace of its own.
+# The bundler layer: one Rspack/webpack compilation's stats — entrypoints, chunks, assets,
+# the module graph, and the byte-size map.
 #
-# The shape is `compilation.getStats().toJson()`, which Rspack shares with webpack — so this
-# models **bundle stats**, not one bundler, which is why the namespace is `bundle` rather than
-# `rspack`. A `Bundle` is one compilation; a multi-compiler setup emits several, so it is the
-# root everything hangs from.
+# The shape is `compilation.getStats().toJson()`, which Rspack shares with webpack, so this
+# models bundle stats rather than one bundler. A `Bundle` is one compilation, and a
+# multi-compiler setup emits several, so it is the root everything hangs from.
 #
-# It imports `npm` because package attribution is genuinely part of what a bundler knows (it
-# resolved every `node_modules` path to get here), and the size-by-package rollup is the single
-# most-asked question of a bundle. The dependency points that way and not the other: a package
-# graph is meaningful with no bundler, a bundle is not meaningful without packages.
+# It imports `npm` because package attribution is part of what a bundler knows — it resolved
+# every `node_modules` path to get here — and size-by-package is the most-asked question of a
+# bundle. The dependency only points that way: a package graph is meaningful with no bundler.
 #
-# ---- the two module graphs, and why they disagree --------------------------------------
-#
-# `ModuleImport` here is the **bundler's** graph — read from stats *after* resolution and
-# tree-shaking. `typescript.FileImport` is the **source** graph — read from the import
-# statements as written. They disagree, and the disagreement is usually the interesting part
-# (a module in the source graph and not in the bundle graph is one that was shaken out).
-#
-# **Identity is the key, attributes are the value.** A `Module`/`Chunk` reference costs its
-# identity alone — `{bundle, identifier}` — instead of dragging its size and type along, and the
-# import graph is nothing but references, so that thrift is the difference.
+# Note that `ModuleImport` is the *bundler's* graph, read from stats after resolution and
+# tree-shaking, while `typescript.FileImport` is the *source* graph, read from the import
+# statements as written. Where they disagree is usually the interesting part — a module in
+# the source graph and not the bundle graph was shaken out.
 
 schema bundle {
 

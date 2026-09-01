@@ -1,54 +1,31 @@
-# The **JavaScript package layer** — a repository's workspaces and its resolved dependency
-# graph. What `typescript.sigla` filled from a Yarn plugin, in a namespace of its own.
+# The JavaScript package layer: a repository's workspaces and its resolved dependency graph.
 #
-# ---- why this is not inside `typescript` ----------------------------------------------
+# The model is Yarn's, so the two agree by construction rather than by translation:
 #
-# `typescript.sigla`'s header opens with *"two producers, one schema"* — a Yarn plugin fills the
-# package layer, an Rspack plugin fills the bundle layer — and then a third arrived with the
-# semantic core. Three producers writing into one namespace is the coupling this set is here to
-# undo, for three reasons that are not tidiness:
+#   * a **Locator** (name + *reference*) is a resolved package instance —
+#     `react@npm:18.2.0`, `@internal/app@workspace:packages/app`. A node in the tree.
+#   * a **Descriptor** (name + *range*) is a dependency requirement — `react@^18`.
+#   * a **Resolution** maps a descriptor to the locator it resolved to. This is `yarn.lock`.
+#   * a **Workspace** is a package that lives in the repo; a **Project** is the tree that
+#     owns the lockfile. (`Project` is to `Workspace` as a solution is to a `.csproj`.)
 #
-#   * **A partial index becomes expressible.** A repository with a lockfile and no TypeScript
-#     is an `npm` index and nothing else. Today it would have to declare — and a reader would
-#     have to see — a schema promising a semantic layer nobody filled.
-#   * **The producers fail independently.** A yarn plugin can complete when tsc OOMs, and a
-#     database whose schema says which producers wrote it (`config.Setting {producer}`) can say
-#     so.
-#   * **It is not TypeScript.** The package graph is the same for a JavaScript, a CSS or a
-#     Rust-via-wasm workspace. Naming it `typescript` was an accident of which producer landed
-#     first, and the indexer-overhaul plan's own Run 8b draws the identical seam on the .NET
-#     side (build facts out from behind the walk).
+# npm and pnpm fit the same model — their lockfiles carry the same requirement/resolution
+# split — which is why the namespace is named for the ecosystem and not the tool.
 #
-# ---- the model is Yarn's, verbatim ----------------------------------------------------
-#
-# Using Yarn's own vocabulary means the two agree by construction rather than by translation:
-#
-#   * a **Locator**    (identifier + *reference*) — a resolved package instance
-#     (`react@npm:18.2.0`, `@internal/app@workspace:packages/app`); a node in the tree.
-#   * a **Descriptor** (identifier + *range*) — a dependency *requirement* (`react@^18`).
-#   * a **Resolution** maps a descriptor to the locator it resolved to (`yarn.lock`).
-#   * a **Workspace** is a package that lives in the repo; a **Project** is the tree that owns
-#     the lockfile. (`Project` ≈ an MSBuild solution; `Workspace` ≈ a `.csproj`.)
-#
-# npm and pnpm both fit it — their lockfiles carry the same requirement/resolution split — and
-# the namespace is named for the ecosystem rather than the tool for that reason. Where Yarn's
-# model is *richer* than theirs, a producer leaves the extra facts unwritten.
-#
-# **Field order is key order, and key order is the index design** — each predicate leads with
-# the field a query seeks on. Identity is the key; attributes are the value.
+# Field order is key order: each predicate leads with the field a query seeks on, identity
+# in the key and attributes in the value.
 
 schema npm {
 
   import src
 
-  # An interned package identifier (`@scope/pkg`). Kept here rather than shared with the other
-  # layers' names: a package identifier and a bundler's chunk name are different string spaces
-  # that happen to both be strings, and Glean keeps `Name` per language for the same reason.
+  # An interned package identifier (`@scope/pkg`). Not shared with the other layers' names:
+  # a package identifier and a bundler's chunk name are different string spaces.
   predicate Name : string
 
-  # The search index, lower-cased — a producer writes it (no `prim.toLower` in fjord).
-  # `nameLowercase` leads and is not unique, so it is key-only. `codemarkup.SearchEntry`
-  # supersedes this for a *user-facing* search box; this is the ecosystem-scoped lookup.
+  # The lower-cased lookup index, written by the producer. Key-only, because
+  # `nameLowercase` is not unique. For a user-facing search box, prefer
+  # `codemarkup.SearchEntry`; this is the ecosystem-scoped lookup.
   predicate NameLowerCase : { nameLowercase : string, name : Name }
 
   # ---- closed vocabularies -------------------------------------------------------------
@@ -58,15 +35,15 @@ schema npm {
 
   # ---- the graph -----------------------------------------------------------------------
 
-  # Yarn's *locator* — a resolved package instance. Both fields are identity: the same name at
-  # two references is two packages, which is how versions fall out. `name` leads, so "every
+  # A resolved package instance. Both fields are identity, so the same name at two
+  # references is two packages — which is how versions fall out. `name` leads, so "every
   # version of `react`" is a range.
   predicate Locator : { name : Name, reference : string }
 
-  # Yarn's *descriptor* — a dependency requirement. Both fields identity; `name` leads.
+  # A dependency requirement. Both fields identity; `name` leads.
   predicate Descriptor : { name : Name, range : string }
 
-  # yarn.lock's core mapping: a descriptor resolves to exactly one locator.
+  # The lockfile's core mapping: a descriptor resolves to exactly one locator.
   predicate Resolution : { descriptor : Descriptor } -> { locator : Locator }
 
   # A package's manifest facts, keyed by its locator.
@@ -76,47 +53,39 @@ schema npm {
   # `Resolution` this is the resolved tree. `dependent` leads: "this package's dependencies".
   predicate Dependency : { dependent : Locator, descriptor : Descriptor } -> { kind : DependencyKind }
 
-  # The reverse — "who depends on this" — keyed on the depended-on descriptor. Key-only edge.
+  # The reverse — "who depends on this" — keyed on the depended-on descriptor.
   predicate Dependent : { descriptor : Descriptor, dependent : Locator }
 
-  # The Yarn project: the tree root that owns the lockfile. (≈ a solution.)
+  # The project: the tree root that owns the lockfile.
   predicate Project : { root : src.File } -> { lockfile : src.File }
 
-  # A workspace — a package that lives in the repo. `project` leads: "this project's
-  # workspaces"; `locator` is its identity; `root` its directory.
+  # A package that lives in the repo. `project` leads, so "this project's workspaces" is a
+  # seek; `locator` is its identity and `root` its directory.
   predicate Workspace : { project : Project, locator : Locator } -> { root : src.File }
 
-  # Which package owns a source file, by path. `file` leads: one file, one package.
+  # Which package owns a source file.
   predicate FilePackage : { file : src.File } -> { locator : Locator }
 
-  # **A manifest, and the package it declares** — `Package`'s `manifest` field keyed for the other
-  # question. `Package` puts the manifest on the value side (identity is the locator), and a value
-  # can be neither matched nor read field-wise, so from a `package.json` there was no way back to
-  # the package at all.
+  # A manifest, and the package it declares — the reverse of `Package.manifest`.
   #
-  # It is also what makes a package reachable from `codemarkup` without a symbol bridge: a
-  # `src.Symbol` naming a package resolves through `codemarkup.Definition {symbol, file}` — whose
-  # `file` **is** the manifest — and lands here. `msbuild.Project` needs no equivalent because its
-  # identity is already its project file.
+  # `Package` holds the manifest on the value side, and a value can be neither matched nor
+  # read field-wise, so without this there is no way back from a `package.json` to its
+  # package. It is also the bridge from `codemarkup`: a `src.Symbol` naming a package
+  # resolves through `codemarkup.Definition {symbol, file}`, whose `file` is the manifest.
   predicate PackageManifest : { manifest : src.File, locator : Locator }
 
-  # **A workspace-to-workspace dependency edge, resolved** — the JavaScript answer to
-  # "inter-project references", and the thing `Dependency` can only say in two hops (through
-  # a `Descriptor` and a `Resolution`).
+  # A resolved workspace-to-workspace dependency — the JavaScript "inter-project reference".
   #
-  # It is stored rather than joined because it is the edge a UI draws: an internal dependency
-  # graph over a 200-workspace monorepo is one seek per node here, against two joins and a
-  # filter-for-workspace-ness there. `dependent` leads; `kind` trails it so "this workspace's
-  # production dependencies on other workspaces" narrows.
+  # Stored rather than derived because it is the edge a UI draws: over a 200-workspace
+  # monorepo this is one seek per node, against two joins and a filter. Equivalent to:
   #
-  # Would derive as:
-  #   npm.WorkspaceDependency {dependent = A, kind = K, dependency = B}
-  #     where npm.Dependency {dependent = A, descriptor = D} = {kind = K};
-  #           npm.Resolution {descriptor = D} = {locator = B};
-  #           npm.Package {locator = B} = {kind = {workspace = _}, ..}
+  #     npm.WorkspaceDependency {dependent = A, kind = K, dependency = B}
+  #       where npm.Dependency {dependent = A, descriptor = D} = {kind = K};
+  #             npm.Resolution {descriptor = D} = {locator = B};
+  #             npm.Package {locator = B} = {kind = {workspace = _}, ..}
   predicate WorkspaceDependency : { dependent : Locator, kind : DependencyKind, dependency : Locator }
 
-  # The reverse — "which workspaces depend on this one", the direction a refactor asks in.
+  # The reverse — which workspaces depend on this one, the direction a refactor asks in.
   predicate WorkspaceDependent : { dependency : Locator, dependent : Locator }
 
 }
