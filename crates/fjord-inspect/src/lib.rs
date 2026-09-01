@@ -56,7 +56,7 @@ pub use lowered::{Lowered, LoweredNode, StatementView, lowered, lowered_json};
 pub use plan::{FuzzyView, PlanView, StepView};
 pub use rows::{ROW_CAP, RowView, Rows, rows, rows_json};
 pub use samples::{SAMPLES, Sample, samples_json};
-pub use schema::{PredicateView, SchemaView, schema, schema_json};
+pub use schema::{PredicateView, SchemaView, schema, schema_json, schema_set, schema_set_json};
 pub use tokens::{
     TokenClass, TokenView, Tokens, schema_tokens, schema_tokens_json, tokens, tokens_json,
 };

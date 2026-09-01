@@ -67,6 +67,19 @@ pub fn schema(source: &str) -> String {
     fjord_inspect::schema_json(source)
 }
 
+/// Read a **set** of schema sources as one schema and answer the
+/// [schema view](fjord_inspect::SchemaView) as JSON.
+///
+/// `sources` is a JSON array of `[name, text]` pairs, the entry first, and its
+/// `import`s are followed through the rest. A string in and a string out like
+/// every export here, because a browser has no filesystem to keep a set of files
+/// in — and resolution needs none.
+#[wasm_bindgen]
+#[must_use]
+pub fn schema_set(sources: &str) -> String {
+    fjord_inspect::schema_set_json(sources)
+}
+
 /// Compile `query` against `schema` through the whole front end — lex, parse,
 /// lower, typecheck, flatten, reorder — and answer the
 /// [lowered view](fjord_inspect::Lowered) as JSON.
