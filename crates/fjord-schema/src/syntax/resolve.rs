@@ -24,10 +24,23 @@
 //!   works this way too, and documenting it is cheaper than a scoping rule nobody asked
 //!   for.
 
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+//! # One algorithm, two providers
+//!
+//! Everything above is about *what* resolution does, and none of it is about where the
+//! text came from. [`resolve_with`] is the algorithm over a [`SchemaSources`]; the
+//! filesystem is one implementation of that trait and an in-memory list is another, so
+//! a browser can open a schema with an `import` in it and a binary can embed one with
+//! `include_str!`. Two algorithms would drift, and
+//! `resolving_from_memory_matches_resolving_from_disk` is what says they have not.
+//!
+//! The filesystem provider is behind the default-on `fs` feature, which is what makes
+//! "the embedded path touches no filesystem" mechanical rather than a promise: with
+//! `--no-default-features` it is not compiled, so a call to it from the embedded path
+//! is a compile error.
+
+use std::collections::BTreeSet;
+#[cfg(feature = "fs")]
+use std::path::{Path, PathBuf};
 
 use crate::{
     schema::Schema,
@@ -39,11 +52,13 @@ pub const EXTENSION: &str = "sigla";
 
 /// An entry file, everything it imports, and what they come to together.
 pub struct Resolved {
-    /// Every file that went into it, in the order they were read — the entry first.
+    /// Every source that went into it, in the order they were read — the entry first,
+    /// named the way its provider names it: a path from the filesystem, an import name
+    /// from an embedded set.
     ///
     /// What `schema check` prints, and what says *where* a schema came from when two
     /// roots hold a namespace of the same name.
-    pub files: Vec<PathBuf>,
+    pub files: Vec<String>,
     /// Their union, as one source — what was lowered.
     ///
     /// **Not what a database embeds**: that is [`print`](super::print::print) of the
@@ -54,53 +69,149 @@ pub struct Resolved {
     pub schema: Schema,
 }
 
-/// Resolve `entry` against `roots`.
+/// One source a resolver read.
+pub struct Source {
+    /// What a diagnostic names — a path from the filesystem, an import name from an
+    /// embedded set.
+    pub name: String,
+    pub text: String,
+    /// **The dedup key, and it differs by provider.** `canonicalize` for the
+    /// filesystem, because two roots may spell one file two ways and a diamond reaches
+    /// it twice; the import name for an embedded set, which has no paths to
+    /// canonicalise. Reading one source twice would turn every declaration in it into a
+    /// redeclaration of itself.
+    pub identity: String,
+}
+
+/// Where a resolver's sources come from.
+pub trait SchemaSources {
+    /// The source for an import name, or `None` if this provider has none.
+    ///
+    /// **The search order is part of the contract**, because it decides which of two
+    /// sources claiming one import name is used: the filesystem searches the entry
+    /// file's own directory first and then the roots, and an embedded set searches its
+    /// list in order. First match wins in both.
+    ///
+    /// # Errors
+    ///
+    /// A rendered reason when the source was located and could not be read.
+    fn find(&self, import: &str) -> Result<Option<Source>, String>;
+
+    /// Where this provider looked, for the message when nothing declares an import.
+    fn searched(&self) -> String;
+}
+
+/// An ordered list of `(name, text)` sources, the entry first — the shape an embedder
+/// has after a handful of `include_str!`s.
+///
+/// The dedup identity is the **name**, so two entries with one name are one source.
+pub struct MemorySources<'a> {
+    sources: Vec<(&'a str, &'a str)>,
+}
+
+impl<'a> MemorySources<'a> {
+    pub fn new(sources: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        Self {
+            sources: sources.into_iter().collect(),
+        }
+    }
+
+    /// The entry: the first source in the list.
+    ///
+    /// # Errors
+    ///
+    /// When the list is empty, because there is then nothing to resolve.
+    pub fn entry(&self) -> Result<(&'a str, &'a str), String> {
+        self.sources
+            .first()
+            .copied()
+            .ok_or_else(|| "no schema sources at all".to_owned())
+    }
+}
+
+impl SchemaSources for MemorySources<'_> {
+    fn find(&self, import: &str) -> Result<Option<Source>, String> {
+        // **By the namespace the source declares its own name to be**, matched against
+        // the import text — the same mapping the filesystem makes, minus the directory
+        // walk: `lang.rust` is the source named `lang.rust` or `lang/rust.sigla`.
+        let wanted = relative_name(import);
+
+        Ok(self
+            .sources
+            .iter()
+            .find(|(name, _)| *name == import || *name == wanted)
+            .map(|(name, text)| Source {
+                name: (*name).to_owned(),
+                text: (*text).to_owned(),
+                identity: (*name).to_owned(),
+            }))
+    }
+
+    fn searched(&self) -> String {
+        if self.sources.is_empty() {
+            "no sources at all".to_owned()
+        } else {
+            self.sources
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+}
+
+/// `lang.rust` → `lang/rust.sigla`, as a name rather than a path.
+fn relative_name(namespace: &str) -> String {
+    format!("{}.{EXTENSION}", namespace.replace('.', "/"))
+}
+
+/// Resolve an in-memory set of sources, the entry first.
+///
+/// The convenience an embedder wants; [`resolve_with`] is the same algorithm over any
+/// [`SchemaSources`].
 ///
 /// # Errors
 ///
-/// A rendered reason: a file that cannot be read, an import nothing resolves, a syntax
-/// error in any file, or anything lowering refuses about the union — a redeclaration
-/// most of all.
-pub fn resolve(entry: &Path, roots: &[PathBuf]) -> Result<Resolved, String> {
-    // The entry file's own directory first, then the configured roots. A schema that
-    // sits beside the ones it imports is the common case and should need no setup.
-    let mut search: Vec<PathBuf> = entry
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .into_iter()
-        .collect();
-    search.extend(roots.iter().cloned());
+/// As [`resolve_with`], plus an empty list.
+pub fn resolve_from<'a>(
+    sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<Resolved, String> {
+    let sources = MemorySources::new(sources);
+    let entry = sources.entry()?;
+    resolve_with(entry, &sources)
+}
 
-    let mut files: Vec<PathBuf> = vec![];
-    let mut sources: Vec<String> = vec![];
-    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+/// Resolve `entry` — a name and its text — following its imports through `sources`.
+///
+/// # Errors
+///
+/// A rendered reason: a source that cannot be read, an import nothing resolves, a
+/// syntax error in any source, or anything lowering refuses about the union — a
+/// redeclaration most of all.
+pub fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Resolved, String> {
+    let mut files: Vec<String> = vec![];
+    let mut texts: Vec<String> = vec![];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
 
-    // The frontier, as (what to read, who asked for it). The second half is the whole
-    // of a useful "unresolved import" message: a namespace with no file is only ever a
-    // problem in the file that named it.
-    let mut pending: Vec<(PathBuf, Option<(PathBuf, String)>)> = vec![(entry.to_owned(), None)];
+    // The frontier, as (source, who asked for it). The second half is the whole of a
+    // useful "unresolved import" message: a namespace with no source is only ever a
+    // problem in the source that named it.
+    let mut pending: Vec<(Source, Option<String>)> = vec![(
+        Source {
+            name: entry.0.to_owned(),
+            text: entry.1.to_owned(),
+            identity: entry.0.to_owned(),
+        },
+        None,
+    )];
 
-    while let Some((path, asked_by)) = pending.pop() {
-        let identity = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-
-        // **Dedup by file identity, not by name.** Two roots may spell one file two
-        // ways, and a diamond reaches it twice; reading it twice would turn every
-        // declaration in it into a redeclaration of itself.
-        if !seen.insert(identity) {
+    while let Some((source, _asked_by)) = pending.pop() {
+        // **Dedup by identity, not by name** — see [`Source::identity`].
+        if !seen.insert(source.identity.clone()) {
             continue;
         }
 
-        let text = std::fs::read_to_string(&path).map_err(|source| match &asked_by {
-            Some((by, namespace)) => format!(
-                "{}: cannot read `{namespace}` from {}: {source}",
-                by.display(),
-                path.display()
-            ),
-            None => format!("{}: {source}", path.display()),
-        })?;
-
-        let name = path.display().to_string();
+        let Source { name, text, .. } = source;
         let mut diags = vec![];
 
         let Some(cst) = parse::parse(&text, &mut diags) else {
@@ -111,49 +222,46 @@ pub fn resolve(entry: &Path, roots: &[PathBuf]) -> Result<Resolved, String> {
         }
 
         for namespace in lower::imports(&cst) {
-            let found = find(&namespace, &search).ok_or_else(|| {
+            let found = sources.find(&namespace)?.ok_or_else(|| {
                 format!(
                     "{name}: nothing on the schema path declares `{namespace}` — looked for \
                      `{}` in {}",
-                    relative(&namespace).display(),
-                    if search.is_empty() {
-                        "no roots at all (set `schema_path`)".to_owned()
-                    } else {
-                        search
-                            .iter()
-                            .map(|root| root.display().to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    }
+                    relative_name(&namespace),
+                    sources.searched()
                 )
             })?;
 
-            pending.push((found, Some((path.clone(), namespace))));
+            pending.push((found, Some(name.clone())));
         }
 
-        sources.push(text);
-        files.push(path);
+        texts.push(text);
+        files.push(name);
     }
 
-    // **One file is itself; several are a union**, and the difference is what a
+    union_and_lower(files, texts)
+}
+
+/// The union of every source read, lowered as one schema.
+fn union_and_lower(files: Vec<String>, sources: Vec<String>) -> Result<Resolved, String> {
+    // **One source is itself; several are a union**, and the difference is what a
     // diagnostic can honestly point at. A schema with no imports is lowered under its
     // own name with its own line numbers — the common case, and the one where a caret
-    // is worth most. Several files have to be lowered together (that is what makes a
+    // is worth most. Several have to be lowered together (that is what makes a
     // cross-file reference resolve and a cross-file redeclaration an error), so they
     // get a header apiece and a name that says the union is what was read.
     let (name, source) = if files.len() == 1 {
-        (files[0].display().to_string(), sources.concat())
+        (files[0].clone(), sources.concat())
     } else {
         let name = format!(
             "<resolved schema: {} and {} more>",
-            files[0].display(),
+            files[0],
             files.len() - 1
         );
 
         let text = files
             .iter()
             .zip(&sources)
-            .map(|(path, source)| format!("# ---- {}\n{source}\n", path.display()))
+            .map(|(path, source)| format!("# ---- {path}\n{source}\n"))
             .collect::<String>();
 
         (name, text)
@@ -168,7 +276,76 @@ pub fn resolve(entry: &Path, roots: &[PathBuf]) -> Result<Resolved, String> {
     })
 }
 
+/// Resolve `entry` against `roots`.
+///
+/// # Errors
+///
+/// A rendered reason: a file that cannot be read, an import nothing resolves, a syntax
+/// error in any file, or anything lowering refuses about the union — a redeclaration
+/// most of all.
+#[cfg(feature = "fs")]
+pub fn resolve(entry: &Path, roots: &[PathBuf]) -> Result<Resolved, String> {
+    // The entry file's own directory first, then the configured roots. A schema that
+    // sits beside the ones it imports is the common case and should need no setup.
+    let mut search: Vec<PathBuf> = entry
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .into_iter()
+        .collect();
+    search.extend(roots.iter().cloned());
+
+    let text = std::fs::read_to_string(entry)
+        .map_err(|source| format!("{}: {source}", entry.display()))?;
+
+    resolve_with((&entry.display().to_string(), &text), &FsSources { search })
+}
+
+/// The filesystem provider: an import name is a path under one of the roots.
+#[cfg(feature = "fs")]
+pub struct FsSources {
+    /// Searched in order, first match wins.
+    pub search: Vec<PathBuf>,
+}
+
+#[cfg(feature = "fs")]
+impl SchemaSources for FsSources {
+    fn find(&self, import: &str) -> Result<Option<Source>, String> {
+        let Some(path) = find(import, &self.search) else {
+            return Ok(None);
+        };
+
+        let text = std::fs::read_to_string(&path).map_err(|source| {
+            format!("cannot read `{import}` from {}: {source}", path.display())
+        })?;
+
+        Ok(Some(Source {
+            name: path.display().to_string(),
+            // **`canonicalize`, not the path as written.** Two roots may spell one file
+            // two ways, and a diamond reaches it twice.
+            identity: std::fs::canonicalize(&path)
+                .unwrap_or_else(|_| path.clone())
+                .display()
+                .to_string(),
+            text,
+        }))
+    }
+
+    fn searched(&self) -> String {
+        if self.search.is_empty() {
+            "no roots at all (set `schema_path`)".to_owned()
+        } else {
+            self.search
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+}
+
 /// `lang.rust` → `lang/rust.sigla`.
+#[cfg(feature = "fs")]
 fn relative(namespace: &str) -> PathBuf {
     let mut path = PathBuf::new();
     for segment in namespace.split('.') {
@@ -179,6 +356,7 @@ fn relative(namespace: &str) -> PathBuf {
 }
 
 /// The first root holding `namespace`'s file.
+#[cfg(feature = "fs")]
 fn find(namespace: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     let relative = relative(namespace);
 
@@ -219,6 +397,178 @@ mod tests {
                     .map(str::to_owned)
             })
             .collect()
+    }
+
+    /// The multi-file cases below, as data, so the differential can run every one of
+    /// them rather than a hand-picked subset.
+    const CASES: &[(&str, &[(&str, &str)])] = &[
+        (
+            "an import brings in what it names",
+            &[
+                (
+                    "main.sigla",
+                    "schema app { import src\n predicate Use : { of : src.File } }",
+                ),
+                ("src.sigla", "schema src { predicate File : string }"),
+            ],
+        ),
+        (
+            "a dotted namespace",
+            &[
+                ("main.sigla", "schema app { import lang.rust }"),
+                (
+                    "lang/rust.sigla",
+                    "schema lang.rust { predicate Crate : string }",
+                ),
+            ],
+        ),
+        (
+            "a cycle",
+            &[
+                (
+                    "a.sigla",
+                    "schema a { import b\n predicate A : { b : b.B } }",
+                ),
+                ("b.sigla", "schema b { import a\n predicate B : string }"),
+            ],
+        ),
+        (
+            "a diamond",
+            &[
+                ("main.sigla", "schema app { import left\n import right }"),
+                (
+                    "left.sigla",
+                    "schema left { import base\n predicate L : string }",
+                ),
+                (
+                    "right.sigla",
+                    "schema right { import base\n predicate R : string }",
+                ),
+                ("base.sigla", "schema base { predicate B : string }"),
+            ],
+        ),
+        (
+            "a name declared twice, in two files",
+            &[
+                (
+                    "main.sigla",
+                    "schema app { import other\n predicate P : int }",
+                ),
+                ("other.sigla", "schema app { predicate P : int }"),
+            ],
+        ),
+        (
+            "an import nothing answers",
+            &[("main.sigla", "schema app { import nosuch }")],
+        ),
+        (
+            "a syntax error in an imported file",
+            &[
+                ("main.sigla", "schema app { import broken }"),
+                ("broken.sigla", "schema broken { predicate }"),
+            ],
+        ),
+        (
+            "a type moved into an imported file — fingerprint-identical to a local one",
+            &[
+                (
+                    "b.sigla",
+                    "schema b { import base\n predicate P : { flag : base.Bool } }",
+                ),
+                (
+                    "base.sigla",
+                    "schema base { type Bool = { no : {} = 0 | yes : {} = 1 } }",
+                ),
+            ],
+        ),
+    ];
+
+    /// **One algorithm, and this is the evidence.** For every multi-file case, resolve
+    /// it twice — once through `FsSources` over a real directory, once through
+    /// `resolve_from` over the same text in memory — and assert the two agree on every
+    /// predicate id, every name, every per-predicate fingerprint, the schema
+    /// fingerprint, and the diagnostics, in order.
+    ///
+    /// A shared implementation is the means; this is what says the two have not
+    /// drifted. What it deliberately does *not* compare is `Resolved::files`, which is
+    /// each provider's own naming — a path from one, an import name from the other.
+    #[test]
+    fn resolving_from_memory_matches_resolving_from_disk() {
+        use crate::fingerprint;
+
+        // A differential where every case took one branch would compare nothing on the
+        // other, and the identity comparison is the half that matters most.
+        let (mut resolved, mut refused) = (0, 0);
+
+        for (what, files) in CASES {
+            let (_dir, from_disk) = resolving(files);
+            let from_memory = resolve_from(files.iter().copied());
+
+            match (from_disk, from_memory) {
+                (Ok(disk), Ok(memory)) => {
+                    resolved += 1;
+                    assert_eq!(
+                        names(&disk.schema),
+                        names(&memory.schema),
+                        "{what}: different predicates"
+                    );
+                    assert_eq!(
+                        disk.schema.len(),
+                        memory.schema.len(),
+                        "{what}: different predicate counts"
+                    );
+
+                    let identity = |schema: &Schema| {
+                        let identity = fingerprint::identity(schema);
+                        (identity.schema(), identity.predicates().clone())
+                    };
+
+                    assert_eq!(
+                        identity(&disk.schema),
+                        identity(&memory.schema),
+                        "{what}: the same declarations resolved to different identities"
+                    );
+                }
+
+                // **Diagnostics too, in the same order**, because a message that
+                // reads one way from a file and another from memory is a message an
+                // embedder cannot act on.
+                (Err(disk), Err(memory)) => {
+                    refused += 1;
+                    // Two clauses are the provider's own by design and are removed
+                    // rather than the comparison being loosened: how it *names* a
+                    // source (an absolute temp path against the name the embedder
+                    // gave), and `searched()`'s account of where it looked (a
+                    // directory against a list of names). Everything else must match
+                    // character for character.
+                    let reason = |rendered: &str| {
+                        rendered
+                            .replace(&format!("{}/", _dir.path().display()), "")
+                            .lines()
+                            .map(|line| match line.split_once(" in ") {
+                                Some((before, _)) => before.to_owned(),
+                                None => line.to_owned(),
+                            })
+                            .collect::<Vec<_>>()
+                    };
+
+                    assert_eq!(
+                        reason(&disk),
+                        reason(&memory),
+                        "{what}: refused for different reasons"
+                    );
+                }
+
+                (disk, memory) => panic!(
+                    "{what}: one path resolved and the other did not\n  disk:   {disk:?}\n  memory: {memory:?}",
+                    disk = disk.map(|r| r.files),
+                    memory = memory.map(|r| r.files),
+                ),
+            }
+        }
+
+        assert!(resolved >= 4, "only {resolved} cases resolved");
+        assert!(refused >= 3, "only {refused} cases were refused");
     }
 
     /// An import is an edge, and the union is what lowers — including a reference that

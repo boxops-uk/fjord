@@ -7,6 +7,33 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### A schema that spans files, resolved without a filesystem
+
+`fjord_db::read_schema` now takes the **set** of sources, the entry first, and follows the
+imports through it — so a producer embeds its schema with `include_str!` and a browser build
+can open one with an `import` in it. It touches no filesystem, and that is mechanical rather
+than a promise: the filesystem provider sits behind a default-on `fs` feature, so
+`cargo check -p fjord-schema --no-default-features` is a compile error the day the embedded
+path reaches for it. CI runs it against `wasm32-unknown-unknown`.
+
+**This is a breaking change to `read_schema`'s signature.** It was `(name, source)` and lowered
+one block of source; a schema with an `import` came back silently missing everything it
+imported, which is a database full of rows nobody can read back. The old shape had no way to be
+right about a multi-file schema.
+
+One algorithm, two providers, and a differential says so: every multi-file case in the corpus
+is resolved twice — once from a real directory, once from the same text in memory — and the two
+must agree on every predicate, every per-predicate fingerprint, the schema fingerprint, and the
+rendered diagnostics. Two clauses are licensed to differ because they are each provider's own:
+how it names a source, and its account of where it looked.
+
+`Resolved::files` is `Vec<String>` where it was `Vec<PathBuf>`, since an embedded set has no
+paths. `fjord schema check` prints the same thing.
+
+`schemas/` gains a recorded-fingerprint test — a shipped schema's number is what a client
+carries as a constant, so an accidental edit to one should be a red suite rather than a refused
+handshake at somebody's site.
+
 ### A `bytes` scalar family, and the `0x…` literal
 
 A schema can declare a field holding **uninterpreted bytes**: `predicate FileDigest : { file :

@@ -45,12 +45,23 @@ use fjord_schema::{
     syntax,
 };
 
-/// The schema itself, as text.
+/// The schema itself, as text — **every file of it, the entry first.**
 ///
 /// **The file is the schema**, and it is a file a person can read, diff, and pass to
 /// `fjord create --schema` — which is exactly what the scripts and the two integration
 /// suites do. Compiled in here so a bench does not have to find it on disk.
-const SOURCE: &str = include_str!("../../../schemas/code.sigla");
+///
+/// A *list*, and resolved rather than lowered directly, because the moment the schema
+/// set is split across files an embedded reader that lowered one block would silently
+/// read a schema missing everything the entry imports. It holds one entry today and
+/// the reader does not care how many it holds — which is the whole point of
+/// `resolve_from`, and what
+/// `crates/fjord-cli/tests/schemas.rs::the_embedded_reader_follows_imports` proves by
+/// handing the same path a genuine two-file set.
+const SOURCES: &[(&str, &str)] = &[(
+    "schemas/code.sigla",
+    include_str!("../../../schemas/code.sigla"),
+)];
 
 /// The schema everything here resolves names against: **a code index**, which is the
 /// canonical shape for a fact database — one fact per thing, and everything about a
@@ -105,7 +116,7 @@ const SOURCE: &str = include_str!("../../../schemas/code.sigla");
 pub fn schema() -> Schema {
     /// Parsed once. `Schema` is `Arc`-backed, so handing out clones is a refcount bump
     /// rather than a re-parse — which matters because every connection asks for one.
-    static SCHEMA: LazyLock<Schema> = LazyLock::new(|| parse_or_panic(SOURCE, None));
+    static SCHEMA: LazyLock<Schema> = LazyLock::new(|| resolve_or_panic(SOURCES));
 
     SCHEMA.clone()
 }
@@ -124,28 +135,20 @@ pub fn id(name: &str) -> PredicateId {
         .unwrap_or_else(|| panic!("`schemas/code.sigla` declares no `{name}`"))
 }
 
-/// Parse a schema, or explain why the build is broken.
+/// Resolve an embedded schema, or explain why the build is broken.
 ///
 /// A schema compiled into the binary is not input — it ships with the program — so a
-/// failure here is a bug rather than a bad file, and the panic carries every diagnostic
-/// so it says which line.
-fn parse_or_panic(source: &str, _path: Option<&str>) -> Schema {
-    let mut diags = vec![];
-
-    let Some(cst) = syntax::parse::parse(source, &mut diags) else {
-        panic!("`schemas/code.sigla` does not parse: {diags:#?}");
-    };
-
-    let Some(lowered) = syntax::lower::lower(&cst, &mut diags) else {
-        panic!("`schemas/code.sigla` does not lower: {diags:#?}");
-    };
-
-    assert!(
-        diags.is_empty(),
-        "`schemas/code.sigla` is not clean: {diags:#?}"
-    );
-
-    lowered.schema
+/// failure here is a bug rather than a bad file, and the panic carries the rendered
+/// reason so it says which line of which file.
+///
+/// **The resolving path, not `lower` directly**, and the diagnostics asserted on are
+/// the *resolved* ones: an unanswered import is then a failure here rather than a
+/// schema quietly missing what it imported.
+pub(crate) fn resolve_or_panic(sources: &[(&str, &str)]) -> Schema {
+    match syntax::resolve::resolve_from(sources.iter().copied()) {
+        Ok(resolved) => resolved.schema,
+        Err(reason) => panic!("the embedded schema does not resolve:\n{reason}"),
+    }
 }
 
 #[cfg(test)]

@@ -111,9 +111,14 @@ cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)
 
 cargo check -p fjord-engine --target wasm32-unknown-unknown   # the browser build
+cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown  # no filesystem
 ./scripts/build-wasm.sh             # the module the interactive site imports
 (cd web && npm run smoke)           # that demo, driven in a real browser
 ```
+
+The `--no-default-features` line is what makes "the embedded schema path touches no
+filesystem" mechanical: `fs` is a default-on feature, so without it `FsSources` is not
+compiled and a call to it from `resolve_from` is a compile error rather than a code review.
 
 `scripts/check-exhaustive.sh {schema|engine}` is **not** in that list and must not be: it
 adds a throwaway variant to `PredicateTyNamed` or to `fjord_engine::syntax::Ty` and asserts

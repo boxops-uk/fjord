@@ -156,6 +156,12 @@ jobs:
       # workspace, so the crate that matters is named explicitly here.
       - name: The engine still compiles for a browser
         run: cargo check -p fjord-engine -p fjord-inspect --target wasm32-unknown-unknown --locked
+      # **And a schema resolves in one without a filesystem.** `fs` is a default-on
+      # feature over the filesystem source provider, so dropping it is what makes "the
+      # embedded path reads no files" a compile error rather than a promise — and it is
+      # the check that fails if `resolve_from` ever reaches `FsSources`.
+      - name: A schema resolves with no filesystem
+        run: cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown --locked
       # The website is the design book. `--strict` turns the generator's own
       # warnings — a page missing from the nav, a nav entry with no page — into a
       # failure, so the book cannot silently lose a page.

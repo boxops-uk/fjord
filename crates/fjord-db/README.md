@@ -60,9 +60,17 @@ snapshot. A pause of a millisecond and a pause of an hour cost it the same thing
 A producer states the schema itself and asserts it at the handshake, so a disagreement is a
 refused connection rather than a database full of rows nobody can read back.
 
-```rust,no_run
-let source = std::fs::read_to_string("schemas/code.sigla")?;
-let schema = fjord_db::read_schema("code.sigla", &source)?;
+A schema is one or more `.sigla` files — an `import` names another namespace — so the reader
+takes the set, the entry first, and follows the imports through it. It touches no filesystem,
+which is what lets a producer embed its schema with `include_str!`:
+
+```rust
+// In a real producer these are `include_str!`s.
+let entry = "schema app { import base\n predicate Use : { of : base.Thing } }";
+let base = "schema base { predicate Thing : string }";
+
+let schema = fjord_db::read_schema([("app.sigla", entry), ("base.sigla", base)])?;
+assert_eq!(schema.len(), 2);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 

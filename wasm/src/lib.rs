@@ -13,11 +13,16 @@
 //! profiling ever asks for it; pre-empting it buys nothing.
 //!
 //! What a browser cannot do, stated so it is not filed as a gap: **ingest**,
-//! because interning needs a real backend and durable id claims, and **schema
-//! `import`**, because resolution reads files — so a browser schema is
-//! single-file until a virtual resolver exists. Everything else runs here,
-//! lexing to executing: the queries answer against a `MemStore` holding the
-//! demo database, through the same executor the server runs.
+//! because interning needs a real backend and durable id claims. Everything
+//! else runs here, lexing to executing: the queries answer against a `MemStore`
+//! holding the demo database, through the same executor the server runs.
+//!
+//! **Schema `import` does work**, and it used to be listed above. Resolution is
+//! one algorithm over a source provider, and the filesystem is only one
+//! implementation of it — so a browser embedder hands
+//! `fjord_schema::syntax::resolve::resolve_from` an ordered list of
+//! `(name, text)` and gets the union, with `--no-default-features` making "no
+//! filesystem" a compile error rather than a promise.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 

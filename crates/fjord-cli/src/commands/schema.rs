@@ -39,7 +39,7 @@ pub fn check(file: &Path, roots: &[PathBuf]) -> Result<String, CliError> {
     // answer that a compiler cannot: two roots holding a namespace of the same name is
     // a configuration problem, and it is invisible in the schema itself.
     for path in &resolved.files {
-        out.push_str(&format!("  {}\n", path.display()));
+        out.push_str(&format!("  {path}\n"));
     }
 
     out.push_str(&format!("fingerprint {:#018x}\n", identity.schema()));

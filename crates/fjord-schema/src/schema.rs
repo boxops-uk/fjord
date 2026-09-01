@@ -67,8 +67,11 @@ pub enum PredicateTyNamed<N> {
     Str,
     /// **Uninterpreted bytes.** Not validated as anything — that is the whole of the
     /// type — and ordered by `memcmp` over the payload, which the storage codec's
-    /// escape scheme preserves. It sorts after a union rather than beside a string,
-    /// for the reason [`MARK_BYTES`](fjord_encoding::tuple::MARK_BYTES) gives.
+    /// escape scheme preserves.
+    ///
+    /// It sorts *after* a union rather than beside a string, because its marker was
+    /// appended and I3 freezes the table; `fjord_encoding::tuple::MARK_BYTES` carries
+    /// the reason. Named rather than linked, because that crate is above this one.
     Bytes,
     Fact(PredicateId),
     Record(Arc<[(N, PredicateTyNamed<N>)]>),
