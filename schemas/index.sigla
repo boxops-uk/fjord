@@ -1,0 +1,71 @@
+# **A composite index** — the whole set, resolved into one schema.
+#
+# This file is not a layer. It is the demonstration that the set *composes*, and the thing you
+# pass to `fjord create` when you want one database to hold everything:
+#
+#     fjord --schema-path ./schemas create index --schema ./schemas/index.sigla
+#
+# ---- what composing buys ---------------------------------------------------------------
+#
+# Today the federated code search runs three databases on one store root — a C# index, a
+# TypeScript index, and a content index — and stitches them together in the bridge, in
+# JavaScript, because `csharp.File "x"`, `typescript.File "x"` and `content.File "x"` were three
+# types naming one file. With the source layer shared, the stitch is a **join**. Both of these
+# typecheck, plan and run against a database created from this file:
+#
+#     # Every reference in one file, resolved to where its target is defined — for **any**
+#     # language in the database, from one query path. The per-language layers can each answer
+#     # this within themselves (`csharp.EntityXRef`, `typescript.XRef`); what they cannot do is
+#     # answer it the same way as each other, or about a target defined in another database.
+#     {use = SP, target = S, defFile = DF, def = D.value} where
+#       F = src.File "packages/app/src/App.tsx";
+#       codemarkup.FileXRef {file = F, span = SP, target = S, role = R};
+#       D = codemarkup.Definition {symbol = S, file = DF}
+#
+#     # A symbol, its declaration site, and the project that compiled the file it sits in —
+#     # across three namespaces filled by three different producers.
+#     {def = D.value, proj = P.value} where
+#       S = src.Symbol "scip-dotnet . Company.Domain . Company/Domain/Order#Total().";
+#       D = codemarkup.Definition {symbol = S, file = F};
+#       msbuild.SourceFileToProject {src = F, project = P}
+#
+# Neither is expressible across three databases, because a `FactId` does not leave the database
+# that issued it (I11) — and both are expressible here with no new mechanism.
+#
+# ---- and what it costs -----------------------------------------------------------------
+#
+# One database is not always the right answer, and the set does not assume it:
+#
+#   * **Producers seal at different cadences.** A completed database is immutable (`Writable →
+#     Complete`), so one database means one write window for every producer. Three databases
+#     means the TypeScript index can be re-cut while the C# one is being served.
+#   * **A failure is shared.** A tsc walk that OOMs after the C# walk finished leaves a
+#     half-filled composite; separate databases leave one good index and one absent one.
+#   * **Cross-database questions do not go away.** Forty repositories are forty databases
+#     whatever the schema says, which is why `src.Symbol` is a string: composing is an
+#     optimisation for the single-repository case, not the mechanism.
+#
+# So the recommendation is: **one database per repository, composed; a fan-out across
+# repositories, joined on `src.Symbol`.** The alternative — one database per producer — stays
+# available and costs only the joins above.
+#
+# `code.sigla` is deliberately **not** imported. It is the built-in reference index and its `src`
+# namespace holds a second, older declaration layer (`src.Decl`, `src.Line`, its own build
+# predicates) that this set does not build on. It resolves alongside this one — the two share
+# `src.File` and nothing else — but importing it here would suggest the two are one design.
+
+schema index {
+
+  import src
+  import config
+  import codemarkup
+  import msbuild
+  import csharp
+  import npm
+  import bundle
+  import typescript
+
+  # A composite index declares no predicates of its own. If it ever does, that is the signal
+  # that a layer is missing a home.
+
+}

@@ -7,6 +7,36 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### Five reference schemas, and `index.sigla` — the set composes
+
+`csharp` (31 predicates), `msbuild` (16), `typescript` (35), `npm` (14) and `bundle` (22), plus
+a composite that declares none of its own and imports the other eight. **138 predicates in 9
+files**, and `schemas/` goes from two files to eleven.
+
+These 118 predicates are **not populated by anything in this repository**. They ship as
+declared, checked, fingerprint-recorded schemas because a schema file costs a binary nothing —
+nothing in `schemas/` is embedded except by an explicit `include_str!`, and a release carries
+no schema files at all. What fjord promises is the shapes and the vocabularies' numbering, not
+tracking LSP, SCIP, Yarn or webpack releases on a schedule; a vocabulary that has to grow does
+so through its `other : string = 0` valve.
+
+**The two queries in the composite's header are integration tests rather than illustrations.**
+Every reference in one file resolved to where its target is defined *for any language*, and a
+symbol joined to the project that compiled the file it sits in — across three namespaces filled
+by three different producers. Neither is expressible across three separate databases, because a
+`FactId` does not leave the database that issued it (I11). The fixture is a TypeScript file
+referencing a C# symbol defined in a C# file compiled by an MSBuild project, and nothing in
+either query says which language anything is.
+
+`csharp.EntityXRef` joined to `csharp.DefinitionLocation` through a shared union-typed variable
+is the end-to-end payoff of the `unify` fix: a seven-alternative union in two key positions,
+which was `reject/type-mismatch` and no plan at all until that arm existed.
+
+`every_vocabulary_is_contiguous_and_unique` walks every union in all 138 predicates and asserts
+the discriminants are unique and contiguous from their lowest. These sit in keys, so I10 froze
+them on landing and a transcription slip in a twenty-one-line table is permanent — which no
+reviewer reliably catches and no other test would.
+
 ### `schemas/codemarkup.sigla` — one surface a UI can read
 
 Ten predicates over `src`, and the whole layer rests on one decision: **the join key is a

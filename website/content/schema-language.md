@@ -480,6 +480,50 @@ means a producer writes them, so each carries the query that *would* derive it a
 While the population is by hand that comment is the specification the producer is checked
 against.
 
+### The five reference schemas, and `index.sigla`
+
+`csharp` (31), `msbuild` (16), `typescript` (35), `npm` (14) and `bundle` (22) — 118
+predicates that **nothing in this repository populates**. They ship as declared, checked,
+fingerprint-recorded schemas because a schema file costs a binary nothing: nothing in
+`schemas/` is embedded except by an explicit `include_str!`, and the release artifact
+carries no schema files at all.
+
+**What fjord promises about them, and what it does not.** fjord defines the shapes and the
+vocabularies' numbering. It does not promise to track LSP, SCIP, Yarn or webpack releases on
+any schedule; a vocabulary that has to grow does so through its `other : string = 0` valve
+rather than a Breaking edit. `csharp` and `msbuild` are the supported pair — the ones a
+first-party producer writes and the ones exercised end to end.
+
+Three structural moves come with them, and each is the same seam drawn twice:
+
+- **The MSBuild project graph left `csharp`.** A different producer fills it, an MSBuild
+  solution compiles F# and VB, and it was missing every edge *between two projects*. A
+  project is now identified by its `.csproj` with the evaluated attributes as values —
+  because an identity must not carry an evaluation detail, or re-evaluating under a
+  different SDK mints a second project and every reference edge points at whichever the
+  walk reached first.
+- **The package layer left `typescript`** into `npm`, modelled on Yarn's own vocabulary
+  (locator / descriptor / resolution / workspace / project) so the two agree by construction.
+  A repository with a lockfile and no TypeScript is then an `npm` index and nothing else,
+  which is a test rather than a claim.
+- **The bundler layer left `typescript`** into `bundle`, whose shape is
+  `getStats().toJson()` — webpack's as much as Rspack's, hence the namespace.
+
+`index.sigla` declares **no predicates of its own**: it imports the other eight and exists to
+prove the set composes. It resolves to **138 predicates in 9 files**, and the two queries in
+its header are integration tests rather than illustrations — every reference in one file
+resolved to where its target is defined *for any language*, and a symbol joined to the
+project that compiled the file it sits in, across three namespaces filled by three different
+producers. Neither is expressible across three separate databases, because a `FactId` does
+not leave the database that issued it ([I11](invariants.html#i11)).
+
+:::note Two module graphs disagree on purpose
+`bundle.ModuleImport` is the bundler's graph, read from stats after resolution and
+tree-shaking; `typescript.FileImport` is the source graph, read from the import statements as
+written. A module in one and not the other is a module that was shaken out — the interesting
+answer, not a bug.
+:::
+
 ### `schemas/config.sigla` — what a database was built for
 
 One predicate, `config.Setting {dimension, value}`, and it answers the question a tool

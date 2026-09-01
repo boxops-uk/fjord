@@ -257,6 +257,7 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
         ("config.sigla", "0xac3c414ab7ff574f"),
         ("csharp.sigla", "0x8368d4cbc47728d7"),
         ("demo.sigla", "0x026d61be0818f394"),
+        ("index.sigla", "0x68e2ad36791ebf1b"),
         ("msbuild.sigla", "0xbda9e53fc3c35113"),
         ("npm.sigla", "0x56ca6b880dd50587"),
         ("src.sigla", "0x0f2fe69be726b41d"),
@@ -271,4 +272,124 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
         expected,
         "a shipped schema's fingerprint moved, or a schema arrived without one"
     );
+}
+
+/// **Every union in the shipped set is contiguous from its stated base, and unique.**
+///
+/// These vocabularies sit in **keys**, so [I10] freezes their discriminants the day they
+/// ship: a slipped number is permanent, and `other : string = 0` is the only valve. They
+/// are also transcriptions — LSP's `SymbolKind`, SCIP's `SymbolRole`, Roslyn's
+/// accessibilities, Yarn's dependency kinds — so the failure mode is a typo in a
+/// twenty-one-line table, which no reviewer reliably catches and no other test would.
+///
+/// Two mechanical properties, and neither is taste:
+///
+/// - **Unique.** Two alternatives sharing a discriminant is a value that decodes as
+///   whichever the reader finds first — silently, and differently in two readers.
+/// - **Contiguous from the lowest declared.** A gap is not wrong on disk, but it is
+///   almost always a transcription slip rather than an intention, and the one place a
+///   deliberate gap would be defensible — reserving a number — is not something any
+///   vocabulary here does.
+///
+/// What this deliberately does not check is that the numbers match their upstream. That
+/// needs the upstream, and citing it in a comment is what the schema does; this is the
+/// half a machine can hold.
+///
+/// [I10]: ../../../website/content/invariants.md#i10
+#[test]
+fn every_vocabulary_is_contiguous_and_unique() {
+    use fjord_schema::schema::{PredicateId, PredicateTy};
+
+    let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    let resolved = resolve::resolve(&root.join("schemas/index.sigla"), &[root.join("schemas")])
+        .expect("the composite resolves");
+    let schema = &resolved.schema;
+
+    /// Every union reachable in a type, with the alternatives it declares.
+    fn walk(
+        ty: &PredicateTy,
+        into: &mut Vec<Vec<(String, u32)>>,
+        schema: &fjord_schema::schema::Schema,
+    ) {
+        match ty {
+            PredicateTy::Record(fields) => {
+                for (_, field) in fields.iter() {
+                    walk(field, into, schema);
+                }
+            }
+            PredicateTy::Union(alts) => {
+                into.push(
+                    alts.iter()
+                        .map(|alt| {
+                            (
+                                schema
+                                    .interner()
+                                    .resolve(alt.name)
+                                    .unwrap_or("?")
+                                    .to_owned(),
+                                alt.disc,
+                            )
+                        })
+                        .collect(),
+                );
+                for alt in alts.iter() {
+                    walk(&alt.ty, into, schema);
+                }
+            }
+            PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes | PredicateTy::Fact(_) => {}
+        }
+    }
+
+    let mut unions: Vec<Vec<(String, u32)>> = vec![];
+    for index in 0..schema.len() {
+        let predicate = schema.get(PredicateId(index as u32)).expect("in range");
+        walk(&predicate.predicate().key, &mut unions, schema);
+        if let Some(value) = &predicate.predicate().value {
+            walk(value, &mut unions, schema);
+        }
+    }
+
+    // A named type is inlined at every use, so the same vocabulary appears once per
+    // field that names it. Deduplicated so a failure names a vocabulary rather than a
+    // position, and counted so this cannot pass by finding nothing.
+    unions.sort();
+    unions.dedup();
+    assert!(
+        unions.len() >= 20,
+        "only {} distinct vocabularies in the composite — this should be finding \
+         dozens, so the walk is missing them",
+        unions.len()
+    );
+
+    for alternatives in &unions {
+        let spelling = |a: &Vec<(String, u32)>| {
+            a.iter()
+                .map(|(name, disc)| format!("{name} = {disc}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+
+        let mut discs: Vec<u32> = alternatives.iter().map(|(_, disc)| *disc).collect();
+        let declared = discs.len();
+        discs.sort_unstable();
+        discs.dedup();
+
+        assert_eq!(
+            discs.len(),
+            declared,
+            "a discriminant is declared twice, so a value of it decodes as whichever \
+             alternative a reader finds first: {}",
+            spelling(alternatives)
+        );
+
+        let (lowest, highest) = (discs[0], discs[discs.len() - 1]);
+        assert_eq!(
+            highest - lowest + 1,
+            declared as u32,
+            "the discriminants are not contiguous from {lowest}, which is a \
+             transcription slip far more often than an intention — and I10 makes it \
+             permanent: {}",
+            spelling(alternatives)
+        );
+    }
 }
