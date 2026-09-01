@@ -73,6 +73,16 @@ pub enum StoreCodecError {
     #[error("no alternative of this union is declared with discriminant {tag}")]
     UnknownDiscriminant { tag: u64 },
 
+    /// A value whose **family** is not the one the schema declares for it: an `int`
+    /// field handed a string, a record field handed a scalar.
+    ///
+    /// Distinct from [`BadRecord`](StoreCodecError::BadRecord), which is a record
+    /// whose *arity* is wrong or whose nesting is too deep. Reporting a family
+    /// mismatch as "bad record" is the one message here that misdirects — at a
+    /// scalar field there is no record to be bad.
+    #[error("a value does not fit the {declared} the schema declares for it")]
+    TypeMismatch { declared: &'static str },
+
     /// A union value whose payload does not match the alternative its discriminant
     /// names — the union's answer to [`BadRecord`](StoreCodecError::BadRecord).
     #[error("a union payload does not match the alternative discriminant {tag} names")]

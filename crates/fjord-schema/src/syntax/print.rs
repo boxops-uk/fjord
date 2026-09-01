@@ -163,16 +163,27 @@ pub fn equivalent(left: &Schema, right: &Schema) -> bool {
     })
 }
 
+/// Dispatched on `ours` exhaustively, and only then on `theirs`. A joint match
+/// needs a wildcard for the "different families" case, and that wildcard would also
+/// absorb a **new** family — silently answering "not the same type" for two schemas
+/// that both use it, which `recoverable()` turns into `create` refusing a schema it
+/// cannot say anything useful about.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn same_ty(left: &Schema, ours: &PredicateTy, right: &Schema, theirs: &PredicateTy) -> bool {
-    match (ours, theirs) {
-        (PredicateTy::Int, PredicateTy::Int) | (PredicateTy::Str, PredicateTy::Str) => true,
+    match ours {
+        PredicateTy::Int => matches!(theirs, PredicateTy::Int),
+        PredicateTy::Str => matches!(theirs, PredicateTy::Str),
 
         // **By id.** A reference is a position, and two schemas that name the same
         // target from different positions are not the same schema to anything that
         // decodes a stored row.
-        (PredicateTy::Fact(ours), PredicateTy::Fact(theirs)) => ours == theirs,
+        PredicateTy::Fact(ours) => matches!(theirs, PredicateTy::Fact(theirs) if ours == theirs),
 
-        (PredicateTy::Record(ours), PredicateTy::Record(theirs)) => {
+        PredicateTy::Record(ours) => {
+            let PredicateTy::Record(theirs) = theirs else {
+                return false;
+            };
+
             ours.len() == theirs.len()
                 && ours
                     .iter()
@@ -188,7 +199,11 @@ fn same_ty(left: &Schema, ours: &PredicateTy, right: &Schema, theirs: &Predicate
         // stronger claim than identity: the text that comes back has to be the text
         // that went in, alternative for alternative, or `create --schema`'s embedded
         // copy is not the schema it was given.
-        (PredicateTy::Union(ours), PredicateTy::Union(theirs)) => {
+        PredicateTy::Union(ours) => {
+            let PredicateTy::Union(theirs) = theirs else {
+                return false;
+            };
+
             ours.len() == theirs.len()
                 && ours.iter().zip(theirs.iter()).all(|(ours, theirs)| {
                     ours.disc == theirs.disc
@@ -197,8 +212,6 @@ fn same_ty(left: &Schema, ours: &PredicateTy, right: &Schema, theirs: &Predicate
                         && same_ty(left, &ours.ty, right, &theirs.ty)
                 })
         }
-
-        _ => false,
     }
 }
 
@@ -272,6 +285,58 @@ fn ty(out: &mut String, schema: &Schema, shape: &PredicateTy) {
 
 #[cfg(test)]
 mod tests {
+    /// **Two types of different families are not the same type**, at every pair.
+    ///
+    /// The arm this reaches was the wildcard of a joint match on the two types, and
+    /// nothing provoked it: every test below compares two schemas that agree. The
+    /// same wildcard absorbed a *new* family — two schemas both using it would have
+    /// compared **unequal**, and `equivalent`'s one production caller is
+    /// `recoverable()`, which `Catalog::create` runs before anything exists on disk.
+    /// So the failure was `create` refusing a valid schema, with a message saying
+    /// only that the two disagree.
+    #[test]
+    fn two_types_of_different_families_are_not_the_same() {
+        use crate::schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema};
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("gen.P");
+        let field = rodeo.get_or_intern("f");
+        let alt = rodeo.get_or_intern("a");
+
+        let families = [
+            PredicateTy::Int,
+            PredicateTy::Str,
+            PredicateTy::Fact(PredicateId(0)),
+            PredicateTy::Record(Arc::from([(field, PredicateTy::Int)])),
+            PredicateTy::Union(Arc::from([Alternative {
+                name: alt,
+                disc: 5,
+                ty: PredicateTy::Int,
+            }])),
+        ];
+
+        let schema = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: PredicateTy::Int,
+                value: None,
+            }]),
+        );
+
+        for (i, ours) in families.iter().enumerate() {
+            for (j, theirs) in families.iter().enumerate() {
+                assert_eq!(
+                    super::same_ty(&schema, ours, &schema, theirs),
+                    i == j,
+                    "{ours:?} against {theirs:?}"
+                );
+            }
+        }
+    }
+
     use std::sync::Arc;
 
     use lasso::Rodeo;

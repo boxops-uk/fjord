@@ -894,20 +894,68 @@ impl Checker<'_> {
             return Ok(());
         }
 
+        // The variable cases are symmetric and stay above the structural ones: an
+        // arm that matched a *shape* first would compare a bound variable's type
+        // before the binding was resolved.
         match (a, b) {
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
             (Ty::Var(var), ty) | (ty, Ty::Var(var)) => self.bind_var(var, ty),
 
-            (Ty::Int, Ty::Int) | (Ty::String, Ty::String) => Ok(()),
-            (Ty::Fact(x), Ty::Fact(y)) if x == y => Ok(()),
+            (got, expected) => self.unify_shapes(&got, &expected),
+        }
+    }
 
-            (Ty::Record(xs), Ty::Record(ys)) => {
-                if xs.len() != ys.len() {
-                    return Err(TyError::Mismatch {
-                        expected: Ty::Record(ys),
-                        got: Ty::Record(xs),
-                    });
+    /// The structural half of [`unify`](Self::unify), once the symmetric variable
+    /// and poison cases are taken.
+    ///
+    /// Dispatched on one side **exhaustively** rather than on the pair. A joint
+    /// match needs a catch-all for the genuine mismatch, and the same catch-all
+    /// absorbs a *new* `Ty` variant — which then fails to compare equal with itself
+    /// and reports the two identical types it could not compare. That was the union
+    /// defect, and this is what stops the next one.
+    #[deny(clippy::wildcard_enum_match_arm)]
+    fn unify_shapes(&mut self, got: &Ty, expected: &Ty) -> Result<(), TyError> {
+        let mismatch = || {
+            Err(TyError::Mismatch {
+                expected: expected.clone(),
+                got: got.clone(),
+            })
+        };
+
+        match got {
+            Ty::Int => {
+                if matches!(expected, Ty::Int) {
+                    Ok(())
+                } else {
+                    mismatch()
                 }
+            }
+
+            Ty::String => {
+                if matches!(expected, Ty::String) {
+                    Ok(())
+                } else {
+                    mismatch()
+                }
+            }
+
+            Ty::Fact(ours) => {
+                if matches!(expected, Ty::Fact(theirs) if ours == theirs) {
+                    Ok(())
+                } else {
+                    mismatch()
+                }
+            }
+
+            Ty::Record(xs) => {
+                let Ty::Record(ys) = expected else {
+                    return mismatch();
+                };
+
+                if xs.len() != ys.len() {
+                    return mismatch();
+                }
+
                 // Looked up by name rather than zipped: both sides are sorted, but
                 // the schema's order is the schema loader's to guarantee, not this
                 // pass's to assume.
@@ -920,9 +968,18 @@ impl Checker<'_> {
                 Ok(())
             }
 
-            (Ty::Union(xs), Ty::Union(ys)) => self.unify_union(xs, ys),
+            Ty::Union(xs) => {
+                let Ty::Union(ys) = expected else {
+                    return mismatch();
+                };
+                self.unify_union(xs.clone(), ys.clone())
+            }
 
-            (got, expected) => Err(TyError::Mismatch { expected, got }),
+            // Unreachable through [`unify`](Self::unify), which takes a variable by
+            // the arms above it and poison by the head check before them — but
+            // written out, because the whole point of this match is that it has no
+            // catch-all to hide the next variant in.
+            Ty::Var(_) | Ty::Error => mismatch(),
         }
     }
 

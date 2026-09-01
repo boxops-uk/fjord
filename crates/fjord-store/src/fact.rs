@@ -187,6 +187,7 @@ pub fn encode<F: Fact>(
 /// here keeps one encoder: what comes back is what
 /// [`encode_typed`](fjord_encoding::tuple::encode_typed) already writes positionally,
 /// so the name resolution cannot drift from the bytes.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn checked(
     interner: &SchemaInterner,
     predicate: &str,
@@ -199,8 +200,27 @@ fn checked(
         got: shape(value),
     };
 
-    match (ty, value) {
-        (PredicateTy::Int, Value::Int(_)) | (PredicateTy::Str, Value::Str(_)) => Ok(value.clone()),
+    // Dispatched on the declared type exhaustively, then on the value: a joint match
+    // needs a wildcard for the genuine mismatch, and the same wildcard absorbs a new
+    // scalar family silently.
+    match ty {
+        // The scalars return the value as it stands, so there is nothing to bind and
+        // the check is a shape test rather than a destructuring.
+        PredicateTy::Int => {
+            if matches!(value, Value::Int(_)) {
+                Ok(value.clone())
+            } else {
+                Err(mismatch())
+            }
+        }
+
+        PredicateTy::Str => {
+            if matches!(value, Value::Str(_)) {
+                Ok(value.clone())
+            } else {
+                Err(mismatch())
+            }
+        }
 
         // A reference has to name the predicate the field *declares*, and the id
         // carries its predicate in its own tag, so this is a compare rather than a
@@ -209,13 +229,23 @@ fn checked(
         // predicate is a fact that either errors when followed or answers with
         // another type's bytes — and neither is visible from the field itself.
         // Sequence 0 is no fact's id, here for the same reason.
-        (PredicateTy::Fact(predicate), Value::FactRef(id))
-            if id.predicate() == *predicate && id.sequence() != 0 =>
-        {
+        PredicateTy::Fact(target) => {
+            let Value::FactRef(id) = value else {
+                return Err(mismatch());
+            };
+
+            if id.predicate() != *target || id.sequence() == 0 {
+                return Err(mismatch());
+            }
+
             Ok(value.clone())
         }
 
-        (PredicateTy::Record(field_tys), Value::Record(given)) => {
+        PredicateTy::Record(field_tys) => {
+            let Value::Record(given) = value else {
+                return Err(mismatch());
+            };
+
             let mut out = Vec::with_capacity(field_tys.len());
             let mut used = vec![false; given.len()];
 
@@ -267,7 +297,11 @@ fn checked(
         // the number it is declared with is not something a caller should have to
         // restate. A tag written by hand and disagreeing with the name would be
         // silently authoritative once it reached the codec.
-        (PredicateTy::Union(alts), Value::Union { alt, value, .. }) => {
+        PredicateTy::Union(alts) => {
+            let Value::Union { alt, value, .. } = value else {
+                return Err(mismatch());
+            };
+
             let declared = alts
                 .iter()
                 .find(|declared| interner.resolve(declared.name) == Some(alt.as_str()))
@@ -282,8 +316,6 @@ fn checked(
                 value: Box::new(checked(interner, predicate, &declared.ty, value)?),
             })
         }
-
-        _ => Err(mismatch()),
     }
 }
 

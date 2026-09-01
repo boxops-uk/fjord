@@ -457,6 +457,119 @@ mod tests {
         WireValue::Record(fields.into())
     }
 
+    /// **The two live JSON renderers agree on the shape of every family.**
+    ///
+    /// This one takes a [`WireValue`] and a [`Desc`]; `fjord_inspect::value::json`
+    /// takes a storage `Value` and a `Schema`. They are written independently and
+    /// both chose `{"alt": payload}` for a union with nothing saying they had to — a
+    /// family that one tagged and the other left bare would make the shape of a row
+    /// depend on which endpoint served it.
+    ///
+    /// **Shapes, not bytes.** A reference is a string in both and deliberately a
+    /// *different* string: this renderer holds a descriptor and names the snowflake,
+    /// that one holds the schema and names the fact.
+    #[test]
+    fn the_two_json_renderers_agree_on_every_family() {
+        use fjord_encoding::tuple::Value;
+        use fjord_schema::{
+            id::FactId,
+            lasso::Rodeo,
+            schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema},
+        };
+        use std::sync::Arc;
+
+        /// A JSON tree with its leaves replaced by the name of their kind, so two
+        /// renderings can be compared for shape without comparing content.
+        fn shape(value: &serde_json::Value) -> String {
+            match value {
+                serde_json::Value::Null => "null".to_owned(),
+                serde_json::Value::Bool(_) => "bool".to_owned(),
+                serde_json::Value::Number(_) => "number".to_owned(),
+                serde_json::Value::String(_) => "string".to_owned(),
+                serde_json::Value::Array(items) => format!(
+                    "[{}]",
+                    items.iter().map(shape).collect::<Vec<_>>().join(", ")
+                ),
+                serde_json::Value::Object(fields) => format!(
+                    "{{{}}}",
+                    fields
+                        .iter()
+                        .map(|(name, field)| format!("{name}: {}", shape(field)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        }
+
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("gen.P");
+        let field = rodeo.get_or_intern("f");
+        let alt = rodeo.get_or_intern("a");
+        let schema = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: PredicateTy::Str,
+                value: None,
+            }]),
+        );
+        let id = FactId::new(PredicateId(0), 7).expect("a fact id");
+
+        let cases: Vec<(&str, PredicateTy, WireValue, Value)> = vec![
+            ("int", PredicateTy::Int, WireValue::Int(1), Value::Int(1)),
+            (
+                "string",
+                PredicateTy::Str,
+                WireValue::Str("x".to_owned()),
+                Value::Str("x".to_owned()),
+            ),
+            (
+                "a reference",
+                PredicateTy::Fact(PredicateId(0)),
+                WireValue::Ref(fjord_client::WireRef::Id(id)),
+                Value::FactRef(id),
+            ),
+            (
+                "a record",
+                PredicateTy::Record(Arc::from([(field, PredicateTy::Int)])),
+                WireValue::Record(vec![WireValue::Int(1)].into()),
+                Value::Record(Box::from([("f".to_owned(), Value::Int(1))])),
+            ),
+            (
+                "a union",
+                PredicateTy::Union(Arc::from([Alternative {
+                    name: alt,
+                    disc: 5,
+                    ty: PredicateTy::Int,
+                }])),
+                WireValue::Union {
+                    disc: 5,
+                    value: Box::new(WireValue::Int(1)),
+                },
+                Value::Union {
+                    disc: 5,
+                    alt: "a".to_owned(),
+                    value: Box::new(Value::Int(1)),
+                },
+            ),
+        ];
+
+        for (what, ty, wire, stored) in cases {
+            let desc = Desc::of(&schema, &ty).expect("a descriptor");
+            let rendered = json(&wire, &desc, Some(&schema), false);
+            let theirs = fjord_inspect::value::json(&stored, &schema);
+
+            let ours: serde_json::Value = serde_json::from_str(&rendered)
+                .unwrap_or_else(|err| panic!("{what}: {rendered} is not JSON: {err}"));
+
+            assert_eq!(
+                shape(&ours),
+                shape(&theirs),
+                "{what}: {rendered} against {theirs}"
+            );
+        }
+    }
+
     #[test]
     fn a_reference_prints_as_the_snowflake_it_is() {
         // Predicate 3, sequence 7 — the two halves an id is made of, and the reason a

@@ -604,6 +604,7 @@ dependencies = [
  "fjord-encoding",
  "fjord-engine",
  "fjord-ingest",
+ "fjord-inspect",
  "fjord-schema",
  "fjord-server",
  "fjord-store",
@@ -653,7 +654,6 @@ dependencies = [
  "lasso",
  "memchr",
  "proptest",
- "serde",
  "thiserror",
 ]
 

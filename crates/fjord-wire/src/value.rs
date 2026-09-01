@@ -132,14 +132,23 @@ pub struct WireFact {
 /// bookkeeping: the bytes carry no type of their own, so a value written against the
 /// wrong one is not a malformed frame the peer can reject — it is a well-formed
 /// frame that decodes to something else.
+#[deny(clippy::wildcard_enum_match_arm)]
 pub fn encode_value(
     out: &mut Vec<u8>,
     schema: &Schema,
     ty: &PredicateTy,
     value: &WireValue,
 ) -> Result<(), WireError> {
-    match (ty, value) {
-        (PredicateTy::Int, WireValue::Int(n)) => {
+    // Dispatched on the declared type exhaustively, then on the value: a joint match
+    // needs a wildcard, and that wildcard absorbs a new scalar family into a run-time
+    // `TypeMismatch` where the compiler could have named the site.
+    let mismatch = || WireError::TypeMismatch("value does not fit this type");
+
+    match ty {
+        PredicateTy::Int => {
+            let WireValue::Int(n) = value else {
+                return Err(mismatch());
+            };
             varint::put_i64(out, *n);
             Ok(())
         }
@@ -148,17 +157,27 @@ pub fn encode_value(
         // a terminator off the end, because a stored string has to stay
         // order-preserving and skippable without a schema; neither is true here, so
         // a blob costs its own size and a header, whatever bytes are in it.
-        (PredicateTy::Str, WireValue::Str(s)) => {
+        PredicateTy::Str => {
+            let WireValue::Str(s) = value else {
+                return Err(mismatch());
+            };
             varint::put_u64(out, s.len() as u64);
             out.extend_from_slice(s.as_bytes());
             Ok(())
         }
 
-        (PredicateTy::Fact(target), WireValue::Ref(reference)) => {
+        PredicateTy::Fact(target) => {
+            let WireValue::Ref(reference) = value else {
+                return Err(mismatch());
+            };
             encode_ref(out, schema, *target, reference)
         }
 
-        (PredicateTy::Record(field_tys), WireValue::Record(fields)) => {
+        PredicateTy::Record(field_tys) => {
+            let WireValue::Record(fields) = value else {
+                return Err(mismatch());
+            };
+
             if field_tys.len() != fields.len() {
                 return Err(WireError::TypeMismatch("record arity"));
             }
@@ -171,13 +190,15 @@ pub fn encode_value(
             Ok(())
         }
 
-        (
-            PredicateTy::Union(alts),
-            WireValue::Union {
+        PredicateTy::Union(alts) => {
+            let WireValue::Union {
                 disc,
                 value: payload,
-            },
-        ) => {
+            } = value
+            else {
+                return Err(mismatch());
+            };
+
             let alt = alts
                 .iter()
                 .find(|alt| alt.disc == *disc)
@@ -189,8 +210,6 @@ pub fn encode_value(
             varint::put_u64(out, u64::from(*disc));
             encode_value(out, schema, &alt.ty, payload)
         }
-
-        _ => Err(WireError::TypeMismatch("value does not fit this type")),
     }
 }
 
@@ -747,6 +766,34 @@ mod tests {
             ]
             .into(),
         )
+    }
+
+    /// **A value that does not fit its declared type is refused**, at every family.
+    ///
+    /// The arm this reaches had no test before the restructure: it was the wildcard
+    /// of a joint `(ty, value)` match, and the same wildcard absorbed a new scalar
+    /// family — which would then reach a peer as "value does not fit this type" at
+    /// run time rather than as a compile error here.
+    #[test]
+    fn a_value_that_does_not_fit_its_type_is_refused() {
+        let mut rodeo = Rodeo::new();
+        let union = union_ty(&mut rodeo);
+
+        for (ty, value) in [
+            (PredicateTy::Int, WireValue::Str("x".to_owned())),
+            (PredicateTy::Str, WireValue::Int(1)),
+            (PredicateTy::Fact(PredicateId(0)), WireValue::Int(1)),
+            (PredicateTy::Record(Arc::from([])), WireValue::Int(1)),
+            (union, WireValue::Int(1)),
+        ] {
+            let schema = schema_of(ty.clone());
+            let mut out = vec![];
+            let err = encode_value(&mut out, &schema, &ty, &value).unwrap_err();
+            assert!(
+                matches!(err, WireError::TypeMismatch("value does not fit this type")),
+                "{ty:?} against {value:?}: got {err:?}"
+            );
+        }
     }
 
     /// **The tag is the only marker this codec writes.** A record's shape is

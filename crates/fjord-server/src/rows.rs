@@ -118,17 +118,43 @@ pub fn desc_of(ty: &Ty, interner: &LocalInterner) -> Result<Desc, ServerError> {
 ///
 /// [`ServerError::Unprojectable`] if the row does not fit the type its own head
 /// produced, which is a bug rather than a bad query.
+#[deny(clippy::wildcard_enum_match_arm)]
 pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError> {
-    Ok(match (ty, value) {
-        (PredicateTy::Int, Value::Int(n)) => WireValue::Int(*n),
-        (PredicateTy::Str, Value::Str(s)) => WireValue::Str(s.clone()),
+    // Dispatched on the head's type exhaustively, then on the row: a joint match
+    // needs a wildcard, and that wildcard absorbs a new scalar family silently.
+    let unprojectable =
+        || ServerError::Unprojectable("a row that does not fit the type its head produced");
+
+    Ok(match ty {
+        PredicateTy::Int => {
+            let Value::Int(n) = value else {
+                return Err(unprojectable());
+            };
+            WireValue::Int(*n)
+        }
+
+        PredicateTy::Str => {
+            let Value::Str(s) = value else {
+                return Err(unprojectable());
+            };
+            WireValue::Str(s.clone())
+        }
 
         // Outbound, a reference is always an id: the row was read from storage, where
         // a reference already is one. The union branch is still written, because the
         // client decodes rows with the same value decoder it encodes facts with.
-        (PredicateTy::Fact(_), Value::FactRef(id)) => WireValue::Ref(WireRef::Id(*id)),
+        PredicateTy::Fact(_) => {
+            let Value::FactRef(id) = value else {
+                return Err(unprojectable());
+            };
+            WireValue::Ref(WireRef::Id(*id))
+        }
 
-        (PredicateTy::Record(field_tys), Value::Record(fields)) => {
+        PredicateTy::Record(field_tys) => {
+            let Value::Record(fields) = value else {
+                return Err(unprojectable());
+            };
+
             if field_tys.len() != fields.len() {
                 return Err(ServerError::Unprojectable(
                     "a row with a different number of fields than its head declared",
@@ -148,7 +174,11 @@ pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError
         // indexed, and what goes on the wire is the discriminant the row carried — not
         // a position in this list, which is the one thing a client must not have to
         // guess. The *name* is in the descriptor, which the client already has.
-        (PredicateTy::Union(alts), Value::Union { disc, value, .. }) => {
+        PredicateTy::Union(alts) => {
+            let Value::Union { disc, value, .. } = value else {
+                return Err(unprojectable());
+            };
+
             let alt =
                 alts.iter()
                     .find(|alt| alt.disc == *disc)
@@ -160,12 +190,6 @@ pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError
                 disc: *disc,
                 value: Box::new(to_wire(&alt.ty, value)?),
             }
-        }
-
-        _ => {
-            return Err(ServerError::Unprojectable(
-                "a row that does not fit the type its head produced",
-            ));
         }
     })
 }
@@ -263,6 +287,46 @@ mod tests {
             write!(&mut out, "{byte:02x}").expect("writing to a String cannot fail");
         }
         out
+    }
+
+    /// **A row that does not fit its head's type is refused**, at every family.
+    ///
+    /// This is a bug rather than a bad query — the descriptor and the row come from
+    /// one head type — so nothing provoked it before the restructure, and the
+    /// wildcard that reported it also absorbed a new scalar family.
+    #[test]
+    fn a_row_that_does_not_fit_its_head_is_unprojectable() {
+        use fjord_encoding::tuple::Value;
+        use fjord_schema::schema::{Alternative, PredicateId, PredicateTy};
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        let mut rodeo = Rodeo::new();
+        let union = PredicateTy::Union(Arc::from([Alternative {
+            name: rodeo.get_or_intern("a"),
+            disc: 5,
+            ty: PredicateTy::Int,
+        }]));
+
+        for ty in [
+            PredicateTy::Int,
+            PredicateTy::Str,
+            PredicateTy::Fact(PredicateId(0)),
+            PredicateTy::Record(Arc::from([])),
+            union,
+        ] {
+            // `Null` fits no declared family, so one value provokes every arm.
+            let err = to_wire(&ty, &Value::Null).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ServerError::Unprojectable(
+                        "a row that does not fit the type its head produced"
+                    )
+                ),
+                "{ty:?}: got {err:?}"
+            );
+        }
     }
 
     #[test]

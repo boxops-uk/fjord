@@ -16,6 +16,49 @@ use fjord_store_fjall::{
 };
 use lasso::Rodeo;
 
+/// **`create` refuses a schema it cannot write down and read back.**
+///
+/// The `recoverable()` → `equivalent` → `same_ty` path, which is `same_ty`'s only
+/// production caller and had no test at all. Worth the paranoia because `Schema` is
+/// public and the failure it prevents is silent: the copy under `schema/` is what the
+/// database is served with for the rest of its life.
+///
+/// Only the half `recover` itself refuses is reachable. The other half — `equivalent`
+/// answering false — needs two schemas that print alike and compare unlike, and there
+/// is no such pair: a numbering round-trips because print emits the ids and `recover`
+/// reads them, and a **family** `same_ty` cannot compare is now a compile error at the
+/// arm rather than a refusal here.
+#[test]
+fn a_built_schema_create_cannot_recover_is_refused() {
+    let mut rodeo = Rodeo::new();
+    // No namespace, which the grammar has no way to write.
+    let name = rodeo.get_or_intern("P");
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Str,
+            value: None,
+        }]),
+    );
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let catalog = Catalog::open(dir.path()).expect("a catalog");
+
+    let err = catalog
+        .create("unspellable", &schema)
+        .expect_err("a schema that does not survive the round trip must be refused");
+
+    assert!(
+        matches!(err, CatalogError::UnwritableSchema { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        !dir.path().join("unspellable").exists(),
+        "refused, but a directory was left behind"
+    );
+}
+
 fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
     let (file, decl) = (

@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-use serde::{Serialize, Serializer, ser::SerializeMap};
-
 use crate::error::StoreCodecError;
 use fjord_schema::{
     id::FactId,
@@ -755,29 +753,51 @@ fn checked_fact_ref(predicate: PredicateId, id: FactId) -> Result<(), StoreCodec
 }
 
 /// [`encode_typed`] into an encoder already in progress — a field of a record.
+///
+/// Dispatched on the **declared type**, exhaustively, and only then on the value.
+/// A joint `match (ty, value)` needs a wildcard for the genuine mismatch, and that
+/// wildcard also absorbs a *new* scalar family — which then fails here at run time,
+/// as a corrupt row, instead of at the compiler. The shape check is a `let … else`
+/// rather than an inner match so the wildcard is gone rather than moved.
+#[deny(clippy::wildcard_enum_match_arm)]
 pub fn encode_typed_at(
     enc: &mut TupleEncoder<'_>,
     ty: &PredicateTy,
     value: &Value,
 ) -> Result<(), StoreCodecError> {
-    match (ty, value) {
-        (PredicateTy::Int, Value::Int(i)) => {
+    match ty {
+        PredicateTy::Int => {
+            let Value::Int(i) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "int" });
+            };
             enc.put_i64(*i);
             Ok(())
         }
 
-        (PredicateTy::Str, Value::Str(s)) => {
+        PredicateTy::Str => {
+            let Value::Str(s) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "string" });
+            };
             enc.put_str(s);
             Ok(())
         }
 
-        (PredicateTy::Fact(predicate), Value::FactRef(id)) => {
+        PredicateTy::Fact(predicate) => {
+            let Value::FactRef(id) = value else {
+                return Err(StoreCodecError::TypeMismatch {
+                    declared: "reference",
+                });
+            };
             checked_fact_ref(*predicate, *id)?;
             enc.put_fact_id(*id);
             Ok(())
         }
 
-        (PredicateTy::Record(field_tys), Value::Record(field_values)) => {
+        PredicateTy::Record(field_tys) => {
+            let Value::Record(field_values) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "record" });
+            };
+
             if field_tys.len() != field_values.len() {
                 return Err(StoreCodecError::BadRecord);
             }
@@ -791,14 +811,16 @@ pub fn encode_typed_at(
             })
         }
 
-        (
-            PredicateTy::Union(alts),
-            Value::Union {
+        PredicateTy::Union(alts) => {
+            let Value::Union {
                 disc,
                 value: payload,
                 ..
-            },
-        ) => {
+            } = value
+            else {
+                return Err(StoreCodecError::TypeMismatch { declared: "union" });
+            };
+
             let tag = u64::from(*disc);
 
             // **By discriminant, never by name.** The tag is the identity — it is
@@ -812,16 +834,24 @@ pub fn encode_typed_at(
                 .ok_or(StoreCodecError::UnknownDiscriminant { tag })?;
 
             enc.union(*disc, |enc| encode_typed_at(enc, &alt.ty, payload))
-                .map_err(|err| match err {
+                .map_err(|err| {
                     // A shape mismatch under a payload *is* a payload that does not
                     // match the alternative, and the tag is the actionable half of
-                    // saying so. A deeper union's own refusal keeps its own tag.
-                    StoreCodecError::BadRecord => StoreCodecError::BadUnion { tag },
-                    other => other,
+                    // saying so. A deeper union's own refusal keeps its own tag, and
+                    // so does every error this cannot improve on — written as an
+                    // `if` because a `_ => err` arm is a wildcard this function
+                    // denies, and enumerating the pass-through set would have to be
+                    // edited every time an unrelated variant was added.
+                    if matches!(
+                        err,
+                        StoreCodecError::BadRecord | StoreCodecError::TypeMismatch { .. }
+                    ) {
+                        StoreCodecError::BadUnion { tag }
+                    } else {
+                        err
+                    }
                 })
         }
-
-        _ => Err(StoreCodecError::BadRecord),
     }
 }
 
@@ -1548,36 +1578,6 @@ impl Ord for Value {
             // distinct by I3's golden test (`marker_table_golden`), which is the
             // invariant this rests on.
             _ => unreachable!("equal rank for different Value variants"),
-        }
-    }
-}
-
-impl Serialize for Value {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Value::Null => serializer.serialize_none(),
-            Value::Int(n) => serializer.serialize_i64(*n),
-            Value::Str(s) => serializer.serialize_str(s),
-            Value::FactRef(id) => serializer.serialize_u64(id.raw()),
-            Value::Record(fields) => {
-                let mut map = serializer.serialize_map(Some(fields.len()))?;
-
-                for (key, value) in fields.iter() {
-                    map.serialize_entry(key, value)?;
-                }
-
-                map.end()
-            }
-            // `{"alt": payload}` — a union renders as the one-field object it is,
-            // which is also how it is written in a query and on the way in.
-            Value::Union { alt, value, .. } => {
-                let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry(alt, value)?;
-                map.end()
-            }
         }
     }
 }
@@ -3439,6 +3439,99 @@ pub(crate) mod tests {
             matches!(err, StoreCodecError::UnknownDiscriminant { tag: 9 }),
             "expected UnknownDiscriminant, got {err:?}"
         );
+    }
+
+    /// The name of a `PredicateTy` family, by an **exhaustive** match.
+    ///
+    /// A new family is a compile error here first, which is the point: the census
+    /// below is only as good as its list of what to look for, and this is what forces
+    /// the list to be revisited. `FAMILIES` moves with it.
+    fn family(ty: &PredicateTy) -> &'static str {
+        match ty {
+            PredicateTy::Int => "int",
+            PredicateTy::Str => "string",
+            PredicateTy::Fact(_) => "a reference",
+            PredicateTy::Record(_) => "a record",
+            PredicateTy::Union(_) => "a union",
+        }
+    }
+
+    /// Every family [`family`] can name. Kept beside it because the two only mean
+    /// anything together.
+    const FAMILIES: &[&str] = &["int", "string", "a reference", "a record", "a union"];
+
+    /// **The census.** Every `PredicateTy` family is drawn by `arb_typed_pair`.
+    ///
+    /// [`TySpec`](proptest::TySpec) is a *parallel* enum with `PredicateTy`'s
+    /// constructors, and nothing keeps the two in step. A family added to
+    /// `PredicateTy` without a `TySpec` arm is never drawn — so every law over this
+    /// generator keeps passing **vacuously**: order against `cmp_typed`, the round
+    /// trip, `Value` ord agreement, and `skip_walks_any_typed_value`, which is I2 for
+    /// a field a reader may not understand. Adding a variant and forgetting the
+    /// strategy looks exactly like proving it correct.
+    #[test]
+    fn the_generator_draws_every_predicate_ty_family() {
+        use self::proptest::{arb_typed_pair, materialize_pair_fixture};
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+        use std::collections::BTreeSet;
+
+        const RUNS: usize = 400;
+
+        fn walk(ty: &PredicateTy, seen: &mut BTreeSet<&'static str>) {
+            seen.insert(family(ty));
+            match ty {
+                PredicateTy::Record(fields) => {
+                    for (_, field) in fields.iter() {
+                        walk(field, seen);
+                    }
+                }
+                PredicateTy::Union(alts) => {
+                    for alt in alts.iter() {
+                        walk(&alt.ty, seen);
+                    }
+                }
+                PredicateTy::Int | PredicateTy::Str | PredicateTy::Fact(_) => {}
+            }
+        }
+
+        let mut runner = TestRunner::deterministic();
+        let mut seen = BTreeSet::new();
+
+        for _ in 0..RUNS {
+            let spec = arb_typed_pair().new_tree(&mut runner).unwrap().current();
+            walk(&materialize_pair_fixture(spec).ty, &mut seen);
+        }
+
+        let missing: Vec<&&str> = FAMILIES.iter().filter(|f| !seen.contains(*f)).collect();
+        assert!(
+            missing.is_empty(),
+            "{RUNS} draws never produced: {missing:?} — every law over this \
+             generator passes vacuously for each of them"
+        );
+    }
+
+    /// A value of the wrong **family** says so, rather than reporting as a bad
+    /// record — which at a scalar field misdirects, there being no record.
+    ///
+    /// The arm this reaches was the wildcard of a joint `(ty, value)` match, and a
+    /// wildcard there absorbs a *new* scalar family silently: the family would fail
+    /// here at run time, as a corrupt row, instead of at the compiler.
+    #[test]
+    fn a_value_of_the_wrong_family_is_not_a_bad_record() {
+        for (ty, value, declared) in [
+            (PredicateTy::Int, Value::Str("x".to_owned()), "int"),
+            (PredicateTy::Str, Value::Int(1), "string"),
+            (PredicateTy::Record(Arc::from([])), Value::Int(1), "record"),
+        ] {
+            let err = encode_typed(&ty, &value).unwrap_err();
+            assert!(
+                matches!(err, StoreCodecError::TypeMismatch { declared: got } if got == declared),
+                "expected TypeMismatch {declared:?}, got {err:?}"
+            );
+        }
     }
 
     /// Nesting past the depth bound is an error, not a panic or a stack overflow —
