@@ -50,6 +50,7 @@ pub fn desc_of(ty: &Ty, interner: &LocalInterner) -> Result<Desc, ServerError> {
     Ok(match ty {
         Ty::Int => Desc::Int,
         Ty::String => Desc::Str,
+        Ty::Bytes => Desc::Bytes,
         Ty::Fact(id) => Desc::Fact(*id),
         Ty::Record(fields) => Desc::Record(
             fields
@@ -138,6 +139,13 @@ pub fn to_wire(ty: &PredicateTy, value: &Value) -> Result<WireValue, ServerError
                 return Err(unprojectable());
             };
             WireValue::Str(s.clone())
+        }
+
+        PredicateTy::Bytes => {
+            let Value::Bytes(payload) = value else {
+                return Err(unprojectable());
+            };
+            WireValue::Bytes(payload.clone())
         }
 
         // Outbound, a reference is always an id: the row was read from storage, where

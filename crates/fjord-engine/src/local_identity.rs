@@ -54,7 +54,7 @@ pub fn reject_local_field_type<N>(
     is_local: &impl Fn(PredicateId) -> bool,
 ) -> Result<(), LocalFieldType> {
     match ty {
-        PredicateTyNamed::Int | PredicateTyNamed::Str => Ok(()),
+        PredicateTyNamed::Int | PredicateTyNamed::Str | PredicateTyNamed::Bytes => Ok(()),
 
         PredicateTyNamed::Fact(predicate) => {
             if is_local(*predicate) {

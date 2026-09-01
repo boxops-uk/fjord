@@ -222,6 +222,14 @@ fn checked(
             }
         }
 
+        PredicateTy::Bytes => {
+            if matches!(value, Value::Bytes(_)) {
+                Ok(value.clone())
+            } else {
+                Err(mismatch())
+            }
+        }
+
         // A reference has to name the predicate the field *declares*, and the id
         // carries its predicate in its own tag, so this is a compare rather than a
         // lookup. Not merely a nicety: the read path reads the referenced row
@@ -324,6 +332,7 @@ fn describe(ty: &PredicateTy) -> String {
     match ty {
         PredicateTy::Int => "int".to_owned(),
         PredicateTy::Str => "string".to_owned(),
+        PredicateTy::Bytes => "bytes".to_owned(),
         PredicateTy::Fact(predicate) => format!("a reference to predicate {}", predicate.0),
         PredicateTy::Record(fields) => format!("a record of {} field(s)", fields.len()),
         PredicateTy::Union(alts) => format!("one of {} alternative(s)", alts.len()),
@@ -341,6 +350,7 @@ fn shape(value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Int(_) => "int".to_owned(),
         Value::Str(_) => "string".to_owned(),
+        Value::Bytes(payload) => format!("{} byte(s)", payload.len()),
         Value::FactRef(id) if id.sequence() == 0 => "the reserved fact id".to_owned(),
         Value::FactRef(id) => format!("a reference to predicate {}", id.predicate().0),
         Value::Record(fields) => format!("a record of {} field(s)", fields.len()),

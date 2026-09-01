@@ -84,6 +84,9 @@ const REF_NESTED: u64 = 1;
 pub enum WireValue {
     Int(i64),
     Str(String),
+    /// Uninterpreted bytes, length-prefixed and raw — the same shape as
+    /// [`WireValue::Str`] minus the UTF-8 validation, which is the whole of the type.
+    Bytes(Vec<u8>),
     Ref(WireRef),
     /// Fields **in schema order**, no names. See the module docs.
     Record(Box<[WireValue]>),
@@ -163,6 +166,15 @@ pub fn encode_value(
             };
             varint::put_u64(out, s.len() as u64);
             out.extend_from_slice(s.as_bytes());
+            Ok(())
+        }
+
+        PredicateTy::Bytes => {
+            let WireValue::Bytes(payload) = value else {
+                return Err(mismatch());
+            };
+            varint::put_u64(out, payload.len() as u64);
+            out.extend_from_slice(payload);
             Ok(())
         }
 
@@ -293,23 +305,17 @@ pub fn decode_value(
         }
 
         PredicateTy::Str => {
-            let (len, used) = varint::get_u64(bytes)?;
-            let rest = &bytes[used..];
+            let (payload, used) = take_blob(bytes)?;
+            let text = std::str::from_utf8(payload).map_err(|_| WireError::BadString)?;
+            Ok((WireValue::Str(text.to_owned()), used))
+        }
 
-            let len = usize::try_from(len).map_err(|_| WireError::LengthOutOfRange {
-                declared: len,
-                available: rest.len(),
-            })?;
-
-            if len > rest.len() {
-                return Err(WireError::LengthOutOfRange {
-                    declared: len as u64,
-                    available: rest.len(),
-                });
-            }
-
-            let text = std::str::from_utf8(&rest[..len]).map_err(|_| WireError::BadString)?;
-            Ok((WireValue::Str(text.to_owned()), used + len))
+        // The same blob, unvalidated. **Not** decoded as a `Str` and handed on: a peer
+        // that cannot tell the two apart is a peer that hands its caller non-UTF-8,
+        // which is why the descriptor's tag is appended rather than reused.
+        PredicateTy::Bytes => {
+            let (payload, used) = take_blob(bytes)?;
+            Ok((WireValue::Bytes(payload.to_vec()), used))
         }
 
         PredicateTy::Fact(target) => {
@@ -349,6 +355,27 @@ pub fn decode_value(
             ))
         }
     }
+}
+
+/// A length-prefixed run: the length, then that many bytes, bounds-checked. Shared by
+/// `string` and `bytes`, which differ only in whether the run is then validated.
+fn take_blob(bytes: &[u8]) -> Result<(&[u8], usize), WireError> {
+    let (len, used) = varint::get_u64(bytes)?;
+    let rest = &bytes[used..];
+
+    let len = usize::try_from(len).map_err(|_| WireError::LengthOutOfRange {
+        declared: len,
+        available: rest.len(),
+    })?;
+
+    if len > rest.len() {
+        return Err(WireError::LengthOutOfRange {
+            declared: len as u64,
+            available: rest.len(),
+        });
+    }
+
+    Ok((&rest[..len], used + len))
 }
 
 fn decode_ref(
@@ -477,6 +504,7 @@ pub mod proptest {
     pub enum TySpec {
         Int,
         Str,
+        Bytes,
         /// A reference to the predicate at this index. Resolved modulo the
         /// predicates declared *before* the one holding it, so it always points
         /// backwards; a predicate with none before it gets [`TySpec::Int`] instead.
@@ -509,10 +537,24 @@ pub mod proptest {
     }
 
     fn arb_ty() -> impl Strategy<Value = TySpec> {
+        // **Weighted, for the reason the recursive step below is, and the numbers are
+        // measured rather than chosen.** A fourth equal-weight leaf takes a quarter of
+        // every scalar position and takes it from `Ref` — which is exactly what
+        // `fjord-ingest`'s `the_generator_reaches_both_outcomes` counts, and it fell
+        // from 293 nested targets per 2,000 draws to 220 against a threshold of 250.
+        // The relationship is not the obvious one: weighting `Ref` *up* from 4 to 5
+        // lowered the count (271 → 259), because a reference at a leaf crowds out the
+        // recursive record and union structure that gives a fact more than one field.
+        // These weights measure 283, so the density is back where it was.
+        //
+        // `bytes` is rare here on purpose; that it is drawn at all is asserted by
+        // `the_generator_reaches_every_wire_shape`, and `fjord-encoding`'s own census
+        // draws the family directly.
         let leaf = prop_oneof![
-            Just(TySpec::Int),
-            Just(TySpec::Str),
-            (0u8..8).prop_map(TySpec::Ref),
+            6 => Just(TySpec::Int),
+            6 => Just(TySpec::Str),
+            1 => Just(TySpec::Bytes),
+            7 => (0u8..8).prop_map(TySpec::Ref),
         ];
 
         leaf.prop_recursive(3, 12, MAX_FIELDS as u32, |inner| {
@@ -618,6 +660,7 @@ pub mod proptest {
         match ty {
             TySpec::Int => PredicateTy::Int,
             TySpec::Str => PredicateTy::Str,
+            TySpec::Bytes => PredicateTy::Bytes,
             // Nothing to point at: predicate 0 has no predecessor, so the position
             // becomes an int rather than a dangling reference.
             TySpec::Ref(_) if index == 0 => PredicateTy::Int,
@@ -668,6 +711,14 @@ pub mod proptest {
             value
         }
 
+        /// A string's bytes with a non-UTF-8 tail, so a `bytes` draw is a run a
+        /// `String` could not have held.
+        fn next_blob(&mut self) -> Vec<u8> {
+            let mut out = self.next_text().into_bytes();
+            out.extend_from_slice(&[0x00, 0xFF, 0x80, 0xC0]);
+            out
+        }
+
         fn next_pick(&mut self) -> u8 {
             let value = self.draws.picks[self.pick % self.draws.picks.len()];
             self.pick += 1;
@@ -692,6 +743,9 @@ pub mod proptest {
             match ty {
                 PredicateTy::Int => WireValue::Int(self.next_int()),
                 PredicateTy::Str => WireValue::Str(self.next_text()),
+                // Drawn from the same tape as a string and then *not* validated, so
+                // the draws include runs no `String` could hold.
+                PredicateTy::Bytes => WireValue::Bytes(self.next_blob()),
 
                 // **Both branches of the union get drawn**, which is the point of
                 // the pick: an id and a nested fact are two different encodings of
@@ -1103,6 +1157,10 @@ mod tests {
             /// union — the draw that says a battery covers more than the alternative
             /// that happened to be declared first.
             second_alternative: bool,
+            bytes: bool,
+            /// A `bytes` draw holding a run no `String` could — the draw that says the
+            /// family is more than a string with a different tag.
+            bytes_no_string_could_hold: bool,
         }
 
         fn walk(value: &WireValue, seen: &mut Seen, depth: usize) {
@@ -1110,6 +1168,10 @@ mod tests {
                 WireValue::Int(_) => {}
                 WireValue::Str(text) => {
                     seen.string_needing_escape_in_storage |= text.contains('\0');
+                }
+                WireValue::Bytes(payload) => {
+                    seen.bytes = true;
+                    seen.bytes_no_string_could_hold |= std::str::from_utf8(payload).is_err();
                 }
                 WireValue::Ref(WireRef::Id(_)) => seen.id_ref = true,
                 WireValue::Ref(WireRef::Nested(fact)) => {
@@ -1171,6 +1233,11 @@ mod tests {
             ),
             (seen.union, "a union"),
             (seen.second_alternative, "a union's second alternative"),
+            (seen.bytes, "a bytes field"),
+            (
+                seen.bytes_no_string_could_hold,
+                "a bytes field holding a run no `String` could",
+            ),
         ]
         .into_iter()
         .filter_map(|(present, what)| (!present).then_some(what))

@@ -246,7 +246,10 @@ impl Checker<'_> {
         }
 
         match self.zonk(&left) {
-            Ty::Int | Ty::String | Ty::Var(_) | Ty::Error => {}
+            // `bytes` belongs here and a record and a union do not: the storage
+            // codec's escape scheme makes the encoded order `memcmp` over the
+            // payload, which is an order somebody can mean.
+            Ty::Int | Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error => {}
             other => {
                 let rendered = self.render(&other);
                 self.reject(
@@ -939,6 +942,14 @@ impl Checker<'_> {
                 }
             }
 
+            Ty::Bytes => {
+                if matches!(expected, Ty::Bytes) {
+                    Ok(())
+                } else {
+                    mismatch()
+                }
+            }
+
             Ty::Fact(ours) => {
                 if matches!(expected, Ty::Fact(theirs) if ours == theirs) {
                     Ok(())
@@ -1091,7 +1102,7 @@ impl Checker<'_> {
     /// wanted. Everything during checking uses [`repr`](Self::repr).
     fn zonk(&self, ty: &Ty) -> Ty {
         match ty {
-            Ty::Error | Ty::Int | Ty::String | Ty::Fact(_) => ty.clone(),
+            Ty::Error | Ty::Int | Ty::String | Ty::Bytes | Ty::Fact(_) => ty.clone(),
 
             Ty::Var(var) => match self.var_ty(*var) {
                 Some(bound) => self.zonk(&bound),
@@ -1119,7 +1130,7 @@ impl Checker<'_> {
 
     fn occurs(&self, var: TyVarId, ty: &Ty) -> bool {
         match self.repr(ty) {
-            Ty::Error | Ty::Int | Ty::String | Ty::Fact(_) => false,
+            Ty::Error | Ty::Int | Ty::String | Ty::Bytes | Ty::Fact(_) => false,
             Ty::Var(other) => other == var,
             Ty::Record(fields) => fields.iter().any(|(_, field)| self.occurs(var, field)),
             Ty::Union(alts) => alts.iter().any(|(_, _, alt)| self.occurs(var, alt)),
@@ -1306,6 +1317,7 @@ impl Checker<'_> {
         match ty {
             Ty::Int => "an integer".to_owned(),
             Ty::String => "a string".to_owned(),
+            Ty::Bytes => "bytes".to_owned(),
             // Only reachable nested inside another type: a bare poison never
             // reaches a message, because `unify` returns `Ok` on it. Named as
             // already-reported rather than as a type — "found an error" reads
@@ -1347,6 +1359,7 @@ fn schema_ty(ty: &PredicateTy) -> Ty {
     match ty {
         PredicateTy::Int => Ty::Int,
         PredicateTy::Str => Ty::String,
+        PredicateTy::Bytes => Ty::Bytes,
         PredicateTy::Fact(predicate) => Ty::Fact(*predicate),
         PredicateTy::Record(fields) => Ty::Record(
             fields
@@ -1454,6 +1467,7 @@ mod tests {
         match ty {
             Ty::Int => "int".to_owned(),
             Ty::String => "str".to_owned(),
+            Ty::Bytes => "bytes".to_owned(),
             Ty::Error => "!error".to_owned(),
             Ty::Var(_) => "?".to_owned(),
             Ty::Fact(p) => format!("fact({})", p.0),

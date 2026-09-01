@@ -40,6 +40,27 @@ pub const MARK_FACT_REF: u8 = 0x51;
 /// [phase 8.6 D-a]: ../../../website/content/storage.md
 pub const MARK_UNION: u8 = 0x52;
 
+/// **Uninterpreted bytes** — the marker, then the same escaped run a string uses.
+///
+/// Appended after [`MARK_UNION`], for the reason `MARK_UNION` was appended after
+/// [`MARK_FACT_REF`]: [I3] freezes the table on disk and appending is the only thing
+/// it permits. The consequence is that `bytes` sorts *after* a union rather than
+/// beside a string, which reads oddly and is **unobservable**: a field has one
+/// declared type, a union discriminates by tag before any payload is compared, and a
+/// record's fields are positional — so no query can put a `bytes` and a `string` on
+/// the two sides of one comparison. Renumbering to make the table read better would
+/// be a `codec` version bump, and [I15] checks the stamp for *equality* at open, so
+/// every database written before it would become unopenable. Take the wart.
+///
+/// The escape scheme is what makes this sound over arbitrary bytes: a `0x00` in the
+/// payload becomes `0x00 0xFF` and a bare `0x00` terminates, so `memcmp` of two
+/// encoded runs agrees with `memcmp` of the payloads. A length prefix would sort by
+/// length first, which is not the order anybody means.
+///
+/// [I3]: ../../../website/content/invariants.md#i3
+/// [I15]: ../../../website/content/invariants.md#i15
+pub const MARK_BYTES: u8 = 0x53;
+
 /// The encoded width of a fact-typed field: the marker, then a fixed-width id.
 ///
 /// Fixed-width rather than the integer codec's variable width, so a reference sorts
@@ -499,6 +520,26 @@ pub fn get_str(bytes: &[u8]) -> Result<(Cow<'_, str>, usize), StoreCodecError> {
     }
 }
 
+/// The same run [`put_str`] writes, minus the validation — **and not performing that
+/// validation is precisely what the type is.**
+pub fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.push(MARK_BYTES);
+    put_escaped(out, bytes);
+}
+
+pub fn get_bytes(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, usize), StoreCodecError> {
+    let Some((&mark, contents)) = bytes.split_first() else {
+        return Err(StoreCodecError::UnexpectedEof);
+    };
+
+    if mark != MARK_BYTES {
+        return Err(StoreCodecError::UnexpectedMark(mark));
+    }
+
+    let (payload, consumed) = get_escaped(contents)?;
+    Ok((payload, consumed + 1))
+}
+
 #[inline]
 fn checked_advance(bytes: &[u8], start: usize, n: usize) -> Result<usize, StoreCodecError> {
     let end = start.checked_add(n).ok_or(StoreCodecError::UnexpectedEof)?;
@@ -576,7 +617,9 @@ pub fn skip(
                 }
             }
 
-            MARK_STRING => {
+            // One arm for both, because an escaped run is self-delimiting whatever
+            // is in it — which is [I2] for a family a reader may not understand.
+            MARK_STRING | MARK_BYTES => {
                 i = skip_terminated(bytes, after_mark)?;
 
                 if record_depth == 0 {
@@ -782,6 +825,14 @@ pub fn encode_typed_at(
             Ok(())
         }
 
+        PredicateTy::Bytes => {
+            let Value::Bytes(payload) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "bytes" });
+            };
+            enc.put_bytes(payload);
+            Ok(())
+        }
+
         PredicateTy::Fact(predicate) => {
             let Value::FactRef(id) = value else {
                 return Err(StoreCodecError::TypeMismatch {
@@ -922,6 +973,10 @@ impl<'a> TupleEncoder<'a> {
 
     pub fn put_str(&mut self, val: &str) {
         put_str(self.out, val);
+    }
+
+    pub fn put_bytes(&mut self, val: &[u8]) {
+        put_bytes(self.out, val);
     }
 
     pub fn put_fact_id(&mut self, id: FactId) {
@@ -1066,6 +1121,12 @@ impl<'a> TupleDecoder<'a> {
 
     pub fn take_str(&mut self) -> Result<Cow<'a, str>, StoreCodecError> {
         let (val, consumed) = get_str(&self.bytes[self.pos..])?;
+        self.pos += consumed;
+        Ok(val)
+    }
+
+    pub fn take_bytes(&mut self) -> Result<Cow<'a, [u8]>, StoreCodecError> {
+        let (val, consumed) = get_bytes(&self.bytes[self.pos..])?;
         self.pos += consumed;
         Ok(val)
     }
@@ -1428,6 +1489,11 @@ pub fn decode_typed_at<N: Copy + Into<Symbol>>(
             Ok(Value::Str(s.into_owned()))
         }
 
+        PredicateTyNamed::Bytes => {
+            let payload = dec.take_bytes()?;
+            Ok(Value::Bytes(payload.into_owned()))
+        }
+
         PredicateTyNamed::Fact(predicate) => {
             // A fact reference is encoded with its own marker (MARK_FACT_REF),
             // consistently with `skip` and the `FactId` codec — not the integer
@@ -1495,6 +1561,9 @@ pub enum Value {
     Null,
     Int(i64),
     Str(String),
+    /// Uninterpreted bytes. A `Vec` for the same reason [`Value::Str`] is a `String`:
+    /// a decoded value owns what it decoded.
+    Bytes(Vec<u8>),
     FactRef(FactId),
     Record(Box<[(String, Value)]>),
     /// One alternative of a union: its **discriminant**, its name, and its payload.
@@ -1535,6 +1604,7 @@ impl Ord for Value {
             match v {
                 Value::Null => MARK_NULL,
                 Value::Str(_) => MARK_STRING,
+                Value::Bytes(_) => MARK_BYTES,
                 Value::Record(_) => MARK_RECORD,
                 Value::Int(_) => MARK_INT_NEG_MIN,
                 Value::FactRef(_) => MARK_FACT_REF,
@@ -1552,6 +1622,7 @@ impl Ord for Value {
         match (self, other) {
             (Int(a), Int(b)) => a.cmp(b),
             (Str(a), Str(b)) => a.cmp(b),
+            (Bytes(a), Bytes(b)) => a.cmp(b),
             (FactRef(a), FactRef(b)) => a.raw().cmp(&b.raw()),
             (Record(a), Record(b)) => a.as_ref().cmp(b.as_ref()),
             // Discriminant then payload, which is the encoded order. The *name* is
@@ -1607,6 +1678,7 @@ pub mod proptest {
     pub enum TySpec {
         Int,
         Str,
+        Bytes,
         Fact(PredicateId),
         Record(Vec<(String, TySpec)>),
         /// Alternatives as `(name, discriminant, payload)`, in **declaration
@@ -1650,6 +1722,8 @@ pub mod proptest {
             TySpec::Int => PredicateTy::Int,
 
             TySpec::Str => PredicateTy::Str,
+
+            TySpec::Bytes => PredicateTy::Bytes,
 
             TySpec::Fact(id) => PredicateTy::Fact(*id),
 
@@ -1744,6 +1818,11 @@ pub mod proptest {
 
             (PredicateTy::Str, Value::Str(a), Value::Str(b)) => a.cmp(b),
 
+            // `memcmp` over the payload, stated here rather than derived from the
+            // encoder — which is the whole point of an independent oracle. A length
+            // prefix would sort by length first, and this is what would catch it.
+            (PredicateTy::Bytes, Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
+
             (PredicateTy::Fact(_), Value::FactRef(a), Value::FactRef(b)) => a.raw().cmp(&b.raw()),
 
             (PredicateTy::Record(field_tys), Value::Record(a_fields), Value::Record(b_fields)) => {
@@ -1825,6 +1904,21 @@ pub mod proptest {
     /// properties can compare `a` against `b`. Injects the known integer/string
     /// edges explicitly rather than trusting random draws to hit them, and
     /// recurses into records with an explicit depth/size bound.
+    /// Byte runs a `String` could not hold, plus the edges the escape scheme is about.
+    fn arb_bytes() -> impl Strategy<Value = Vec<u8>> + Clone {
+        prop_oneof![
+            Just(vec![]),
+            Just(vec![0x00]),
+            Just(vec![0x00, 0x00]),
+            Just(vec![0xFF]),
+            Just(vec![0x00, 0xFF]),
+            Just(vec![0x80]),
+            Just(vec![0xC0]),
+            Just(vec![0x00, 0xFF, 0xFF, 0x00, 0x80, 0xC0]),
+            ::proptest::collection::vec(any::<u8>(), 0..12),
+        ]
+    }
+
     pub fn arb_typed_pair() -> impl Strategy<Value = TypedPairSpec> {
         let arb_i64 = prop_oneof![
             Just(i64::MIN),
@@ -1847,10 +1941,20 @@ pub mod proptest {
                 a: Value::Int(a),
                 b: Value::Int(b),
             }),
-            (arb_str.clone(), arb_str).prop_map(|(a, b)| TypedPairSpec {
+            (arb_str.clone(), arb_str.clone()).prop_map(|(a, b)| TypedPairSpec {
                 ty: TySpec::Str,
                 a: Value::Str(a),
                 b: Value::Str(b),
+            }),
+            // **Drawn from the same edges a string is, plus the ones it cannot
+            // hold.** `0x00` is what the escape scheme is about, `0xFF` is the escape
+            // byte itself, and `0x80`/`0xC0` are continuation bytes no `String` could
+            // carry — which is what makes the ordering law over this family say
+            // something a string's could not.
+            (arb_bytes(), arb_bytes()).prop_map(|(a, b)| TypedPairSpec {
+                ty: TySpec::Bytes,
+                a: Value::Bytes(a),
+                b: Value::Bytes(b),
             }),
             // Both halves of a pair share one type, so both references are tagged
             // for the *same* predicate — which is what the schema means and, since
@@ -3450,6 +3554,7 @@ pub(crate) mod tests {
         match ty {
             PredicateTy::Int => "int",
             PredicateTy::Str => "string",
+            PredicateTy::Bytes => "bytes",
             PredicateTy::Fact(_) => "a reference",
             PredicateTy::Record(_) => "a record",
             PredicateTy::Union(_) => "a union",
@@ -3458,7 +3563,14 @@ pub(crate) mod tests {
 
     /// Every family [`family`] can name. Kept beside it because the two only mean
     /// anything together.
-    const FAMILIES: &[&str] = &["int", "string", "a reference", "a record", "a union"];
+    const FAMILIES: &[&str] = &[
+        "int",
+        "string",
+        "bytes",
+        "a reference",
+        "a record",
+        "a union",
+    ];
 
     /// **The census.** Every `PredicateTy` family is drawn by `arb_typed_pair`.
     ///
@@ -3493,7 +3605,8 @@ pub(crate) mod tests {
                         walk(&alt.ty, seen);
                     }
                 }
-                PredicateTy::Int | PredicateTy::Str | PredicateTy::Fact(_) => {}
+                PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes | PredicateTy::Fact(_) => {
+                }
             }
         }
 

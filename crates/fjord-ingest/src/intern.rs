@@ -183,6 +183,13 @@ fn resolve<S: FactSink>(
             Ok(Value::Str(s.clone()))
         }
 
+        PredicateTy::Bytes => {
+            let WireValue::Bytes(payload) = value else {
+                return Err(mismatch());
+            };
+            Ok(Value::Bytes(payload.clone()))
+        }
+
         PredicateTy::Fact(target) => {
             let WireValue::Ref(reference) = value else {
                 return Err(mismatch());

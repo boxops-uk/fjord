@@ -5251,6 +5251,7 @@ mod tests {
         match ty {
             PredicateTy::Int => "int".to_owned(),
             PredicateTy::Str => "str".to_owned(),
+            PredicateTy::Bytes => "bytes".to_owned(),
             PredicateTy::Fact(p) => format!("fact({})", p.0),
             PredicateTy::Record(fields) => format!("{{{} fields}}", fields.len()),
             PredicateTy::Union(alts) => format!("{{{} alternatives}}", alts.len()),

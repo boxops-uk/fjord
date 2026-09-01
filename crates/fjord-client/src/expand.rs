@@ -432,7 +432,7 @@ impl Expander {
         transient: &HashMap<FactId, Option<WireValue>>,
     ) -> WireValue {
         match value {
-            WireValue::Int(_) | WireValue::Str(_) => value.clone(),
+            WireValue::Int(_) | WireValue::Str(_) | WireValue::Bytes(_) => value.clone(),
 
             // A record is not a hop. Its fields are this fact's own, so they expand at
             // the same depth — otherwise `{at = {line, col}}` would spend a level on a
@@ -482,7 +482,7 @@ impl Expander {
 /// breadth-first rather than this function recursive into the store.
 fn references(value: &WireValue, out: &mut Vec<FactId>) {
     match value {
-        WireValue::Int(_) | WireValue::Str(_) => {}
+        WireValue::Int(_) | WireValue::Str(_) | WireValue::Bytes(_) => {}
         WireValue::Ref(WireRef::Id(id)) => out.push(*id),
         WireValue::Ref(WireRef::Nested(fact)) => references(&fact.key, out),
         WireValue::Record(fields) => {

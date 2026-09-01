@@ -80,6 +80,10 @@ const TAG_NO_VALUE_SIDE: u8 = 7;
 /// holding no unions is the number it always was — which is what makes this an
 /// addition rather than a migration of every artifact already sealed.
 const TAG_UNION: u8 = 8;
+/// **Appended**, and its own number rather than [`TAG_STR`]'s: sharing one would fold
+/// `Str("ab")` and `Bytes(b"ab")` together, so two databases holding different data
+/// would hash alike — which is the whole of `ops-I4`.
+const TAG_BYTES: u8 = 9;
 
 /// What a database's content came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +189,12 @@ fn feed_value<S: FactStore>(
             // to the same bytes in a record.
             feed(hash, &(text.len() as u64).to_le_bytes());
             feed(hash, text.as_bytes());
+        }
+
+        Value::Bytes(payload) => {
+            feed(hash, &[TAG_BYTES]);
+            feed(hash, &(payload.len() as u64).to_le_bytes());
+            feed(hash, payload);
         }
 
         Value::Null => feed(hash, &[TAG_NULL]),

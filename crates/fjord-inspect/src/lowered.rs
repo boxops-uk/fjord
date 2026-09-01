@@ -364,6 +364,7 @@ fn render(ty: &Ty, schema: &Schema, interner: &LocalInterner) -> String {
     match ty {
         Ty::Int => "int".to_owned(),
         Ty::String => "string".to_owned(),
+        Ty::Bytes => "bytes".to_owned(),
         Ty::Fact(predicate) => predicate_name(*predicate, schema),
         Ty::Record(fields) => format!(
             "{{{}}}",

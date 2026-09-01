@@ -562,6 +562,17 @@ fn literal(schema: &Schema, value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Int(int) => int.to_string(),
         Value::Str(text) => escape(text),
+        // `0x…`, lowercase, two digits a byte — the form sigla parses back. Without
+        // the literal this would be the one place the printer emits text the language
+        // cannot read.
+        Value::Bytes(payload) => {
+            let mut out = String::with_capacity(2 + payload.len() * 2);
+            out.push_str("0x");
+            for byte in payload.iter() {
+                let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{byte:02x}"));
+            }
+            out
+        }
         Value::FactRef(id) => {
             let name = schema
                 .get(id.predicate())

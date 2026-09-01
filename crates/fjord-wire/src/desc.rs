@@ -35,6 +35,12 @@ const TAG_RECORD: u64 = 3;
 /// case for and reports [`WireError::UnknownRefForm`] rather than mis-reading the
 /// bytes that follow. Renumbering any tag above would do the opposite.
 const TAG_UNION: u64 = 4;
+/// Appended after [`TAG_UNION`], on the same argument — and it is what makes `bytes`
+/// **a protocol bump**: a peer built before it meets tag 5, has no case for it, and
+/// refuses the stream rather than reading the field as a `string` and handing its
+/// caller non-UTF-8. That is the right behaviour, and the protocol version exists for
+/// exactly this.
+const TAG_BYTES: u64 = 5;
 
 /// A row's shape, with names a peer can read.
 ///
@@ -45,6 +51,7 @@ const TAG_UNION: u64 = 4;
 pub enum Desc {
     Int,
     Str,
+    Bytes,
     Fact(PredicateId),
     /// Fields in order. A row's values follow this order and carry no names.
     Record(Box<[(String, Desc)]>),
@@ -67,6 +74,7 @@ impl Desc {
         Ok(match ty {
             PredicateTy::Int => Desc::Int,
             PredicateTy::Str => Desc::Str,
+            PredicateTy::Bytes => Desc::Bytes,
             PredicateTy::Fact(id) => Desc::Fact(*id),
             PredicateTy::Record(fields) => Desc::Record(
                 fields
@@ -118,6 +126,7 @@ impl Desc {
         match self {
             Desc::Int => PredicateTy::Int,
             Desc::Str => PredicateTy::Str,
+            Desc::Bytes => PredicateTy::Bytes,
             Desc::Fact(id) => PredicateTy::Fact(*id),
             Desc::Record(fields) => PredicateTy::Record(
                 fields
@@ -156,6 +165,7 @@ pub fn encode_desc(out: &mut Vec<u8>, desc: &Desc) {
     match desc {
         Desc::Int => varint::put_u64(out, TAG_INT),
         Desc::Str => varint::put_u64(out, TAG_STR),
+        Desc::Bytes => varint::put_u64(out, TAG_BYTES),
         Desc::Fact(id) => {
             varint::put_u64(out, TAG_FACT);
             varint::put_u64(out, u64::from(id.0));
@@ -194,6 +204,7 @@ pub fn decode_desc(bytes: &[u8]) -> Result<(Desc, usize), WireError> {
     let desc = match tag {
         TAG_INT => Desc::Int,
         TAG_STR => Desc::Str,
+        TAG_BYTES => Desc::Bytes,
         TAG_FACT => {
             let (id, used) = varint::get_u64(&bytes[at..])?;
             at += used;

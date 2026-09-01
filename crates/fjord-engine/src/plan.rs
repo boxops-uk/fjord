@@ -952,6 +952,10 @@ impl Fingerprint {
         match ty {
             PredicateTy::Int => self.byte(0),
             PredicateTy::Str => self.byte(1),
+            // Its own next free number in this table, derived from no other: sharing
+            // `Str`'s would make a plan over a `bytes` key the same plan as one over a
+            // `string` key, and a cursor issued against one accepted by the other.
+            PredicateTy::Bytes => self.byte(5),
             PredicateTy::Fact(p) => {
                 self.byte(2);
                 self.int(u64::from(p.0));
@@ -988,6 +992,10 @@ impl Fingerprint {
             Value::Str(s) => {
                 self.byte(2);
                 self.bytes(s.as_bytes());
+            }
+            Value::Bytes(payload) => {
+                self.byte(6);
+                self.bytes(payload);
             }
             Value::FactRef(id) => {
                 self.byte(3);

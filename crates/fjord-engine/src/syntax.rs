@@ -93,6 +93,9 @@ impl NodeId {
 pub enum Ty {
     Int,
     String,
+    /// Uninterpreted bytes. Ordered — the encoding is `memcmp` over the payload — so
+    /// unlike a record or a union it is accepted by `Checker::compare`.
+    Bytes,
     Fact(PredicateId),
     /// Fields sorted by name, as everywhere. `Arc` rather than `Box` because
     /// substitution genuinely shares: one inferred type ends up in the

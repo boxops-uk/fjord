@@ -377,7 +377,7 @@ mod tests {
                         walk(&alt.ty, len, name);
                     }
                 }
-                PredicateTy::Int | PredicateTy::Str => {}
+                PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes => {}
             }
         }
 

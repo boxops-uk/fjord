@@ -173,6 +173,7 @@ fn same_ty(left: &Schema, ours: &PredicateTy, right: &Schema, theirs: &Predicate
     match ours {
         PredicateTy::Int => matches!(theirs, PredicateTy::Int),
         PredicateTy::Str => matches!(theirs, PredicateTy::Str),
+        PredicateTy::Bytes => matches!(theirs, PredicateTy::Bytes),
 
         // **By id.** A reference is a position, and two schemas that name the same
         // target from different positions are not the same schema to anything that
@@ -227,6 +228,7 @@ fn ty(out: &mut String, schema: &Schema, shape: &PredicateTy) {
     match shape {
         PredicateTy::Int => out.push_str("int"),
         PredicateTy::Str => out.push_str("string"),
+        PredicateTy::Bytes => out.push_str("bytes"),
 
         // **Fully qualified, always.** A bare name resolves in the block's own
         // namespace, so printing one would make a cross-namespace reference come back

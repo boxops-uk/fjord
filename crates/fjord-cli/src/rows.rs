@@ -266,6 +266,7 @@ pub fn render(value: &WireValue) -> String {
     match value {
         WireValue::Int(n) => n.to_string(),
         WireValue::Str(text) => text.clone(),
+        WireValue::Bytes(payload) => fjord_inspect_hex(payload),
 
         WireValue::Ref(fjord_client::WireRef::Id(id)) => {
             format!("#{}:{}", id.predicate().0, id.sequence())
@@ -307,6 +308,14 @@ fn json(value: &WireValue, desc: &Desc, schema: Option<&Schema>, colour: bool) -
     match (value, desc) {
         (WireValue::Int(n), _) => paint(NUMBER, &n.to_string(), colour),
         (WireValue::Str(text), _) => paint(STRING, &json_string(text), colour),
+
+        // **A bare lowercase hex string, untagged** — the same shape
+        // `fjord_inspect::value::json` emits, asserted equal by
+        // `the_two_json_renderers_agree_on_every_family`. Painted as a string because
+        // that is what it is on the wire once rendered.
+        (WireValue::Bytes(payload), _) => {
+            paint(STRING, &json_string(&fjord_inspect_hex(payload)), colour)
+        }
 
         (WireValue::Ref(fjord_client::WireRef::Id(id)), _) => paint(
             REFERENCE,
@@ -402,6 +411,21 @@ fn key_desc(schema: &Schema, predicate: PredicateId) -> Option<Desc> {
 }
 
 /// jq's `JQ_COLORS` defaults, and one addition of our own.
+/// Lowercase hex, two digits a byte.
+///
+/// Restated rather than imported: `fjord-inspect` is a dev-dependency here, not a real
+/// one, and the *shape* the two produce is asserted equal by a test rather than made
+/// equal by a shared function.
+fn fjord_inspect_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
 const STRING: &str = "0;32";
 const NUMBER: &str = "0;39";
 const KEY: &str = "34;1";
