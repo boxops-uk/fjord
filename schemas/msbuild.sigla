@@ -1,0 +1,131 @@
+# The **MSBuild layer** — the solution/project graph a build evaluates, and the references
+# between projects. What `csharp.sigla` carried as its "build layer", in a namespace of its own,
+# with the edges it was missing.
+#
+# ---- why this is not inside `csharp` --------------------------------------------------
+#
+# The same seam the indexer-overhaul plan's **Run 8b** draws in the producer: build facts come
+# out from behind the walk, because "the two halves meet at one line" and nothing crosses the
+# MSBuild ↔ fact-emission boundary. A schema whose predicates are filled by two unrelated
+# producers is a schema that cannot say which half of it is populated.
+#
+# It is also not C#. An MSBuild solution compiles F# and VB; a project graph is a project graph.
+# And nothing in the semantic layer references a project — the join from a declaration to the
+# project that compiled it goes through `src.File`, which is exactly what a shared source layer
+# is for. `csharp.sigla` does not import this file, and does not need to.
+#
+# ---- what changed from `csharp.sigla`'s build layer ----------------------------------
+#
+# **1. A project is identified by its `.csproj`, and its evaluated attributes are values.**
+# `csharp.Project`'s key was all seven fields — the path *and* the target framework, SDK, output
+# type, assembly name and root namespace MSBuild resolved. Three problems, and the first is the
+# argument the overhaul plan makes about `src.Decl`:
+#
+#   * **An identity must not carry an evaluation detail.** Re-evaluating the same project under
+#     a different SDK, or with one property overridden, mints a *different project* — so a
+#     re-index silently doubles the graph and every reference edge points at whichever variant
+#     the walk reached first. `code.sigla`'s own warning applies: *"widening an identity to
+#     carry a rendering detail is how a schema acquires fields nobody can explain later."*
+#   * **A seven-field key is not addressable.** A consumer holding a `.csproj` path cannot name
+#     the project without knowing all six evaluated values; the bridge works around it by
+#     seeking on the key prefix, and cannot put a project in a URL at all.
+#   * **The `ProjectSource` union was Glean's Unity arm, which is already dropped.** A
+#     one-alternative union costs every query a nested pattern
+#     (`{source = {msbuildProjectSource = MS}}`) and buys nothing once the namespace says
+#     `msbuild`.
+#
+# **2. The references exist.** `csharp.sigla` had solutions, projects and source files, and *no
+# edge between two projects* — the graph question a build layer exists to answer. The producer
+# already reads them (`Projects.cs` walks `ProjectReference` and `PackageReference` items, and
+# `Loader.cs` wires the reference graph by `ProjectId`); only the schema was missing. Package
+# references, metadata/assembly references and the assembly crossing come back too — all three
+# were in `code.sigla` and were lost in the Glean translation.
+#
+# **Field order is key order.** Every reverse question is its own predicate, as `code.sigla`'s
+# `Extends`/`DerivesFrom` pair is.
+
+schema msbuild {
+
+  import src
+
+  # ---- the artifacts a repository contains ---------------------------------------------
+
+  # A `.sln` that exists in the repository.
+  predicate Solution : { file : src.File }
+
+  # An evaluated MSBuild project, identified by its project file. The value is what MSBuild
+  # resolved for the configuration this database was built under — `config.Setting
+  # {dimension = "framework"}` and friends record what that was, because a project resolved
+  # *nearest-compatible* records its own target here and not the resolution root.
+  #
+  # Every field is optional because MSBuild may leave it unset.
+  predicate Project :
+    { file : src.File }
+    -> { platformTarget  : src.MaybeString
+       , targetFramework : src.MaybeString
+       , sdk             : src.MaybeString
+       , outputType      : src.MaybeString
+       , assemblyName    : src.MaybeString
+       , rootNamespace   : src.MaybeString
+       }
+
+  # An assembly name — a string identity, as a file is a path.
+  predicate Assembly : { name : string }
+
+  # A NuGet package: **a compound identity**, because a package is its name *and* its version and
+  # neither alone. `name` leads, so "every version of `Newtonsoft.Json` in this repository" is a
+  # range.
+  predicate Package : { name : string, version : string }
+
+  # ---- containment ---------------------------------------------------------------------
+
+  # A solution's projects, and the reverse. Both directions are wanted, so both are kept —
+  # `ProjectToSolution` is what Glean derives from `SolutionToProject`.
+  predicate SolutionToProject : { solution : Solution, project : Project }
+  predicate ProjectToSolution : { project : Project, solution : Solution }
+
+  # A source file an evaluated project compiled. `project` leads: "this project's files".
+  predicate ProjectToSourceFile : { project : Project, src : src.File }
+
+  # The reverse — "which project compiled this file". **This is the join a code viewer makes on
+  # every open**, from a `src.File` it got out of the semantic layer or out of a search hit, and
+  # it works across schemas only because the file predicate is shared.
+  predicate SourceFileToProject : { src : src.File, project : Project }
+
+  # ---- references: the graph that was missing ------------------------------------------
+
+  # A `<ProjectReference>`: `from` builds against `to`. `from` leads: "what does this project
+  # depend on". Key-only — a reference has no attributes worth a point read.
+  predicate ProjectReference : { from : Project, to : Project }
+
+  # The reverse — **"who depends on this project"**, which is the direction that decides whether
+  # a change is safe, and the one a build graph is usually consulted for. A separate predicate
+  # for `code.sigla`'s reason: a predicate leads with one field, and both fan-outs are seeks.
+  predicate ProjectReferencedBy : { to : Project, from : Project }
+
+  # A `<PackageReference>`: which package a project asks for, and the version *range* it wrote
+  # (the resolved version is in the `Package` identity; the range is what the file said, and the
+  # two differ under central package management or a floating version).
+  predicate PackageReference : { project : Project, package : Package } -> { range : src.MaybeString }
+
+  # The reverse — **"which projects use this package"**, keyed package-first. The question that
+  # gets asked the day a CVE lands, and the reason `code.sigla` keyed `PackageRef` this way.
+  predicate PackageDependent : { package : Package, project : Project }
+
+  # A metadata reference to an assembly outside the project graph — a raw `<Reference>`, a
+  # framework assembly, a DLL from a package. `project` leads; the reverse follows.
+  predicate AssemblyReference : { project : Project, assembly : Assembly }
+  predicate AssemblyDependent : { assembly : Assembly, project : Project }
+
+  # ---- what a build produces -----------------------------------------------------------
+
+  # **The crossing**: a project, a target framework, and the assembly the pair produces —
+  # `code.sigla`'s `Compilation`, restored. `assembly` leads, because the question this answers
+  # is the one a stack trace or a dependency report poses: *which project produced
+  # `Company.Domain.dll`?*
+  predicate Compilation : { assembly : Assembly, framework : string, project : Project }
+
+  # The same crossing from the project's side, for the panel that opens on a project.
+  predicate ProjectCompilation : { project : Project, framework : string } -> { assembly : Assembly }
+
+}
