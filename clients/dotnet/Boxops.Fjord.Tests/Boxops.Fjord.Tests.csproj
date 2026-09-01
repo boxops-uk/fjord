@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    **Somewhere for a gate to live.** Six of the indexer runs state a mechanical gate and
+    there was no test project to put one in — `git grep -Ein "xunit|nunit|mstest"` over
+    `clients/` returned nothing, and the required CI job installed no .NET. Every claim on
+    this side was therefore checked by running the demo and reading the output.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <!-- Not published, so it does not need the analysis the shipped projects run with. -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Boxops.Fjord.Client/Boxops.Fjord.Client.csproj" />
+    <ProjectReference Include="../Boxops.Fjord.Indexer/Boxops.Fjord.Indexer.csproj" />
+  </ItemGroup>
+
+</Project>
