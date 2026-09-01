@@ -26,6 +26,7 @@
 //! predicate test.Named  : { name : string, of : test.Foo }  // a *string* before a ref
 //! predicate test.Tagged : { what : union, id : int }    // a union in the *leading* field
 //! predicate test.Label  : { id : int, what : union }    // ...and not in the leading field
+//! predicate test.Blob   : { digest : bytes }            // a `bytes` key field
 //!
 //! where `union` is `{ num : int = 3 | text : string = 0 }` in both — tags neither
 //! contiguous, nor starting at zero, nor in declaration order, so nothing that read a
@@ -57,7 +58,9 @@ use std::sync::Arc;
 
 use lasso::Rodeo;
 
-use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, fact_ref_bytes, put_i64, put_str};
+use fjord_encoding::tuple::{
+    MARK_RECORD, MARK_TERM, UnionTag, fact_ref_bytes, put_bytes, put_i64, put_str,
+};
 use fjord_schema::{
     id::FactId,
     schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema},
@@ -82,6 +85,10 @@ const BOXED: PredicateId = PredicateId(12);
 const NAMED: PredicateId = PredicateId(13);
 const TAGGED: PredicateId = PredicateId(14);
 const LABEL: PredicateId = PredicateId(15);
+/// **Appended**, so every id above keeps its number — which is what makes adding a
+/// family to the fixture free rather than a re-fingerprint of every plan in the
+/// corpus.
+const BLOB: PredicateId = PredicateId(16);
 
 /// The two alternatives every union in this fixture declares.
 ///
@@ -245,6 +252,15 @@ pub fn schema() -> Schema {
             ])),
             value: None,
         },
+        // **A `bytes` key field**, so the `0x…` literal has somewhere to be a seek
+        // constant. Its payloads hold bytes no `String` could — a NUL, the escape
+        // byte, and two UTF-8 continuation bytes — which is what makes a query over
+        // it say something a query over a string could not.
+        Predicate {
+            name: sym("test.Blob"),
+            key: PredicateTy::Record(Arc::from([(sym("digest"), PredicateTy::Bytes)])),
+            value: None,
+        },
     ];
 
     // Field and predicate names queries use but that no declaration interns, so
@@ -403,6 +419,20 @@ pub fn facts() -> Vec<Fact> {
         .map(|(id, alt, payload)| [int(id), what(alt, payload)].concat()),
     );
 
+    // **Bytes a `String` could not hold**, in `memcmp` order so the scan order is
+    // also the order a reader would predict: the empty run first, then a lone NUL,
+    // then the escape byte, then a continuation byte.
+    push(
+        &mut out,
+        BLOB,
+        [
+            blob(b""),
+            blob(&[0x00]),
+            blob(&[0x00, 0xFF]),
+            blob(&[0x80, 0xC0]),
+        ],
+    );
+
     out
 }
 
@@ -432,6 +462,12 @@ fn int(value: i64) -> Vec<u8> {
 fn string(value: &str) -> Vec<u8> {
     let mut out = Vec::new();
     put_str(&mut out, value);
+    out
+}
+
+fn blob(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_bytes(&mut out, payload);
     out
 }
 
@@ -487,6 +523,7 @@ mod tests {
             ("test.Named", NAMED),
             ("test.Tagged", TAGGED),
             ("test.Label", LABEL),
+            ("test.Blob", BLOB),
         ] {
             assert_eq!(
                 schema.find_position(name).map(|(id, _)| id),

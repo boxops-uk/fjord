@@ -82,7 +82,9 @@ use crate::{
         ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt,
     },
 };
-use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, Value, get_str, put_i64, put_str};
+use fjord_encoding::tuple::{
+    MARK_RECORD, MARK_TERM, UnionTag, Value, get_str, put_bytes, put_i64, put_str,
+};
 use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 /// Where a pattern's value lives when the plan runs.
@@ -4438,6 +4440,7 @@ impl Flattener<'_> {
         match self.ast.store().kind(node) {
             ExprKind::Lit(Literal::Int(_)) => Some(PredicateTy::Int),
             ExprKind::Lit(Literal::Str(_)) | ExprKind::Prefix(_) => Some(PredicateTy::Str),
+            ExprKind::Lit(Literal::Bytes(_)) => Some(PredicateTy::Bytes),
             _ => None,
         }
     }
@@ -4500,6 +4503,12 @@ impl Flattener<'_> {
             (ExprKind::Lit(Literal::Str(text)), PredicateTy::Str) => {
                 let mut out = vec![];
                 put_str(&mut out, self.interner.try_resolve(*text)?);
+                Some(Const::Bytes(out))
+            }
+
+            (ExprKind::Lit(Literal::Bytes(payload)), PredicateTy::Bytes) => {
+                let mut out = vec![];
+                put_bytes(&mut out, payload);
                 Some(Const::Bytes(out))
             }
 
@@ -4841,6 +4850,9 @@ impl Flattener<'_> {
         match self.ast.store().kind(node) {
             ExprKind::Lit(Literal::Int(value)) => Some(Project::Lit(Value::Int(*value))),
 
+            ExprKind::Lit(Literal::Bytes(payload)) => {
+                Some(Project::Lit(Value::Bytes(payload.to_vec())))
+            }
             ExprKind::Lit(Literal::Str(text)) => Some(Project::Lit(Value::Str(
                 self.interner.try_resolve(*text)?.to_owned(),
             ))),

@@ -151,6 +151,7 @@ const fn rule_name(rule: Rule) -> &'static str {
         Rule::AnonRecordPrimary => "AnonRecordPrimary",
         Rule::Arith => "Arith",
         Rule::BindStmt => "BindStmt",
+        Rule::BytesPrimary => "BytesPrimary",
         Rule::Branch => "Branch",
         Rule::DenyStmt => "DenyStmt",
         Rule::Disjunction => "Disjunction",

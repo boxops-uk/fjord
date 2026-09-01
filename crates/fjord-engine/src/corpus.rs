@@ -735,6 +735,52 @@ pub const CORPUS: &[Entry] = &[
          — one query per alternative, narrowing both sides — which must keep \
          answering what it answers today",
     ),
+    // ---- bytes, and the `0x…` literal ----------------------------------------
+    entry(
+        "X where test.Blob {digest = X}",
+        Supported("0x; 0x00; 0x00ff; 0x80c0"),
+        "**a `bytes` key field**, scanned: the payloads hold a NUL, the escape byte \
+         and two UTF-8 continuation bytes, so these are four rows no `string` \
+         predicate could have held — and the order is `memcmp` over the payload",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0x00ff}",
+        Supported("test.Blob#3"),
+        "**the `0x…` literal as a seek constant**, which is the reason the literal is \
+         not deferred: without it a digest lookup is inexpressible and \
+         `print::literal` is the one place the printer emits text sigla cannot parse",
+    ),
+    entry(
+        "X where test.Blob {digest = X}; X = 0x80c0",
+        Supported("0x80c0"),
+        "the same constant reached by a **bind** rather than spliced into the key — \
+         a `bytes` value folds like any other scalar",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0x}",
+        Diagnosed(Code::LitBytesEmpty),
+        "`0x` with no digits: lexed as one token and rejected by name, which is what \
+         a permissive lexer buys over a caret between two tokens",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0xfff}",
+        Diagnosed(Code::LitBytesOddDigits),
+        "an **odd** digit count — a byte is two digits, and guessing which end to pad \
+         is a guess that silently answers a different question",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0xzz}",
+        Diagnosed(Code::LitBytesDigit),
+        "not a hex digit. The lexer's regex takes the whole run so the diagnostic has \
+         the literal to point at",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = \"00ff\"}",
+        Diagnosed(Code::RejectTypeMismatch),
+        "a **string** against a `bytes` field: the two are different types and no \
+         query can compare them, which is why `bytes` sorting after a union rather \
+         than beside a string is unobservable",
+    ),
     entry(
         "X where X = never",
         Supported(""),
@@ -1441,6 +1487,9 @@ mod tests {
             "8380b2573bfefefe",
             "04c12d148fe1ff53",
             "d893681e33a2b227",
+            "85ed77c455b6e09d",
+            "1fc936d8e6cfee45",
+            "3b926e76df4bcaac",
             "403111a87c66ed0a",
             "86b6587a68dba1a4",
             "98b0463566dbd32a",
@@ -1831,6 +1880,16 @@ mod tests {
         match value {
             Value::Int(n) => n.to_string(),
             Value::Str(s) => s.clone(),
+            // `0x…`, the literal a reader would have typed — the same spelling
+            // `print::literal` emits, so a row in this table is a value somebody can
+            // paste back into a query.
+            Value::Bytes(payload) => format!(
+                "0x{}",
+                payload
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ),
             Value::FactRef(id) => {
                 let name = schema
                     .get(id.predicate())

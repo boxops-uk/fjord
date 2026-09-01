@@ -431,6 +431,7 @@ impl Resolver<'_, '_> {
                 match name {
                     "int" => Some(PredicateTy::Int),
                     "string" => Some(PredicateTy::Str),
+                    "bytes" => Some(PredicateTy::Bytes),
                     other => self.refuse(
                         node,
                         Code::RejectUnknownName,

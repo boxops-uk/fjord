@@ -268,6 +268,7 @@ const fn kind_name(kind: &ExprKind<NodeId>) -> &'static str {
     match kind {
         ExprKind::Lit(Literal::Int(_)) => "Int",
         ExprKind::Lit(Literal::Str(_)) => "Str",
+        ExprKind::Lit(Literal::Bytes(_)) => "Bytes",
         ExprKind::Var(_) => "Var",
         ExprKind::Wildcard => "Wildcard",
         ExprKind::Never => "Never",
@@ -312,6 +313,7 @@ fn label_of(kind: &ExprKind<NodeId>, schema: &Schema, interner: &LocalInterner) 
     match kind {
         ExprKind::Lit(Literal::Int(value)) => Some(value.to_string()),
         ExprKind::Lit(Literal::Str(symbol)) => Some(format!("{:?}", name(*symbol))),
+        ExprKind::Lit(Literal::Bytes(payload)) => Some(format!("{} byte(s)", payload.len())),
         ExprKind::Var(symbol) | ExprKind::Select(symbol, _) => Some(name(*symbol)),
         ExprKind::Prefix(symbol) => Some(format!("{:?}..", name(*symbol))),
         ExprKind::Fuzzy(symbol, distance, anchor) => {

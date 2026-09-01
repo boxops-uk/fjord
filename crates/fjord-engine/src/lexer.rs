@@ -42,6 +42,17 @@ pub enum Token {
     Wildcard,
     #[regex(r"[0-9][0-9_]*")]
     Nat,
+    /// `0x…` — a **bytes literal**, two hex digits a byte.
+    ///
+    /// Its own token rather than a widening of [`Token::String`]: overloading the
+    /// string rule would make every existing string literal ambiguous. Lexed
+    /// **permissively** and narrowed in lowering, exactly as `Nat` is — so `0xzz` is
+    /// one token with a named diagnostic rather than a caret between two tokens.
+    ///
+    /// logos takes the longer match, so `0x…` is never `Nat("0")` followed by an
+    /// identifier, and `007` is still a `Nat`.
+    #[regex(r"0[xX][0-9a-zA-Z_]*")]
+    Hex,
     #[regex(r#""(?:\\(?:["\\/bfnrt]|u[a-fA-F0-9]{4})|[^"\\[:cntrl:]]+)*""#)]
     String,
     #[token("..")]
@@ -156,6 +167,15 @@ pub enum LiteralError {
     IntRange,
     /// A `\u` escape that is not a Unicode scalar value — an unpaired surrogate.
     StringEscape,
+    /// `0x` with nothing after it. Its own case rather than "an odd digit count of
+    /// one": a reader who wrote `0x` meant to write something and the message should
+    /// say so.
+    BytesEmpty,
+    /// An odd number of hex digits: `0xfff`. A byte is two digits, and guessing which
+    /// end to pad is the sort of guess that silently answers the wrong question.
+    BytesOddDigits,
+    /// A character that is not a hex digit: `0xzz`.
+    BytesDigit,
 }
 
 impl LiteralError {
@@ -166,6 +186,9 @@ impl LiteralError {
             Self::IntLeadingZero => Code::LitIntLeadingZero,
             Self::IntRange => Code::LitIntRange,
             Self::StringEscape => Code::LitStringEscape,
+            Self::BytesEmpty => Code::LitBytesEmpty,
+            Self::BytesOddDigits => Code::LitBytesOddDigits,
+            Self::BytesDigit => Code::LitBytesDigit,
         }
     }
 
@@ -175,8 +198,48 @@ impl LiteralError {
             Self::IntLeadingZero => "a number must not have a leading zero",
             Self::IntRange => "number out of range",
             Self::StringEscape => "escape does not denote a character",
+            Self::BytesEmpty => "`0x` with no digits is not a value",
+            Self::BytesOddDigits => "a byte is two hex digits, so the count must be even",
+            Self::BytesDigit => "not a hex digit",
         }
     }
+}
+
+/// Decode a `Hex` token's text as bytes.
+///
+/// Enforces the shape the lexer's regex is deliberately looser than: `0x` then an
+/// even number of hex digits, separators allowed between them as a number's are.
+pub fn parse_hex(text: &str) -> Result<Vec<u8>, LiteralError> {
+    // The lexer's regex guarantees the prefix; checked rather than assumed.
+    let digits = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .ok_or(LiteralError::BytesDigit)?;
+
+    let mut nibbles: Vec<u8> = Vec::with_capacity(digits.len());
+    for c in digits.chars() {
+        if c == '_' {
+            continue;
+        }
+        nibbles.push(
+            c.to_digit(16)
+                .ok_or(LiteralError::BytesDigit)?
+                .try_into()
+                .map_err(|_| LiteralError::BytesDigit)?,
+        );
+    }
+
+    if nibbles.is_empty() {
+        return Err(LiteralError::BytesEmpty);
+    }
+    if nibbles.len() % 2 != 0 {
+        return Err(LiteralError::BytesOddDigits);
+    }
+
+    Ok(nibbles
+        .chunks(2)
+        .map(|pair| pair[0] << 4 | pair[1])
+        .collect())
 }
 
 /// Decode a `Nat` token's text as a magnitude.

@@ -553,6 +553,19 @@ fn prefix(interner: &LocalInterner, ty: Option<&PredicateTy>, bytes: &[u8]) -> O
     }
 }
 
+/// `0x…`, lowercase, two digits a byte — the one spelling both the printer and
+/// [`literal`] emit, and the one the lexer reads back.
+fn hex_literal(payload: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::with_capacity(2 + payload.len() * 2);
+    out.push_str("0x");
+    for byte in payload {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
 /// A decoded value as sigla text — the literal a reader would have written.
 ///
 /// A reference is named as the corpus and the shell name one, `test.Foo#1`: the
@@ -562,17 +575,9 @@ fn literal(schema: &Schema, value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Int(int) => int.to_string(),
         Value::Str(text) => escape(text),
-        // `0x…`, lowercase, two digits a byte — the form sigla parses back. Without
-        // the literal this would be the one place the printer emits text the language
-        // cannot read.
-        Value::Bytes(payload) => {
-            let mut out = String::with_capacity(2 + payload.len() * 2);
-            out.push_str("0x");
-            for byte in payload.iter() {
-                let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{byte:02x}"));
-            }
-            out
-        }
+        // Without the `0x…` literal this would be the one place the printer emits
+        // text sigla cannot parse back.
+        Value::Bytes(payload) => hex_literal(payload),
         Value::FactRef(id) => {
             let name = schema
                 .get(id.predicate())
@@ -1004,6 +1009,8 @@ impl Printer<'_> {
                 }
             }
             ExprKind::Lit(Literal::Str(symbol)) => out.push(&escape(self.name(*symbol))),
+            // `0x…`, lowercase, two digits a byte — what the lexer reads back.
+            ExprKind::Lit(Literal::Bytes(payload)) => out.push(&hex_literal(payload)),
             ExprKind::Prefix(symbol) => {
                 out.push(&escape(self.name(*symbol)));
                 out.push("..");
@@ -1174,6 +1181,9 @@ impl Printer<'_> {
             ExprKind::Lit(Literal::Int(value)) => write!(out, "(int {value})").expect(SINK),
             ExprKind::Lit(Literal::Str(symbol)) => {
                 write!(out, "(str {:?})", self.name(*symbol)).expect(SINK);
+            }
+            ExprKind::Lit(Literal::Bytes(payload)) => {
+                write!(out, "(bytes {})", hex_literal(payload)).expect(SINK);
             }
             ExprKind::Prefix(symbol) => {
                 write!(out, "(prefix {:?})", self.name(*symbol)).expect(SINK);

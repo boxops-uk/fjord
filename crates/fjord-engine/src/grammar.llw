@@ -4,6 +4,7 @@ token QId='<qid>';
 token UId='<uid>' LId='<lid>';
 token Wildcard='_';
 token Nat='<nat>';
+token Hex='<hex>';
 token String='<string>';
 token DotDot='..' Tilde='~' TildeLt='~<';
 token Dot='.' Eq='=' BangEq='!=' Semi=';' Comma=',' Minus='-' LBrace='{' RBrace='}'
@@ -64,6 +65,9 @@ primary:
 | UId @var_primary
 | Nat @nat_primary
 | '-' Nat @int_primary
+// `0x…`. Its own alternative, one token of lookahead like every other primary —
+// widening the string rule would make every existing string literal ambiguous.
+| Hex @bytes_primary
 | String ('..' @string_prefix_primary
          | '~' [Nat] @string_fuzzy_primary
          | '~<' [Nat] @string_fuzzy_prefix_primary

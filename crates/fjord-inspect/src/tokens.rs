@@ -166,6 +166,7 @@ pub(crate) const fn kind(token: Token) -> &'static str {
         Token::LId => "LId",
         Token::Wildcard => "Wildcard",
         Token::Nat => "Nat",
+        Token::Hex => "Hex",
         Token::String => "String",
         Token::DotDot => "DotDot",
         Token::Tilde => "Tilde",
@@ -201,7 +202,9 @@ const fn class(token: Token) -> TokenClass {
         // lexer has already made that distinction, so a page never has to.
         Token::UId => TokenClass::Variable,
         Token::LId => TokenClass::Field,
-        Token::Nat => TokenClass::Number,
+        // A bytes literal is a number in the same sense a `Nat` is: a value written
+        // in digits, and the palette a page paints it with is the numeric one.
+        Token::Nat | Token::Hex => TokenClass::Number,
         Token::String => TokenClass::String,
         Token::Wildcard => TokenClass::Wildcard,
         Token::Whitespace => TokenClass::Whitespace,

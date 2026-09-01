@@ -479,6 +479,7 @@ impl Checker<'_> {
     fn infer(&mut self, ast: &Ast, id: NodeId) -> Ty {
         let ty = match ast.store().kind(id) {
             ExprKind::Lit(Literal::Int(_)) => Ty::Int,
+            ExprKind::Lit(Literal::Bytes(_)) => Ty::Bytes,
             ExprKind::Lit(Literal::Str(_)) | ExprKind::Prefix(_) => Ty::String,
 
             // A fuzzy pattern is a *string* pattern, so it types exactly as a

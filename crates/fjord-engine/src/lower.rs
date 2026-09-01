@@ -257,6 +257,11 @@ impl Lowering<'_> {
                 Out::Pattern(id)
             }
 
+            Rule::BytesPrimary => {
+                let id = self.bytes_literal(&children, &span);
+                Out::Pattern(id)
+            }
+
             Rule::StringPrimary => {
                 let id = match self.string_literal(&children, &span) {
                     Ok(symbol) => self.push(ExprKind::Lit(Literal::Str(symbol)), &span),
@@ -468,6 +473,18 @@ impl Lowering<'_> {
 
         match lexer::parse_nat(text).and_then(|n| lexer::signed_literal(n, negative)) {
             Ok(value) => self.push(ExprKind::Lit(Literal::Int(value)), span),
+            Err(err) => self.literal_error(span, err),
+        }
+    }
+
+    /// The decoded payload of a `Hex` token.
+    fn bytes_literal(&mut self, children: &[(CstNode<'_>, Out)], span: &Span) -> NodeId {
+        let Some(text) = token_text(children, Token::Hex) else {
+            return self.hole(span);
+        };
+
+        match lexer::parse_hex(text) {
+            Ok(payload) => self.push(ExprKind::Lit(Literal::Bytes(payload.into())), span),
             Err(err) => self.literal_error(span, err),
         }
     }
@@ -713,6 +730,15 @@ mod tests {
         ast.store().reduce(id, &mut |_, kind| match kind {
             ExprKind::Lit(Literal::Int(v)) => format!("{v}"),
             ExprKind::Lit(Literal::Str(s)) => format!("{:?}", name(s)),
+            ExprKind::Lit(Literal::Bytes(payload)) => {
+                format!(
+                    "0x{}",
+                    payload
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                )
+            }
             ExprKind::Prefix(s) => format!("prefix({:?})", name(s)),
             ExprKind::Fuzzy(s, distance, FuzzyAnchor::Whole) => {
                 format!("fuzzy({:?}, {distance})", name(s))
