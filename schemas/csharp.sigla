@@ -1,0 +1,418 @@
+# The C# code index — a fjord translation of Meta Glean's `csharp` schema.
+#
+# It captures what a C# compiler (Roslyn) can see: namespaces, the four named-type kinds
+# (class / interface / record / struct), methods, fields, parameters, type parameters, locals
+# and properties; and the definitions, references and locations that tie them to source.
+#
+# **Two layers it used to carry have moved out**, and this is the only structural change from
+# the schema that shipped:
+#
+#   * The **MSBuild project/solution graph** is now `msbuild.sigla`, because a different
+#     producer fills it (the plan's own Run 8b seam), because it is not C#, and because it was
+#     missing every edge between two projects. Nothing here references a project: the join from
+#     a declaration to the project that compiled it goes `src.Location` → `src.File` →
+#     `msbuild.SourceFileToProject`, and that join typechecks only because the file predicate
+#     is now shared.
+#   * The **codemarkup compatibility layer** (`FileDefinitions`, `DefinitionLocationName`,
+#     `SearchByName`, `SearchEntry`) is now `codemarkup.sigla`, shared with every other language.
+#     Its own header called it "the codemarkup analogue"; there is now a codemarkup to be an
+#     analogue of. The bridge into it is `SymbolOf`/`DefinitionBySymbol` at the end of this file.
+#     `FileEntityXRefs` stays — renamed `EntityXRef` and given the reverse direction it never
+#     had — because a `Definition`-targeted reference is a `FactId` hop where the codemarkup one
+#     is a string, and both are worth having.
+#
+# ---- how the translation was done ------------------------------------------------
+#
+# fjord's type model is narrower than Glean's, so five of Glean's constructs are
+# expressed with the ones fjord has. Each rule is applied uniformly, and each is a trap
+# for anyone tempted to "fix" it back:
+#
+#   * `enum { A | B }`  →  a union of empty-payload alternatives with explicit,
+#     append-only discriminants: `{ a = 0 | b = 1 }`. Alternative names are **lowercase**
+#     — the grammar's field/alternative name is a `<lid>`, so Glean's `Public` becomes
+#     `public`. Discriminants are frozen on disk (I10); every union edit is Breaking, so
+#     the numbering here is the numbering forever.
+#
+#   * `bool`  →  the `src.Bool` union. fjord has no boolean primitive; a two-alternative
+#     union is what `bool` desugars to in Glean too. It lives in `src` now rather than here —
+#     a named type is structural, so importing one is fingerprint-identical to declaring it
+#     (verified), and four schemas declaring the same two alternatives was four places to keep
+#     a discriminant in step.
+#
+#   * `byte`  →  `int`. fjord has one integer (signed 64-bit) and no `byte`. `rank` is a
+#     small non-negative count, so the widening is free.
+#
+#   * `maybe T`  →  a `Maybe<T>` union `{ nothing = 0 | just : T = 1 }`, one named type per
+#     payload (no generics). fjord *has* the optionality Glean's `maybe` sugar lowers to;
+#     what it lacks is the naming, so the alternative names are pinned here.
+#
+#   * `[T]` (a list)  →  **one fact per element**, an edge predicate carrying an
+#     `index : int` where order matters (`MethodParameter`, `MethodTypeParameter`, …). This
+#     is fjord's settled answer, not a stopgap: a length-prefixed array cannot be
+#     prefix-matched, so it would close the seek for every field after it. A method's
+#     parameters therefore come back in order by seeking the method and scanning the index.
+#     A Glean `Method` is identified by its whole signature *including* the parameter list,
+#     which fjord cannot put in a key — so `Method` carries the **documentation comment ID**
+#     (`M:Namespace.Type.Method(System.Int32,…)`, Roslyn's `GetDocumentationCommentId()`) as
+#     a trailing key field. It is the C# name that already encodes the parameter types, so it
+#     keeps overloads distinct without an edge, and sits last because it is a disambiguator,
+#     not something anyone searches on.
+#
+# Two further points:
+#
+#   * **Glean's `stored` derived predicates lose their query bodies.** fjord has no schema
+#     derivation yet, so `NameLowerCase` here — and everything in `codemarkup` — is declared as
+#     an ordinary predicate the indexer fills directly, the same pattern `schemas/code.sigla`
+#     uses for `src.SearchByName` and friends. Their key order is chosen for the lookup they
+#     answer, exactly as a derived-and-stored predicate's would be.
+#
+#   * **The source layer is imported now.** Glean's schema opens `import src` and references
+#     `src.File` / `src.ByteSpan`; so does this one. It used to own private copies, with the
+#     comment "so the schema resolves standalone" — and the cost was that `csharp.File "x"` and
+#     `content.File "x"` were different types naming one file, so the join that renders a search
+#     hit could not be written in sigla at all.
+#
+# **Field order is key order, and key order is the index design.** Each predicate leads
+# with the field a query seeks on — read every record as "what is this fast at", not as a
+# list of attributes. Reverse-direction questions are separate predicates.
+
+schema csharp {
+
+  import src
+
+  # ---- scalars that stand in for Glean's `bool`, and the optionals it wrote as `maybe` --
+
+  # `maybe T`, one per payload type. `nothing` is the empty-payload alternative. The ones over
+  # *this schema's* reference types live here; `src` owns the ones over primitives.
+  type MaybeNamespace                 = { nothing = 0 | just : Namespace = 1 }
+  type MaybeClass                     = { nothing = 0 | just : Class = 1 }
+  type MaybeRecord                    = { nothing = 0 | just : Record = 1 }
+  type MaybeNamedType                 = { nothing = 0 | just : NamedType = 1 }
+  type MaybeVariance                  = { nothing = 0 | just : Variance = 1 }
+  type MaybeMethod                    = { nothing = 0 | just : Method = 1 }
+  type MaybeMethodInvocationExpression = { nothing = 0 | just : MethodInvocationExpression = 1 }
+
+  # ---- names and namespaces ------------------------------------------------------------
+
+  # An interned identifier. A name is shared, so a reference to one is a `FactId`, and
+  # `SearchByName` can key on the name fact.
+  predicate Name : string
+
+  # The search index, lower-cased. Glean derives this with `prim.toLower`; fjord has no
+  # such primitive and no derivation, so the indexer writes it. `nameLowercase` leads the
+  # key because a case-insensitive search box seeks on it.
+  predicate NameLowerCase : { nameLowercase : string, name : Name }
+
+  # A namespace, and the one it is nested in — recursively. The containing namespace is
+  # part of the key because `A.B` and `C.B` are different namespaces both named `B`.
+  predicate Namespace : { name : Name, containingNamespace : MaybeNamespace }
+
+  # A qualified name: a simple name plus the namespace that contains it. `name` leads, so
+  # "the fully-qualified names spelled `Foo`" is a range.
+  predicate FullName : { name : Name, containingNamespace : Namespace }
+
+  # ---- accessibility, and the other closed vocabularies (Glean `enum`s) ----------------
+
+  # Every accessibility combination Roslyn exposes.
+  type Accessibility =
+    { friend                = 0
+    | internal              = 1
+    | notApplicable         = 2
+    | private               = 3
+    | protected             = 4
+    | protectedAndFriend    = 5
+    | protectedAndInternal  = 6
+    | protectedOrFriend     = 7
+    | protectedOrInternal   = 8
+    | public                = 9
+    }
+
+  # The kinds of method-like symbol. Present for completeness; as in the Glean schema, no
+  # predicate here carries a `MethodKind` field yet — the indexer may add one.
+  type MethodKind =
+    { anonymousFunction                = 0
+    | builtinOperator                  = 1
+    | constructor                      = 2
+    | conversion                       = 3
+    | declareMethod                    = 4
+    | delegateInvoke                   = 5
+    | destructor                       = 6
+    | eventAdd                         = 7
+    | eventRaise                       = 8
+    | eventRemove                      = 9
+    | explicitInterfaceImplementation  = 10
+    | functionPointerSignature         = 11
+    | lambdaMethod                     = 12
+    | localFunction                    = 13
+    | ordinary                         = 14
+    | propertyGet                      = 15
+    | propertySet                      = 16
+    | reducedExtension                 = 17
+    | sharedConstructor                = 18
+    | staticConstructor                = 19
+    | userDefinedOperator              = 20
+    }
+
+  # How a parameter is passed by reference. `none_` is the plain by-value case (a bare
+  # `none` would read as "absent"); the trailing underscore keeps it a name.
+  type RefKind = { in = 0 | none_ = 1 | out = 2 | ref = 3 | refReadOnly = 4 }
+
+  # Declared variance of a generic type parameter.
+  type Variance = { in = 0 | none_ = 1 | out = 2 }
+
+  # ---- the type system: a definition, and the types a definition can be ----------------
+  #
+  # `Definition`, `AType` and `NamedType` are unions inlined at every use site — the tag
+  # and (for the fact-bearing alternatives) a `FactId` are what get stored. The recursion
+  # is broken by references: an `AType` names predicates, it does not embed their bodies.
+
+  # Any symbol the compiler exposes.
+  type Definition =
+    { type          : AType         = 0
+    | method        : Method        = 1
+    | field         : Field         = 2
+    | parameter     : Parameter     = 3
+    | typeParameter : TypeParameter = 4
+    | local         : Local         = 5
+    | property      : Property      = 6
+    }
+
+  # A type: an array, a named type, a function pointer, a pointer, or a type parameter.
+  type AType =
+    { arrayType           : ArrayType           = 0
+    | namedType           : NamedType           = 1
+    | functionPointerType : FunctionPointerType = 2
+    | pointerType         : PointerType         = 3
+    | typeParameter       : TypeParameter       = 4
+    }
+
+  # A type that is neither an array, a pointer, nor a type parameter. The four keyword
+  # names carry a trailing underscore to match Glean's spelling.
+  type NamedType =
+    { class_     : Class     = 0
+    | interface_ : Interface = 1
+    | record_    : Record    = 2
+    | struct_    : Struct    = 3
+    }
+
+  # ---- the named types -----------------------------------------------------------------
+  #
+  # Each is identified by its `FullName`, which leads the key so "the class named X" is a
+  # seek. Glean carries the type parameters in the key too; here they are edges
+  # (`TypeTypeParameter`), because a list cannot lead anything after it in a key.
+
+  predicate Class :
+    { name                  : FullName
+    , baseType              : MaybeClass
+    , containingType        : MaybeNamedType
+    , declaredAccessibility : Accessibility
+    , isAbstract            : src.Bool
+    , isStatic              : src.Bool
+    , isSealed              : src.Bool
+    }
+
+  predicate Interface :
+    { name                  : FullName
+    , containingType        : MaybeNamedType
+    , declaredAccessibility : Accessibility
+    , isStatic              : src.Bool
+    }
+
+  predicate Record :
+    { name                  : FullName
+    , baseType              : MaybeRecord
+    , containingType        : MaybeNamedType
+    , declaredAccessibility : Accessibility
+    , isAbstract            : src.Bool
+    , isSealed              : src.Bool
+    }
+
+  predicate Struct :
+    { name                  : FullName
+    , containingType        : MaybeNamedType
+    , declaredAccessibility : Accessibility
+    }
+
+  # An interface a named type implements. `type` leads: "what does this type implement".
+  # The reverse question — "who implements this interface" — is a separate predicate away
+  # if it is ever needed, the way `src.DerivesFrom` mirrors `src.Extends`.
+  predicate Implements : { type : NamedType, interface_ : Interface }
+
+  # Ordered type parameters of a named type. `type` then `index`, so a type's parameters
+  # come back in declaration order from one seek.
+  predicate TypeTypeParameter : { type : NamedType, index : int, typeParameter : TypeParameter }
+
+  # ---- methods, and what they carry ----------------------------------------------------
+
+  # `name` leads (search by method name); the parameters and type parameters are edges.
+  # `docId` is the documentation comment ID — the full name including parameter types
+  # (`M:N.T.M(System.Int32)`) — and trails the key: it is what keeps overloads distinct,
+  # never a search key, so it sits after every field a query narrows on.
+  predicate Method :
+    { name                  : Name
+    , containingType        : NamedType
+    , returnType            : AType
+    , isStatic              : src.Bool
+    , declaredAccessibility : Accessibility
+    , docId                 : string
+    }
+
+  # Ordered parameters of a method.
+  predicate MethodParameter : { method : Method, index : int, parameter : Parameter }
+
+  # Ordered type parameters of a generic method.
+  predicate MethodTypeParameter : { method : Method, index : int, typeParameter : TypeParameter }
+
+  predicate Parameter :
+    { name       : Name
+    , type       : AType
+    , refKind    : RefKind
+    , isThis     : src.Bool
+    , isParams   : src.Bool
+    , isOptional : src.Bool
+    }
+
+  predicate Field :
+    { name                  : Name
+    , type                  : AType
+    , containingType        : NamedType
+    , declaredAccessibility : Accessibility
+    , isConst               : src.Bool
+    , isReadonly            : src.Bool
+    , isVirtual             : src.Bool
+    }
+
+  # A type parameter, identified by name and its constraints — the same structural
+  # identity Glean gives it, so two parameters agreeing on all of these are one fact.
+  predicate TypeParameter :
+    { name                       : Name
+    , variance                   : MaybeVariance
+    , hasNotNullConstraint       : src.Bool
+    , hasReferenceTypeConstraint : src.Bool
+    , hasValueTypeConstraint     : src.Bool
+    }
+
+  # A local variable in a method body.
+  predicate Local :
+    { name             : Name
+    , type             : AType
+    , containingMethod : Method
+    , refKind          : RefKind
+    , isConst          : src.Bool
+    }
+
+  # A property or indexer. Its indexer parameters are an edge; its accessors are optional.
+  # `docId` is the documentation comment ID (`P:N.T.Item(System.Int32)`) and trails the key
+  # for the same reason it does on `Method`: indexers overload by parameter type, so it is
+  # what keeps two indexers distinct — a disambiguator, never a search key.
+  predicate Property :
+    { name           : Name
+    , containingType : NamedType
+    , type           : AType
+    , getMethod      : MaybeMethod
+    , setMethod      : MaybeMethod
+    , isStatic       : src.Bool
+    , isIndexer      : src.Bool
+    , docId          : string
+    }
+
+  # Ordered indexer parameters of a property.
+  predicate PropertyParameter : { property : Property, index : int, parameter : Parameter }
+
+  # ---- the remaining type shapes -------------------------------------------------------
+
+  # `rank` was Glean's `byte`; here it is an `int`.
+  predicate ArrayType : { elementType : AType, rank : int }
+
+  # A pointer type (`int*`), only in unsafe code.
+  predicate PointerType : { pointedAtType : AType }
+
+  # A function pointer type (`delegate*<void>`), whose shape is a method signature.
+  predicate FunctionPointerType : { name : FullName, signature : Method }
+
+  # ---- locations -----------------------------------------------------------------------
+  #
+  # Glean's `Location` bundled a `src.FileLocation` with `src.FileLines` (a line-index for
+  # rendering). The `src` layer models lines separately (`src.FileLine`), so `src.Location` is
+  # just the file span: a `src.File` reference and a span into it, in the position encoding the
+  # database declares.
+
+
+  # Where a definition is declared. `definition` leads: "where is this defined".
+  predicate DefinitionLocation : { definition : Definition, location : src.Location }
+
+  # Where an object is constructed, and which constructor it calls.
+  predicate ObjectCreationLocation : { type : AType, constructor : Method, location : src.Location }
+
+  # Where a method is invoked, and the expression it was invoked through, if any.
+  predicate MethodInvocationLocation :
+    { method     : Method
+    , location   : src.Location
+    , expression : MaybeMethodInvocationExpression
+    }
+
+  # A single-field wrapper, as in Glean — a method invocation seen through a member access.
+  type MethodInvocationExpression = { memberAccess : MemberAccessLocation }
+
+  # Where a member is accessed, and what the accessed member resolves to.
+  predicate MemberAccessLocation : { expression : MemberAccessExpression, location : src.Location }
+
+  type MemberAccessExpression =
+    { local     : Local     = 0
+    | parameter : Parameter = 1
+    | field     : Field     = 2
+    | property  : Property  = 3
+    | method    : Method    = 4
+    }
+
+  # Where a type is written (a type reference in source).
+  predicate TypeLocation : { type : AType, location : src.Location }
+
+  # ---- cross-references, unified over the Definition union -----------------------------
+  #
+  # `MethodInvocationLocation`, `MemberAccessLocation` and `TypeLocation` above are Glean's
+  # xref facts, and they are per-kind: three predicates, three shapes, three queries to answer
+  # "what is at this position". These two are the unified pair, keyed on `Definition` — the
+  # question a viewer and a refactor actually ask.
+  #
+  # This is the **cheap in-database path**: the target is a `Definition`, so following it is a
+  # `FactId` hop rather than a string lookup. `codemarkup.FileXRef` is the same relation with a
+  # `src.Symbol` target, which costs a string and buys the ability to leave this database. Both
+  # exist for the reason `typescript.DeclRef` and `codemarkup.SymbolXRef` both exist, and that
+  # duplication is what portability costs.
+  #
+  # Both depend on a union-typed variable being shareable between generators —
+  # `csharp.EntityXRef {file = F, use = U, target = D}; csharp.DefinitionLocation {definition = D,
+  # location = L}` is the join, and it is exactly what `reject/type-mismatch` refused before the
+  # `Ty::Union` arm landed in `unify`. Before it, the same answer took eleven queries, one per
+  # alternative, because only the innermost `Fact` reference could be shared — and that narrowed
+  # form (`target = {method = M}`) still works, so these are useful before the arm and *good*
+  # after it.
+
+  # References in a file: a use span and what it targets. `file` then `use`, so a file's
+  # references come back in position order for a renderer to splice. Key-only.
+  predicate EntityXRef : { file : src.File, use : src.ByteSpan, target : Definition }
+
+  # The reverse — **"where is this used"** — which C# never had a predicate for, in either
+  # schema. `target` leads, then `file`, so both "everywhere" and "everywhere in this file"
+  # are one seek. `src.Ref`'s key design, and the direction find-references needs.
+  predicate EntityRef : { target : Definition, file : src.File, use : src.ByteSpan }
+
+  # ---- the bridge to the language-independent layer -------------------------------------
+  #
+  # Two predicates, and they are the whole of what `codemarkup` needs from this schema: a way to
+  # get from a global name to the rich C# facts, and back. Both key on `Definition` directly —
+  # no wrapper predicate, because a union-typed key is now shareable with the `DefinitionLocation`
+  # and `EntityXRef` joins that make it useful.
+
+  # This definition's global name — the SCIP symbol. `definition` leads: "what is this called
+  # everywhere else". Key-only, and the symbol is a *trailing key field* rather than a value, so
+  # a query can carry on joining on it — behind the `->` it would be projectable and nothing
+  # more, which is the placement mistake `codemarkup.sigla`'s header describes.
+  predicate SymbolOf : { definition : Definition, symbol : src.Symbol }
+
+  # The reverse, and the one that makes a cross-database answer usable: **given a symbol from
+  # another index, the C# definition it names here.** `symbol` leads, so it is a seek. Key-only.
+  predicate DefinitionBySymbol : { symbol : src.Symbol, definition : Definition }
+
+}

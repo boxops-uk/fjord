@@ -255,6 +255,7 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
         ("code.sigla", "0xe044df7620885507"),
         ("codemarkup.sigla", "0x32adb52110a42dcc"),
         ("config.sigla", "0xac3c414ab7ff574f"),
+        ("csharp.sigla", "0x8368d4cbc47728d7"),
         ("demo.sigla", "0x026d61be0818f394"),
         ("msbuild.sigla", "0xbda9e53fc3c35113"),
         ("npm.sigla", "0x56ca6b880dd50587"),
