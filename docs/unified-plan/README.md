@@ -9,7 +9,7 @@ two are engine defects the schemas hit, and one is an unrelated storage observat
 [#28](https://github.com/boxops-uk/fjord/issues/28)–[#32](https://github.com/boxops-uk/fjord/issues/32)
 and review [#34](https://github.com/boxops-uk/fjord/issues/34).
 
-This directory is one route through all of it: **fourteen work items**, each with one falsifiable
+This directory is one route through all of it: **fifteen work items**, each with one falsifiable
 claim and acceptance criteria that are tests and commands rather than intentions.
 
 **What is authoritative.** Revision 2 remains the specification of Runs 0–9; **[W13](13-indexer-runs-amended.md)
@@ -43,7 +43,7 @@ knowing is that W6/W8/W9 add predicates whose cardinalities a cost model would r
 
 ---
 
-## The fourteen work items
+## The fifteen work items
 
 | # | Item | Issue | Depends on | Moves a fingerprint? | Size |
 |---|---|---|---|---|---|
@@ -61,6 +61,7 @@ knowing is that W6/W8/W9 add predicates whose cardinalities a cost model would r
 | **W12** | [A sealed database is its tables](12-sealed-database-journals.md) | #43 | — | no | M |
 | **W13** | [The indexer runs, amended](13-indexer-runs-amended.md) | #28–#34, #42 | W6, W7, W8, W11 | **yes — R4** | **XL** |
 | **W14** | [The flag-day inventory](14-flag-day-inventory.md) | R4e, #39 | — | it *is* the fingerprint move | S |
+| **W15** | [`code.sigla` retires](15-retire-code-sigla.md) | D12 | W6, W7, W8, W9 | **yes — the last one** | **XL** |
 
 **W13 is a tier of its own.** It is not one work item: it carries amendments to all ten of
 revision 2's runs, a new sub-run (R3.7), an edit to the required CI job, a 61-file migration, and one

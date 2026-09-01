@@ -3,7 +3,8 @@
 Three lists. The first is the ten decisions put for review and **answered** — recorded with their
 consequence so the reasoning survives the sprint; the second is what the plan found to be wrong in
 the issues (recorded here so nobody re-derives it); the third is what remains risky after everything
-lands. **All of them are answered now**: D11 closes the one that was left open underneath D5.
+lands. **All of them are answered now**: D11 closed the one left open underneath D5, and D12 is the
+largest of them — `code.sigla` retires, which cancels R4 and reorders everything after it.
 
 ---
 
@@ -24,6 +25,7 @@ the reasoning survives the sprint.
 | **D8** | **The `bytes` prototype is closed-source and unavailable — re-derive** | W3 stands on its own criteria. The issue's account of five sequential runtime failures is evidence for W2, not a patch we can apply |
 | **D9** | **Delete `--syntax-only`.** The indexer requires successful resolution | W13's **R3.7 removes the mode** rather than specifying it — 40 occurrences across seven files. **Three published measurements (§1, §14, §15) were taken with it and become unreproducible**, which is recorded and re-run in R7 |
 | **D10** | **One sprint; the stated order is fine** | README's sequencing stands. The seven load-bearing orderings still hold inside it — in particular the two flag days stay separate commits |
+| **D12** | **`code.sigla` retires**, and the C# indexer writes the new set. There are no consumers, so the freedom to break it exists now and will not later — the schema move goes first, before the runs that merely make the indexer better | [W15](15-retire-code-sigla.md). **R4 is cancelled**: it would spend a flag day giving `src.Decl` the semantic identity `csharp.Method`'s `docId` key already has, in a schema being deleted. R4.0 and R4c survive, re-aimed. Five new runs S1–S5 replace it, and **R7 must run after S5** because every published read number is keyed to predicates this deletes |
 | **D11** | **`fjord-viewer` is retired, now, before W6.** A browser application replaces it — React + Vite, a WebAssembly client and a JS wrapper | W11 is re-cut from "fix the viewer" to "what the new viewer needs from this side", and the crate is deleted before the flag day rather than migrated through it. **W6 loses two of its seven migration sites**; R9 loses its stated gate and needs another; and the protocol grows a **WebSocket listener**, because a browser can open neither a Unix socket nor raw TCP and those are the whole of `Transport` today |
 
 ## 2 · Corrections this plan makes to the issues
@@ -80,6 +82,15 @@ correction table says was fixed. One line, in W10.
    converted index, asserted with rows. It is a better gate — it tests the converter rather than a
    UI — but it is *written* rather than *proven*, and a gate nobody has run is a gate whose rows
    might turn out to be the wrong ones to ask for. R9 depends on **W8** now, not on W11.
-8. **`nyi/value-field` shapes four schemas.** Every "this is in the key because a value cannot be
+8. **Every published read measurement dies with `code.sigla`** (D12), and not merely as a
+   re-baseline. §1's key-order finding, §2's join costs, §6's 67 q/s mix and §11's ~6,000 q/s are
+   measured over `src.Decl`, `src.Ref` and `src.Line` in a corpus S5 deletes — and the replacement
+   is a different *shape*, not the same corpus renamed: `csharp` splits one declaration predicate
+   into a dozen and `codemarkup` re-keys the same facts again, so one corpus's fact count goes up
+   rather than staying still. R7 re-runs them **after S5**, and until then the record carries
+   figures no command can reproduce. This repository has been here once already, over
+   `--syntax-only` (D9), and got through it by writing it down at each figure rather than by
+   pretending.
+9. **`nyi/value-field` shapes four schemas.** Every "this is in the key because a value cannot be
    projected" decision in W6, W8 and W9 becomes redundant the day value-field projection lands, and
    the keys will already be wide. That is the right trade today and worth knowing it was a trade.
