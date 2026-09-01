@@ -7,6 +7,41 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `finish` writes the data to tables, which it did not
+
+`Catalog::seal` called `persist` then `compact`. `persist` fsyncs the write-ahead journal;
+`compact` merges already-flushed segments. **Neither touches a memtable** — so whatever ingest
+left resident when a database was sealed was written to no table at all. It stayed in the
+journal, invisible to the merge that followed, and every read of it came from a memtable
+recovered at open rather than from the merged tables sealing exists to leave behind. `compact`'s
+own doc prices a re-seek into an unmerged tree at up to 180×.
+
+Measured on the same corpus both ways — 520,000 facts:
+
+| | without the flush | with it |
+|---|---|---|
+| tables after `finish` | **1,176 kB** | **17,120 kB** |
+| journal after `finish` | 73,376 kB | 73,376 kB |
+| the instance on disk | 74,572 kB | 90,516 kB |
+| `finish` | 4.97 s | 9.26 s |
+
+Read the first row: half a million facts came to 1.2 MB of tables.
+
+**Two consequences worth knowing before upgrading.** `finish` costs 1.86× more, which is the
+flush doing real work — it is the operation whose whole job is to say *this is finished*. And a
+sealed directory is now **21% larger**, because fjall reclaims a sealed journal only inside its
+own flush worker, above a threshold of its own, with no public API to ask; so the tables are
+written *in addition to* the journal rather than instead of it. The trade is a table-backed read
+path, paid for on every query forever, against a one-time larger artifact.
+
+`FJORD_META.bytes` is documented rather than changed: it is the on-disk size of the instance
+directory at the moment of sealing, journals included. Not a logical fact count.
+
+No identity moves — `ops-I4` hashes the facts, and the test corpus seals to
+`0xbd38b7d3971a1c5d` on both paths, which is what makes a flush a flush.
+
+The `ops-I*` table in the invariants registry gains its first Guard column entries.
+
 ### `import ob` answered by a file declaring `schema base` says so
 
 A file is located from the import name alone — resolution never inspects the `schema <name>`

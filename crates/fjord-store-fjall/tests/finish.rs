@@ -196,6 +196,16 @@ fn sealing_records_the_identity_and_flips_the_status() {
     assert_eq!(entry.meta.content_fingerprint, Some(fingerprint));
     assert_eq!(entry.meta.facts, Some(7), "2 files + 2 modules + 3 decls");
     assert!(entry.meta.bytes.unwrap_or(0) > 0, "a size was measured");
+
+    // **The literal, so a moved identity is visible.** `ops-I4` hashes the facts and
+    // nothing else, so no change to *where* the bytes sit may move it — which is what
+    // makes this the assertion that a flush is a flush. It was this number before
+    // `seal` learned to flush memtables and it is this number after; a change here is
+    // a change to what the database says, not to how it is stored.
+    assert_eq!(
+        fingerprint, 0xbd38b7d3971a1c5d,
+        "the sealed identity moved: a storage change altered what the facts hash to"
+    );
 }
 
 /// **Two front doors, one implementation.** A database sealed through a handle this
@@ -545,6 +555,228 @@ fn sealing_merges_every_tree_into_one_table() {
     assert!(
         after.iter().all(|count| *count <= 1),
         "a sealed database still has a tree spread across tables: {after:?}"
+    );
+}
+
+/// **A sealed database's data is in its tables.**
+///
+/// `seal` called `persist` and `compact` and neither touches a memtable, so whatever was
+/// still resident at `finish` was never written to a table: it stayed only in the
+/// journal, invisible to the compaction that followed, replayed into memory at every
+/// open, and served from a recovered memtable rather than the merged tables sealing was
+/// supposed to leave. `compact`'s own doc prices a re-seek into an unmerged tree at up
+/// to 180× one into a merged tree.
+///
+/// **This is the guard `sealing_merges_every_tree_into_one_table` could not be.** That
+/// test flushes by hand before sealing — honestly, and its precondition says so — which
+/// is exactly why it never noticed that the production path did not.
+///
+/// No manual flush anywhere here. That is the whole test.
+#[test]
+fn sealing_leaves_the_data_in_tables() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("code", &schema).expect("it creates");
+    let (_entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
+
+    write(&db, &schema, CONTENT);
+    for batch in BATCHES {
+        write(&db, &schema, batch);
+    }
+
+    // The state the fix is about: everything written, nothing flushed, every tree still
+    // empty of tables. Asserted so that a backend which started flushing on its own
+    // would make this test say so rather than pass for the wrong reason.
+    let before = db.table_counts();
+    assert!(
+        before.iter().all(|count| *count == 0),
+        "a tree was flushed before sealing, so this test no longer sets up the state \
+         the fix is about: {before:?}"
+    );
+    drop(db);
+
+    catalog
+        .finish(&Selector::of("code"), false)
+        .expect("it seals");
+
+    let (_entry, db) = catalog
+        .open_read(&Selector::of("code"))
+        .expect("it reopens");
+
+    let after = db.table_counts();
+    assert!(
+        after.iter().all(|count| *count >= 1),
+        "a sealed database has a tree with no table at all — its data is only in the \
+         journal: {after:?}"
+    );
+}
+
+/// **A sealed artifact is its tables**, with a stated bound rather than an impression.
+///
+/// The number is fjall's own — `journal_disk_space` and `journal_count` — so this asserts
+/// on what the backend believes it is holding rather than on what a directory walk
+/// happened to catch. A journal is reclaimed inside fjall's own flush worker, above a
+/// threshold of its own, with no public API to force it; so a *bounded* residual is
+/// expected and a large one is the finding. At test scale the tables are tiny, so the
+/// bound is stated in bytes rather than as a ratio — a ratio against a 4 kB table says
+/// nothing.
+///
+/// This is the `ops-I2`/`ops-I3` guard that table in `invariants.md` never had.
+#[test]
+fn a_sealed_artifact_is_its_tables() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("code", &schema).expect("it creates");
+    let (_entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
+
+    write(&db, &schema, CONTENT);
+    for batch in BATCHES {
+        write(&db, &schema, batch);
+    }
+    drop(db);
+
+    catalog
+        .finish(&Selector::of("code"), false)
+        .expect("it seals");
+
+    let (_entry, db) = catalog
+        .open_read(&Selector::of("code"))
+        .expect("it reopens");
+
+    let journals = db.journal_count();
+    let journal_bytes = db.journal_bytes().expect("the journals size");
+
+    // One active journal is what a reopened database always holds; more than a couple
+    // means sealed journals are accumulating, which is the shape the fix is about.
+    assert!(
+        journals <= 2,
+        "a sealed database is holding {journals} journals"
+    );
+
+    // **A test-scale bound, and the real-scale residual is not one.** At this corpus the
+    // journals are kilobytes; at 520,000 facts they are 73 MB against 17 MB of tables,
+    // because fjall reclaims a sealed journal only inside its own flush worker, above a
+    // hardcoded 64 MB threshold, with no public API to force it (`bench/FINDINGS.md`
+    // §20). So what this asserts is that *this* size of database does not accumulate
+    // them — which is worth having, and is not the same claim as the artifact being
+    // tables alone.
+    const BOUND: u64 = 8 * 1024 * 1024;
+    assert!(
+        journal_bytes < BOUND,
+        "a sealed database is holding {journal_bytes} bytes of journal at test scale, \
+         over the {BOUND}-byte bound"
+    );
+}
+
+/// **What is readable does not change, only where it is read from.**
+///
+/// The flush moves bytes from a memtable into a table and the merge rewrites the
+/// tables; both happen underneath `ops-I4`, which is a promise about *content*. So the
+/// facts a reopened database yields must be the facts it yielded before sealing, one
+/// for one — an identity that agreed while a fact had gone missing is an identity over
+/// a walk that found nothing, which is why the count is asserted beside it.
+#[test]
+fn a_sealed_database_reopens_and_answers_identically() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("code", &schema).expect("it creates");
+    let (entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
+
+    write(&db, &schema, CONTENT);
+    for batch in BATCHES {
+        write(&db, &schema, batch);
+    }
+
+    let before =
+        identity::compute(&db, &schema, entry.meta.schema_fingerprint).expect("it computes");
+    drop(db);
+
+    let sealed = catalog
+        .finish(&Selector::of("code"), false)
+        .expect("it seals");
+
+    assert_eq!(sealed.fingerprint, before.fingerprint);
+    assert_eq!(sealed.facts, before.facts);
+
+    // Reopened, from tables this time rather than from a replayed journal.
+    let (entry, db) = catalog
+        .open_read(&Selector::of("code"))
+        .expect("it reopens");
+    let after =
+        identity::compute(&db, &schema, entry.meta.schema_fingerprint).expect("it recomputes");
+
+    assert_eq!(after.fingerprint, before.fingerprint);
+    assert_eq!(after.facts, before.facts, "a fact went missing");
+    assert!(after.facts > 0, "nothing was written, so nothing is proved");
+}
+
+/// **Where the artifact's size settles, measured at three points.**
+///
+/// The reporter of #43 saw `FJORD_META.bytes` and `du` disagree by 2.6×, and read that
+/// as `bytes` being a logical fact count. It is not — `record()` calls
+/// `identity::directory_size`, which sums every file under the instance directory,
+/// journals included, *at the moment of sealing*. Both numbers are on-disk numbers and
+/// they should agree, so a discrepancy is a third thing: most likely a journal fjall
+/// reclaimed on a later open, after the size was already written down.
+///
+/// So this measures the journal at three points — after sealing, after one reopen, and
+/// after a second — and asserts what it finds rather than assuming the benign answer.
+/// If a reopen does reclaim, then `FJORD_META.bytes` **over-reports** a sealed artifact,
+/// and the field's meaning is "at seal" rather than "for ever".
+#[test]
+fn what_a_sealed_artifact_costs_is_settled_at_seal() {
+    let (_dir, catalog) = catalog();
+    let schema = schema();
+
+    catalog.create("code", &schema).expect("it creates");
+    let (_entry, db) = catalog.open_write(&Selector::of("code")).expect("it opens");
+    write(&db, &schema, CONTENT);
+    for batch in BATCHES {
+        write(&db, &schema, batch);
+    }
+    drop(db);
+
+    catalog
+        .finish(&Selector::of("code"), false)
+        .expect("it seals");
+
+    let recorded = catalog
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it is found")
+        .meta
+        .bytes
+        .expect("a size was recorded");
+
+    let journal_at = |catalog: &Catalog| {
+        let (_entry, db) = catalog
+            .open_read(&Selector::of("code"))
+            .expect("it reopens");
+        (db.journal_count(), db.journal_bytes().expect("it sizes"))
+    };
+
+    let first = journal_at(&catalog);
+    let second = journal_at(&catalog);
+
+    // **A reopen is not allowed to grow the artifact.** Whatever fjall does with a
+    // sealed journal, opening a Complete database read-only must not add to it — that
+    // is what makes a sealed directory something a packaging step can copy.
+    assert!(
+        second.1 <= first.1,
+        "reopening a sealed database grew its journals: {} then {} bytes",
+        first.1,
+        second.1
+    );
+
+    // And the recorded size is a real measurement of the directory, so it covers at
+    // least the journals the backend still admits to holding.
+    assert!(
+        recorded >= first.1,
+        "`FJORD_META.bytes` ({recorded}) is under the journal bytes alone ({}), so it \
+         is not a measurement of the directory",
+        first.1
     );
 }
 

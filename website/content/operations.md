@@ -70,7 +70,9 @@ key-to-fact bijection, and it now has a mechanism of its own — see
     │     name, instance, status, format version, schema fingerprint,
     │     content fingerprint (at finish), counts, size, created_at
     ├── schema/                    # the embedded canonical schema
-    └── <storage files>            # keys.<id> / entities.<id> per predicate
+    ├── keyspaces/<n>/tables/      # the LSM tables — where a sealed database's data is
+    ├── <n>.jnl                    # the write-ahead journal, and a residual after sealing
+    └── lock, version
 ```
 
 The sidecar is the fast enumeration path; the embedded schema copy is the durable fallback **and**
@@ -78,6 +80,32 @@ the source a server reads a database's schema back from. The field list is fixed
 has no "externally modified" flag — there is no such concept (`ops-I6`) — and no provenance field
 yet. Both are additions the versioned format can take later, which is what the format version is
 for.
+
+### What a `Complete` directory contains
+
+`finish` runs, in this order: **fsync, flush every memtable to a table, merge, fsync again,
+compute the identity, flip the status.** The flush is what makes the claim on this section true —
+before it existed, whatever ingest had left resident was written nowhere but the journal, and a
+sealed database served it from a memtable recovered at every open. 520,000 facts came to 1.2 MB
+of tables and 73 MB of journal (`bench/FINDINGS.md` §20).
+
+So after sealing:
+
+- **the data is in `keyspaces/<n>/tables/`**, one table per tree where the merge could manage it;
+- **a journal residual remains**, and it is not small. fjall reclaims a sealed journal only
+  inside its own flush worker, above a threshold of its own, and exposes no way to ask; so the
+  directory is bigger after this change than before it — 21% on the corpus above. That is the
+  trade: a table-backed read path against a larger artifact, and the read path is the one paid
+  for on every query forever (`compact` prices a re-seek into an unmerged tree at up to 180×).
+- **`FJORD_META.bytes` is the on-disk size of the instance directory at the moment of sealing**,
+  journal included. Not a logical fact count, and not a promise about later: it is measured after
+  the final fsync, which is the only moment the number is both honest and stable.
+
+:::warn Never remove a `*.jnl` from a sealed directory
+Not as a tidy-up and not behind a flag. Recovery is the backend's, and a database whose journal
+was deleted from underneath it has an undefined next open. If the residual matters for your
+packaging, copy the tables and re-ingest, or wait on the upstream request §20 names.
+:::
 
 ## Running a server
 

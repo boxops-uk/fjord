@@ -823,6 +823,19 @@ fn seal(
     // identity computed here describes bytes that survive a power loss.
     db.persist()?;
 
+    // **Then flush, because `persist` and `compact` both skip a memtable.** `persist`
+    // fsyncs the write-ahead journal; `compact` merges already-flushed segments. So
+    // whatever ingest left resident was never written to a table at all: it stayed only
+    // in the journal, invisible to the merge below, replayed into memory at every open,
+    // and served from a recovered memtable rather than the merged tables this function
+    // exists to leave behind — which `compact`'s own doc prices at up to 180× on a
+    // re-seek. Measured before this line existed: 208,000 facts came to 60 kB of tables
+    // against 29 MB of journal.
+    //
+    // Ordered before `compact` so the merge sees what the flush wrote, and the tree that
+    // ships is the tree the identity is computed over.
+    db.flush_to_tables()?;
+
     // Then merge, and merge *here* — before the walk, so the identity is computed over
     // the tree that will actually be shipped, and before `record`, so the byte count it
     // writes down is the artifact's rather than the ingest's. What this reclaims is
@@ -834,6 +847,11 @@ fn seal(
     // Not conditional on `allow_zero_facts`: an empty database has nothing to merge and
     // merging it costs nothing, so the check stays where it reads best.
     db.compact()?;
+
+    // **Durable again, and the reason is `ops-I3` exactly as it reads.** The flush and
+    // the merge both wrote files; an identity computed over bytes a power loss could
+    // still take back would describe a database that might not exist.
+    db.persist()?;
 
     let identity = identity::compute(db, schema, entry.meta.schema_fingerprint)?;
 

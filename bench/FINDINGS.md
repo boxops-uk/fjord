@@ -1366,6 +1366,74 @@ A shorter list than either of these is a regression.
 
 ---
 
+## 20. A sealed database's data was in its journal, not its tables — and the fix makes the artifact *bigger*
+
+`Catalog::seal` called `persist` then `compact`. `persist` fsyncs the write-ahead journal;
+`compact` merges already-flushed segments. **Neither touches a memtable**, so whatever ingest
+left resident was never written to a table at all: it stayed only in the journal, invisible to
+the merge that followed, and served from a recovered memtable rather than the merged tables
+sealing exists to leave behind.
+
+The guard that should have caught it,
+`sealing_merges_every_tree_into_one_table`, calls `flush_to_tables()` **itself** before sealing
+— honestly, with an asserted precondition saying why. What it could not see is that the
+production path never creates the state it sets up. That is the class AGENTS.md warns about, and
+it is worth reading beside the fix.
+
+### Measured, same corpus both ways
+
+520,000 facts (20,000 files × 5 declarations, `loadgen`), release build, one machine:
+
+| | seal without the flush | seal with it |
+|---|---|---|
+| tables after `finish` | **1,176 kB** | **17,120 kB** |
+| journal after `finish` | 73,376 kB | 73,376 kB |
+| `du` of the instance | 74,572 kB | 90,516 kB |
+| `FJORD_META.bytes` | 75,230,038 | 91,513,383 |
+| `finish` | 4.97 s | 9.26 s |
+| after a reopen | unchanged | unchanged |
+
+Read the first row: **520,000 facts came to 1.2 MB of tables.** Everything else was journal.
+
+### Three things this settles, one of them against the prediction
+
+1. **The flush is real and it is not free.** `finish` goes from 4.97 s to 9.26 s — 1.86× — and
+   writes 16 MB it did not write before. `finish` is the operation whose whole job is to say
+   *this is finished*, so the cost is acceptable; it should be public.
+2. **The journal is not reclaimed, and the artifact therefore grows** — 74 MB → 90 MB, +21%. The
+   plan predicted one of three outcomes and this is the middle one: fjall reclaims sealed
+   journals only inside `JournalManager::maintenance`, reached only from its flush worker and
+   gated on a hardcoded 64 MB journal position, with **no public API to force it**. So the
+   options are an upstream request for a `gc()`/`seal_journals()` or a documented residual, and
+   the residual here is material rather than incidental — 73 MB of journal against 17 MB of
+   tables.
+3. **A reopen reclaims nothing**, which contradicts the plan's own guess at #43's 2.6×
+   discrepancy. `FJORD_META.bytes` and `du` agree to within block rounding both before and after
+   sealing, and opening the sealed database read-only moves neither. So `bytes` is an honest
+   on-disk measurement at the moment of sealing and the reporter's 2.6× is **not** explained by
+   reclamation-on-open. What is left as the likely cause is a `du` taken after some later
+   write-mode open crossed fjall's own threshold — which this measurement cannot reach, and which
+   is worth saying rather than guessing at twice.
+
+### What it does *not* touch: the read numbers already published
+
+`ops-I4` hashes the facts, so no change to where bytes sit may move an identity — and none did:
+the test corpus seals to `0xbd38b7d3971a1c5d` on both paths, which is what makes a flush a flush
+rather than a rewrite.
+
+For the read-path sections the question is whether their databases were sealed unflushed, and the
+answer is **no, and §1 says so in its own table**: `src.File` 1 table, `src.Line` 4, `src.Ref` 5.
+A database whose per-tree memtables exceed their own size limit flushes during ingest without
+being asked, and at 18M facts across 44 keyspaces they do repeatedly. So §1, §2, §6 and §11 were
+measured against tables and their figures stand.
+
+The exposure is the other way round from the obvious guess: it scales with **per-tree** volume,
+not total. Half a million facts spread over 44 keyspaces leaves almost everything resident,
+which is why the corpus above shows 1.2 MB of tables and 73 MB of journal. A *small* index is
+where this bit hardest.
+
+---
+
 ## What is still open
 
 - **Finding 7's number, after its fix.** The per-query retention had a cause, the cause has a

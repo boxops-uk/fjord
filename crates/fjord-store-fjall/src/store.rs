@@ -1299,13 +1299,56 @@ impl FjallDb {
             .collect()
     }
 
+    /// How many journal files the backend is holding, and what they cost on disk.
+    ///
+    /// fjall's own numbers rather than a walk of the directory, so a guard about the
+    /// artifact's shape asserts on what the backend believes rather than on what a
+    /// `du` happened to catch. A journal is reclaimed inside fjall's flush worker and
+    /// only above a threshold of its own, so a residual here is expected and a *large*
+    /// one is the finding.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the backend cannot size its journals.
+    pub fn journal_bytes(&self) -> Result<u64, StoreError> {
+        self.db.journal_disk_space().map_err(StoreError::backend)
+    }
+
+    /// How many journal files there are.
+    #[must_use]
+    pub fn journal_count(&self) -> usize {
+        self.db.journal_count()
+    }
+
+    /// What the backend says the whole database costs on disk.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the backend cannot size itself.
+    pub fn disk_bytes(&self) -> Result<u64, StoreError> {
+        self.db.disk_space().map_err(StoreError::backend)
+    }
+
     /// Turn whatever is in memory into a table, per tree.
     ///
-    /// **A test fixture, and it exists to make a guard non-vacuous.** At the sizes a
-    /// test writes, every fact lives in one memtable and no tree ever has two tables
-    /// to merge — so a compaction guard would pass having compacted nothing. This is
-    /// how a test states "there were three tables here" as a fact rather than a hope.
-    #[cfg(any(test, feature = "proptest"))]
+    /// **What `finish` calls, and what it did not.** `persist` fsyncs the write-ahead
+    /// journal and `compact` merges already-flushed segments — neither touches a
+    /// memtable — so whatever was still resident when a database was sealed was never
+    /// written to a table at all. It stayed only in the journal: invisible to the
+    /// compaction that followed, replayed into memory at every open, and served from a
+    /// recovered memtable rather than the merged tables the seal was supposed to leave.
+    /// Measured before the fix: 208,000 facts came to 60 kB of tables and 29 MB of
+    /// journal.
+    ///
+    /// Also a test fixture, and it was one first. At the sizes a test writes every fact
+    /// lives in one memtable and no tree ever has two tables to merge, so a compaction
+    /// guard would pass having compacted nothing; a test calls this to state "there were
+    /// three tables here" as a fact rather than a hope. That the *production* path never
+    /// created the state those tests set up is exactly how this survived.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if a rotation fails.
     pub fn flush_to_tables(&self) -> Result<(), StoreError> {
         let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
 
