@@ -19,7 +19,37 @@ internal sealed class ProjectInfo(string path)
     /// <summary>The project file, relative to the index root, with forward slashes.</summary>
     public string Path { get; } = path;
 
-    public FjordFact Fact { get; } = CodeIndex.ProjectFact(path);
+    private FjordFact? _fact;
+
+    /// <summary>
+    /// This project as an <c>msbuild.Project</c> fact — its file, with everything MSBuild
+    /// evaluated on the value side.
+    /// </summary>
+    /// <remarks>
+    /// <b>Built on first read, which must be after refinement.</b> The value side carries
+    /// what a design-time build resolved, so a fact built before <c>Refine</c> would cache
+    /// what the XML could only approximate. Nothing reads it during loading; the walk is
+    /// the first caller.
+    /// </remarks>
+    public FjordFact Fact => _fact ??= DotnetIndex.ProjectFact(
+        DotnetIndex.FileFact(Path),
+        platformTarget: PlatformTarget,
+        // One target framework, or none: a multi-targeting project resolves several and
+        // `msbuild.ProjectCompilation` is what carries the crossing per framework.
+        targetFramework: Frameworks.Count == 1 ? Frameworks[0] : null,
+        sdk: Sdk,
+        outputType: OutputType,
+        assemblyName: Assembly,
+        rootNamespace: RootNamespace);
+
+    /// <summary>What MSBuild evaluated, where a design-time build answered.</summary>
+    public string? PlatformTarget { get; set; }
+
+    public string? Sdk { get; set; }
+
+    public string? OutputType { get; set; }
+
+    public string? RootNamespace { get; set; }
 
     /// <summary>
     /// The assembly this produces — MSBuild's own default until something says
@@ -191,10 +221,10 @@ internal sealed class ProjectIndex
     {
         foreach (var project in _byPath.Values)
         {
-            sink.Add(CodeIndex.Project, project.Fact);
+            sink.Add(DotnetIndex.Project, project.Fact);
 
-            var assembly = CodeIndex.AssemblyFact(project.Assembly);
-            sink.Add(CodeIndex.Assembly, assembly);
+            var assembly = DotnetIndex.AssemblyFact(project.Assembly);
+            sink.Add(DotnetIndex.Assembly, assembly);
 
             // A project that names no framework still compiles into an assembly, and the
             // compilation is the only fact that says which — so it gets one, with the
@@ -203,8 +233,15 @@ internal sealed class ProjectIndex
             foreach (var framework in project.Frameworks.Count > 0 ? project.Frameworks : [""])
             {
                 sink.Add(
-                    CodeIndex.Compilation,
-                    CodeIndex.CompilationFact(assembly, framework, project.Fact));
+                    DotnetIndex.Compilation,
+                    DotnetIndex.CompilationFact(assembly, framework, project.Fact));
+
+                // The same crossing from the project's side, for the panel that opens on
+                // a project. A second predicate rather than a sort, because a predicate
+                // leads with one field.
+                sink.Add(
+                    DotnetIndex.ProjectCompilation,
+                    DotnetIndex.ProjectCompilationFact(project.Fact, framework, assembly));
             }
 
             foreach (var path in project.ProjectRefs)
@@ -213,19 +250,39 @@ internal sealed class ProjectIndex
                 // repository, or one `--source` did not reach. The target has no facts
                 // here, and an edge to a project nothing else mentions is an edge to
                 // nothing.
-                if (_byPath.TryGetValue(path, out var target))
+                if (!_byPath.TryGetValue(path, out var target))
                 {
-                    sink.Add(
-                        CodeIndex.ProjectRef,
-                        CodeIndex.ProjectRefFact(project.Fact, target.Fact));
+                    continue;
                 }
+
+                // **The edge between two projects, in both directions.** The old build
+                // layer had neither: it carried a reference to a project keyed on a path
+                // string, and no reverse at all — so "who depends on this" was a scan.
+                sink.Add(
+                    DotnetIndex.ProjectReference,
+                    DotnetIndex.ProjectReferenceFact(project.Fact, target.Fact));
+                sink.Add(
+                    DotnetIndex.ProjectReferencedBy,
+                    DotnetIndex.ProjectReferencedByFact(target.Fact, project.Fact));
             }
 
             foreach (var (name, version) in project.Packages)
             {
-                var package = CodeIndex.PackageFact(name, version);
-                sink.Add(CodeIndex.Package, package);
-                sink.Add(CodeIndex.PackageRef, CodeIndex.PackageRefFact(package, project.Fact));
+                var package = DotnetIndex.PackageFact(name, version);
+                sink.Add(DotnetIndex.Package, package);
+
+                // **`range` is what the file said and `Package.version` is the identity.**
+                // This producer has one number for both: the declared version, after
+                // central package management has had its say. The resolved version needs
+                // the assets file, which is a restore this walk does not read — so the
+                // range is the same string, and improving `Package.version` later will not
+                // disturb it.
+                sink.Add(
+                    DotnetIndex.PackageReference,
+                    DotnetIndex.PackageReferenceFact(project.Fact, package, version));
+                sink.Add(
+                    DotnetIndex.PackageDependent,
+                    DotnetIndex.PackageDependentFact(package, project.Fact));
             }
         }
     }
@@ -254,6 +311,16 @@ internal sealed class ProjectIndex
         {
             project.Assembly = assembly;
         }
+
+        // The rest of `msbuild.Project`'s value side. Each stays null where MSBuild left
+        // it unset, which is a `nothing` rather than an empty string — the schema's six
+        // optionals exist because "unset" and "empty" are different answers.
+        project.PlatformTarget = Property(result, "PlatformTarget");
+        project.Sdk = Property(result, "UsingMicrosoftNETSdk") == "true"
+            ? Property(result, "MSBuildProjectSdk") ?? "Microsoft.NET.Sdk"
+            : Property(result, "MSBuildProjectSdk");
+        project.OutputType = Property(result, "OutputType");
+        project.RootNamespace = Property(result, "RootNamespace");
 
         if (result.PackageReferences is { Count: > 0 } packages)
         {

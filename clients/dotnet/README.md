@@ -127,10 +127,12 @@ step 7. `scripts/flag-day.sh regen` does the parts a machine can.
 
 1. **Edit `schemas/code.sigla`.**
 2. **Read the new number** — `fjord schema check schemas/code.sigla`.
-3. **Paste it into both C# constants**: `Boxops.Fjord.Indexer/CodeIndex.cs` and
-   `Boxops.Fjord.Demo/Program.cs`. Two, restated independently on purpose;
-   `the_dotnet_clients_carry_the_fingerprint_the_schema_has` checks both, so a missed one
-   is a red suite rather than a refused handshake at somebody's site.
+3. **Paste it into the constant that states *that* schema.** The two clients are no
+   longer written against one schema: `Boxops.Fjord.Demo/Program.cs` states
+   `code.sigla` and `Boxops.Fjord.Indexer/DotnetIndex.cs` states `dotnet.sigla`, each
+   restated independently on purpose.
+   `the_dotnet_clients_carry_the_fingerprint_the_schema_has` checks each against its own,
+   so a missed one is a red suite rather than a refused handshake at somebody's site.
 4. **Regenerate the goldens** — `./clients/dotnet/emit-golden.sh`. This needs a .NET SDK,
    and it is the step most often forgotten because the Rust test that depends on it
    *looks* like a Rust problem.

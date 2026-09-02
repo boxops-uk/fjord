@@ -161,7 +161,7 @@ public sealed class SourceLayerTests
         foreach (var path in paths)
         {
             var name = SourceLayer.LanguageName(path);
-            Assert.Contains(name, CodeIndex.LanguageNames);
+            Assert.Contains(name, DotnetIndex.LanguageNames);
         }
     }
 
@@ -178,7 +178,7 @@ public sealed class SourceLayerTests
     public void An_unlisted_extension_is_carried_rather_than_dropped(string path, string expected)
     {
         Assert.Equal(expected, SourceLayer.LanguageName(path));
-        Assert.DoesNotContain(SourceLayer.LanguageName(path), CodeIndex.LanguageNames);
+        Assert.DoesNotContain(SourceLayer.LanguageName(path), DotnetIndex.LanguageNames);
     }
 
     [Theory]

@@ -165,34 +165,38 @@ fn moving_a_declaration_into_an_imported_file_moves_no_fingerprint() {
 /// golden exists to avoid.
 ///
 /// So it is a grep rather than a build. Two constants, restated independently on purpose
-/// — `CodeIndex.cs`'s is what the indexer sends and `Program.cs`'s is what the demo sends
+/// — `DotnetIndex.cs`'s is what the indexer sends and `Program.cs`'s is what the demo sends
 /// — and both are checked, because "we updated the client" has meant one of them before.
 #[test]
 fn the_dotnet_clients_carry_the_fingerprint_the_schema_has() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
-    let resolved = resolve::resolve(
-        &std::path::PathBuf::from(root).join("schemas/code.sigla"),
-        &[std::path::PathBuf::from(root).join("schemas")],
-    )
-    .expect("the shipped schema resolves");
-    let actual = format!("0x{:016x}", fingerprint::of(&resolved.schema));
-
-    // Where each constant lives, and the line that declares it. Named rather than
-    // globbed: a new file carrying a third copy should be a decision, and adding it here
-    // is how that decision gets made.
+    // **Which schema each client is written against.** They are no longer the same one:
+    // the indexer writes `dotnet.sigla` and the demo still writes `code.sigla`, which is
+    // the state the switch leaves the tree in until `code.sigla` is deleted. Named rather
+    // than globbed: a new file carrying a third copy should be a decision, and adding it
+    // here is how that decision gets made.
     let carried = [
         (
-            "clients/dotnet/Boxops.Fjord.Indexer/CodeIndex.cs",
+            "schemas/dotnet.sigla",
+            "clients/dotnet/Boxops.Fjord.Indexer/DotnetIndex.cs",
             "public const ulong SchemaFingerprint = ",
         ),
         (
+            "schemas/code.sigla",
             "clients/dotnet/Boxops.Fjord.Demo/Program.cs",
             "const ulong SchemaFingerprint = ",
         ),
     ];
 
-    for (file, declaration) in carried {
+    for (schema, file, declaration) in carried {
+        let resolved = resolve::resolve(
+            &std::path::PathBuf::from(root).join(schema),
+            &[std::path::PathBuf::from(root).join("schemas")],
+        )
+        .unwrap_or_else(|reason| panic!("{schema} does not resolve:\n{reason}"));
+        let actual = format!("0x{:016x}", fingerprint::of(&resolved.schema));
+
         let source = std::fs::read_to_string(std::path::PathBuf::from(root).join(file))
             .unwrap_or_else(|err| panic!("{file}: {err}"));
 
@@ -214,10 +218,10 @@ fn the_dotnet_clients_carry_the_fingerprint_the_schema_has() {
 
         assert_eq!(
             found[0], actual,
-            "{file} carries a stale fingerprint. `schemas/code.sigla` is now {actual}, \
-             so this client would be refused at the handshake. Re-paste it and follow \
-             the rest of `clients/dotnet/README.md`'s flag-day checklist — the goldens \
-             do not regenerate themselves."
+            "{file} carries a stale fingerprint. `{schema}` is now {actual}, so this \
+             client would be refused at the handshake. Re-paste it and follow the rest \
+             of `clients/dotnet/README.md`'s flag-day checklist — the goldens do not \
+             regenerate themselves."
         );
     }
 }

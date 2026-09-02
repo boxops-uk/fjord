@@ -47,7 +47,7 @@ public sealed class SourceLayerDatabaseTests
     [Fact]
     public void Every_source_layer_predicate_answers_against_an_indexed_database()
     {
-        using var server = FjordServer.Serving("code", "code.sigla");
+        using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
         var directory = Directory.CreateTempSubdirectory("fjord-source-db");
 
         try
@@ -57,7 +57,7 @@ public sealed class SourceLayerDatabaseTests
 
             Index(directory.FullName, path, server.Socket);
 
-            using var connection = FjordConnection.Connect(server.Socket, "code", CodeIndex.Schema);
+            using var connection = FjordConnection.Connect(server.Socket, "dotnet", DotnetIndex.Schema);
 
             // One question per predicate. Each asserts rows, because "the query compiles"
             // is not the claim — the claim is that the producer filled it.
@@ -119,9 +119,20 @@ public sealed class SourceLayerDatabaseTests
         };
 
         using var workspace = new AdhocWorkspace();
-        var project = workspace
-            .AddProject("Fixture", LanguageNames.CSharp)
-            .AddMetadataReference(MetadataReference.CreateFromFile(typeof(object).Assembly.Location));
+
+        // **The references have to be on the project the workspace holds.**
+        // `AddProject(name, language).AddMetadataReference(...)` returns a *detached*
+        // project in a new solution, so the document then lands on a project with no
+        // references — every type is an error type, `csharp.AType` cannot express one, and
+        // the walk correctly drops every member while still writing the class. Which is
+        // what `Inexpressible` is for, and why this test asserts it is zero.
+        var project = workspace.AddProject(Microsoft.CodeAnalysis.ProjectInfo.Create(
+            ProjectId.CreateNewId(),
+            VersionStamp.Create(),
+            name: "Fixture",
+            assemblyName: "Fixture",
+            language: LanguageNames.CSharp,
+            metadataReferences: [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)]));
         // `DocumentInfo` rather than `AddDocument(id, name, text)`, because the walk keys
         // everything on `SyntaxTree.FilePath` and the simple overload leaves it empty — the
         // file would then be outside the root and silently skipped.
@@ -136,12 +147,16 @@ public sealed class SourceLayerDatabaseTests
 
         var projects = ProjectIndex.Build(root, root, [], TextWriter.Null);
 
-        using var writing = FjordConnection.Connect(socket, "code", CodeIndex.Schema);
+        using var writing = FjordConnection.Connect(socket, "dotnet", DotnetIndex.Schema);
         using var sink = new FactSink(options, [new FjordTarget(writing)]);
 
-        new Boxops.Fjord.Indexer.Indexer(options, sink, root, projects)
-            .Index(compilation, document.Project);
+        var indexer = new Boxops.Fjord.Indexer.Indexer(options, sink, root, projects);
+        indexer.Index(compilation, document.Project);
 
         sink.Drain();
+
+        // A fixture whose references did not load drops every member and indexes the
+        // class alone — which reads as an indexer that works and an index that is empty.
+        Assert.Equal(0, indexer.Inexpressible);
     }
 }

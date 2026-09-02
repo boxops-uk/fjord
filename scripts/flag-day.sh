@@ -49,13 +49,14 @@ fingerprint=$(cargo run -q --bin fjord -- schema check schemas/code.sigla 2>/dev
 echo "    fingerprint $fingerprint"
 
 # ---- 2, 3 · the two constants the .NET clients carry, independently --------
-step "2  the constants in CodeIndex.cs and Demo/Program.cs"
+step "2  the constants the .NET clients carry (DotnetIndex.cs, Demo/Program.cs)"
 if ! cargo test -q -p fjord-cli --test schemas the_dotnet_clients_carry_the_fingerprint \
     >/dev/null 2>&1; then
     cargo test -p fjord-cli --test schemas the_dotnet_clients_carry_the_fingerprint 2>&1 |
         sed -n 's/^.*carries a stale/  carries a stale/p'
     fail "a .NET client carries a stale fingerprint" \
-        "paste $fingerprint into both, then re-run with regen"
+        "each client carries its own schema's number — the indexer writes dotnet.sigla \
+and the demo writes code.sigla; paste the one the failure names, then re-run with regen"
 fi
 
 # ---- 4 · the checked-in golden bytes ---------------------------------------

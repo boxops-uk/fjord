@@ -18,24 +18,24 @@ public class HarnessTests
     [Fact]
     public void A_test_can_start_a_server_write_facts_and_read_them_back()
     {
-        using var server = FjordServer.Serving("code", "code.sigla");
+        using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
 
         using var connection = FjordConnection.Connect(
             server.Socket,
-            "code",
-            CodeIndex.Schema);
+            "dotnet",
+            DotnetIndex.Schema);
 
         // The handshake is the first assertion: the fingerprint this client carries is the
         // one the database holds, or the connection above would already have been refused.
-        Assert.Equal(CodeIndex.SchemaFingerprint, connection.Hello.SchemaFingerprint);
+        Assert.Equal(DotnetIndex.SchemaFingerprint, connection.Hello.SchemaFingerprint);
 
-        var file = CodeIndex.FileFact("src/Parser.cs");
-        var written = connection.Write(CodeIndex.File, [file]);
+        var file = DotnetIndex.FileFact("src/Parser.cs");
+        var written = connection.Write(DotnetIndex.File, [file]);
         Assert.Equal(1UL, written.Created);
 
         // Writing the identical fact again is free — `ops-I5`'s dedup, and the reason a
         // producer keeps no book of what it has already sent.
-        var again = connection.Write(CodeIndex.File, [file]);
+        var again = connection.Write(DotnetIndex.File, [file]);
         Assert.Equal(0UL, again.Created);
         Assert.Equal(1UL, again.Deduped);
 
@@ -51,17 +51,17 @@ public class HarnessTests
     [Fact]
     public void A_client_carrying_the_wrong_fingerprint_is_refused()
     {
-        using var server = FjordServer.Serving("code", "code.sigla");
+        using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
 
-        var stale = new FjordSchema(CodeIndex.Schema.Predicates, CodeIndex.SchemaFingerprint ^ 0xFF);
+        var stale = new FjordSchema(DotnetIndex.Schema.Predicates, DotnetIndex.SchemaFingerprint ^ 0xFF);
 
         // A *server* refusal, not a protocol fault: the frames were well formed and the
         // server declined. The two are different exceptions on purpose.
         var refused = Assert.Throws<FjordServerException>(() =>
-            FjordConnection.Connect(server.Socket, "code", stale));
+            FjordConnection.Connect(server.Socket, "dotnet", stale));
 
         Assert.Contains("schema mismatch", refused.Message, StringComparison.Ordinal);
-        Assert.Contains($"{CodeIndex.SchemaFingerprint:x}", refused.Message, StringComparison.Ordinal);
+        Assert.Contains($"{DotnetIndex.SchemaFingerprint:x}", refused.Message, StringComparison.Ordinal);
     }
 
     /// <summary>

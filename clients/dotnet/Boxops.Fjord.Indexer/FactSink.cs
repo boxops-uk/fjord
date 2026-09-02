@@ -101,14 +101,14 @@ internal sealed class FactSink : IDisposable
     {
         _options = options;
         _emit = options.Emit is null ? null : File.Create(options.Emit);
-        _pending = new List<FjordFact>[CodeIndex.Predicates.Length];
+        _pending = new List<FjordFact>[DotnetIndex.Predicates.Length];
 
-        foreach (var predicate in CodeIndex.Predicates)
+        foreach (var predicate in DotnetIndex.Predicates)
         {
             _pending[predicate] = new List<FjordFact>(options.Batch);
         }
 
-        Facts = new long[CodeIndex.Predicates.Length];
+        Facts = new long[DotnetIndex.Predicates.Length];
 
         var writers = Math.Max(1, targets.Count);
         _queue = new BlockingCollection<(uint, List<FjordFact>)>(QueueDepthPerWriter * writers);
@@ -191,7 +191,7 @@ internal sealed class FactSink : IDisposable
 
     public void FlushAll()
     {
-        foreach (var predicate in CodeIndex.Predicates)
+        foreach (var predicate in DotnetIndex.Predicates)
         {
             Flush(predicate);
         }
@@ -242,7 +242,7 @@ internal sealed class FactSink : IDisposable
                 // run hands the facts to the client, which encodes them once on the way out.
                 if (_emit is not null || _options.DryRun)
                 {
-                    var block = Block.Encode(CodeIndex.Schema, predicate, facts);
+                    var block = Block.Encode(DotnetIndex.Schema, predicate, facts);
                     Interlocked.Add(ref _bytes, block.Length);
 
                     // Only ever one writer when emitting — see `Program.Connect` — so the

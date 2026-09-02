@@ -224,10 +224,46 @@ and `PackageReference`, `Loader.cs` wires the reference graph by `ProjectId`. Th
 plus the new `{ file }` identity, and it is the natural companion to **R8b**, which moves
 `ProjectInfo.Fact` and `ProjectIndex.Emit` behind an emitter.
 
-**Blocked on S5a**, like S3 and S4: `msbuild` is not in the producer's schema until the switch.
+**Landed with the switch.** Every reverse question is its own predicate and both project-graph
+answers `code.sigla` could not give are asserted: an edge **between two projects**, in both
+directions, and one project file reaching one project. `msbuild.Project`'s value side is six
+optionals, so a field MSBuild left unset is `nothing` rather than the empty string — the two are
+different answers, and a design-time build is what fills `sdk`, `outputType`, `platformTarget` and
+`rootNamespace`.
+
+One thing is approximated and says so at the code: **`Package.version` and `PackageReference.range`
+are the same string.** The schema wants the resolved version in the identity and the declared range
+beside it; this producer has one number, the declared version after central package management, and
+the resolved one needs the assets file a design-time build does not read. Improving the identity
+later will not disturb the range.
 
 **Gate.** Two evaluations of one `.csproj` reach one project (already a test, W9); the reference
 graph has edges between two projects, which `code.sigla`'s build layer never had.
+
+### The switch — what it moved, and what it left
+
+**The indexer targets `dotnet.sigla`, and `code.sigla`'s emission is gone**, both-models window
+skipped. `CodeIndex` is deleted; the demo keeps `code.sigla` and its own statement of it, which is
+what keeps `golden/blocks.txt` and `byte_identical_with_dotnet.rs` pinning the codec through the
+move. The two clients are therefore written against *different* schemas now, and
+`the_dotnet_clients_carry_the_fingerprint_the_schema_has` was re-cut to check each against its own —
+which also gives `DotnetIndex`'s fingerprint its first mechanical guard.
+
+**`--glean-out` refuses rather than lying.** `fjbench.angle` describes `code.sigla`'s shapes and the
+walk now writes `dotnet.sigla`'s, so the translation would emit facts Glean cannot load, silently,
+into a directory somebody would then measure. R7 re-establishes it against the new set; the
+comparison it exists for is invalidated by the schema move regardless (risk 8).
+
+**Still owed on `csharp`, and each for a stated reason:**
+
+| Predicate | Why not yet |
+|---|---|
+| `Local` | deliberate. SCIP models a local as an occurrence ordinal that moves when the file is edited, and `codemarkup.FileLocalXRef` answers a file-local jump span to span — so a local needs no global identity. W15 asked whether one is worth emitting at all; this is the answer until a consumer wants otherwise |
+| `MethodInvocationLocation`, `MemberAccessLocation`, `ObjectCreationLocation`, `TypeLocation` | Glean's per-kind xref facts. `EntityXRef`/`EntityRef` already answer "what is at this position" over the `Definition` union, which is the unified pair those three predate. They are additive and land with S4, where `codemarkup` needs the same spans |
+| `Implements`, `TypeTypeParameter`, `MethodTypeParameter`, `PropertyParameter` | written by `CsharpEntities.Edges`, which the walk calls per declaration — so they have facts wherever the fixture has the shape |
+
+`bench.sh` and `loadgen` are untouched: they generate synthetic `code.sigla` facts and never run the
+indexer, so the benchmark corpus is re-shaped in S5b rather than here.
 
 ### S3 — `csharp.*`
 

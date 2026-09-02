@@ -41,7 +41,7 @@ internal static class Program
 
         Console.WriteLine($"indexing {options.Source}");
         Console.WriteLine($"  paths relative to {root}");
-        Console.WriteLine($"  schema fingerprint {CodeIndex.Schema.Fingerprint:x16}");
+        Console.WriteLine($"  schema fingerprint {DotnetIndex.Schema.Fingerprint:x16}");
 
         var loading = Stopwatch.StartNew();
         LoadedSolution solution;
@@ -203,7 +203,7 @@ internal static class Program
         return
         [
             .. Enumerable.Range(0, options.Writers).Select(
-                IBlockTarget (writer) => new GleanTarget(CodeIndex.Schema, options.GleanOut, writer)),
+                IBlockTarget (writer) => new GleanTarget(DotnetIndex.Schema, options.GleanOut, writer)),
         ];
     }
 
@@ -247,7 +247,7 @@ internal static class Program
         {
             connections.Add(FjordConnection.Connect(
                 options.Address,
-                CodeIndex.Schema,
+                DotnetIndex.Schema,
                 SessionMode.ReadWrite,
                 assertSchema: true));
         }
@@ -260,9 +260,9 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine($"indexed {Count(indexer.Files)} file(s) in {elapsed.TotalSeconds:F1}s");
 
-        foreach (var predicate in CodeIndex.Predicates)
+        foreach (var predicate in DotnetIndex.Predicates)
         {
-            Console.WriteLine($"  {CodeIndex.NameOf(predicate),-20}{Count(sink.Facts[predicate]),14}");
+            Console.WriteLine($"  {DotnetIndex.NameOf(predicate),-32}{Count(sink.Facts[predicate]),14}");
         }
 
         Console.WriteLine($"  {"total",-20}{Count(sink.Total),14} facts in {Count(sink.Blocks)} blocks");
@@ -319,16 +319,19 @@ internal static class Program
         if (indexer.Unattributed > 0)
         {
             // Shared source, or a checkout with no project files under `--source`. Said
-            // out loud because a silent zero for `src.ProjectSource` looks like a bug in
-            // the schema rather than a fact about the repository.
+            // out loud because a silent zero for `msbuild.SourceFileToProject` looks like
+            // a bug in the schema rather than a fact about the repository.
             Console.WriteLine($"  {Count(indexer.Unattributed)} file(s) no project compiles "
                 + "(shared source, or outside every project directory)");
         }
 
-        if (indexer.Conflicts > 0)
+        if (indexer.Inexpressible > 0)
         {
-            Console.WriteLine($"  {Count(indexer.Conflicts)} declaration key(s) reached with two kinds; "
-                + "the first won (see Indexer._kinds)");
+            // A signature mentioning `dynamic` or an unresolved name cannot be keyed —
+            // `csharp.AType` has no alternative for either — so the declaration is
+            // dropped. Said out loud because the alternative is a silently smaller index.
+            Console.WriteLine($"  {Count(indexer.Inexpressible)} declaration(s) dropped: "
+                + "a type this layer cannot express (`dynamic`, or a name that did not resolve)");
         }
     }
 
@@ -350,45 +353,40 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("querying it back");
 
-        Run("every namespace, which is a scan", "N where src.Module {name = N}");
+        Run("every namespace, which is a scan",
+            "N where csharp.Namespace {name = M, containingNamespace = _}; csharp.Name N; M = csharp.Name N");
 
         Run("every assembly the repository builds, which is the build layer",
-            "A where src.Assembly A");
+            "A where msbuild.Assembly {name = A}");
+
+        Run("what a project compiles, which is a seek keyed by the project file",
+            "{project = P, src = S} where "
+            + "F = src.File P; Q = msbuild.Project {file = F}; "
+            + "msbuild.ProjectToSourceFile {project = Q, src = G}; G = src.File S");
 
         if (sample is not null)
         {
-            Run($"declarations named `{sample}`, which is a seek",
-                $"{{kind = D.value, line = D.line, name = D.name}} "
-                + $"where src.SearchByName {{name = \"{sample}\", to = D}}");
+            Run($"the definitions named `{sample}`, which is a seek into the search index",
+                $"{{name = L}} where csharp.NameLowerCase {{nameLowercase = L, name = N}}; "
+                + $"N = csharp.Name \"{sample}\"");
 
-            Run($"uses of `{sample}`, which is a join",
-                $"{{line = R.at.line, col = R.at.col}} where R = src.Ref {{to = D}}; "
-                + $"src.SearchByName {{name = \"{sample}\", to = D}}");
+            // **The join that reaches through a reference**, and the one this schema
+            // changes the cost of: `EntityRef` leads with the target, so every use of a
+            // definition is a seek rather than a read of the whole cross-reference table
+            // — which is what `src.Ref` could not do, its key beginning with a position.
+            Run($"every use of `{sample}`, which is a seek because the target leads",
+                $"{{file = P, at = X.use.start}} where "
+                + $"X = csharp.EntityRef {{target = D, file = F}}; F = src.File P; "
+                + $"csharp.SymbolOf {{definition = D, symbol = S}}; "
+                + $"Y = src.Symbol S; S = src.Symbol _");
 
-            // Into the declaration graph and out the other side: a name, the
-            // declaration it reaches, and a seek into a predicate keyed by that
-            // declaration. `src.Param`'s key is (decl, index, name), so this is one seek
-            // and the parameters come back in order.
-            if (indexer.SampleMethod is { } method)
-            {
-                Run($"the parameters of `{method}`, which is a seek keyed by a declaration",
-                    $"{{at = P.index, name = P.name, type = P.value}} "
-                    + $"where src.SearchByName {{name = \"{method}\", to = D}}; "
-                    + $"P = src.Param {{decl = D}}");
-            }
-
-            // Two references followed — declaration to module to file — and the result
-            // used as the key of a third predicate. No string is compared: the file is
-            // an id by the time `src.Line` is seeked.
-            //
-            // **The conjuncts are in this order because the field access needs it.**
-            // `reorder` is free to run them either way round, but `D.module.file` is
-            // typechecked where it is written, and a variable no earlier conjunct has
-            // bound has no type there to take a field of.
-            Run($"the source of the file declaring `{sample}`, which is a fetch then a seek",
-                $"{{line = L.line, text = L.value}} "
-                + $"where src.SearchByName {{name = \"{sample}\", to = D}}; "
-                + $"L = src.Line {{file = D.module.file}}");
+            // A definition, where it is written, and the text of that line: two
+            // references followed and the result used as the key of a third predicate.
+            // No string is compared — the file is an id by the time the line is seeked.
+            Run($"the line declaring a definition, which is a fetch then a seek",
+                "{line = L.line, text = L.value} where "
+                + "csharp.DefinitionLocation {definition = D, location = {file = F, span = _}}; "
+                + "L = src.FileLine {file = F}");
         }
 
         void Run(string what, string sigla)

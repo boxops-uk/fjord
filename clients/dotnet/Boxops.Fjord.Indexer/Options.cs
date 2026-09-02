@@ -380,6 +380,19 @@ internal sealed record Options
             return false;
         }
 
+        // **`--glean-out` translates the schema this indexer no longer writes.**
+        // `clients/dotnet/glean/fjbench.angle` describes `code.sigla`'s shapes, and the
+        // walk now produces `dotnet.sigla`'s — so the translation would emit facts Glean
+        // cannot load, silently, into a directory somebody would then try to measure.
+        // Re-established by Run 7, which re-runs the comparison it exists for; the
+        // comparison itself is invalidated by the schema move regardless.
+        if (gleanOut is not null)
+        {
+            error = "--glean-out is not available: it translates `code.sigla`, which this "
+                + "indexer no longer writes. Run 7 re-establishes it against the new set.";
+            return false;
+        }
+
         // Each of these names where the facts go, and they name different places. Taking
         // two would leave the run's timings covering a mixture of the two write paths,
         // which is the one thing a comparison harness must not do quietly.

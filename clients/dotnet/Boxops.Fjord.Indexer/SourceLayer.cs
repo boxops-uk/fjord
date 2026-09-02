@@ -40,8 +40,8 @@ internal static class SourceLayer
     /// one, and the extension itself where there is not.
     /// </summary>
     /// <remarks>
-    /// The values are resolved against <see cref="CodeIndex.LanguageNames"/> by
-    /// <see cref="CodeIndex.FileLanguageFact"/>, so a name misspelled here becomes an
+    /// The values are resolved against <see cref="DotnetIndex.LanguageNames"/> by
+    /// <see cref="DotnetIndex.FileLanguageFact"/>, so a name misspelled here becomes an
     /// <c>other</c> fact rather than a wrong one — and a test asserts every value in this
     /// table is in that vocabulary.
     /// </remarks>

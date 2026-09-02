@@ -62,7 +62,7 @@ It is interning working, and it is the number this whole exercise exists to meas
 
 The schema is the server's — twenty-seven predicates, now parsed from `schemas/code.sigla`
 rather than written in Rust — so the question is not what to declare but what to put in
-it. `CodeIndex.cs` states it a third time, independently, because that is what the
+it. `DotnetIndex.cs` states it a third time, independently, because that is what the
 handshake fingerprint is for. **Declaration order is not part of that agreement**: the
 fingerprint sorts by name on both sides, so this file may list predicates in whatever
 order reads well.

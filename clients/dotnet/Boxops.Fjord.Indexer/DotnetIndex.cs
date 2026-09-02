@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Boxops.Fjord.Client;
 
@@ -601,6 +602,108 @@ internal static class DotnetIndex
     public static FjordFact SettingFact(string dimension, string value) =>
         new(Setting, FjordValue.Rec(FjordValue.Of(dimension), FjordValue.Of(value)));
 
+    // ---- src facts -------------------------------------------------------------------
+
+    /// <summary>
+    /// <c>src.FileLanguage</c>: what a file is written in, named rather than numbered.
+    /// </summary>
+    /// <remarks>
+    /// The discriminant is resolved through <see cref="LanguageNames"/>, so this producer
+    /// holds no numbers of its own and a language the vocabulary does not have goes
+    /// through the <c>other</c> valve carrying its own name.
+    /// </remarks>
+    public static FjordFact FileLanguageFact(FjordFact file, string language)
+    {
+        var named = Array.IndexOf(LanguageNames, language);
+
+        return new(FileLanguage,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(named < 0
+                ? FjordValue.Alt(0u, FjordValue.Of(language))
+                : FjordValue.Alt((uint)named + 1, FjordValue.Rec())));
+    }
+
+    /// <summary>
+    /// <c>src.FileDigest</c>: a content hash of the file, as lowercase hex.
+    /// </summary>
+    /// <remarks>
+    /// The algorithm is <see cref="SourceLayer.Digest"/>'s and is owed
+    /// <c>config.Setting {dimension = "digest"}</c> — which this producer can now write,
+    /// since `dotnet.sigla` imports `config`.
+    /// </remarks>
+    public static FjordFact FileDigestFact(FjordFact file, string digest) =>
+        new(FileDigest,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(FjordValue.Of(digest)));
+
+    /// <summary>
+    /// <c>src.FileOrigin</c>: which repository and revision a file came from.
+    /// </summary>
+    public static FjordFact FileOriginFact(FjordFact file, string repo, string revision) =>
+        new(FileOrigin,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(FjordValue.Of(repo), FjordValue.Of(revision)));
+
+    /// <summary>
+    /// <c>src.FileInfo</c>: a file's size in bytes and lines, and whether its last byte
+    /// is a terminator.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="lines"/> must be the number of <c>src.FileLine</c> facts written
+    /// for the file: a consumer resolving an offset past the last line's start falls back
+    /// to this number, so a count that disagrees sends it to a line that does not exist.
+    /// </remarks>
+    public static FjordFact FileInfoFact(FjordFact file, long bytes, long lines, bool endsInNewline) =>
+        new(FileInfo,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(
+                FjordValue.Of(bytes),
+                FjordValue.Of(lines),
+                FjordValue.Alt(endsInNewline ? 1u : 0u, FjordValue.Rec())));
+
+    /// <summary>One line of a file: its text, and the three offsets that locate it.</summary>
+    /// <remarks>
+    /// <paramref name="start"/> is a <b>UTF-8 byte</b> offset and <paramref name="cstart"/>
+    /// a <b>UTF-16 code-unit</b> one, and they are not the same number: a codepoint above
+    /// the BMP is four bytes and two code units.
+    /// </remarks>
+    public static FjordFact FileLineFact(
+        FjordFact file,
+        long line,
+        string text,
+        long start,
+        long bytes,
+        long cstart) =>
+        new(FileLine,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file)), FjordValue.Of(line)),
+            FjordValue.Rec(
+                FjordValue.Of(text),
+                FjordValue.Of(start),
+                FjordValue.Of(bytes),
+                FjordValue.Of(cstart)));
+
+    /// <summary>
+    /// <c>src.FileLineAt</c>: the line table keyed by offset, all key.
+    /// </summary>
+    public static FjordFact FileLineAtFact(FjordFact file, long start, long line) =>
+        new(FileLineAt,
+            FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(file)),
+                FjordValue.Of(start),
+                FjordValue.Of(line)));
+
+    /// <summary>
+    /// <c>src.FileLineStyles</c>: one line's syntax highlighting, as opaque bytes.
+    /// </summary>
+    /// <remarks>
+    /// The payload is whatever the producer's <c>style-encoding</c> declares — see
+    /// <see cref="SemanticTokens"/> — and the schema asks no questions about it.
+    /// </remarks>
+    public static FjordFact FileLineStylesFact(FjordFact file, long line, ReadOnlyMemory<byte> styles) =>
+        new(FileLineStyles,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file)), FjordValue.Of(line)),
+            FjordValue.Rec(FjordValue.Of(styles)));
+
     // ---- msbuild facts ---------------------------------------------------------------
 
     /// <summary>`nothing`, or `just` the string — never the empty string for absence.</summary>
@@ -687,6 +790,41 @@ internal static class DotnetIndex
             FjordValue.Of(FjordRef.To(assembly)),
             FjordValue.Of(framework),
             FjordValue.Of(FjordRef.To(project))));
+
+    // ---- csharp facts the walk writes directly ---------------------------------------
+    //
+    // The entity facts are `CsharpEntities`'; these are the ones that need a span, which
+    // is the walk's to give.
+
+    private static FjordValue Span(long start, long length) =>
+        FjordValue.Rec(FjordValue.Of(start), FjordValue.Of(length));
+
+    private static FjordValue Location(FjordFact file, long start, long length) =>
+        FjordValue.Rec(FjordValue.Of(FjordRef.To(file)), Span(start, length));
+
+    /// <summary>`csharp.DefinitionLocation` — where a definition is declared.</summary>
+    public static FjordFact DefinitionLocationFact(
+        FjordValue definition, FjordFact file, long start, long length) =>
+        new(DefinitionLocation, FjordValue.Rec(definition, Location(file, start, length)));
+
+    /// <summary>`csharp.EntityXRef` — a use span and what it targets.</summary>
+    public static FjordFact EntityXRefFact(
+        FjordFact file, long start, long length, FjordValue target) =>
+        new(EntityXRef, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(file)), Span(start, length), target));
+
+    /// <summary>`csharp.EntityRef` — the same reference keyed by what it points at.</summary>
+    public static FjordFact EntityRefFact(
+        FjordValue target, FjordFact file, long start, long length) =>
+        new(EntityRef, FjordValue.Rec(
+            target, FjordValue.Of(FjordRef.To(file)), Span(start, length)));
+
+    public static FjordFact SymbolOfFact(FjordValue definition, FjordFact symbol) =>
+        new(SymbolOf, FjordValue.Rec(definition, FjordValue.Of(FjordRef.To(symbol))));
+
+    public static FjordFact DefinitionBySymbolFact(FjordFact symbol, FjordValue definition) =>
+        new(DefinitionBySymbol, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(symbol)), definition));
 
     public static FjordFact ProjectCompilationFact(FjordFact project, string framework, FjordFact assembly) =>
         new(ProjectCompilation,

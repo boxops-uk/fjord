@@ -29,7 +29,7 @@ namespace Boxops.Fjord.Tests;
 public sealed class SourceWalkTests
 {
     /// <summary>A target that keeps what it was handed.</summary>
-    private sealed class Recorder : IBlockTarget
+    internal sealed class Recorder : IBlockTarget
     {
         private readonly Lock _gate = new();
         private readonly List<(uint Predicate, FjordFact Fact)> _facts = [];
@@ -68,7 +68,7 @@ public sealed class SourceWalkTests
         Assert.IsType<FjordValue.Record>(value).Fields;
 
     /// <summary>Walk one file's source through the real indexer and keep what it wrote.</summary>
-    private static Recorder Walk(
+    internal static Recorder Walk(
         string source,
         bool lines = true,
         string? repo = null,
@@ -123,7 +123,7 @@ public sealed class SourceWalkTests
     {
         var written = Walk("class A\n{\n}\n");
 
-        var lines = written.Of(CodeIndex.FileLine);
+        var lines = written.Of(DotnetIndex.FileLine);
         Assert.Equal(["class A", "{", "}"], lines.Select(fact => Str(Fields(fact.Value)[0])));
     }
 
@@ -136,11 +136,11 @@ public sealed class SourceWalkTests
     {
         var written = Walk("class A\n{\n}\n");
 
-        var info = Assert.Single(written.Of(CodeIndex.FileInfo));
+        var info = Assert.Single(written.Of(DotnetIndex.FileInfo));
         var fields = Fields(info.Value);
 
         Assert.Equal(12, Int(fields[0]));
-        Assert.Equal(written.Of(CodeIndex.FileLine).Count, Int(fields[1]));
+        Assert.Equal(written.Of(DotnetIndex.FileLine).Count, Int(fields[1]));
         // `endsInNewline`: `false_ = 0 | true_ = 1`.
         Assert.Equal(1u, Assert.IsType<FjordValue.Union>(fields[2]).Disc);
     }
@@ -150,9 +150,9 @@ public sealed class SourceWalkTests
     {
         var written = Walk("class A\n{\n}");
 
-        var info = Assert.Single(written.Of(CodeIndex.FileInfo));
+        var info = Assert.Single(written.Of(DotnetIndex.FileInfo));
         Assert.Equal(0u, Assert.IsType<FjordValue.Union>(Fields(info.Value)[2]).Disc);
-        Assert.Equal(3, written.Of(CodeIndex.FileLine).Count);
+        Assert.Equal(3, written.Of(DotnetIndex.FileLine).Count);
     }
 
     /// <summary>
@@ -164,8 +164,8 @@ public sealed class SourceWalkTests
     {
         var written = Walk("class A\n{\n    // \U0001F600\n}\n");
 
-        var lines = written.Of(CodeIndex.FileLine);
-        var at = written.Of(CodeIndex.FileLineAt);
+        var lines = written.Of(DotnetIndex.FileLine);
+        var at = written.Of(DotnetIndex.FileLineAt);
 
         Assert.Equal(lines.Count, at.Count);
 
@@ -193,11 +193,11 @@ public sealed class SourceWalkTests
     {
         var written = Walk("class A\n{\n}\n", lines: false);
 
-        Assert.Single(written.Of(CodeIndex.FileInfo));
-        Assert.Single(written.Of(CodeIndex.FileLanguage));
-        Assert.Single(written.Of(CodeIndex.FileDigest));
-        Assert.Empty(written.Of(CodeIndex.FileLine));
-        Assert.Empty(written.Of(CodeIndex.FileLineAt));
+        Assert.Single(written.Of(DotnetIndex.FileInfo));
+        Assert.Single(written.Of(DotnetIndex.FileLanguage));
+        Assert.Single(written.Of(DotnetIndex.FileDigest));
+        Assert.Empty(written.Of(DotnetIndex.FileLine));
+        Assert.Empty(written.Of(DotnetIndex.FileLineAt));
     }
 
     /// <summary>
@@ -210,10 +210,10 @@ public sealed class SourceWalkTests
     {
         var written = Walk("class A\n{\n}\n");
 
-        var language = Assert.Single(written.Of(CodeIndex.FileLanguage));
+        var language = Assert.Single(written.Of(DotnetIndex.FileLanguage));
         var alternative = Assert.IsType<FjordValue.Union>(Fields(language.Value)[0]);
 
-        Assert.Equal((uint)Array.IndexOf(CodeIndex.LanguageNames, "csharp") + 1, alternative.Disc);
+        Assert.Equal((uint)Array.IndexOf(DotnetIndex.LanguageNames, "csharp") + 1, alternative.Disc);
         Assert.Empty(Assert.IsType<FjordValue.Record>(alternative.Value).Fields);
     }
 
@@ -229,7 +229,7 @@ public sealed class SourceWalkTests
             repo: "github.com/boxops-uk/fjord",
             revision: "3fa4961");
 
-        var origin = Assert.Single(written.Of(CodeIndex.FileOrigin));
+        var origin = Assert.Single(written.Of(DotnetIndex.FileOrigin));
         var fields = Fields(origin.Value);
 
         Assert.Equal("github.com/boxops-uk/fjord", Str(fields[0]));
@@ -239,7 +239,7 @@ public sealed class SourceWalkTests
     [Fact]
     public void A_run_that_states_no_provenance_writes_none()
     {
-        Assert.Empty(Walk("class A\n{\n}\n").Of(CodeIndex.FileOrigin));
+        Assert.Empty(Walk("class A\n{\n}\n").Of(DotnetIndex.FileOrigin));
     }
 
     /// <summary>
@@ -262,7 +262,7 @@ public sealed class SourceWalkTests
             }
             """);
 
-        var symbols = written.Of(CodeIndex.Symbol)
+        var symbols = written.Of(DotnetIndex.Symbol)
             .Select(fact => Assert.IsType<FjordValue.Str>(fact.Key).Value)
             .ToList();
 
@@ -282,7 +282,7 @@ public sealed class SourceWalkTests
         const string Source = "class A\n{\n}\n";
         var written = Walk(Source);
 
-        var digest = Assert.Single(written.Of(CodeIndex.FileDigest));
+        var digest = Assert.Single(written.Of(DotnetIndex.FileDigest));
 
         Assert.Equal(
             SourceLayer.Digest(Microsoft.CodeAnalysis.Text.SourceText.From(Source)),

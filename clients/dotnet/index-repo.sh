@@ -43,9 +43,10 @@ fjord="$root/target/release/fjord"
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-# `--schema` is required, and this is the file `CodeIndex.cs` states independently.
-"$fjord" --data-dir "$scratch/db" create "$database" \
-    --schema "$root/schemas/code.sigla"
+# `--schema` is required, and this is the file `DotnetIndex.cs` states independently.
+# `--schema-path` because `dotnet.sigla` composes five files by import.
+"$fjord" --data-dir "$scratch/db" --schema-path "$root/schemas" create "$database" \
+    --schema "$root/schemas/dotnet.sigla"
 
 "$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/ready" &
 server=$!
