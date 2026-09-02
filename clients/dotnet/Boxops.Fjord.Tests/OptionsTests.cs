@@ -76,6 +76,30 @@ public sealed class OptionsTests
             System.StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// **The degraded mode is gone, and asking for it is an error rather than a no-op.**
+    /// A flag the parser quietly ignores is worse than one it refuses: a script that
+    /// passed `--syntax-only` would keep running and produce a *different, much larger*
+    /// index than the one it asked for, with nothing in the output to say so.
+    /// </summary>
+    [Theory]
+    [InlineData("--syntax-only")]
+    [InlineData("--skip-files")]
+    public void The_syntax_only_mode_and_its_slicing_flag_are_refused_by_name(string flag)
+    {
+        var error = Refused("--source", "/tmp/x.sln", flag, "0");
+
+        Assert.Contains(flag, error, System.StringComparison.Ordinal);
+        Assert.Contains("unknown flag", error, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_usage_text_names_neither_of_them()
+    {
+        Assert.DoesNotContain("syntax-only", Options.Usage, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("skip-files", Options.Usage, System.StringComparison.Ordinal);
+    }
+
     [Fact]
     public void The_usage_text_names_the_pair()
     {

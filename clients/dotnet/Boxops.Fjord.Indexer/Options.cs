@@ -112,26 +112,6 @@ internal sealed record Options
     /// </remarks>
     public string[] Excludes { get; init; } = [];
 
-    /// <summary>
-    /// Skip this many source files before indexing, in path order — <c>--syntax-only</c>
-    /// only.
-    /// </summary>
-    /// <remarks>
-    /// <b>What makes a checkout too big for one compilation indexable anyway.</b> A
-    /// syntax-only run holds every tree of its <c>--source</c> at once, which for
-    /// dotnet/runtime is more memory than most machines have. With this, the same source
-    /// root is indexed in slices — <c>--skip-files 0 --max-files 4000</c>, then 4000,
-    /// then 8000 — each run costing only what its slice holds, and the facts accumulating
-    /// in one database because interning does not care which run wrote a target first.
-    /// <para>
-    /// The cost is real and worth stating: a reference from a slice to a declaration in
-    /// another slice binds against the framework's metadata rather than against source,
-    /// so it is dropped as external. Slices bounded at a library keep nearly all of it;
-    /// slices that cut one in half do not.
-    /// </para>
-    /// </remarks>
-    public int SkipFiles { get; init; }
-
     /// <summary>Stop after this many projects. 0 means all of them.</summary>
     public int MaxProjects { get; init; }
 
@@ -171,12 +151,6 @@ internal sealed record Options
     /// <summary>Let the design-time build restore first. Off is much faster when it is already restored.</summary>
     public bool Restore { get; init; } = true;
 
-    /// <summary>
-    /// Skip MSBuild entirely: glob <c>*.cs</c> and compile them against the running
-    /// framework's reference set. Fast, and resolves less — see the README.
-    /// </summary>
-    public bool SyntaxOnly { get; init; }
-
     /// <summary>Run a handful of queries against what was just written.</summary>
     public bool Smoke { get; init; } = true;
 
@@ -212,7 +186,6 @@ internal sealed record Options
           --batch <n>           facts per block (default: 4096)
           --max-files <n>       stop after n source files
           --exclude <path>      do not walk this tree, relative to --root (repeatable)
-          --skip-files <n>      skip the first n files, in path order (--syntax-only)
           --max-projects <n>    stop after n projects
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
           --writers <n>         concurrent write streams, one connection each (default: 1;
@@ -224,7 +197,6 @@ internal sealed record Options
           --revision <rev>      the revision indexed (both, or neither: src.FileOrigin)
           --no-docs             do not write doc comments (src.Doc)
           --no-restore          do not let the design-time build restore first
-          --syntax-only         skip MSBuild; glob *.cs and parse them
           --dry-run             index and encode, but connect to nothing
           --emit <path>         also write every block to a file
           --no-smoke            do not query the index afterwards
@@ -254,11 +226,11 @@ internal sealed record Options
 
         string? source = null, root = null, emit = null, dotnet = null;
         var at = $"{DefaultSocket}{FjordAddress.Separator}code";
-        int batch = 4096, maxFiles = 0, maxProjects = 0, skipFiles = 0;
+        int batch = 4096, maxFiles = 0, maxProjects = 0;
         var excludes = new List<string>();
         var jobs = Math.Min(4, Environment.ProcessorCount);
         int? writers = null;
-        bool references = true, restore = true, syntaxOnly = false;
+        bool references = true, restore = true;
         bool lines = true, docs = true, styles = false;
         string? repo = null, revision = null;
         bool dryRun = false, smoke = true, verbose = false;
@@ -303,7 +275,6 @@ internal sealed record Options
                     case "--batch": batch = Number(); break;
                     case "--max-files": maxFiles = Number(); break;
                     case "--exclude": excludes.Add(Value().Replace('\\', '/').Trim('/')); break;
-                    case "--skip-files": skipFiles = Number(); break;
                     case "--max-projects": maxProjects = Number(); break;
                     case "--jobs": jobs = Math.Max(1, Number()); break;
                     case "--writers": writers = Math.Max(1, Number()); break;
@@ -314,7 +285,6 @@ internal sealed record Options
                     case "--revision": revision = Value(); break;
                     case "--no-docs": docs = false; break;
                     case "--no-restore": restore = false; break;
-                    case "--syntax-only": syntaxOnly = true; break;
                     case "--dry-run": dryRun = true; break;
                     case "--no-smoke": smoke = false; break;
                     case "--verbose": verbose = true; break;
@@ -377,7 +347,6 @@ internal sealed record Options
             Batch = batch,
             MaxFiles = maxFiles,
             Excludes = [.. excludes],
-            SkipFiles = skipFiles,
             MaxProjects = maxProjects,
             Jobs = jobs,
             Writers = writers ?? 1,
@@ -388,7 +357,6 @@ internal sealed record Options
             Revision = revision,
             Docs = docs,
             Restore = restore,
-            SyntaxOnly = syntaxOnly,
             DryRun = dryRun,
             Smoke = smoke && !dryRun,
             Verbose = verbose,

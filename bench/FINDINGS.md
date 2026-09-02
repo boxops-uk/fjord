@@ -22,6 +22,14 @@ facts** across 22 predicates, 1.8 GB on disk, 4,613 s to build. This is the firs
 database in the project's history large enough for a scaling question to mean anything,
 and every number below is from it.
 
+> **This corpus cannot be rebuilt, and the reason is a deletion rather than a drift.**
+> `--syntax-only` no longer exists: it globbed the `.cs` files and parsed them against the
+> running framework's reference set, which finds every declaration and loses every
+> reference into a package, and a producer that cannot resolve now refuses instead. A
+> semantic walk over the same tree is a *different and much larger* workload, so these are
+> not numbers a later run can be compared against. The predicates are gone too — 22 of
+> them were `code.sigla`'s. Run 7 re-measures on a named corpus.
+
 **The instrument.** `cargo run --release --example engine -- --store <instance>` —
 S1 (`--layer executor`), S2 (`--layer compile`), S3 (`--layer store`). In-process, no
 tokio, no wire, no server. Each workload is run once unmeasured to fix its row count and
@@ -945,7 +953,8 @@ stops below them deliberately, and the layer that adds them is what finding 12's
 Phase 12 made a database take as many writers as it has streams; `clients/dotnet` can now
 ask for them (`--writers n`, one connection each, since the C# client issues streams
 sequentially over one socket and cannot multiplex). Measured on this repository's own
-`clients/dotnet` tree — 16 files, 12,382 facts, `--syntax-only`:
+`clients/dotnet` tree — 16 files, 12,382 facts, `--syntax-only` (a mode since deleted, so
+this corpus is not rebuildable either — see the note under *The corpus* above):
 
 | | 1 writer | 4 writers |
 |---|---|---|
@@ -986,7 +995,8 @@ cost 20–30% before that. `queueing` on a real index is 1,019.4 s of 3,977.7 s 
 > which is why the allocator work in §18 exists.
 
 **What was measured.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree, four runs
-of the same producer: `clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8`, the line
+of the same producer: `clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8` — a mode
+since deleted, so this run is not rebuildable — the line
 table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches which
 `glean create -j 8 --finish` then loads. **One walk, two sinks**, so what differs between
 the last two rows is the database and not the indexer.

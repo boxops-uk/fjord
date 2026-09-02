@@ -220,7 +220,6 @@ collision nobody would have predicted.
                       /tmp/fjord.sock)
 --batch <n>           facts per block (default: 4096)
 --max-files <n>       stop after n source files
---skip-files <n>      skip the first n files, in path order (--syntax-only)
 --max-projects <n>    stop after n projects
 --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
 --writers <n>         concurrent write streams, one connection each (default: 1)
@@ -228,7 +227,6 @@ collision nobody would have predicted.
 --no-lines            do not write the line table (src.Line)
 --no-docs             do not write doc comments (src.Doc)
 --no-restore          do not let the design-time build restore first
---syntax-only         skip MSBuild; glob *.cs and parse them
 --dry-run             index and encode, but connect to nothing
 --emit <path>         also write every block to a file
 --no-smoke            do not query the index afterwards
@@ -243,48 +241,33 @@ inside its per-database writer lock: bigger means fewer round trips and a longer
 none. A connected run hands its facts to the client, which encodes them on the way out,
 so the byte count is reported only when this program does the encoding itself.
 
-**`--syntax-only` is the honest degraded mode.** No MSBuild, no NuGet, no project graph:
-every `.cs` file under `--source`, parsed against the framework this program is running
-on. Declarations are all still found — they are in the syntax. References into a package's
-types are not, because the type is an error type and the member on it binds to nothing.
-It exists so that a repository which will not restore on this machine still produces an
-index, and so that a run measuring *the database* need not wait for MSBuild first. The
-loader falls back to it on its own if every project fails.
+**There is no degraded mode, and the numbers are why.** A walk that skipped MSBuild —
+every `.cs` file under `--source`, parsed against the framework this program runs on, no
+project graph and no NuGet — finds every declaration, because declarations are in the
+syntax. It loses
+references into a package's types, because the type is an error type and the member on it
+binds to nothing. FluentValidation through the design-time build leaves **13** names
+unresolved out of six and a half thousand; Roslyn's compilers parsed without MSBuild
+leave **310,525** out of two and a half million. Different repositories, so not a
+controlled comparison — but one name in five hundred against one in eight is the right
+order of difference, and it is what asking MSBuild buys.
 
-The cost is measurable, and worth knowing before choosing it. FluentValidation indexed
-through the design-time build leaves **13** names unresolved out of six and a half
-thousand; Roslyn's compilers indexed `--syntax-only` leave **310,525** out of two and a
-half million. Those are different repositories, so it is not a controlled comparison —
-but one name in five hundred against one in eight is the right order of difference, and
-it is what asking MSBuild buys.
+An index missing four fifths of its edges looks complete and answers wrongly, with
+nothing in it to say so. **So a run whose projects all fail refuses**, naming what to fix,
+rather than writing that index.
 
 **`--emit <path>`** writes the same blocks to a file — sync marker, header, CRC and
 payload, byte for byte what the wire carries. That is the fact-file format Phase 7b
 ingests, so a large index can be captured once and replayed without Roslyn in the loop.
 
-**`--skip-files` is what makes a checkout too big for one compilation indexable.** A
-syntax-only run holds every tree of its `--source` at once, and the memory that costs is
-measurable: on this corpus, roughly 1.4 GB per ten thousand files parsed, plus another
-0.23 GB for every thousand files *walked* as the symbol tables fill. dotnet/runtime's
-`src/` is 32,710 files, which is more than most machines will give. Sliced, it is nine
-runs of four thousand:
-
-```sh
-for i in $(seq 0 8); do
-    dotnet run --project clients/dotnet/Boxops.Fjord.Indexer -c Release -- \
-        --source ~/runtime/src --root ~/runtime --syntax-only --no-smoke \
-        --skip-files $((i * 4000)) --max-files 4000 \
-        --socket /tmp/fj-runtime/db/fjord.sock --database code
-done
-```
-
-The slices are a partition because the order is the path order, and the facts accumulate
-in one database because **nothing here holds an id**: a later slice naming a declaration
-an earlier one wrote sends the same nested fact and the server dedups it. What it costs
-is stated rather than hidden — a reference from one slice to a declaration in another
-binds against the framework's metadata rather than against source, so it is dropped as
-external. Slices that fall on a library boundary keep nearly all of it; slices that cut
-one in half do not.
+**A checkout too big for one machine is indexed per project, not per slice.** Holding
+every tree of a large `--source` at once costs roughly 1.4 GB per ten thousand files
+parsed, plus another 0.23 GB per thousand files *walked* as the symbol tables fill —
+dotnet/runtime's `src/` is 32,710 files, which is more than most machines will give. The
+answer is `--max-projects`, because a project is a compilation and a compilation is what
+the memory is proportional to. Slicing a single compilation by *file* was the other
+answer, and it dropped every reference that crossed a slice boundary — a cost paid in
+missing edges rather than in time.
 
 ## Something big to point it at
 
@@ -306,8 +289,9 @@ or relax the `global.json` in the checkout to get the full semantic index.
 ## What a run prints
 
 This is a real one: **all of dotnet/runtime's `src/`** — 32,710 C# files, 430 MB of
-source — indexed `--syntax-only` into a release server on an eight-core machine, one
-compilation, `--jobs 8`.
+source — indexed into a release server on an eight-core machine, one compilation,
+`--jobs 8`. It was taken with a mode this program no longer has, so the figures are a
+record rather than a target.
 
 ```
 indexed 32,710 file(s) in 4613.4s
@@ -363,8 +347,8 @@ hold **645 project files beside their sources**, one per test. Containment says 
 these 645", so the run says nothing and counts it. A design-time build answers all of
 them exactly.
 
-**3.13 million names went unresolved — one in three.** That is not the usual
-`--syntax-only` figure (one in eight) and the reason is instructive: this is a whole
+**3.13 million names went unresolved — one in three.** That is not the usual figure for
+a walk without MSBuild (one in eight) and the reason is instructive: this is a whole
 repository compiled as *one* compilation, and dotnet/runtime defines the same type many
 times over — a reference assembly, an implementation, a per-platform variant. Roslyn
 cannot pick, so the name binds to nothing. Slicing per project, or a design-time build,

@@ -112,6 +112,22 @@ indexer refuses, by name, a run whose resolution failed; and §1/§14/§15 are m
 as measured by a mode that no longer exists, with their re-run scheduled in R7 against a semantic
 walk on a named corpus.
 
+**Done, and the gate's first clause cannot be taken literally** — a test that proves the flags are
+refused has to name them, so the grep finds its own guard. The honest reading is *nothing outside
+the test that refuses them*, and that is what holds: `Options`, `Loader`'s branch and its whole
+walk, the `--skip-files` slicing that existed only for it, and the prose are gone.
+
+**What replaced the fallback is the point of the run.** The loader fell back to the syntax walk
+when every project failed; it now throws, naming what to fix. An index missing four fifths of its
+edges looks complete and answers wrongly with nothing in it to say so — one name in five hundred
+unresolved through a design-time build against one in eight without, which is the measurement the
+README keeps.
+
+`--max-projects` replaces `--skip-files` for a checkout too big for one machine, and that is a
+better answer rather than an equal one: a project is a compilation and a compilation is what the
+memory is proportional to, where slicing one compilation by *file* dropped every reference that
+crossed a slice boundary.
+
 ### R4a — the descriptor is a **string**, and this settles #42 item 1
 
 Revision 2's 4a declares `descriptor : string`, while three other passages only make sense if it is a

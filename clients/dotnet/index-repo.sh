@@ -8,7 +8,7 @@
 #
 # Everything the indexer takes is passed through, so the knobs are its own:
 #
-#   ./clients/dotnet/index-repo.sh ~/src/OrchardCore code --syntax-only --max-files 5000
+#   ./clients/dotnet/index-repo.sh ~/src/OrchardCore code --max-files 5000
 #
 # The server is left running until this script exits and the database survives it — the
 # last lines say how to open a shell on it.

@@ -382,7 +382,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// <b>A document, not a semantic model.</b> The classifier's semantic-model overload
     /// is obsolete, and the supported form takes a <see cref="Document"/> — so the
     /// workspace project Buildalyzer already built is carried down to here rather than
-    /// a scratch one being invented. In syntax-only mode there is no workspace and
+    /// a scratch one being invented. Where a compilation was built without a workspace
     /// <paramref name="document"/> is null, so no styles are written.
     /// </para>
     /// <para>

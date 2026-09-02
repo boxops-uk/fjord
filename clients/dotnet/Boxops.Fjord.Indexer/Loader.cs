@@ -18,8 +18,8 @@ namespace Boxops.Fjord.Indexer;
 /// only while it is being walked.
 /// </remarks>
 /// <param name="Roslyn">
-/// The workspace's project, or <c>null</c> in syntax-only mode where there is no
-/// workspace. Carried only so <c>--styles</c> can reach a <see cref="Document"/>:
+/// The workspace's project, or <c>null</c> where a compilation was built without one.
+/// Carried only so <c>--styles</c> can reach a <see cref="Document"/>:
 /// <see cref="Microsoft.CodeAnalysis.Classification.Classifier"/>'s semantic-model
 /// overload is obsolete, and its supported form takes a document.
 /// </param>
@@ -57,19 +57,15 @@ internal sealed record LoadedSolution(IReadOnlyList<LoadedProject> Projects, Pro
 /// <b>The fallback is deliberate.</b> A real repository has projects that will not
 /// restore on this machine — a Windows-only target, a pinned SDK, a missing feed. One
 /// project failing must not cost the other four hundred, so a failure is reported and
-/// skipped; if <i>every</i> project fails, the loader falls back to parsing the
-/// <c>.cs</c> files it can find. That mode resolves less (see the README) and says so.
+/// skipped. If <i>every</i> project fails there is nothing to index and the run says so:
+/// a producer that cannot resolve types has nothing to write but degraded facts, and
+/// writing those is the one thing this indexer refuses to do.
 /// </para>
 /// </remarks>
 internal static class Loader
 {
     public static LoadedSolution Load(Options options, string root, TextWriter log)
     {
-        if (options.SyntaxOnly)
-        {
-            return Syntax(options, root, log);
-        }
-
         var entry = ResolveEntryPoint(options.Source);
         log.WriteLine($"  entry point {entry}");
 
@@ -167,13 +163,25 @@ internal static class Loader
             }
         }
 
+        // **A run that cannot resolve fails, and must not fall back to a syntax walk.**
+        // Globbing the `.cs` files and parsing them against the running framework's
+        // reference set finds every declaration and loses every reference into a NuGet
+        // package — the type is an error type, so the member on it binds to nothing — and
+        // the result is an index that looks complete while missing most of its edges,
+        // with nothing in it to say so.
+        //
+        // The rule this protects: a producer that cannot resolve emits nothing rather
+        // than a degraded fact.
         if (built == 0)
         {
-            log.WriteLine(failed == 0
-                ? "  no projects found; falling back to parsing the .cs files under --source"
-                : $"  every project failed ({failed}); falling back to parsing the .cs files under --source");
-
-            return Syntax(options, root, log);
+            throw new InvalidOperationException(
+                failed == 0
+                    ? "no projects were found under --source, so there is nothing to "
+                        + "resolve against and nothing to index"
+                    : $"every project failed to build ({failed} of them), so no type in "
+                        + "this checkout can be resolved. Fix the build — a restore, an "
+                        + "SDK, a missing reference — and run again; this indexer writes "
+                        + "no facts it cannot resolve");
         }
 
         if (failed > 0)
@@ -435,133 +443,6 @@ internal static class Loader
         }
     }
 
-    /// <summary>
-    /// Every <c>.cs</c> file under the source, parsed against the running framework's
-    /// reference set — no MSBuild, no NuGet, no project graph.
-    /// </summary>
-    /// <remarks>
-    /// This is the honest degraded mode. Declarations are all still found: they are in
-    /// the syntax. References to anything whose type comes from a NuGet package are not,
-    /// because the type is an error type and the member on it binds to nothing. It is
-    /// here so that a repository which will not restore still produces an index, and so
-    /// that a run measuring the <i>database</i> need not wait for MSBuild first.
-    /// </remarks>
-    /// <summary>
-    /// The syntax-only walk, and the build layer read straight off the disk beside it.
-    /// </summary>
-    /// <remarks>
-    /// No MSBuild means no resolved framework and no exact source list, but the project
-    /// files are still there and still say what they reference — so the layer is thinner
-    /// rather than absent, and <see cref="ProjectIndex"/> is explicit about which of the
-    /// two a fact came from.
-    /// </remarks>
-    private static LoadedSolution Syntax(Options options, string root, TextWriter log) =>
-        new([SyntaxOnly(options, log)], ProjectIndex.Build(root, options.Source, [], log));
-
-    private static LoadedProject SyntaxOnly(Options options, TextWriter log)
-    {
-        var root = Directory.Exists(options.Source)
-            ? options.Source
-            : Path.GetDirectoryName(options.Source)!;
-
-        // Relative to `--root` rather than to `--source`, so an exclusion reads the way a
-        // path in the index reads: `src/tests` is what a `src.File` fact calls it.
-        var relativeTo = options.Root ?? root;
-
-        var all = Directory
-            .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-            .Where(Indexable)
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .ToList();
-
-        var found = options.Excludes.Length == 0
-            ? all
-            : all.Where(path => !Excluded(path)).ToList();
-
-        if (all.Count != found.Count)
-        {
-            log.WriteLine($"  excluding {all.Count - found.Count} file(s) under "
-                + string.Join(", ", options.Excludes));
-        }
-
-        // `--max-files` bounds the *parse* here, not just the walk. Parsing seventeen
-        // thousand files to index two thousand of them is the wrong shape for the flag
-        // people reach for when they want a quick answer.
-        //
-        // With `--skip-files` it is also the slice: this compilation holds files
-        // [skip, skip + max) of the source root in path order, and the next run holds
-        // the ones after them. Path order is what makes the slices a partition rather
-        // than a lottery — the same run twice is the same files.
-        IEnumerable<string> slice = found;
-
-        if (options.SkipFiles > 0)
-        {
-            slice = slice.Skip(options.SkipFiles);
-        }
-
-        if (options.MaxFiles > 0)
-        {
-            slice = slice.Take(options.MaxFiles);
-        }
-
-        var files = ReferenceEquals(slice, found) ? found : slice.ToList();
-
-        log.WriteLine($"  syntax-only: {files.Count} of {found.Count} file(s) under {root}"
-            + (options.SkipFiles > 0 ? $", skipping the first {options.SkipFiles}" : string.Empty));
-
-        var parse = new CSharpParseOptions(LanguageVersion.Preview);
-        var trees = new List<SyntaxTree>(files.Count);
-
-        foreach (var file in files)
-        {
-            try
-            {
-                trees.Add(CSharpSyntaxTree.ParseText(File.ReadAllText(file), parse, path: file));
-            }
-            catch (IOException failure)
-            {
-                log.WriteLine($"  ! {file}: {failure.Message}");
-            }
-        }
-
-        // The framework the indexer itself is running on. Not the framework the corpus
-        // targets — which is exactly the imprecision this mode is admitting to.
-        var references = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? string.Empty)
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-            .Where(path => path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-            .Select(path => (MetadataReference)MetadataReference.CreateFromFile(path))
-            .ToList();
-
-        var compilation = CSharpCompilation.Create(
-            "syntax-only",
-            trees,
-            references,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-
-        return new LoadedProject("syntax-only", () => compilation);
-
-        static bool Indexable(string path) =>
-            !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-            && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
-
-        // A prefix on the *relative* path, and a separator after it, so `--exclude src/te`
-        // excludes nothing and `--exclude src/tests` excludes exactly that tree.
-        bool Excluded(string path)
-        {
-            var relative = Path.GetRelativePath(relativeTo, path).Replace('\\', '/');
-
-            foreach (var excluded in options.Excludes)
-            {
-                if (relative.StartsWith($"{excluded}/", StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-    }
-
     /// <summary>A solution, a project, or the directory one lives in.</summary>
     private static string ResolveEntryPoint(string source)
     {
@@ -591,6 +472,6 @@ internal static class Loader
         }
 
         throw new FileNotFoundException(
-            $"no .slnx, .sln or .csproj directly under {source} — name one with --source, or use --syntax-only");
+            $"no .slnx, .sln or .csproj directly under {source} — name one with --source");
     }
 }

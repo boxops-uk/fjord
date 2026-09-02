@@ -61,12 +61,12 @@ internal sealed class ProjectInfo(string path)
     /// The frameworks it targets, <b>as the project states them</b>.
     /// </summary>
     /// <remarks>
-    /// A design-time build hands back a framework MSBuild has already resolved. Read
-    /// from the project file instead, a multi-targeting repository commonly names one
-    /// by property — <c>$(NetCoreAppCurrent)</c> — and that is what is recorded, since
-    /// the alternative is either inventing a value or dropping the project's only link
-    /// to the assembly it produces. Which of the two a run got is what
-    /// <c>--syntax-only</c> says about itself.
+    /// A design-time build hands back a framework MSBuild has already resolved. Where
+    /// only the project file could be read, a multi-targeting repository commonly names
+    /// one by property — <c>$(NetCoreAppCurrent)</c> — and that is what is recorded,
+    /// since the alternative is either inventing a value or dropping the project's only
+    /// link to the assembly it produces. <see cref="Built"/> is which of the two a
+    /// project got.
     /// </remarks>
     public List<string> Frameworks { get; } = [];
 
