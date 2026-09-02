@@ -97,6 +97,27 @@ fn main() {
         }
     };
 
+    // **This instrument measures a predicate the fixture no longer carries.** Its whole
+    // subject is a prefix seek into a name index — `src.SearchByName`, whose key led with
+    // `name` — and `schemas/demo.sigla` has no search index: it is the language fixture,
+    // and adding one would make it a workload fixture instead. Every query below would
+    // fail per request, which reads as a broken server rather than a retired corpus.
+    //
+    // Run 7 owns re-aiming it, because it owns choosing what gets measured. Refusing here
+    // is the same call `--glean-out` takes for the same reason.
+    if sample_schema::schema()
+        .find_position("code.SearchByName")
+        .is_none()
+    {
+        eprintln!(
+            "codesearch: the fixture declares no search index, so there is nothing here \
+             to seek into.\n  This instrument measured `src.SearchByName` over \
+             `code.sigla`, which is retired.\n  Run 7 re-establishes the read-path \
+             measurements against the schema that replaced it."
+        );
+        std::process::exit(2);
+    }
+
     // **The idle baseline comes first**, before this process has asked the server for
     // anything. Taken after sampling the term pool it measured the tail of that scan, which
     // is precisely the mistake this correction exists to avoid.

@@ -121,12 +121,14 @@ The `--no-default-features` line is what makes "the embedded schema path touches
 filesystem" mechanical: `fs` is a default-on feature, so without it `FsSources` is not
 compiled and a call to it from `resolve_from` is a compile error rather than a code review.
 
-`scripts/flag-day.sh check` is the other one worth knowing: it walks every artifact that
-moves when `schemas/code.sigla` does — two independently-pasted C# constants, the checked-in
-goldens, the fixture reader, the Glean translation — and stops at the first stale one,
-because the expensive failure there is discovering step 3 after step 7. Read-only, so it is
-safe to run at any time; `regen` does the parts a machine can. The checklist it walks is in
-[`clients/dotnet/README.md`](clients/dotnet/README.md).
+**A schema move is a flag day, and the checklist is now tests rather than a script.** A
+client sends one whole-schema fingerprint and the server checks it for equality, so an edit
+to a shipped schema refuses every client until each is rebuilt. What used to be
+`scripts/flag-day.sh`'s nine ordered steps are the guards named in
+[`clients/dotnet/README.md`](clients/dotnet/README.md) — each client's constant checked
+against *its own* schema by name, the goldens pinned by
+`byte_identical_with_the_dotnet_client`, the fixture reader by `sample_schema`'s own tests.
+The order still matters to a person, and that file carries it.
 
 `scripts/check-exhaustive.sh {schema|engine}` is **not** in that list and must not be: it
 adds a throwaway variant to `PredicateTyNamed` or to `fjord_engine::syntax::Ty` and asserts

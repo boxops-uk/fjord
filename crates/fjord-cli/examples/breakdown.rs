@@ -58,7 +58,7 @@ use fjord_wire::{FrameKind, StreamId, encode_desc, encode_frame, frame};
 const BASELINE: &str = "X where X = 42";
 
 /// A query with a level, for contrast — the same fixed cost plus one scan's setup.
-const ONE_LEVEL: &str = "F where src.File F";
+const ONE_LEVEL: &str = "F where code.File F";
 
 const ITERATIONS: usize = 2000;
 const WARMUP: usize = 200;

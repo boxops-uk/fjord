@@ -268,11 +268,11 @@ fn scratch(options: &Options, name: &str, schema: &Schema) -> (PathBuf, FjallDb)
 ///
 /// A different corpus by necessity — `put_fact` takes encoded bytes, and encoding a key
 /// that holds a reference presupposes the interning this layer is defined by not doing.
-/// So it writes `src.File` keys, one string apiece, as many as the corpus has facts. What
+/// So it writes `code.File` keys, one string apiece, as many as the corpus has facts. What
 /// it prices is the part every other row also pays: an id from the allocator, two tree
 /// inserts, one batch commit through fjall's journal.
 fn commit(options: &Options, schema: &Schema) -> Row {
-    let predicate = sample_schema::id("src.File");
+    let predicate = sample_schema::id("code.File");
     let facts = options.corpus.facts();
     let keys: Vec<Vec<u8>> = (0..facts)
         .map(|n| {

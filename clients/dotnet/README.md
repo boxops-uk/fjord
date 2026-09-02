@@ -121,32 +121,48 @@ and it is deliberately not used: the default schema is not expected to move ofte
 version bump is the accepted cost of the simpler client. That decision is the reason this
 section exists.
 
-Run `scripts/flag-day.sh check` at any point; it walks the steps below in order and stops
-at the first stale one, because the expensive failure here is discovering step 3 after
-step 7. `scripts/flag-day.sh regen` does the parts a machine can.
+**There was a script for this, and it is gone.** `scripts/flag-day.sh` walked nine steps
+in order and stopped at the first stale one, because the expensive failure was discovering
+step 3 after step 7. Every step that was a *correctness* claim is a test now, and a test is
+a required check rather than a thing somebody remembers to run:
 
-1. **Edit `schemas/code.sigla`.**
-2. **Read the new number** — `fjord schema check schemas/code.sigla`.
-3. **Paste it into the constant that states *that* schema.** The two clients are no
-   longer written against one schema: `Boxops.Fjord.Demo/Program.cs` states
-   `code.sigla` and `Boxops.Fjord.Indexer/DotnetIndex.cs` states `dotnet.sigla`, each
-   restated independently on purpose.
-   `the_dotnet_clients_carry_the_fingerprint_the_schema_has` checks each against its own,
-   so a missed one is a red suite rather than a refused handshake at somebody's site.
+| what the script checked | what checks it now |
+|---|---|
+| the schema resolves, and its number | `every_shipped_schema_has_a_recorded_fingerprint` |
+| each client's constant | `the_dotnet_clients_carry_the_fingerprint_the_schema_has`, per schema and by name |
+| the Rust side agrees byte for byte | `byte_identical_with_the_dotnet_client` |
+| the fixture reader's counts and key order | `sample_schema`'s four tests |
+| the suite and the lint gate | the ordinary gate |
+
+What went with it is two nudges rather than two guarantees: it noticed goldens that had
+been regenerated and not committed, and it warned when the schema moved and the Glean
+translation did not. The first is a `git status` away; the second is moot while
+`--glean-out` refuses.
+
+So the order below is for a person, and nothing enforces it:
+
+1. **Edit the schema** — `schemas/demo.sigla` for the demo and the fixture,
+   `schemas/dotnet.sigla` for what the indexer writes.
+2. **Read the new number** — `fjord --schema-path ./schemas schema check <file>`.
+3. **Paste it into the constant that states *that* schema.** The clients are written
+   against different schemas: `Boxops.Fjord.Demo/Program.cs` states `demo.sigla` and
+   `Boxops.Fjord.Indexer/DotnetIndex.cs` states `dotnet.sigla`, each restated
+   independently on purpose. The test above checks each against its own, so a missed one
+   is a red suite rather than a refused handshake at somebody's site.
 4. **Regenerate the goldens** — `./clients/dotnet/emit-golden.sh`. This needs a .NET SDK,
    and it is the step most often forgotten because the Rust test that depends on it
    *looks* like a Rust problem.
-5. **Check the Rust side still agrees** — `cargo test -p fjord-client byte_identical`.
-6. **Update `crates/fjord-cli/src/sample_schema.rs`**: the predicate count, `KEY_ORDER`,
-   and the name lookups.
-7. **Update `clients/dotnet/glean/fjbench.angle`**, the Glean translation of the same
-   shapes. Nothing checks this one; the script warns.
-8. **Bump the .NET package version** in the same commit that re-pastes the constant. A
+5. **Check the Rust side still agrees** — `cargo test -p fjord-client byte_identical`. Its
+   corpus is stated independently, so a block added on one side and not the other fails
+   here by count before it fails by bytes.
+6. **Update `crates/fjord-cli/src/sample_schema.rs`** if the fixture moved: the predicate
+   count, `KEY_ORDER`, `VALUE_ORDER` and the name lookups.
+7. **Bump the .NET package version** in the same commit that re-pastes the constant. A
    moved fingerprint *is* a client release, and an un-upgraded client's refusal is the
    designed failure — `a_schema_mismatch_is_refused_at_the_handshake` asserts it names
    both numbers, so an operator can tell a stale client from one pointed at the wrong
    database.
-9. **`cargo test` and the pinned lint gate.**
+8. **`cargo test` and the pinned lint gate.**
 
 A schema *re-keying* — changing a predicate's key rather than adding one — is a bigger
 job than this: every query and every producer that reads the predicate moves with it, and

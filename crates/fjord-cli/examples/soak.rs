@@ -285,22 +285,22 @@ fn mix(pivots: &Pivots) -> Vec<Class> {
         Class {
             name: "point lookup",
             weight: 80,
-            sigla: format!("F where src.File F; F = \"{}\"", pivots.file),
+            sigla: format!("F where code.File F; F = \"{}\"", pivots.file),
         },
         Class {
             name: "small scan",
             weight: 15,
-            sigla: format!("F where src.File F; F = \"{}\"..", pivots.directory),
+            sigla: format!("F where code.File F; F = \"{}\"..", pivots.directory),
         },
         Class {
             name: "full scan",
             weight: 4,
-            sigla: "F where src.File F".to_owned(),
+            sigla: "F where code.File F".to_owned(),
         },
         Class {
             name: "join, whole db",
             weight: 1,
-            sigla: "{what = D.name, file = D.module.file} where D = src.Decl _".to_owned(),
+            sigla: "{what = D.name, file = D.file} where D = code.Decl _".to_owned(),
         },
     ]
 }
@@ -328,7 +328,7 @@ fn start_stalled<'scope>(
                     return;
                 };
 
-                let Ok(mut rows) = connection.query("F where src.File F") else {
+                let Ok(mut rows) = connection.query("F where code.File F") else {
                     return;
                 };
 
