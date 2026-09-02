@@ -594,6 +594,21 @@ internal static class CodeIndex
                 FjordValue.Of(line)));
 
     /// <summary>
+    /// <c>src.FileOrigin</c>: which repository and revision a file came from.
+    /// </summary>
+    /// <remarks>
+    /// Per file, because the layer's purpose for it is an index that spans several
+    /// repositories — where a per-database answer cannot be right. For a single checkout it
+    /// is the same two strings on every file, and the per-database form belongs in
+    /// <c>config.Setting</c>, which this schema cannot carry: until then this is the only
+    /// channel provenance has.
+    /// </remarks>
+    public static FjordFact FileOriginFact(FjordFact file, string repo, string revision) =>
+        new(FileOrigin,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(FjordValue.Of(repo), FjordValue.Of(revision)));
+
+    /// <summary>
     /// <c>src.FileLanguage</c>: what a file is written in, named rather than numbered.
     /// </summary>
     /// <remarks>

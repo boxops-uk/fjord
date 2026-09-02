@@ -68,7 +68,11 @@ public sealed class SourceWalkTests
         Assert.IsType<FjordValue.Record>(value).Fields;
 
     /// <summary>Walk one file's source through the real indexer and keep what it wrote.</summary>
-    private static Recorder Walk(string source, bool lines = true)
+    private static Recorder Walk(
+        string source,
+        bool lines = true,
+        string? repo = null,
+        string? revision = null)
     {
         var directory = Directory.CreateTempSubdirectory("fjord-source-walk");
         try
@@ -76,7 +80,13 @@ public sealed class SourceWalkTests
             var path = Path.Combine(directory.FullName, "A.cs");
             File.WriteAllText(path, source);
 
-            var options = new Options { Source = directory.FullName, Lines = lines };
+            var options = new Options
+            {
+                Source = directory.FullName,
+                Lines = lines,
+                Repo = repo,
+                Revision = revision,
+            };
             var projects = ProjectIndex.Build(directory.FullName, directory.FullName, [], TextWriter.Null);
             var recorder = new Recorder();
 
@@ -205,6 +215,31 @@ public sealed class SourceWalkTests
 
         Assert.Equal((uint)Array.IndexOf(CodeIndex.LanguageNames, "csharp") + 1, alternative.Disc);
         Assert.Empty(Assert.IsType<FjordValue.Record>(alternative.Value).Fields);
+    }
+
+    /// <summary>
+    /// **Provenance is written only where a run states it.** A file's origin is not in the
+    /// code, and an index that guessed one would be asserting something it cannot know.
+    /// </summary>
+    [Fact]
+    public void A_file_carries_its_origin_when_the_run_states_one()
+    {
+        var written = Walk(
+            "class A\n{\n}\n",
+            repo: "github.com/boxops-uk/fjord",
+            revision: "3fa4961");
+
+        var origin = Assert.Single(written.Of(CodeIndex.FileOrigin));
+        var fields = Fields(origin.Value);
+
+        Assert.Equal("github.com/boxops-uk/fjord", Str(fields[0]));
+        Assert.Equal("3fa4961", Str(fields[1]));
+    }
+
+    [Fact]
+    public void A_run_that_states_no_provenance_writes_none()
+    {
+        Assert.Empty(Walk("class A\n{\n}\n").Of(CodeIndex.FileOrigin));
     }
 
     /// <summary>

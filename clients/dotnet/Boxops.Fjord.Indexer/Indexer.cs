@@ -307,19 +307,29 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// what its contents hash to.
     /// </summary>
     /// <remarks>
-    /// Neither is gated by <c>--no-lines</c>: they are one fact each per file, and they
-    /// are what makes a file's row in a search result renderable — a language to
-    /// highlight by, and a digest to tell two checkouts of one path apart.
+    /// None of them is gated by <c>--no-lines</c>: they are one fact each per file, and
+    /// they are what makes a file's row in a search result renderable — a language to
+    /// highlight by, and a digest to tell two checkouts of one path apart. Provenance
+    /// joins them only when the run stated it, since it is the one thing here that is not
+    /// in the code.
     /// </remarks>
     private void IndexFile(SyntaxTree tree, FjordFact file)
     {
         var language = CodeIndex.FileLanguageFact(file, SourceLayer.LanguageName(tree.FilePath));
         var digest = CodeIndex.FileDigestFact(file, SourceLayer.Digest(tree.GetText()));
+        var origin = options.Repo is { } repo && options.Revision is { } revision
+            ? CodeIndex.FileOriginFact(file, repo, revision)
+            : null;
 
         using (Enter())
         {
             sink.Add(CodeIndex.FileLanguage, language);
             sink.Add(CodeIndex.FileDigest, digest);
+
+            if (origin is not null)
+            {
+                sink.Add(CodeIndex.FileOrigin, origin);
+            }
         }
     }
 

@@ -203,6 +203,22 @@ internal sealed record Options
     /// <summary>Let MSBuild's own output through.</summary>
     public bool Verbose { get; init; }
 
+    /// <summary>
+    /// The repository this checkout is of, written as <c>src.FileOrigin</c> — null when a
+    /// run does not say.
+    /// </summary>
+    /// <remarks>
+    /// <b>Provenance is not in the code.</b> Which repository and which revision a
+    /// directory is a checkout of are facts about the checkout, so a run either states them
+    /// or the index does not carry them; guessing from a `.git` directory would put
+    /// something in the index that the next consumer would have to distrust. Paired with
+    /// <see cref="Revision"/> and refused without it.
+    /// </remarks>
+    public string? Repo { get; init; }
+
+    /// <summary>The revision indexed. Paired with <see cref="Repo"/>.</summary>
+    public string? Revision { get; init; }
+
     public const string Usage = """
         fjord-indexer — index a .NET solution into a Fjord database
 
@@ -224,6 +240,8 @@ internal sealed record Options
           --no-refs             declarations only: no src.Ref, no src.Import
           --no-lines            do not write the line table (src.FileLine)
           --styles              also write syntax highlighting (src.FileLineStyles)
+          --repo <id>           the repository this checkout is of, per file
+          --revision <rev>      the revision indexed (both, or neither: src.FileOrigin)
           --no-docs             do not write doc comments (src.Doc)
           --no-restore          do not let the design-time build restore first
           --syntax-only         skip MSBuild; glob *.cs and parse them
@@ -265,6 +283,7 @@ internal sealed record Options
         int? writers = null;
         bool references = true, restore = true, syntaxOnly = false;
         bool lines = true, docs = true, styles = false;
+        string? repo = null, revision = null;
         bool dryRun = false, smoke = true, verbose = false;
 
         for (var index = 0; index < argv.Length; index++)
@@ -315,6 +334,8 @@ internal sealed record Options
                     case "--no-refs": references = false; break;
                     case "--no-lines": lines = false; break;
                     case "--styles": styles = true; break;
+                    case "--repo": repo = Value(); break;
+                    case "--revision": revision = Value(); break;
                     case "--no-docs": docs = false; break;
                     case "--no-restore": restore = false; break;
                     case "--syntax-only": syntaxOnly = true; break;
@@ -347,6 +368,15 @@ internal sealed record Options
         if (batch < 1)
         {
             error = "--batch must be at least 1";
+            return false;
+        }
+
+        // **Half a pair is worse than neither.** `src.FileOrigin` carries both fields on one
+        // fact, so a run stating one would write provenance asserting the other is the empty
+        // string — a claim in the index that no consumer can tell apart from a gap.
+        if (repo is null != revision is null)
+        {
+            error = "--repo and --revision are a pair: state both, or neither";
             return false;
         }
 
@@ -389,6 +419,8 @@ internal sealed record Options
             References = references,
             Lines = lines,
             Styles = styles,
+            Repo = repo,
+            Revision = revision,
             Docs = docs,
             Restore = restore,
             SyntaxOnly = syntaxOnly,

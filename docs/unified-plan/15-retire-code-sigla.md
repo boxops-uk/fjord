@@ -54,8 +54,8 @@ only between S3 and S5, and that window is deliberately short.
 
 ### S1 — the source layer
 
-The indexer writes all nine `src.*`. It writes **three** today — `File`, `FileLine` and
-`FileLineStyles`.
+**Done.** The indexer writes all nine `src.*`, and the gate below is green: it wrote three when
+this run opened — `File`, `FileLine` and `FileLineStyles`.
 
 `FileInfo`, `FileLineAt`, `FileDigest` and `FileLanguage` are arithmetic and a hash over text the
 walk already has. `FileOrigin` is per-file provenance, written only where an index spans several
@@ -93,7 +93,7 @@ predicate asserting rows; the line-table arithmetic is a property over generated
 three examples — a file with and without a trailing newline, CRLF, a real blank final line, non-BMP
 text and a clipped line — and `FileLineAt` inverts `FileLine.start` for every row of it.
 
-**Landed so far — seven of the nine.** The arithmetic is `SourceLayer`, separated from the walk
+**How it landed.** The arithmetic is `SourceLayer`, separated from the walk
 because a walk needs a workspace and a property does not: the line table with the phantom line gone,
 `FileInfo`, `FileLineAt`, the extension-to-language mapping and the digest. Two test files, because
 the two halves fail differently — `SourceLayerTests` for the arithmetic (a seeded corpus whose
@@ -142,8 +142,23 @@ in `src.sigla`'s charter, `ScipSymbols`' own, and twelve tests, rather than in a
 `digest`: three things a consumer must read out of the database and cannot, until the indexer stops
 writing a schema that imports no `config`.
 
-**Still owed:** `FileOrigin` — per-file provenance, which needs options a run *states* rather than
-data it can read. It is the last of the nine.
+**`FileOrigin` is stated by a run, not read from the code.** Which repository and which revision a
+directory is a checkout of are facts about the checkout, so `--repo` and `--revision` say them or the
+index does not carry them — guessing from a `.git` directory would put something in the index that
+the next consumer has to distrust. They are refused singly: `FileOrigin` carries both fields on one
+fact, so half a pair writes provenance asserting the other is the empty string, which no consumer
+can tell from a gap. For a single checkout it is the same two strings on every file and the
+per-database form belongs in `config.Setting` — one more thing S5 owes, and until then this is the
+only channel provenance has at all.
+
+**The gate is green, in two halves.** `SourceLayerDatabaseTests` starts a real server, walks a
+fixture through the real `Indexer` into it over a socket, and asks one query per predicate against
+what came back — a workspace rather than a bare compilation, so the classifier has a `Document` and
+the style layer is covered too. It also asserts two answers rather than row counts: that
+`FileInfo.lines` equals the number of `FileLine` rows across the whole round trip, and that an
+overload's `+1` disambiguator survived being written and read back. The other half is
+`source_layer.rs`, which asks the same questions of hand-built facts — the schema answering and the
+producer filling it are different claims, and each needs its own test.
 
 **One published number moves and is annotated rather than re-run.** The tour transcript in
 `walkthrough.md` was taken before the source layer and is now stale in four ways — the predicate's
@@ -151,12 +166,49 @@ name, the predicate count, the fingerprint, and one fewer line fact per file plu
 predicates. It is re-run **with R7, after S5**, for D12's reason: the alternative is spending the
 same afternoon twice on numbers that are about to move again.
 
+### The order above is wrong past S1, and this is why
+
+**S2, S3 and S4 write predicates the producer's schema cannot reach.** The indexer
+handshakes on `code.sigla`'s fingerprint; `code.sigla` imports `src` and nothing else, and every
+predicate `CodeIndex` carries is `src.*`. So `msbuild.*`, `csharp.*`, `codemarkup.*` and
+`config.Setting` are all unreachable from it, and **S1 was the only S-run that could land against
+it**. The handshake compares one whole-schema fingerprint ([D2](OPEN-QUESTIONS.md)), so a narrower
+client schema is refused rather than accepted as a subset — there is no partial route.
+
+This also explains a symptom rather than three: `style-encoding`, `digest` and `symbol-scheme` are
+all owed to `config` and all blocked on the same switch, not on three separate oversights.
+
+**So the retirement splits, and its first half moves to the front:**
+
+```
+S1   the source layer          done
+S5a  the switch                the indexer targets the new set; `CodeIndex` becomes its
+                               constants; the goldens and the independently-stated schemas
+                               follow. This is the flag day, and it unblocks everything
+S2 · S3 · S4                   msbuild, csharp, codemarkup — parallel, after S5a
+S5b  the deletion              `schemas/code.sigla` goes when nothing references it
+R7   re-measure                once, after S5b
+```
+
+**What S5a costs turns on which schema it targets, and that is open:**
+
+| Target | Predicates the C# constant must carry |
+|---|---|
+| `index.sigla` as it stands | **138**, including `typescript`, `npm` and `bundle` — layers this producer will never write |
+| a new C#-only composite (`src` + `config` + `msbuild` + `csharp` + `codemarkup`) | **67** |
+
+The second halves the flag day and is arguably the better shape: a C# repository's database has no
+use for the TypeScript layers, and `index.sigla` stays the everything-composite for a consumer that
+wants both. It costs one schema file and one more row in the fingerprint golden.
+
 ### S2 — `msbuild.*`
 
 Sixteen predicates, and the producer already reads the data: `Projects.cs` walks `ProjectReference`
 and `PackageReference`, `Loader.cs` wires the reference graph by `ProjectId`. This is re-shaping
 plus the new `{ file }` identity, and it is the natural companion to **R8b**, which moves
 `ProjectInfo.Fact` and `ProjectIndex.Emit` behind an emitter.
+
+**Blocked on S5a**, like S3 and S4: `msbuild` is not in the producer's schema until the switch.
 
 **Gate.** Two evaluations of one `.csproj` reach one project (already a test, W9); the reference
 graph has edges between two projects, which `code.sigla`'s build layer never had.
