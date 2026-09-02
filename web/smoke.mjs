@@ -14,6 +14,17 @@ import puppeteer from 'puppeteer-core'
 
 const CACHE = `${process.env.HOME}/.cache/puppeteer/chrome`
 
+// The shipped fixture's predicate count, read off the fixture. Hardcoding it
+// meant that expanding `schemas/demo.sigla` broke three checks at once and none
+// of them named the schema; the page's claim is *every* predicate, not six.
+const PREDICATES = (readFileSync('../schemas/demo.sigla', 'utf8').match(/^\s*predicate\s/gm) ?? [])
+  .length
+// A count of zero would make every check below pass by asking for nothing.
+if (PREDICATES < 2) {
+  console.error(`read ${PREDICATES} predicates out of schemas/demo.sigla; the regex is wrong`)
+  process.exit(2)
+}
+
 function chrome() {
   if (process.env.CHROME) return process.env.CHROME
   if (!existsSync(CACHE)) return null
@@ -149,7 +160,7 @@ check(
   (await page.$$('.astryx-layout-panel')).length >= 2 &&
     (await page.$$('.plan .steps li')).length > 0 &&
     (await page.$$('.transport')).length === 1 &&
-    (await page.$$('.data tr.section')).length === 6,
+    (await page.$$('.data tr.section')).length === PREDICATES,
 )
 check('the split can be resized', (await page.$$('.astryx-resize-handle')).length >= 1)
 
@@ -227,7 +238,7 @@ await settle()
 check('an empty query reports nothing', (await page.$$('.diagnostics li')).length === 0)
 check(
   'an empty query folds the whole database',
-  (await unfolded()).length === 0 && (await page.$$('.data tr.section')).length === 6,
+  (await unfolded()).length === 0 && (await page.$$('.data tr.section')).length === PREDICATES,
 )
 check(
   'an empty query leaves every view saying so',
@@ -462,7 +473,7 @@ await page.waitForSelector('dialog .editor.tall .input')
 // the first did not.
 check(
   'the schema says what it declares',
-  (await page.$eval('dialog', (el) => el.textContent)).includes('6 predicates'),
+  (await page.$eval('dialog', (el) => el.textContent)).includes(`${PREDICATES} predicates`),
 )
 
 // The schema pane is painted by the *schema* lexer, which has keywords sigla
