@@ -288,12 +288,37 @@ internal sealed class ProjectIndex
     }
 
     /// <summary>What a design-time build knows and the project file cannot say.</summary>
+    /// <remarks>
+    /// <b>A project that built belongs here, wherever the glob looked.</b> The discovery
+    /// pass reads every <c>.csproj</c> under the source, and a solution is free to name one
+    /// that is not under it — a solution in <c>app/</c> listing <c>../lib/Lib.csproj</c> is
+    /// an ordinary layout. Such a project used to be dropped by this one branch: looked up
+    /// by path, not found, and returned from. It had a framework, an assembly name and an
+    /// exact source list, and none of it reached the index — nor did the reference edge
+    /// pointing at it, since an edge with no target is not written.
+    /// <para>
+    /// <b>The early return that stays</b> is for a path that does not resolve under the
+    /// root. That one has no name two runs would agree on — it would come back as
+    /// <c>../../elsewhere</c>, which depends on where the root happens to be — so there is
+    /// nothing to call it and nothing to key it by.
+    /// </para>
+    /// </remarks>
     private void Refine(string root, IAnalyzerResult result)
     {
-        if (Paths.Relative(root, result.ProjectFilePath) is not { } path
-            || !_byPath.TryGetValue(path, out var project))
+        if (Paths.Relative(root, result.ProjectFilePath) is not { } path)
         {
             return;
+        }
+
+        if (!_byPath.TryGetValue(path, out var project))
+        {
+            project = new ProjectInfo(path);
+
+            // Read its file too, spelled exactly as `Discover` would have: a rescued
+            // project is a discovered one that was looked for in the wrong place, and it
+            // should carry the same facts for the same reasons.
+            Read(root, System.IO.Path.GetFullPath(result.ProjectFilePath), project);
+            _byPath[path] = project;
         }
 
         project.Built = true;

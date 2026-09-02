@@ -262,4 +262,64 @@ public sealed class LoaderTests
         Assert.Contains("Missing.props", said, StringComparison.Ordinal);
         Assert.DoesNotContain("DispatchToInnerBuilds", said, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// <b>A project that built belongs in the graph, wherever it was found.</b>
+    /// </summary>
+    /// <remarks>
+    /// The build layer globs every <c>.csproj</c> under the source, and a solution is free
+    /// to list one that is not under it — <c>app/App.slnx</c> naming <c>../lib/Lib.csproj</c>
+    /// is an ordinary layout. Such a project used to be dropped by the one branch that
+    /// could see it: refinement looked it up by path, did not find it, and returned. It had
+    /// a design-time build, a framework, an assembly name and a source list, and none of it
+    /// reached the index.
+    /// </remarks>
+    [Fact]
+    public void A_project_the_glob_missed_and_the_build_found_is_in_the_layer()
+    {
+        using var fixture = Fixture.Copy("rescue");
+
+        var solution = Loader.Load(
+            new Options { Source = fixture.Path("app", "App.slnx"), Jobs = 2 },
+            fixture.Root,
+            TextWriter.Null);
+
+        Assert.Equal(
+            ["app/Main/Main.csproj", "lib/Lib.csproj"],
+            solution.Build.Projects.Select(project => project.Path).Order());
+
+        // Refined, not merely present: the framework is the one MSBuild resolved rather
+        // than one the XML happened to spell.
+        var lib = Assert.Single(solution.Build.Projects, project => project.Path == "lib/Lib.csproj");
+        Assert.True(lib.Built);
+        Assert.Equal(["net10.0"], lib.Frameworks);
+
+        // And the edge is no longer dropped for want of a target to point at.
+        var main = Assert.Single(solution.Build.Projects, project => project.Path.EndsWith("Main.csproj", StringComparison.Ordinal));
+        Assert.Contains("lib/Lib.csproj", main.ProjectRefs);
+    }
+
+    /// <summary>
+    /// <b>The class invariant: a build with a usable compilation has a project fact.</b>
+    /// </summary>
+    /// <remarks>
+    /// One count against one count, over both fixtures — the layout where every project is
+    /// under the source and the one where a project is not. A fixture can be fixed by
+    /// hand; this is the rule the fixture is an example of.
+    /// </remarks>
+    [Theory]
+    [InlineData("graph", "Graph.slnx")]
+    [InlineData("rescue", "app/App.slnx")]
+    public void Every_project_that_built_has_a_project_fact(string name, string solutionFile)
+    {
+        using var fixture = Fixture.Copy(name);
+
+        var solution = Loader.Load(
+            new Options { Source = fixture.Path(solutionFile.Split('/')), Jobs = 2 },
+            fixture.Root,
+            TextWriter.Null);
+
+        Assert.NotEmpty(solution.Projects);
+        Assert.Equal(solution.Projects.Count, solution.Build.Built);
+    }
 }

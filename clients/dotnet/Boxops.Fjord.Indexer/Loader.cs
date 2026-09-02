@@ -472,10 +472,34 @@ internal static class Loader
         var projects = manager.Projects.Values
             .Where(analyzer => analyzer.ProjectFile.Path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
             .OrderBy(analyzer => analyzer.ProjectFile.Path, StringComparer.Ordinal)
+            .Select(analyzer => Normalised(analyzer, managerOptions))
             .ToList();
 
         log.WriteLine($"  {projects.Count} C# project(s) in the solution");
         return projects;
+    }
+
+    /// <summary>
+    /// The same project, asked for under the path MSBuild will call it by.
+    /// </summary>
+    /// <remarks>
+    /// <b>A solution may name a project by a path that climbs.</b> A solution in
+    /// <c>app/</c> listing <c>../lib/Lib.csproj</c> is ordinary, and the path is carried
+    /// through exactly as written — while MSBuild reports the project it built under the
+    /// normalised one. Buildalyzer pairs the two by string, so nothing matches: the build
+    /// succeeds, reports no error, and hands back <i>no results</i>. The project is then
+    /// skipped, which reads as "it does not build" for a project that builds perfectly.
+    /// </remarks>
+    private static IProjectAnalyzer Normalised(
+        IProjectAnalyzer analyzer,
+        AnalyzerManagerOptions options)
+    {
+        var written = analyzer.ProjectFile.Path.ToString();
+        var real = Path.GetFullPath(written);
+
+        return string.Equals(written, real, StringComparison.Ordinal)
+            ? analyzer
+            : new AnalyzerManager(options).GetProject(IOPath.Parse(real)) ?? analyzer;
     }
 
     private static EnvironmentOptions BuildOptions(Options options, bool innerBuilds)
