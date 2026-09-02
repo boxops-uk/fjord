@@ -248,6 +248,20 @@ emitting at all, given `codemarkup.FileLocalXRef` answers the jump span-to-span 
 on one line, a conversion-operator pair, and a type with a same-line constructor — asserted per
 predicate. Reformatting the fixture produces an identical set of keys.
 
+**And the census had to be sharpened before it would pass, which is worth recording because the
+question as written reads as a defect.** `csharp.Parameter` and `csharp.TypeParameter` are
+**structural** identities: neither key names its containing method — `TypeParameter`'s comment says
+so in as many words, and `Parameter`'s key is name, type and modifiers — so `M(int a)` and
+`SameLine(int a)` reach *one* `Parameter` fact by design, and the ordered edge
+`MethodParameter {method, index, parameter}` is what ties one to a method. Run against every
+predicate, the census reports those as conflicts. So it runs over the predicates that carry an
+identity — the four named types, `Method`, `Field`, `Property`, `Namespace`, `FullName` — and the
+sharing is asserted separately, as a claim rather than an excuse.
+
+Both defects the old key had are asserted gone rather than argued: two overloads on one line are two
+keys, and reformatting the fixture moves not a single one. The conversion-operator pair is its own
+test, since it is the case that needs `docId` at all.
+
 ### S4 — `codemarkup.*`
 
 Ten predicates, and cheap once S3 exists because they are the same facts re-keyed for the question
