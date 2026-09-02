@@ -113,6 +113,43 @@ public sealed class LoaderTests
     }
 
     /// <summary>
+    /// <b>A checkout that has been built still indexes.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The regression guard for the defect that made this the normal case and the broken
+    /// one. <c>CoreCompile</c> is incremental, so after an ordinary <c>dotnet build</c>
+    /// MSBuild skips it — and the compiler command line it would have logged is the
+    /// entire content of a design-time build. Every project came back
+    /// succeeded-with-nothing, which the loader reported as a failed build, so indexing
+    /// a repository anybody had built produced <i>nothing at all</i>.
+    /// </para>
+    /// <para>
+    /// The fixture is built first on purpose: this test is green by accident on a fresh
+    /// checkout, which is exactly how the defect survived.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_project_whose_outputs_are_up_to_date_is_still_built_for_its_command_line()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        // A alone, which drags B in behind it: the two projects the solution lists are
+        // then both up to date, which is the state this is about.
+        fixture.Build("src/A/A.csproj");
+
+        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+
+        Assert.Equal(["A", "B"], solution.Projects.Select(project => project.Name).Order());
+
+        // And the compilations are real ones, not empty shells: an up-to-date project
+        // whose source list came back empty would still count as a project.
+        Assert.All(
+            solution.Projects,
+            project => Assert.NotEmpty(project.Compile()!.SyntaxTrees));
+    }
+
+    /// <summary>
     /// <b>The build layer is every project under the source, not only the built ones.</b>
     /// </summary>
     /// <remarks>

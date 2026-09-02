@@ -455,6 +455,23 @@ internal static class Loader
             environment.TargetsToBuild.Add("Compile");
         }
 
+        // **A checkout somebody has built is the normal case, and it used to index as
+        // nothing.** `CoreCompile` is incremental: its outputs are the intermediate
+        // assembly, its inputs are the sources, and after any ordinary `dotnet build` the
+        // former is newer than the latter — so MSBuild skips the target, the compiler
+        // command line is never logged, and the whole of what Buildalyzer reads is that
+        // line. Every project then comes back succeeded-with-no-result, which the loader
+        // reports as a failed design-time build, and a run over a built repository ends
+        // with "every project failed to build" and no clue why.
+        //
+        // `$(NonExistentFile)` is `CoreCompile`'s own escape hatch — it sits in the
+        // target's `Inputs` list precisely so a caller can name a file that is not there
+        // and make the up-to-date check fail. Nothing is written and nothing is deleted:
+        // the target re-runs, logs its command line, and `SkipCompilerExecution` still
+        // stops the compiler itself from doing any work.
+        environment.GlobalProperties["NonExistentFile"] =
+            Path.Combine("__NonExistentSubDir__", "__NonExistentFile.cs");
+
 
         // Node reuse leaves MSBuild processes alive between builds, which over a few
         // hundred projects is a few hundred idle processes holding a machine's memory.
