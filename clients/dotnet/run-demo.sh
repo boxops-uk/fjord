@@ -17,7 +17,7 @@ mkdir -p "$scratch"
 # one, and this is the file the C# side states independently in `Program.cs` — which
 # is the agreement the handshake fingerprint checks.
 "$root/target/debug/fjord" --data-dir "$scratch/db" create code \
-    --schema "$root/schemas/code.sigla"
+    --schema "$root/schemas/demo.sigla"
 
 "$root/target/debug/fjord" --data-dir "$scratch/db" serve \
     --socket "$scratch/fjord.sock" \

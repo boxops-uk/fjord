@@ -183,7 +183,7 @@ fn the_dotnet_clients_carry_the_fingerprint_the_schema_has() {
             "public const ulong SchemaFingerprint = ",
         ),
         (
-            "schemas/code.sigla",
+            "schemas/demo.sigla",
             "clients/dotnet/Boxops.Fjord.Demo/Program.cs",
             "const ulong SchemaFingerprint = ",
         ),

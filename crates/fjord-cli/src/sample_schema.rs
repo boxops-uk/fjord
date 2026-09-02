@@ -180,17 +180,18 @@ mod tests {
     /// whether either agrees with the schema the **server** actually serves, because that
     /// one is parsed from a file and nothing else reads it.
     ///
-    /// **It names the demo's schema explicitly**, which is no longer this module's. The
-    /// two were the same file until the indexer moved to `dotnet.sigla` and the fixture to
-    /// `demo.sigla`; comparing the golden against whatever `schema()` happens to return
-    /// would then be comparing two unrelated numbers and passing only by coincidence.
+    /// **It names the file rather than trusting `schema()`.** The two are the same
+    /// today — both are `demo.sigla` — and naming it is what keeps this a claim about the
+    /// *server's* copy: if the fixture and the demo ever part company again, as they did
+    /// while the indexer moved to `dotnet.sigla`, comparing the golden against whatever
+    /// `schema()` returned would compare two unrelated numbers and pass by coincidence.
     ///
     /// Regenerate with `./clients/dotnet/emit-golden.sh` when that schema moves on
     /// purpose; both sides move together, which is the point.
     #[test]
     fn the_dotnet_demos_schema_is_the_file_the_server_parses() {
         const GOLDEN: &str = include_str!("../../../clients/dotnet/golden/blocks.txt");
-        const DEMO: &str = "schemas/code.sigla";
+        const DEMO: &str = "schemas/demo.sigla";
 
         let recorded = GOLDEN
             .lines()

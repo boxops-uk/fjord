@@ -25,132 +25,94 @@ use fjord_wire::{WireFact, WireRef, WireValue, encode_block};
 use lasso::Rodeo;
 
 const FILE: PredicateId = PredicateId(0);
-const MODULE: PredicateId = PredicateId(1);
-const DECL: PredicateId = PredicateId(2);
-const REFERENCE: PredicateId = PredicateId(4);
-const PROJECT: PredicateId = PredicateId(6);
-const ASSEMBLY: PredicateId = PredicateId(7);
-const PACKAGE: PredicateId = PredicateId(11);
-const PARAM: PredicateId = PredicateId(17);
-const DOC: PredicateId = PredicateId(19);
+const DECL: PredicateId = PredicateId(1);
+const REFERENCE: PredicateId = PredicateId(2);
+const SPAN: PredicateId = PredicateId(3);
+const EXTENT: PredicateId = PredicateId(4);
+const KIND: PredicateId = PredicateId(5);
+const KIND_OF: PredicateId = PredicateId(6);
+const RESOLVES: PredicateId = PredicateId(7);
+const DIGEST: PredicateId = PredicateId(8);
+const EXTENDS: PredicateId = PredicateId(9);
+const NOTE: PredicateId = PredicateId(10);
 
-/// The demo's schema, restated in Rust.
+/// **`schemas/demo.sigla`, stated here rather than parsed.**
 ///
-/// Two rules here are load-bearing and are exactly what the fingerprint checks: a
-/// predicate's id **is** its position, and a record's fields are in the order the schema
-/// declares them, because that order is part of the encoding. It is *not* alphabetical —
-/// `src.Decl` and `src.Ref` are declared for the seeks they are asked to serve — which is
-/// the whole reason this file states the schema again instead of importing one.
+/// The point of the file is that two implementations agree, so this side writes the
+/// schema down. Parsing the `.sigla` and encoding against it would test the parser, not
+/// the codec, and would make the C# statement's agreement automatic.
+///
+/// The order is the C# client's order, because a predicate's id is its position in each
+/// client's own list and the golden names the ids it used. Nothing positional crosses
+/// the wire — a block header carries the predicate's *name* — so the two lists need only
+/// agree with themselves.
 fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
     let mut sym = |name: &str| rodeo.get_or_intern(name);
 
-    let (file, module, decl) = (sym("src.File"), sym("src.Module"), sym("src.Decl"));
-    let (search, reference, import) = (sym("src.SearchByName"), sym("src.Ref"), sym("src.Import"));
-    let (project, assembly, compilation) = (
-        sym("src.Project"),
-        sym("src.Assembly"),
-        sym("src.Compilation"),
+    let (file, decl, reference, span) = (
+        sym("code.File"),
+        sym("code.Decl"),
+        sym("code.Ref"),
+        sym("code.Span"),
     );
-    let (project_source, project_ref) = (sym("src.ProjectSource"), sym("src.ProjectRef"));
-    let (package, package_ref) = (sym("src.Package"), sym("src.PackageRef"));
-    let (member, extends, implements, overrides) = (
-        sym("src.Member"),
-        sym("src.Extends"),
-        sym("src.Implements"),
-        sym("src.Override"),
-    );
-    let (decl_span, search_lower, file_xref, derives_from, attribute_of) = (
-        sym("src.DeclSpan"),
-        sym("src.SearchByLowerName"),
-        sym("src.FileXRef"),
-        sym("src.DerivesFrom"),
-        sym("src.AttributeOf"),
-    );
-    let (param, type_of, doc, attribute) = (
-        sym("src.Param"),
-        sym("src.TypeOf"),
-        sym("src.Doc"),
-        sym("src.Attribute"),
-    );
-    // The shared source layer, which `code.sigla` imports rather than declares. Stated
-    // here for the same reason everything else is: two independent statements of one
-    // schema is what the fingerprint is *for*, and a shared one would agree by
-    // construction.
-    let (symbol, file_language, file_digest, file_origin) = (
-        sym("src.Symbol"),
-        sym("src.FileLanguage"),
-        sym("src.FileDigest"),
-        sym("src.FileOrigin"),
-    );
-    let (file_info, file_line, file_line_at, file_line_styles) = (
-        sym("src.FileInfo"),
-        sym("src.FileLine"),
-        sym("src.FileLineAt"),
-        sym("src.FileLineStyles"),
+    let (extent, kind, kind_of) = (sym("code.Extent"), sym("code.Kind"), sym("code.KindOf"));
+    let (resolves, digest, extends, note) = (
+        sym("code.Resolves"),
+        sym("code.Digest"),
+        sym("code.Extends"),
+        sym("code.Note"),
     );
 
-    let (f_at, f_col, f_file, f_from) = (sym("at"), sym("col"), sym("file"), sym("from"));
-    let (f_line, f_module, f_name, f_to) = (sym("line"), sym("module"), sym("name"), sym("to"));
-    let (f_assembly, f_framework, f_project) = (sym("assembly"), sym("framework"), sym("project"));
-    let (f_package, f_version, f_container) = (sym("package"), sym("version"), sym("container"));
-    let (f_member, f_base, f_type, f_iface) =
-        (sym("member"), sym("base"), sym("type"), sym("iface"));
-    let (f_decl, f_index, f_attribute, f_target) =
-        (sym("decl"), sym("index"), sym("attribute"), sym("target"));
-    let (f_length, f_end_line, f_end_col) = (sym("length"), sym("endLine"), sym("endCol"));
-    let (f_language, f_digest, f_repo, f_revision) =
-        (sym("language"), sym("digest"), sym("repo"), sym("revision"));
-    let (f_bytes, f_lines, f_ends_in_newline) = (sym("bytes"), sym("lines"), sym("endsInNewline"));
-    let (f_text, f_start, f_cstart, f_styles) =
-        (sym("text"), sym("start"), sym("cstart"), sym("styles"));
+    let (f_file, f_name, f_line, f_col) = (sym("file"), sym("name"), sym("line"), sym("col"));
+    let (f_from, f_to, f_decl, f_at) = (sym("from"), sym("to"), sym("decl"), sym("at"));
+    let (f_what, f_sha256, f_type, f_base, f_text) = (
+        sym("what"),
+        sym("sha256"),
+        sym("type"),
+        sym("base"),
+        sym("text"),
+    );
+    let f_assembly = sym("assembly");
 
-    // **An alternative declared with no type is the empty record**, which is what
-    // `false_ = 0` lowers to — verified against `fjord schema fingerprint`, not assumed.
-    let unit = || PredicateTy::Record(Arc::from([]));
     let alt = |name: lasso::Spur, disc: u32, ty: PredicateTy| Alternative { name, disc, ty };
 
-    let boolean = {
-        let (f, t) = (sym("false_"), sym("true_"));
-        PredicateTy::Union(Arc::from([alt(f, 0, unit()), alt(t, 1, unit())]))
-    };
+    /// **An alternative declared with no type is the empty record**, which is what
+    /// `unresolved = 0` lowers to — verified against `fjord schema check`, not assumed.
+    fn unit() -> PredicateTy {
+        PredicateTy::Record(Arc::from([]))
+    }
 
-    // 21 alternatives, `other : string = 0` first and the rest contiguous from 1. Built
-    // from a table rather than written out, because a transcription slip in twenty-one
-    // hand-written structs is exactly what I10 makes permanent — and the fingerprint
-    // check below is what catches one either way.
-    let language = {
-        let other = sym("other");
-        let mut alts = vec![alt(other, 0, PredicateTy::Str)];
-        for (index, name) in [
-            "csharp",
-            "typescript",
-            "javascript",
-            "tsx",
-            "jsx",
-            "rust",
-            "python",
-            "java",
-            "cpp",
-            "c",
-            "go",
-            "json",
-            "yaml",
-            "markdown",
-            "css",
-            "html",
-            "sql",
-            "shell",
-            "xml",
-            "proto",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            alts.push(alt(sym(name), index as u32 + 1, unit()));
-        }
-        PredicateTy::Union(Arc::from(alts))
-    };
+    let position = PredicateTy::Record(Arc::from([
+        (f_line, PredicateTy::Int),
+        (f_col, PredicateTy::Int),
+    ]));
+
+    // **The tags are 5 and 2, not 0 and 1.** A client numbering alternatives by
+    // position writes `data` where the schema says `func`, and nothing on the wire
+    // objects.
+    let what = PredicateTy::Union(Arc::from([
+        alt(sym("data"), 5, PredicateTy::Str),
+        alt(sym("func"), 2, PredicateTy::Int),
+    ]));
+
+    // A payload of every kind: none, a reference, a reference to a *different*
+    // predicate, and a record.
+    let target = PredicateTy::Union(Arc::from([
+        alt(sym("unresolved"), 0, unit()),
+        alt(sym("decl"), 1, PredicateTy::Fact(DECL)),
+        alt(sym("file"), 2, PredicateTy::Fact(FILE)),
+        alt(
+            sym("external"),
+            3,
+            PredicateTy::Record(Arc::from([
+                (f_name, PredicateTy::Str),
+                (f_assembly, PredicateTy::Str),
+            ])),
+        ),
+    ]));
+
+    let rendered = PredicateTy::Union(Arc::from([alt(sym("html"), 0, PredicateTy::Str)]));
 
     Schema::new(
         rodeo.into_reader(),
@@ -160,304 +122,92 @@ fn schema() -> Schema {
                 key: PredicateTy::Str,
                 value: None,
             },
-            Predicate {
-                name: module,
-                key: PredicateTy::Record(Arc::from([
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (f_name, PredicateTy::Str),
-                ])),
-                value: None,
-            },
-            // A value side: the declaration's kind.
+            // A reference leading the key, and a value side.
             Predicate {
                 name: decl,
                 key: PredicateTy::Record(Arc::from([
-                    (f_module, PredicateTy::Fact(MODULE)),
+                    (f_file, PredicateTy::Fact(FILE)),
                     (f_name, PredicateTy::Str),
                     (f_line, PredicateTy::Int),
                 ])),
                 value: Some(PredicateTy::Str),
             },
-            Predicate {
-                name: search,
-                key: PredicateTy::Record(Arc::from([
-                    (f_name, PredicateTy::Str),
-                    (f_to, PredicateTy::Fact(DECL)),
-                ])),
-                value: None,
-            },
-            // A nested record inside a key, and two references to two predicates.
+            // Two references to one predicate, each of which names its file — two
+            // levels of nesting.
             Predicate {
                 name: reference,
                 key: PredicateTy::Record(Arc::from([
+                    (f_from, PredicateTy::Fact(DECL)),
                     (f_to, PredicateTy::Fact(DECL)),
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (
-                        f_at,
-                        PredicateTy::Record(Arc::from([
-                            (f_line, PredicateTy::Int),
-                            (f_col, PredicateTy::Int),
-                            (f_length, PredicateTy::Int),
-                        ])),
-                    ),
                 ])),
                 value: None,
             },
+            // A reference then a **nested record**, spliced into the key rather than
+            // framed.
             Predicate {
-                name: import,
+                name: span,
                 key: PredicateTy::Record(Arc::from([
-                    (f_from, PredicateTy::Fact(MODULE)),
-                    (f_to, PredicateTy::Fact(MODULE)),
+                    (f_decl, PredicateTy::Fact(DECL)),
+                    (f_at, position.clone()),
                 ])),
                 value: None,
             },
-            // The build layer. Nothing below is written by the demo, and all of it is
-            // in the fingerprint — which is the point: a client that states a shorter
-            // schema is refused at the handshake rather than at the first fact.
+            // A **record value side**, which a scalar one does not reach.
             Predicate {
-                name: project,
-                key: PredicateTy::Str,
-                value: None,
+                name: extent,
+                key: PredicateTy::Record(Arc::from([(f_decl, PredicateTy::Fact(DECL))])),
+                value: Some(PredicateTy::Record(Arc::from([
+                    (f_from, position.clone()),
+                    (f_to, position),
+                ]))),
             },
             Predicate {
-                name: assembly,
-                key: PredicateTy::Str,
-                value: None,
-            },
-            Predicate {
-                name: compilation,
+                name: kind,
                 key: PredicateTy::Record(Arc::from([
-                    (f_assembly, PredicateTy::Fact(ASSEMBLY)),
-                    (f_framework, PredicateTy::Str),
-                    (f_project, PredicateTy::Fact(PROJECT)),
+                    (f_decl, PredicateTy::Fact(DECL)),
+                    (f_what, what.clone()),
+                ])),
+                value: None,
+            },
+            // A **union leading a key**.
+            Predicate {
+                name: kind_of,
+                key: PredicateTy::Record(Arc::from([
+                    (f_what, what),
+                    (f_decl, PredicateTy::Fact(DECL)),
                 ])),
                 value: None,
             },
             Predicate {
-                name: project_source,
-                key: PredicateTy::Record(Arc::from([
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (f_project, PredicateTy::Fact(PROJECT)),
-                ])),
+                name: resolves,
+                key: PredicateTy::Record(Arc::from([(f_at, PredicateTy::Int), (f_to, target)])),
                 value: None,
             },
+            // `bytes`, in a value side.
             Predicate {
-                name: project_ref,
-                key: PredicateTy::Record(Arc::from([
-                    (f_from, PredicateTy::Fact(PROJECT)),
-                    (f_to, PredicateTy::Fact(PROJECT)),
-                ])),
-                value: None,
+                name: digest,
+                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
+                value: Some(PredicateTy::Record(Arc::from([(
+                    f_sha256,
+                    PredicateTy::Bytes,
+                )]))),
             },
-            Predicate {
-                name: package,
-                key: PredicateTy::Record(Arc::from([
-                    (f_name, PredicateTy::Str),
-                    (f_version, PredicateTy::Str),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: package_ref,
-                key: PredicateTy::Record(Arc::from([
-                    (f_package, PredicateTy::Fact(PACKAGE)),
-                    (f_project, PredicateTy::Fact(PROJECT)),
-                ])),
-                value: None,
-            },
-            // The declaration graph.
-            Predicate {
-                name: member,
-                key: PredicateTy::Record(Arc::from([
-                    (f_container, PredicateTy::Fact(DECL)),
-                    (f_member, PredicateTy::Fact(DECL)),
-                ])),
-                value: None,
-            },
+            // `type` as a field name, which the grammar allows.
             Predicate {
                 name: extends,
                 key: PredicateTy::Record(Arc::from([
-                    (f_base, PredicateTy::Fact(DECL)),
                     (f_type, PredicateTy::Fact(DECL)),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: implements,
-                key: PredicateTy::Record(Arc::from([
-                    (f_iface, PredicateTy::Fact(DECL)),
-                    (f_type, PredicateTy::Fact(DECL)),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: overrides,
-                key: PredicateTy::Record(Arc::from([
                     (f_base, PredicateTy::Fact(DECL)),
-                    (f_member, PredicateTy::Fact(DECL)),
                 ])),
                 value: None,
             },
-            // A reference in the middle of a key, an integer after it, and a value
-            // behind both.
             Predicate {
-                name: param,
+                name: note,
                 key: PredicateTy::Record(Arc::from([
                     (f_decl, PredicateTy::Fact(DECL)),
-                    (f_index, PredicateTy::Int),
-                    (f_name, PredicateTy::Str),
-                ])),
-                value: Some(PredicateTy::Str),
-            },
-            // A key of one field.
-            Predicate {
-                name: type_of,
-                key: PredicateTy::Record(Arc::from([(f_decl, PredicateTy::Fact(DECL))])),
-                value: Some(PredicateTy::Str),
-            },
-            Predicate {
-                name: doc,
-                key: PredicateTy::Record(Arc::from([(f_decl, PredicateTy::Fact(DECL))])),
-                value: Some(PredicateTy::Str),
-            },
-            Predicate {
-                name: attribute,
-                key: PredicateTy::Record(Arc::from([
-                    (f_attribute, PredicateTy::Str),
-                    (f_target, PredicateTy::Fact(DECL)),
+                    (f_text, rendered),
                 ])),
                 value: None,
-            },
-            // What a code-search viewer needs. Three of these are a second key order
-            // over data already declared above — a predicate leads with one field, and
-            // find-references and a file view want different ones.
-            Predicate {
-                name: decl_span,
-                key: PredicateTy::Record(Arc::from([
-                    (f_decl, PredicateTy::Fact(DECL)),
-                    (f_col, PredicateTy::Int),
-                    (f_end_line, PredicateTy::Int),
-                    (f_end_col, PredicateTy::Int),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: search_lower,
-                key: PredicateTy::Record(Arc::from([
-                    (f_name, PredicateTy::Str),
-                    (f_to, PredicateTy::Fact(DECL)),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: file_xref,
-                key: PredicateTy::Record(Arc::from([
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (
-                        f_at,
-                        PredicateTy::Record(Arc::from([
-                            (f_line, PredicateTy::Int),
-                            (f_col, PredicateTy::Int),
-                            (f_length, PredicateTy::Int),
-                        ])),
-                    ),
-                    (f_to, PredicateTy::Fact(DECL)),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: derives_from,
-                key: PredicateTy::Record(Arc::from([
-                    (f_type, PredicateTy::Fact(DECL)),
-                    (f_base, PredicateTy::Fact(DECL)),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: attribute_of,
-                key: PredicateTy::Record(Arc::from([
-                    (f_target, PredicateTy::Fact(DECL)),
-                    (f_attribute, PredicateTy::Str),
-                ])),
-                value: None,
-            },
-            // ---- the shared source layer, appended ------------------------------
-            //
-            // **Appended, and that is deliberate.** These ids are this statement's own
-            // and the C# side's must agree with them positionally, because the golden
-            // records a block's predicate by number. Inserting them in sorted order
-            // would renumber every block above and regenerate a golden for no reason;
-            // the *fingerprint* is over the canonical form, which sorts, so it does not
-            // care where they sit here.
-            Predicate {
-                name: symbol,
-                key: PredicateTy::Str,
-                value: None,
-            },
-            Predicate {
-                name: file_language,
-                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
-                value: Some(PredicateTy::Record(Arc::from([(f_language, language)]))),
-            },
-            Predicate {
-                name: file_digest,
-                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
-                value: Some(PredicateTy::Record(Arc::from([(
-                    f_digest,
-                    PredicateTy::Str,
-                )]))),
-            },
-            Predicate {
-                name: file_origin,
-                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
-                value: Some(PredicateTy::Record(Arc::from([
-                    (f_repo, PredicateTy::Str),
-                    (f_revision, PredicateTy::Str),
-                ]))),
-            },
-            Predicate {
-                name: file_info,
-                key: PredicateTy::Record(Arc::from([(f_file, PredicateTy::Fact(FILE))])),
-                value: Some(PredicateTy::Record(Arc::from([
-                    (f_bytes, PredicateTy::Int),
-                    (f_lines, PredicateTy::Int),
-                    (f_ends_in_newline, boolean),
-                ]))),
-            },
-            Predicate {
-                name: file_line,
-                key: PredicateTy::Record(Arc::from([
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (f_line, PredicateTy::Int),
-                ])),
-                value: Some(PredicateTy::Record(Arc::from([
-                    (f_text, PredicateTy::Str),
-                    (f_start, PredicateTy::Int),
-                    (f_bytes, PredicateTy::Int),
-                    (f_cstart, PredicateTy::Int),
-                ]))),
-            },
-            Predicate {
-                name: file_line_at,
-                key: PredicateTy::Record(Arc::from([
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (f_start, PredicateTy::Int),
-                    (f_line, PredicateTy::Int),
-                ])),
-                value: None,
-            },
-            Predicate {
-                name: file_line_styles,
-                key: PredicateTy::Record(Arc::from([
-                    (f_file, PredicateTy::Fact(FILE)),
-                    (f_line, PredicateTy::Int),
-                ])),
-                // Opaque bytes: the schema does not say what encoding is in them —
-                // `config.Setting {dimension = "style-encoding"}` does.
-                value: Some(PredicateTy::Record(Arc::from([(
-                    f_styles,
-                    PredicateTy::Bytes,
-                )]))),
             },
         ]),
     )
@@ -471,116 +221,195 @@ fn file(path: &str) -> WireFact {
     }
 }
 
-fn module(path: &str, name: &str) -> WireFact {
-    WireFact {
-        predicate: MODULE,
-        key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(file(path)))),
-            WireValue::Str(name.to_owned()),
-        ])),
-        value: None,
-    }
-}
-
-/// Fields in the schema's order — module, name, line — and the kind on the value side.
-fn decl(path: &str, module_name: &str, kind: &str, line: i64, name: &str) -> WireFact {
+/// A declaration naming its file, with its signature on the value side.
+fn decl(path: &str, name: &str, line: i64, signature: &str) -> WireFact {
     WireFact {
         predicate: DECL,
         key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(module(path, module_name)))),
+            WireValue::Ref(WireRef::Nested(Box::new(file(path)))),
             WireValue::Str(name.to_owned()),
             WireValue::Int(line),
         ])),
-        value: Some(WireValue::Str(kind.to_owned())),
+        value: Some(WireValue::Str(signature.to_owned())),
     }
 }
 
-/// The same corpus `EmitGolden` encodes, stated here in Rust.
+fn nested(fact: WireFact) -> WireValue {
+    WireValue::Ref(WireRef::Nested(Box::new(fact)))
+}
+
+fn union(disc: u32, value: WireValue) -> WireValue {
+    WireValue::Union {
+        disc,
+        value: Box::new(value),
+    }
+}
+
+/// The same facts the C# side writes, restated here rather than shared.
+///
+/// Chosen for what it **reaches** rather than for what it means: scalars, a value side,
+/// two levels of nesting, a record spliced into a key, a union leading a key with a tag
+/// that is neither 0 nor 1, an empty union payload, a union payload that is a record,
+/// `bytes` behind a `->`, a record value side, and integers on both sides of the
+/// varint's one-byte boundary in both signs.
 fn corpus() -> Vec<(&'static str, PredicateId, Vec<WireFact>)> {
+    let key_of = || decl("store/keys.py", "key_of", 12, "def key_of(row)");
+    let plan = || decl("query/plan.py", "Plan", 5, "class Plan");
+
     vec![
         (
-            "src.File",
+            "code.File",
             FILE,
             vec![file("store/keys.py"), file("query/plan.py")],
         ),
         (
-            "src.Decl",
+            "code.Decl",
             DECL,
             vec![
-                decl("store/keys.py", "keys", "def", 12, "key_of"),
-                decl("store/keys.py", "keys", "def", 0, "zero"),
-                decl("query/plan.py", "plan", "class", 2_147_483_648, "Plan"),
+                key_of(),
+                decl("store/keys.py", "zero", 0, "def zero()"),
+                decl("query/plan.py", "Plan", 2_147_483_648, "class Plan"),
+                decl("store/keys.py", "before", -1, "def before()"),
             ],
         ),
         (
-            "src.Ref",
+            "code.Ref",
             REFERENCE,
             vec![WireFact {
                 predicate: REFERENCE,
+                key: WireValue::Record(Box::from([nested(key_of()), nested(plan())])),
+                value: None,
+            }],
+        ),
+        (
+            "code.Span",
+            SPAN,
+            vec![WireFact {
+                predicate: SPAN,
                 key: WireValue::Record(Box::from([
-                    WireValue::Ref(WireRef::Nested(Box::new(decl(
-                        "store/keys.py",
-                        "keys",
-                        "def",
-                        12,
-                        "key_of",
-                    )))),
-                    WireValue::Ref(WireRef::Nested(Box::new(file("query/plan.py")))),
-                    WireValue::Record(Box::from([
-                        WireValue::Int(19),
-                        WireValue::Int(4),
-                        WireValue::Int(6),
-                    ])),
+                    nested(key_of()),
+                    WireValue::Record(Box::from([WireValue::Int(12), WireValue::Int(4)])),
                 ])),
                 value: None,
             }],
         ),
-        // A reference in the *middle* of a key, an integer after it, and a value side
-        // behind all three — and a negative integer, since zigzag is where two codecs
-        // that agree about every positive one can still disagree.
         (
-            "src.Param",
-            PARAM,
-            vec![param(0, "key", "bytes"), param(-1, "rest", "int")],
+            "code.KindOf",
+            KIND_OF,
+            vec![
+                WireFact {
+                    predicate: KIND_OF,
+                    key: WireValue::Record(Box::from([
+                        union(2, WireValue::Int(1)),
+                        nested(key_of()),
+                    ])),
+                    value: None,
+                },
+                WireFact {
+                    predicate: KIND_OF,
+                    key: WireValue::Record(Box::from([
+                        union(5, WireValue::Str("class".to_owned())),
+                        nested(plan()),
+                    ])),
+                    value: None,
+                },
+            ],
         ),
-        // A key of one field, which encodes as the bare reference does.
         (
-            "src.Doc",
-            DOC,
+            "code.Resolves",
+            RESOLVES,
+            vec![
+                WireFact {
+                    predicate: RESOLVES,
+                    key: WireValue::Record(Box::from([
+                        WireValue::Int(7),
+                        union(0, WireValue::Record(Box::from([]))),
+                    ])),
+                    value: None,
+                },
+                WireFact {
+                    predicate: RESOLVES,
+                    key: WireValue::Record(Box::from([
+                        WireValue::Int(19),
+                        union(
+                            3,
+                            WireValue::Record(Box::from([
+                                WireValue::Str("Deserialize".to_owned()),
+                                WireValue::Str("serde".to_owned()),
+                            ])),
+                        ),
+                    ])),
+                    value: None,
+                },
+            ],
+        ),
+        (
+            "code.Digest",
+            DIGEST,
             vec![WireFact {
-                predicate: DOC,
-                key: WireValue::Record(Box::from([WireValue::Ref(WireRef::Nested(Box::new(
-                    decl("query/plan.py", "plan", "class", 5, "Plan"),
-                )))])),
-                value: Some(WireValue::Str(
-                    "A plan is an ordered list of steps.".to_owned(),
-                )),
+                predicate: DIGEST,
+                key: WireValue::Record(Box::from([nested(file("store/keys.py"))])),
+                value: Some(WireValue::Record(Box::from([WireValue::Bytes(vec![
+                    0x00, 0x53, 0x80, 0xBF, 0xFF,
+                ])]))),
+            }],
+        ),
+        (
+            "code.Extent",
+            EXTENT,
+            vec![WireFact {
+                predicate: EXTENT,
+                key: WireValue::Record(Box::from([nested(plan())])),
+                value: Some(WireValue::Record(Box::from([
+                    WireValue::Record(Box::from([WireValue::Int(5), WireValue::Int(1)])),
+                    WireValue::Record(Box::from([WireValue::Int(41), WireValue::Int(2)])),
+                ]))),
+            }],
+        ),
+        // The same union *after* a reference rather than before it: a tag has to encode
+        // the same wherever it sits in a key.
+        (
+            "code.Kind",
+            KIND,
+            vec![WireFact {
+                predicate: KIND,
+                key: WireValue::Record(Box::from([nested(key_of()), union(2, WireValue::Int(1))])),
+                value: None,
+            }],
+        ),
+        // `type` as a field name, which the grammar allows.
+        (
+            "code.Extends",
+            EXTENDS,
+            vec![WireFact {
+                predicate: EXTENDS,
+                key: WireValue::Record(Box::from([
+                    nested(decl("store/codec.py", "CodecError", 31, "class CodecError")),
+                    nested(plan()),
+                ])),
+                value: None,
+            }],
+        ),
+        // A single-alternative union, whose tag is still written rather than elided.
+        (
+            "code.Note",
+            NOTE,
+            vec![WireFact {
+                predicate: NOTE,
+                key: WireValue::Record(Box::from([
+                    nested(plan()),
+                    union(
+                        0,
+                        WireValue::Str("<p>An ordered list of steps.</p>".to_owned()),
+                    ),
+                ])),
+                value: None,
             }],
         ),
     ]
 }
 
-/// A parameter of `key_of`, which is the declaration three of the blocks above already
-/// nest — so this block is also the same nested fact reached a fourth way.
-fn param(index: i64, name: &str, ty: &str) -> WireFact {
-    WireFact {
-        predicate: PARAM,
-        key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(decl(
-                "store/keys.py",
-                "keys",
-                "def",
-                12,
-                "key_of",
-            )))),
-            WireValue::Int(index),
-            WireValue::Str(name.to_owned()),
-        ])),
-        value: Some(WireValue::Str(ty.to_owned())),
-    }
-}
-
-/// One golden line: what the C# client said a block's bytes are.
+/// The golden as parsed: the fingerprint it names, and one entry per block.
 struct Golden {
     fingerprint: u64,
     blocks: Vec<(String, u32, Vec<u8>)>,

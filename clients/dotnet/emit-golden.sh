@@ -17,10 +17,10 @@ blobs="$root/clients/dotnet/golden/bytes.txt"
 mkdir -p "$(dirname "$out")"
 
 dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --golden "$out"
-# A second corpus, over a schema of its own: a union in `schemas/code.sigla` would move
+# A second corpus, over a schema of its own: a union tag past a varint byte would move
 # that schema's fingerprint and every block above with it.
 dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --golden-unions "$unions"
-# A third, for the same reason: a `bytes` field in `schemas/code.sigla` would move that
+# A third, for the same reason: a `bytes` payload no `string` could hold would move that
 # schema's fingerprint and every block above with it.
 dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --golden-bytes "$blobs"
 
