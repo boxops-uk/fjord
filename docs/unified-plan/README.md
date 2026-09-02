@@ -16,10 +16,12 @@ claim and acceptance criteria that are tests and commands rather than intentions
 amends it**, and where the two disagree W13 wins. Everything else here is new and this directory is
 its specification.
 
-**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — eleven now, all answered,
+**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — thirteen now, all answered,
 with the consequence of each — plus ten corrections the plan makes to the issues and eight risks it
-carries. D11 closed the last open one: `fjord-viewer` **is** retired, which re-cut W11 and R9's
-gate and shrank W6's flag day.
+carries. Three of them re-cut work already specified here: D11 retired `fjord-viewer`, which re-cut
+W11 and R9's gate and shrank W6's flag day; D12 retires `code.sigla`, which cancels R4 and adds
+[W15](15-retire-code-sigla.md); and D13 makes the style payload opaque, which re-cuts W6's D3 and
+c7, W15's S1 and two rows of [W10](10-the-book.md).
 
 ---
 
@@ -34,7 +36,7 @@ gate and shrank W6's flag day.
 | [#41](https://github.com/boxops-uk/fjord/issues/41) — embedded readers never `resolve` | `[06]` | **W4**, **W5** |
 | [#42](https://github.com/boxops-uk/fjord/issues/42) — revision 2 follow-ups | `[07]` | **W7** (items 2–3), **W13** (items 1, 4) |
 | [#43](https://github.com/boxops-uk/fjord/issues/43) — a sealed database keeps its journals | `[08]` | **W12** |
-| [#36](https://github.com/boxops-uk/fjord/issues/36) — the content schema and style layer | superseded by `[03]` | **W6** (the style layer is adopted whole), **W11** |
+| [#36](https://github.com/boxops-uk/fjord/issues/36) — the content schema and style layer | superseded by `[03]` | **W6** (the style layer is adopted, its payload opaque — D13), **W11** |
 | [#28](https://github.com/boxops-uk/fjord/issues/28)–[#32](https://github.com/boxops-uk/fjord/issues/32), [#34](https://github.com/boxops-uk/fjord/issues/34) | — | **W13** (Runs 0–9, amended), **W14** |
 
 Not in this plan: [#18](https://github.com/boxops-uk/fjord/issues/18) (cost-based reorder), which has

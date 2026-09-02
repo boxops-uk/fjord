@@ -28,7 +28,7 @@ const SETTINGS: &[(&str, &str)] = &[
     ("revision", "5ac4f0e69729bbbb54e28b6219237608f2a4ebae"),
     ("index-root", "/home/ci/checkout"),
     ("position-encoding", "utf16"),
-    ("style-vocabulary", "fjord-1"),
+    ("style-encoding", "roslyn-lsp-1"),
     ("symbol-scheme", "scip-csharp"),
     ("language", "csharp"),
     ("language", "msbuild"),

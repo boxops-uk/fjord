@@ -54,20 +54,32 @@ only between S3 and S5, and that window is deliberately short.
 
 ### S1 — the source layer
 
-The indexer writes all nine `src.*`. It writes two today (`File`, `FileLine`).
+The indexer writes all nine `src.*`. It writes **three** today — `File`, `FileLine` and
+`FileLineStyles`.
 
 `FileInfo`, `FileLineAt`, `FileDigest` and `FileLanguage` are arithmetic and a hash over text the
 walk already has. `FileOrigin` is per-file provenance, written only where an index spans several
 repositories. `Symbol` is the SCIP-form symbol string, which R4b introduced and which `codemarkup`
 joins on.
 
-`FileLineStyles` is the one with new machinery: a `Classifier.GetClassifiedSpans` pass per file, and
-the run-length encoder for the style format — a decimal length then a kind letter, a trailing
-`plain` run omitted, an unrecognised letter read as `plain`. **This is where W6 c7's round-trip
-property lands**, since the retired viewer was going to own it and does not exist.
+**`FileLineStyles` is done, and it is not what this section originally specified.** The run-length
+encoder over a fjord kind table is deleted rather than deferred ([D13](OPEN-QUESTIONS.md)): the
+declaration is `bytes`, the schema is silent about the contents, and the producer names the format.
+`--styles` runs Roslyn's `Classifier` per document and writes LSP `SemanticTokens.data` — LEB128
+varints, per line so `deltaLine` is always 0, over a fixed legend of Roslyn's own
+`ClassificationTypeNames`. W6 c7's round-trip property went with the format: there is no fjord codec
+to round-trip, and the cases that matter (overlapping spans, spans crossing a line boundary, no
+token for whitespace) are asserted in `Boxops.Fjord.Tests.SemanticTokensTests`.
 
-**Gate.** Every `src.*` predicate has facts after a fixture run, and the style encoder round-trips
-over generated run lists including the omitted trailing run and an unrecognised letter.
+**What that leaves owed here.** Nothing consumes `style-encoding` yet, and the indexer holds
+`roslyn-lsp-1` as a constant without writing the `config.Setting` fact that publishes it — so a
+consumer today receives bytes it has no declared way to read. Emitting `config.Setting` is not on
+any run's list and belongs on this one, with the six remaining `src.*`.
+
+**Gate.** Every `src.*` predicate has facts after a fixture run, one query per predicate asserting
+rows; and a database the indexer wrote with `--styles` carries
+`config.Setting {dimension = "style-encoding", value = "roslyn-lsp-1"}`, so the payload is readable
+by the contract rather than by knowing which indexer produced it.
 
 ### S2 — `msbuild.*`
 

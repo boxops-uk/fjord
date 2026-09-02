@@ -411,7 +411,7 @@ Nine predicates — `File`, `Symbol`, `FileLanguage`, `FileDigest`, `FileOrigin`
 Every one leads with `file`, so a file's line table, its styles and its digest are each one
 prefix seek, and `line` trails so a **window is a range on the last key field**.
 
-Three shapes in it are worth reading before designing anything similar:
+Four shapes in it are worth reading before designing anything similar:
 
 - **`FileLine` carries both offsets.** `start` is a UTF-8 byte offset and `cstart` a UTF-16
   code-unit offset, and they are not the same number — a codepoint above the BMP is four
@@ -430,6 +430,43 @@ Three shapes in it are worth reading before designing anything similar:
   them*. A baked-HTML field measured 21.6 MB against 12.6 MB of text on a real corpus, so a
   viewer's window paid ~2.4× the bytes it needed. `FileLineStyles` is a separate predicate
   for that reason, keyed identically so a window is the same seek.
+- **`FileLineStyles` holds bytes the schema refuses to describe.** A highlighter's
+  vocabulary is a presentation concern with a lifecycle of its own, so freezing one into a
+  predicate every published index carries would make each new token kind a Breaking edit
+  ([I10](invariants.html#i10)) — and styles are the one thing here that is *regenerable*,
+  where the facts beside them are not. So the type is `bytes` and the declaration says
+  nothing about the contents: `config.Setting {dimension = "style-encoding"}` names the byte
+  format and its token legend together, and a consumer that does not recognise the value
+  renders those lines plain. Absent means "not tokenised", so an index with no highlighter
+  is a complete index and needs no sentinel. **fjord ships no codec and defines no
+  vocabulary** — a producer writes what its tokeniser already emits, and names it.
+
+:::note The worked example is LSP, and none of it is fjord's
+`Boxops.Fjord.Indexer --styles` runs Roslyn's `Classifier` — what Visual Studio colours
+with — and writes LSP `SemanticTokens.data` under the `style-encoding` value `roslyn-lsp-1`:
+five integers per token, `[deltaLine, deltaStart, length, tokenType, tokenModifiers]`, over a
+legend of Roslyn's own `ClassificationTypeNames`. A browser decodes it to a `Uint32Array` and
+hands it to Monaco unchanged.
+
+Two details of that encoding matter. The integers are LEB128 varints rather than fixed 32-bit
+words, because a delta, a length and a legend index are all small — about five bytes a token
+instead of twenty. And the facts are **per line**, so `deltaLine` is always 0 and
+`deltaStart` is relative to the previous token on that line: a deliberate divergence from
+LSP, which encodes a whole file and would otherwise have to be fetched and decoded whole to
+draw forty lines.
+
+Three properties of a real tokeniser rule out a flat run list, each verified against Roslyn's
+output rather than assumed: spans **overlap** (a static method's name comes back as both a
+method name and a static symbol, which is LSP's `tokenModifiers` bitfield), spans **cross
+lines** (an LSP token may not, so a block comment is split at each line boundary), and
+**nothing is emitted for whitespace**, so gaps are absent and uncovered text renders plain.
+
+The legend is fixed rather than discovered: one built from the names a run happened to meet
+would differ between two indexes of the same repository, and a sealed identity hashes the
+facts. Appending to it is safe and renumbering is not, exactly as for a schema union. A
+producer for another language names its own encoding and its own legend, and this predicate
+does not change.
+:::
 
 ### `schemas/codemarkup.sigla` — one surface a UI can read
 
@@ -540,7 +577,7 @@ strings and neither is a union, deliberately: a union would freeze the vocabular
 discriminants on the day it shipped ([I10](invariants.html#i10)) and make every new axis a
 Breaking edit to a predicate every published index carries. The schema comment carries the
 reserved list instead — `repo`, `revision`, `index-root`, `position-encoding`,
-`style-vocabulary`, `symbol-scheme`, `language`, `producer`, and the build axes.
+`style-encoding`, `symbol-scheme`, `language`, `producer`, and the build axes.
 
 It is **per-database**, so it cannot record a per-project or per-file axis:
 `{dimension = "define", value = "DEBUG"}` says the run defined `DEBUG`, not which projects

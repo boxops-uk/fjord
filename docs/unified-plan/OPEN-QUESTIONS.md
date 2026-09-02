@@ -1,17 +1,18 @@
 # Decisions, corrections, and the risks this plan carries
 
-Three lists. The first is the ten decisions put for review and **answered** — recorded with their
-consequence so the reasoning survives the sprint; the second is what the plan found to be wrong in
-the issues (recorded here so nobody re-derives it); the third is what remains risky after everything
-lands. **All of them are answered now**: D11 closed the one left open underneath D5, and D12 is the
-largest of them — `code.sigla` retires, which cancels R4 and reorders everything after it.
+Three lists. The first is the thirteen decisions put for review and **answered** — recorded with
+their consequence so the reasoning survives the sprint; the second is what the plan found to be wrong
+in the issues (recorded here so nobody re-derives it); the third is what remains risky after
+everything lands. **All of them are answered now**: D11 closed the one left open underneath D5, D12
+is the largest of them — `code.sigla` retires, which cancels R4 and reorders everything after it —
+and D13 takes the style payload out of the schema's hands entirely.
 
 ---
 
 ## 1 · Decisions taken
 
-All ten were put with a recommendation and all ten are answered. Recorded with their consequence, so
-the reasoning survives the sprint.
+All thirteen were put with a recommendation and all thirteen are answered. Recorded with their
+consequence, so the reasoning survives the sprint.
 
 | | Decision | Consequence, and where it lands |
 |---|---|---|
@@ -27,6 +28,7 @@ the reasoning survives the sprint.
 | **D10** | **One sprint; the stated order is fine** | README's sequencing stands. The seven load-bearing orderings still hold inside it — in particular the two flag days stay separate commits |
 | **D12** | **`code.sigla` retires**, and the C# indexer writes the new set. There are no consumers, so the freedom to break it exists now and will not later — the schema move goes first, before the runs that merely make the indexer better | [W15](15-retire-code-sigla.md). **R4 is cancelled**: it would spend a flag day giving `src.Decl` the semantic identity `csharp.Method`'s `docId` key already has, in a schema being deleted. R4.0 and R4c survive, re-aimed. Five new runs S1–S5 replace it, and **R7 must run after S5** because every published read number is keyed to predicates this deletes |
 | **D11** | **`fjord-viewer` is retired, now, before W6.** A browser application replaces it — React + Vite, a WebAssembly client and a JS wrapper | W11 is re-cut from "fix the viewer" to "what the new viewer needs from this side", and the crate is deleted before the flag day rather than migrated through it. **W6 loses two of its seven migration sites**; R9 loses its stated gate and needs another; and the protocol grows a **WebSocket listener**, because a browser can open neither a Unix socket nor raw TCP and those are the whole of `Transport` today |
+| **D13** | **`src.FileLineStyles` is `bytes`, and fjord defines no style vocabulary.** A producer writes what its tokeniser already emits and names the format in `config.Setting {dimension = "style-encoding"}` | Re-cuts **W6 D3** (which shipped `styles` as a run-length `string`) and **W6 c7**, and re-cuts **W15's S1**. The kind table, its `fjord-1` revision and the fold from Roslyn's 67 `ClassificationTypeNames` down into it are all **deleted** rather than deferred: a schema agnostic about a payload has no business shipping the payload, and the fold discarded distinctions a real tokeniser had already made. The dimension `style-vocabulary` is renamed, because it named half the thing. The round-trip property moves to the producer, where the format now lives |
 
 ## 2 · Corrections this plan makes to the issues
 
@@ -46,9 +48,10 @@ change the work.
 | C9 | Run 8a is "largely an accessibility change" for `IBlockTarget`, `FactSink`, `IFactWriter` | **`IFactWriter` does not exist.** Writer concurrency is a raw `Thread[]` (`FactSink.cs:62`). Two are accessibility changes; the third is an extraction |
 | C10 | `src.sigla` is "8 predicates" (#39 appendix A header) | It lists **nine**, and `index.sigla`'s own total only adds up with nine: 9+1+10+16+31+14+22+35 = 138. Verify at implementation |
 
-And one correction the plan makes to **itself**: revision 2 says `docs/glean.md` supports C5's
-`ops-I5` reading. `glean.md:57-58` still carries the `ops-I4`/`ops-I5` slip that revision 2's own
-correction table says was fixed. One line, in W10.
+And one correction the plan makes to **itself**: revision 2 declared the `ops-I4`/`ops-I5` slip
+corrected and then carried it twice — in its own C5 row, and in `docs/glean.md`, which C5 cites.
+**Both landed**, in W10: the conflict-reject rule is `ops-I4`, as `invariants.md:408` has it, and
+`ops-I5` is the one-write-funnel rule it was being confused with.
 
 ---
 
@@ -74,9 +77,12 @@ correction table says was fixed. One line, in W10.
    `npm` and `bundle` ship with their two headline joins exercised (W9 c3) and nothing else. An
    unexercised predicate is a name in a file, and three namespaces of them is the shape of this
    risk.
-6. **The style vocabulary's forward-compatibility rule is load-bearing and untested by anyone but
-   us.** "An unrecognised kind letter reads as `plain`" is what lets a producer be richer than a
-   reader; the only guard is W6 c7's round-trip and W11 c4.
+6. **The style payload's forward-compatibility rule is load-bearing and untested by anyone but
+   us** (D13). What lets a producer be richer than a reader is now one rule one layer up: *an
+   unrecognised `style-encoding` renders those lines plain*. It is cheaper to honour than the kind
+   table it replaces — a consumer compares one string — but nothing in this repository consumes
+   styles at all, so the rule has no reader-side guard here. The producer's own encoder is covered
+   (`SemanticTokensTests`); the contract between two parties is not.
 7. **R9's gate is new and has never been run.** It was "the viewer answers `/symbol/{name}`", and
    D11 retired the viewer; the replacement is a fixed set of `codemarkup` queries against a
    converted index, asserted with rows. It is a better gate — it tests the converter rather than a

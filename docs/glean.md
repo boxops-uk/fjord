@@ -55,7 +55,7 @@ already are that:
   last-writer-wins: `Define::define` returns `Id::INVALID` (`glean/rts/define.h:20-30`) and
   `defineBatch` raises "invalid fact redefinition" (`glean/rts/define.cpp:91-102`). Identical
   facts dedup in both. This was previously filed as a divergence; it is Glean's default rule,
-  and `ops-I5` adopts it. What Glean does that we refuse is *disable*
+  and `ops-I4` adopts it. What Glean does that we refuse is *disable*
   it on three paths — see §2.
 - **Both maps written atomically** — Glean uses one `WriteBatch` over entities, keys, the id
   counter and stats (`glean/rocksdb/database-impl.cpp:480-537`);

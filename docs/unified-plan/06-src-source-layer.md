@@ -104,13 +104,15 @@ and has been retired ([D11](OPEN-QUESTIONS.md)), so it is five:
 corpus; `FileLine`'s value is four fields where it was one, so the corpus's size and its per-row
 read cost both move. §1's line-table figures are re-run with R7's list (W13).
 
-**D3 · `styles` ships as a `string` in v1.** The run-length encoding is ASCII — a decimal length
-then a single-letter kind, `"2p6k1p12s"`, a trailing `plain` run omitted, an unrecognised letter read
-as `plain`. That last rule is why the vocabulary is **not** a sigla union: inside an opaque payload
-a new kind costs nothing, where a union alternative would be a Breaking edit to a predicate every
-published index carries (I10). `config.Setting {dimension = "style-vocabulary"}` (W7) states which
-revision was written. When W3 lands, `styles` becomes a packed varint table and **this one
-predicate's fingerprint moves** — which is the third reason it is a predicate of its own.
+**D3 · `styles` ships as a `string` in v1 — superseded by [D13](OPEN-QUESTIONS.md).** This shipped
+a run-length ASCII encoding of fjord's own kind table (`"2p6k1p12s"`, a trailing `plain` run
+omitted, an unrecognised letter read as `plain`) and planned a packed varint table once W3 landed.
+D13 keeps the reasoning and throws away the vocabulary: `styles` is **`bytes`**, the schema says
+nothing about the contents, and `config.Setting {dimension = "style-encoding"}` (W7) names the byte
+format and its token legend together. Both fingerprint moves happen in one edit rather than two.
+Everything the run-length form bought is still bought one layer up — a new token kind costs nothing
+because it never enters a sigla union (I10), and an unrecognised *encoding* renders those lines
+plain where an unrecognised *letter* used to.
 
 ## Two consumer recipes that must be written down, because the shapes are sharp
 
@@ -157,10 +159,12 @@ planner fix already in the tree.
    100 line window on a large synthetic file reads the window and not the offset — the same
    construction `iter::a_bounded_seek_reads_the_window_and_not_the_offset` already uses. Recorded in
    `bench/FINDINGS.md` with the corpus size.
-7. **The style encoding has a decoder and a property.** A round-trip test over generated
-   `(length, kind)` run lists: encode → decode → equal, including the omitted trailing `plain` run
-   and an unrecognised letter reading as `plain`. It lives wherever the first consumer does (W11);
-   the *format* is specified in the schema comment and the book.
+7. **The style payload has a producer, a property and a declared name** — re-cut by
+   [D13](OPEN-QUESTIONS.md), which moved the format out of fjord. There is no fjord codec to
+   round-trip, so the property belongs to whoever writes the bytes: the .NET indexer's
+   `SemanticTokensTests` covers the overlapping, line-crossing and whitespace cases against
+   Roslyn's real output. What this side owes is the *contract* — `bytes` in the declaration, no
+   vocabulary in the comment, and `style-encoding` in `config`'s reserved list.
 8. **`sample_schema.rs` moves with it**: the predicate count assertion, the `KEY_ORDER` table, and
    the resolving reader from W4. `cargo test -p fjord-cli` green.
 9. **The .NET side and the goldens.** The re-pasted constant in both C# files, the indexer emitting
