@@ -162,7 +162,7 @@ without being told where the data is. Access control is the socket's permissions
 The workflow the design assumes is **a fresh sealed artifact per build**:
 
 ```bash
-fjord --data-dir ./out create code --schema ./schemas/code.sigla
+fjord --data-dir ./out create code --schema ./schemas/demo.sigla
 fjord --data-dir ./out serve --ready-file ./ready &
 # … a producer writes facts over the socket …
 fjord --data-dir ./out finish code

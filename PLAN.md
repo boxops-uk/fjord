@@ -318,7 +318,7 @@ typechecking, which is the clearest statement that these are the same phases
 the server runs.
 
 **The samples moved into the crate.** `fjord_inspect::SAMPLES` and `SCHEMA`
-(the repository's own `schemas/code.sigla`, embedded) are what the page opens
+(the repository's own `schemas/demo.sigla`, embedded) are what the page opens
 with, and `every_sample_compiles_clean` is what makes them claims rather than
 decoration. The page invented its own examples once; all of them were missing
 the head a query requires.
@@ -449,7 +449,7 @@ the scan, resume equals uninterrupted — runs against the traced build.
 #### The database in the page
 
 `MemStore` is wasm-clean already; what is missing is facts — and, it turns out,
-a schema. `schemas/code.sigla` has **no union and no nested record**, so a
+a schema. The sample schema then had **no union and no nested record**, so a
 select (`.what.func?`), a union pattern, a discriminant residual and a nested
 record key have nothing to bind against. A union in a *leading* key field is a
 seek and behind another field is a residual — the same query shape, two costs —
@@ -680,8 +680,8 @@ Three things this turned up:
   is the one view in the original list nothing has needed yet.
 - **A schema handle, if a bigger schema ever makes it hurt.** `compile` re-reads
   the schema on every keystroke, because the module holds no state — two strings
-  in, JSON out, and no handle a page has to free. Measured on
-  `schemas/code.sigla`: 700–800 µs warm for the whole round trip, which is a
+  in, JSON out, and no handle a page has to free. Measured on the sample
+  schema: 700–800 µs warm for the whole round trip, which is a
   tenth of a frame, so the statelessness is worth keeping until it is not.
 - **Size.** 258 KB is the whole front end plus the schema language; `wasm-opt
   -Oz` takes 34 KB off it and `web/`'s dev-dependencies now carry binaryen so

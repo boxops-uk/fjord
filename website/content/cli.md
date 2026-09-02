@@ -176,7 +176,7 @@ re-running the index, never a wrong answer from one that sealed.
 ## `fjord create <name>`
 
 ```bash
-fjord --data-dir ./db create code --schema ./schemas/code.sigla
+fjord --data-dir ./db create code --schema ./schemas/demo.sigla
 fjord --data-dir ./db create people --schema ./people.sigla
 ```
 
@@ -295,8 +295,8 @@ Full command list: [Shell reference](shell.html).
 ## `fjord schema …`
 
 ```bash
-fjord schema check ./code.sigla
-fjord schema fingerprint ./code.sigla [--format json] [--canonical]
+fjord schema check ./demo.sigla
+fjord schema fingerprint ./demo.sigla [--format json] [--canonical]
 fjord schema diff before.sigla after.sigla
 fjord schema diff before.sigla code           # a file against a database
 ```

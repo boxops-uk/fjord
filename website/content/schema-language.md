@@ -382,23 +382,29 @@ Two of them are worth understanding rather than just noting:
 
 ## The sample schema
 
-`schemas/code.sigla` is a worked example rather than a default — `create` requires a schema and
-there is nothing standing in for one. It is twenty-seven predicates in three layers, and the
-joins between the layers are the point.
+`schemas/demo.sigla` is a worked example rather than a default — `create` requires a schema
+and there is nothing standing in for one. It is a small code index, and it is **complete on
+purpose**: eleven predicates, at least one for every construct the type model can hold.
 
-| Layer | Predicates | Answerable by |
-|---|---|---|
-| Source | `File`, `Module`, `Decl`, `DeclSpan`, `Ref`, `Import`, `Line`, plus `SearchByName`, `SearchByLowerName`, `FileXRef` | A syntax walk |
-| Build | `Project`, `Assembly`, `Compilation`, `ProjectSource`, `ProjectRef`, `Package`, `PackageRef` | Something holding a build system |
-| Declarations | `Member`, `Extends`, `Implements`, `Override`, `DerivesFrom`, `Param`, `TypeOf`, `Doc`, `Attribute`, `AttributeOf` | Something holding a compiler |
+| Construct | Where to see it |
+|---|---|
+| a scalar key, and a reference to one | `code.File`, and every predicate that names it |
+| a record key with a value side | `code.Decl` — a reference leading, `line` trailing |
+| a nested record in a key, and in a value | `code.Span`, `code.Extent` |
+| a union in a key, both ways round | `code.Kind` and `code.KindOf` |
+| a union payload of every kind — none, a reference, a record | `code.Resolves` |
+| a single-alternative union | `code.Note` |
+| `bytes` | `code.Digest` |
+| a keyword as a field name | `code.Extends`, whose first field is `type` |
 
-Read `schemas/code.sigla` itself if you are designing a schema: every predicate carries a
-comment saying which question its key order answers, and four of them exist purely because
-a derived predicate cannot yet be declared.
+Read it if you are designing a schema: every predicate carries a comment saying which
+question its key order answers, and the file states which construct it is there to show.
+The set a real producer writes is `schemas/dotnet.sigla` — sixty-seven predicates across
+five layers — and it is the wrong thing to read first.
 
 ### `schemas/src.sigla` — the shared source layer
 
-`code.sigla` imports it rather than declaring it, and that import is the point. Three
+Every layer imports it rather than declaring its own, and that import is the point. Three
 schemas used to declare **their own `File`**, each with a comment saying "owned here so the
 schema resolves standalone" — and the cost of that thrift is that `content.File "x"` and
 `csharp.File "x"` are *different types naming the same file*, so the join that renders a

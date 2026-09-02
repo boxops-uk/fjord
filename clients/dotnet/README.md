@@ -112,7 +112,7 @@ a producer.
 order-preserving, self-delimiting and frozen on disk; none of that is on the wire, and
 a client never sees it.
 
-## The flag day: what to do when `schemas/code.sigla` moves
+## The flag day: what to do when a shipped schema moves
 
 A client sends **one** whole-schema fingerprint and the server checks it for equality, so
 any edit to that file refuses every client until each one is rebuilt. The protocol carries

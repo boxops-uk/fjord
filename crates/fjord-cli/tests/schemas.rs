@@ -84,7 +84,7 @@ fn moving_a_declaration_into_an_imported_file_moves_no_fingerprint() {
     );
 }
 
-/// **The constants the .NET clients carry are the fingerprint `schemas/code.sigla`
+/// **The constants the .NET clients carry are the fingerprint the schema each is
 /// actually has.**
 ///
 /// A client sends one whole-schema number at the handshake and the server checks it for
@@ -103,8 +103,8 @@ fn the_dotnet_clients_carry_the_fingerprint_the_schema_has() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
     // **Which schema each client is written against.** They are no longer the same one:
-    // the indexer writes `dotnet.sigla` and the demo still writes `code.sigla`, which is
-    // the state the switch leaves the tree in until `code.sigla` is deleted. Named rather
+    // the indexer writes `dotnet.sigla` and the demo writes `demo.sigla`, the fixture the
+    // instruments measure over. Named rather
     // than globbed: a new file carrying a third copy should be a decision, and adding it
     // here is how that decision gets made.
     let carried = [

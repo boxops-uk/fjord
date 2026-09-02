@@ -545,11 +545,12 @@ fn the_dotnet_clients_blocks_decode_here() {
 
 // ---- unions (8.6) ---------------------------------------------------------
 //
-// A **second** golden, over a schema of its own, and the separation is deliberate: a
-// union in `schemas/code.sigla` would move that schema's fingerprint and with it two
-// constants in the .NET clients and every block in the golden above — a flag day, and
-// one that has nothing to do with whether the two codecs agree about a tag. So the
-// union corpus gets three predicates of its own, stated independently on each side
+// A **second** golden, over a schema of its own, and the separation is deliberate: the
+// shared fixture's tags are small and tidy, and pushing the *tag space* — 3, 0, 40000
+// and 7, declared in that order — would move its fingerprint, the constants the .NET
+// clients carry and every block in the golden above. A flag day with nothing to do with
+// whether the two codecs agree about a tag. So the union corpus gets three predicates of
+// its own, stated independently on each side
 // exactly as the corpus above is.
 
 const THING: PredicateId = PredicateId(0);
@@ -745,9 +746,9 @@ fn unions_are_byte_identical_with_the_dotnet_client() {
 
 /// The `bytes` corpus's schema, stated independently of the C# side's.
 ///
-/// Its own schema for the reason the union corpus has one: a `bytes` field in
-/// `schemas/code.sigla` would move that schema's fingerprint and every block in
-/// `blocks.txt` with it.
+/// Its own schema for the reason the union corpus has one: a payload no `string` could
+/// hold — a NUL, an escape byte, two continuation bytes — in the shared fixture would
+/// move its fingerprint and every block in `blocks.txt` with it.
 fn bytes_schema() -> Schema {
     let mut rodeo = Rodeo::new();
     let mut sym = |name: &str| rodeo.get_or_intern(name);

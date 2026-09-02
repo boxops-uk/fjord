@@ -55,17 +55,17 @@ A database is created **against a schema**, which is then frozen and embedded in
 life. There is no default, and that is deliberate: the schema is what says what every row
 in the database means.
 
-`schemas/code.sigla` in the repository is a worked example — twenty-seven predicates
+`schemas/demo.sigla` in the repository is a worked example — eleven predicates
 describing files, declarations, references, a build graph and a declaration graph. It is what
 the .NET indexer writes, what the viewer reads and what every benchmark here measures, so it
 is the one to start from.
 
 ```bash
-fjord --data-dir ./db create code --schema schemas/code.sigla
+fjord --data-dir ./db create code --schema schemas/demo.sigla
 ```
 
 ```text
-created code (01M0BN4HG1W821VK1R7R9E26P1) against schemas/code.sigla
+created code (01M0BN4HG1W821VK1R7R9E26P1) against schemas/demo.sigla
 ```
 
 The name is `code`; the ULID is the **instance**. `--data-dir` is the **store root** — the

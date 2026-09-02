@@ -24,51 +24,58 @@ AP=$FJ/target/release/fjord
 
 ## 1. A schema you can read
 
-The sample schema is a file, `schemas/code.sigla`, and it parses like any other. Ask it
+The sample schema is a file, `schemas/demo.sigla`, and it parses like any other. Ask it
 what it thinks it is:
 
 ```bash
-$AP schema check $FJ/schemas/code.sigla
+$AP schema check $FJ/schemas/demo.sigla
 ```
 
 ```text
-27 predicate(s) in 1 file(s)
-  schemas/code.sigla
-fingerprint 0xb08eea634e866a75
+11 predicate(s) in 1 file(s)
+  schemas/demo.sigla
+fingerprint 0x03678fcd1e7924e3
 ```
+
+Eleven predicates, and **one for each construct the language has** — that is what the file
+is for. It is small enough to read in a sitting and complete enough that no shape goes
+untested, which is why the instruments and the interactive site both measure over it.
 
 The fingerprint is computed over the **canonical form** — fully-qualified names, no
 comments, no whitespace, no declaration order. Two files that mean the same thing have the
 same number. Per-predicate fingerprints come out too:
 
 ```bash
-$AP schema fingerprint $FJ/schemas/code.sigla
+$AP schema fingerprint $FJ/schemas/demo.sigla
 ```
 
 ```text
-ID  PREDICATE       TYPE                                                         FINGERPRINT
-0   src.Assembly    string                                                       36525ff21049
-1   src.Attribute   { attribute: string, target: src.Decl }                       44271aed92ee
-2   src.AttributeOf { target: src.Decl, attribute: string }                       3917b590f90a
-3   src.Compilation { assembly: src.Assembly, framework: string, project: … }     a1f1156c4e18
-4   src.Decl        { module: src.Module, name: string, line: int } -> string     54a21901f27e
+ID  PREDICATE      TYPE                                                       FINGERPRINT
+0   code.Decl      { file: code.File, name: string, line: int } -> string     755bfcc416fd
+1   code.Digest    { file: code.File } -> { sha256: bytes }                   69de1231a679
+2   code.Extends   { type: code.Decl, base: code.Decl }                       9590300c5a52
+3   code.Extent    { decl: code.Decl } -> { from: { line: int, … }, … }       77a58f8ed3b6
+4   code.File      string                                                     3ebcbfa8a901
+5   code.Kind      { decl: code.Decl, what: { data: string = 5 | … } }        15350b25ba50
+6   code.KindOf    { what: { data: string = 5 | … }, decl: code.Decl }        4a780f20a7cd
 …
 ```
 
-Two of those predicates are the same data twice: `src.Attribute` leads with the attribute
-and `src.AttributeOf` leads with the target. That is not redundancy, it is the index
-design — and [step 6](#6-read-the-plan) is where it becomes visible.
+Two of those predicates are the same data twice: `code.Kind` leads with the declaration
+and `code.KindOf` leads with the tag. That is not redundancy, it is the index design — and
+[step 6](#6-read-the-plan) is where it becomes visible. The ids are **sorted by name**, not
+by declaration order, which is where a position comes from.
 
 ## 2. Create, and serve
 
 ```bash
-$AP --data-dir ./db create code --schema $FJ/schemas/code.sigla
+$AP --data-dir ./db create code --schema $FJ/schemas/demo.sigla
 $AP --data-dir ./db serve --ready-file ./ready &
 while [ ! -e ./ready ]; do sleep 0.1; done
 ```
 
 ```text
-created code (01M0G64F9Q2YYKDAG6459JGZJ5) against schemas/code.sigla
+created code (01M0G64F9Q2YYKDAG6459JGZJ5) against schemas/demo.sigla
 fjord serve
   data dir   ./db
   socket     ./db/fjord.sock
@@ -120,13 +127,11 @@ references: 2,672 resolved, 1,718 to declarations outside the index, 1 unresolve
 
 :::note This transcript is older than the schema it ran against
 It was taken before the shared source layer landed, and the numbers in it are the ones
-that run produced. Three things have moved since: `src.Line` is `src.FileLine`, the
-predicate count and the fingerprint are both larger, and the line table no longer carries
-a row for the empty line Roslyn reports at the end of a newline-terminated file — one
-fewer fact per file, plus a `src.FileInfo` and a `src.FileLineAt` per line. The tour is
-re-run once, with the read measurements, after the indexer stops writing `code.sigla`;
-re-running it twice would spend the same afternoon on numbers that are about to move
-again.
+that run produced. The indexer has since moved schema entirely — it writes `dotnet.sigla`
+now, a different set with a `csharp` layer where this run had `src.Decl` — so every name,
+count and fingerprint above is from a schema that no longer exists. The tour is re-run
+once, with the read measurements, when there is a corpus to re-run it over; doing it twice
+would spend the same afternoon on numbers that are about to move again.
 :::
 
 Read the two server counts together: 55,421 facts touched, 15,039 rows exist — because

@@ -71,10 +71,10 @@ corpus and the schema are stated **independently on each side on purpose** — a
 would make the two agree by construction, which is the agreement being tested. The Rust test
 needs no `dotnet`; regenerating the golden does.
 
-There are two goldens: the code-index corpus, and `unions.txt` over a schema of its own — the
-union tag stated independently from outside, including a nested reference *inside* a payload and
-an empty-record payload. `schemas/code.sigla` is deliberately untouched by it, so no fingerprint
-moved when unions landed.
+There are three goldens: the sample corpus, `unions.txt` over a schema of its own, and
+`bytes.txt` over another. The separate ones exist to push what the shared fixture keeps tidy —
+a tag space of 3, 0, 40000 and 7, and a payload no `string` could hold — so pinning either
+costs the fixture no fingerprint move and no flag day.
 
 ## The real indexer
 
@@ -133,8 +133,8 @@ The three things it will need from this side are already here or named:
   the whole of the client crate's `Transport` today. The answer is a **WebSocket listener
   carrying the same frames**, so there is one protocol, one codec and one set of goldens — not a
   second, JSON-shaped surface. It is default-closed like TCP is (`ops-I10`).
-- **A language-independent route layer**, so an index the viewer can serve does not have to be a
-  `code.sigla` index. That is `codemarkup`.
+- **A language-independent route layer**, so an index the viewer can serve does not have to be
+  a C# one. That is `codemarkup`.
 
 ## Writing a client
 
