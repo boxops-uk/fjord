@@ -7,6 +7,113 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### The measurement register is closed until a 1.0 pass
+
+`bench/FINDINGS.md` carries one banner saying every number in it is superseded, and the
+twenty sections below are left exactly as they were taken. Four things happened underneath
+it and any one would have been enough: the schema every figure was measured over is
+deleted, the mode that built the corpus is deleted, the Glean comparison the write-path
+entries turn on is retired, and cost-based reordering and recursion are still ahead of the
+read path.
+
+**Closed rather than amended, and that is the decision.** A measurement is only worth
+reading against the tree that produced it, so rewriting these to look current would destroy
+the one thing they are still good for. What survives is stated instead: five lessons, each
+banked in the tree with a guard — key field order decides a join's cost (§2), interning is
+most of what ingest spends (§12, §13), the plateau was the connect and the allocator (§18),
+two defects found and fixed (§10, §20), and a new scalar family is a compile error rather
+than a corrupt row (§19). The instruments survive too, and *"what is still open"* is kept
+whole as the next pass's inbox: an unmeasured question is worth more than a stale answer.
+
+Four run gates recorded into the register and are re-cut with it. One of them, R0's, had
+been unrunnable for longer than that: it asserted `Conflicts == 0` against a counter the
+semantic key removed, and `M == 0` against a counter that never existed in the tree or the
+plan.
+
+### `--syntax-only` is deleted, and a run that cannot resolve refuses
+
+The mode skipped semantic resolution to index faster. The governing rule is that *a run
+that cannot resolve assemblies or types fails, loudly, rather than emitting a degraded
+fact*, and a mode whose whole purpose is to skip resolution is the exception that rule
+cannot survive. `--skip-files` goes with it, having existed only to make syntax-only runs
+finish.
+
+An indexer that builds no project now throws and says which of the two happened — nothing
+found under `--source`, or every project failed — rather than writing a small index that
+looks like a working one.
+
+### The Glean comparison is retired; Fjord stands on its own
+
+The capability ledger, the read-path comparison plan, the Angle translation of the
+benchmark schema, the script that ran both systems, `GleanFacts.cs` and `--glean-out` are
+all deleted. Every number the comparison produced was already void — measured over
+predicates a later change deleted — and maintaining a translation of somebody else's schema
+to keep a void comparison runnable is a cost with nothing on the other side.
+
+**Provenance stays, because deleting a citation loses the reasoning rather than the
+comparison.** `csharp.sigla` still says it is a translation, and `codemarkup`'s
+vocabularies still name their sources — their discriminants are frozen *because* they are
+citations, and a reader who thought we invented the numbering would feel free to renumber
+it.
+
+### `schemas/code.sigla` is deleted; the .NET indexer writes `schemas/dotnet.sigla`
+
+The worked-example schema and the real producer's schema were one file, and it could not be
+both. It is now two.
+
+**`dotnet.sigla` (`0xc20dfe719b04e025`) is what the indexer writes** — 67 predicates,
+declaring none of its own, importing `src`, `config`, `msbuild`, `csharp` and `codemarkup`.
+One declaration predicate keyed `{module, name, line}` becomes a per-kind entity layer with
+a symbol identity that does not move when a file is reformatted: **`src.Symbol` is a
+spec-conformant SCIP symbol** under this producer's own scheme token, `scip-csharp`, with
+the database naming the scheme it holds in `config.Setting {dimension = "symbol-scheme"}`.
+A symbol with no global name — a local, a label, a member inside a method body — gets no
+string rather than a synthesised one that would have to be invalidated;
+`codemarkup.FileLocalXRef` answers those span to span.
+
+**`demo.sigla` (`0x03678fcd1e7924e3`) takes the fixture role and grows to earn it** — eleven
+predicates covering every construct the type model can hold: the three scalars, records flat
+and nested, a value side that is a scalar and one that is a record, references, unions with
+payloads of every kind including empty, a single-alternative union, a keyword as a field
+name, and a named type. It is what the interactive site lowers, what the benchmarks measure
+over, and what the byte-identical test states independently in Rust.
+
+**A client may declare only what it writes**, and that turned the switch from a 67-predicate
+big bang with no gate until the end into ten predicates against a database of sixty-seven,
+then a layer at a time. Predicate ids are the client's own, a block header carries the
+predicate's *name*, and a nested reference takes its predicate from the field's declared
+target, so nothing positional crosses the wire. Declaring less asserts nothing less: the
+fingerprint is carried rather than computed, so a stale one is still refused — and since it
+therefore says nothing about the shapes, what checks a transcription is a fact of every
+declared predicate written and read back.
+
+Two things went with the file. `flag-day.sh` is retired: every step it walked is a test now,
+which is where a checklist belongs. And the Roslyn side gained an `Inexpressible` counter —
+a signature this layer cannot key is dropped and *counted*, never hidden — which promptly
+caught a test workspace built without metadata references that was indexing one type out of
+nine.
+
+### `src.FileLineStyles` holds opaque bytes, and fjord ships no codec
+
+Syntax highlighting is a payload fjord stores and does not interpret. There is no fjord
+format for it, no vocabulary of token types, and no codec in any crate: the schema says
+`bytes`, `config.Setting {dimension = "style-encoding"}` names the format and its legend
+together, an unrecognised value renders those lines plain, and absent means "not
+tokenised".
+
+The alternative was fjord defining a token vocabulary, which would have made every
+producer's classifier translate into ours and every consumer's renderer translate back out
+— two lossy conversions to reach a format neither end wanted. The .NET indexer carries LSP
+semantic tokens as **the producer's choice**, marked as such.
+
+### The .NET side has a test project, in the job that is already required
+
+`Boxops.Fjord.Tests` runs on every pull request, added to the existing `test` job rather
+than to a new one. A new `dotnet-test` job would not be a required check until a repository
+ruleset was edited — an admin action, audit-logged, easy to forget, and invisible when
+forgotten — so the gate for six runs' worth of work lives behind a check that is already
+enforced.
+
 ### Five reference schemas, and `index.sigla` — the set composes
 
 `csharp` (31 predicates), `msbuild` (16), `typescript` (35), `npm` (14) and `bundle` (22), plus
@@ -67,6 +174,8 @@ Nothing existing moves — a new namespace in a file of its own.
 ### `schemas/src.sigla` — one shared source layer · **breaking, and a client rebuild**
 
 `schemas/code.sigla`'s fingerprint moves from `0xb08eea634e866a75` to `0xe044df7620885507`.
+(That file is **deleted** later in this same release, above; the flag day below is what it cost
+while it existed, and the layer it moved to is what survives.)
 **Every client carrying the old constant is refused at the handshake until it is rebuilt** —
 that is the designed failure, and the refusal names both numbers so an operator can tell a
 stale client from one pointed at the wrong database. The .NET package goes to 0.2.0 in the
@@ -100,8 +209,9 @@ returns nothing, which is when a consumer falls back to `FileInfo.lines`. That f
 common case for a reference in the last line of a file, so a consumer reading empty as "not
 found" fails on every one of them.
 
-`bench/FINDINGS.md` §1's `src.Line` row is marked: the seek figures are about the key, which is
-unchanged, but the byte totals are not, and the re-run is scheduled.
+`bench/FINDINGS.md` §1's `src.Line` row was marked for a re-run: the seek figures are about the
+key, which is unchanged, but the byte totals are not. The register has since been closed whole,
+above, so the re-run is the 1.0 pass rather than a scheduled repair.
 
 ### `fjord-viewer` is retired
 
