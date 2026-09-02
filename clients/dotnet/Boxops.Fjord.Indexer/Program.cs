@@ -61,9 +61,7 @@ internal static class Program
             + $"loaded in {loading.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
-        // Nothing to connect to on the Glean path: the facts go into files, and the
-        // database at the far end has not been written to yet.
-        List<FjordConnection> connections = options.GleanOut is null ? Connect(options) : [];
+        List<FjordConnection> connections = Connect(options);
         using var closing = new Closing<FjordConnection>(connections);
         var connection = connections.Count > 0 ? connections[0] : null;
 
@@ -74,11 +72,7 @@ internal static class Program
             Console.WriteLine();
         }
 
-        if (Targets(options, connections) is not { } targets)
-        {
-            return 1;
-        }
-
+        var targets = Targets(connections);
         using var closingTargets = new Closing<IBlockTarget>(targets);
 
         var walking = Stopwatch.StartNew();
@@ -165,47 +159,14 @@ internal static class Program
         }
     }
 
-    /// <summary>
-    /// What the writer threads write to: one Fjord connection each, or one Glean batch
-    /// writer each. Null means the run cannot start, and why has been printed.
-    /// </summary>
+    /// <summary>One write target per connection.</summary>
     /// <remarks>
-    /// <b>An empty output directory is a requirement, not a courtesy.</b> Glean's loader
-    /// takes every file it finds, so batches left over from an earlier run would be loaded
-    /// beside this one's — a corpus that is neither run, silently. Since each block writes
-    /// its own file this is the only place the question can be asked.
+    /// A list rather than one, because a producer with several writers holds a connection
+    /// each — the client issues streams sequentially over one socket, so concurrency is
+    /// sockets.
     /// </remarks>
-    private static List<IBlockTarget>? Targets(
-        Options options,
-        IReadOnlyList<FjordConnection> connections)
-    {
-        if (options.GleanOut is null)
-        {
-            return [.. connections.Select(IBlockTarget (connection) => new FjordTarget(connection))];
-        }
-
-        Directory.CreateDirectory(options.GleanOut);
-
-        if (Directory.EnumerateFiles(options.GleanOut, "*.json").Any())
-        {
-            Console.Error.WriteLine(
-                $"{options.GleanOut} already holds batch files; glean write would load them "
-                + "with this run's, so empty it first");
-            return null;
-        }
-
-        Console.WriteLine($"writing Glean JSON batches to {options.GleanOut}, "
-            + $"{options.Writers} writer(s)");
-        Console.WriteLine($"  schema {GleanFacts.Namespace}.{GleanFacts.Version}, "
-            + "one file per block, every reference nested");
-        Console.WriteLine();
-
-        return
-        [
-            .. Enumerable.Range(0, options.Writers).Select(
-                IBlockTarget (writer) => new GleanTarget(DotnetIndex.Schema, options.GleanOut, writer)),
-        ];
-    }
+    private static List<IBlockTarget> Targets(IReadOnlyList<FjordConnection> connections) =>
+        [.. connections.Select(IBlockTarget (connection) => new FjordTarget(connection))];
 
     /// <summary>One connection per writer thread.</summary>
     /// <remarks>
@@ -269,22 +230,11 @@ internal static class Program
 
         if (sink.Bytes > 0)
         {
-            // `json` on the Glean path and `encoded` on ours, because they are not the
-            // same measurement: one is a batch file including every nested target spelled
-            // out again, the other is the wire encoding of the block.
-            var what = options.GleanOut is null ? "encoded" : "json";
-
-            Console.WriteLine($"  {what,-20}{Megabytes(sink.Bytes),14} MB"
+            Console.WriteLine($"  {"encoded",-20}{Megabytes(sink.Bytes),14} MB"
                 + $"  ({(double)sink.Bytes / Math.Max(sink.Total, 1):F0} bytes/fact)");
         }
 
-        if (options.GleanOut is not null)
-        {
-            Console.WriteLine($"  {"batches",-20}{Count(sink.Blocks),14} file(s) in {options.GleanOut}");
-            Console.WriteLine($"  {"",-20}{"",14}  not interned yet: load them with glean write");
-        }
-
-        if (!options.DryRun && options.GleanOut is null)
+        if (!options.DryRun)
         {
             // Created counts every fact written, nested targets included; deduped those
             // already there. A million references naming ten thousand declarations is

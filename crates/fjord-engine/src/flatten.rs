@@ -1562,9 +1562,8 @@ impl Flattener<'_> {
 
     /// **Lookup-chasing**: mark the row binds that may be lowered as a fetch.
     ///
-    /// Glean's `Opt` pass calls this lookup-chasing, and
-    /// [the comparison](../../../docs/glean.md) listed it as the one part of
-    /// that pass genuinely absent here. This is it.
+    /// Glean's `Opt` pass calls this lookup-chasing, and it was the one part of that
+    /// pass genuinely absent here. This is it.
     ///
     /// # What it is for
     ///

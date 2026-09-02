@@ -103,8 +103,7 @@ fn main() {
     // and adding one would make it a workload fixture instead. Every query below would
     // fail per request, which reads as a broken server rather than a retired corpus.
     //
-    // Run 7 owns re-aiming it, because it owns choosing what gets measured. Refusing here
-    // is the same call `--glean-out` takes for the same reason.
+    // Run 7 owns re-aiming it, because it owns choosing what gets measured.
     if sample_schema::schema()
         .find_position("code.SearchByName")
         .is_none()

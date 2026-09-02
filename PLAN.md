@@ -21,7 +21,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 |---|---|---|
 | [File ingestion](#file-ingestion--fjord-write) | designed; format built and shared with the wire | nothing — the interning primitive it needed exists |
 | [Stored derivation](#stored-derivation) | designed; two rules banked | the [re-derivation decision](#the-open-decision-re-derivation-vs-i11) |
-| [The read-path benchmark](#the-read-path-benchmark-against-glean) | planned, with predictions | a quiet machine and the indexed corpus |
+| [The read-path benchmark](#the-read-path-benchmark) | instruments exist; the corpus and the question set do not | Run 7 |
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
 | [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
 | [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not. [Movement 0](#movement-0--semantics-and-seams) is green through 0e | nothing — [Movement 1](#movement-1--the-relation-store-and-the-overlay) is next, and unblocked |
@@ -142,22 +142,21 @@ be read as promising it.
 
 ---
 
-## The read-path benchmark against Glean
+## The read-path benchmark
 
-The write paths are measured and within 8% on equal footing
-([findings §15–§17](bench/FINDINGS.md)); the read paths are not. The suite is
-[`bench/glean-read-path.md`](bench/glean-read-path.md): sixteen query families over two rungs
-(in-process, and over each system's wire), the same 18.3M-fact corpus both systems already
-hold from one Roslyn walk, reporting **work done beside every timing** — Glean's
-`facts_searched` against our `Profile.examined` — because that separates *did more work* from
-*did the same work slower*.
+The write paths are measured; the read paths are not, and what exists is a set of
+instruments rather than a suite: `examples/engine.rs` prices the machine's own operations,
+`examples/breakdown.rs` splits a query into its phases, and the workload catalogue in
+`workload.rs` states one access class per entry — a point fold, a range seek, the smallest
+scan, a fetch per row, the pair that prices key field order, a residual, a nested key, two
+fetches, a union leading a key, an opaque payload.
 
-Three predictions it exists to check, each from a design document rather than a hope: the
-scan curve against database size (2.4 GB against 886 MB for the same facts); what a value
-read costs us (a second point read per row, I6, against Glean's inline value — the sharpest
-prediction); and what a missing feature costs (transitive closure as one recursive Angle
-query against a client-side loop of round trips — the strongest argument for building
-recursion).
+**What is owed is the corpus and the choosing.** Every figure in
+[`bench/FINDINGS.md`](bench/FINDINGS.md) was measured over predicates that no longer exist,
+and the fixture the instruments now resolve against is the language fixture rather than a
+workload one — it carries no search index and nothing per line, which is what two of the
+retired workloads measured. Run 7 owns both halves: which questions get asked, and a corpus
+shaped to ask them.
 
 It also closes a long-carried item: `bench/baselines/<host>.json` and a `--json` flag on the
 instruments, so a number can be re-run rather than re-argued.

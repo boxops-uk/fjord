@@ -72,7 +72,9 @@ public class HarnessTests
     public void The_binary_and_the_schemas_are_where_the_harness_looks()
     {
         Assert.True(File.Exists(FjordServer.Binary), FjordServer.Binary);
-        foreach (var schema in new[] { "code.sigla", "index.sigla", "csharp.sigla" })
+        // The three the harness actually opens databases from: what this client writes,
+        // the fixture the demo and the instruments use, and a layer of the set.
+        foreach (var schema in new[] { "dotnet.sigla", "demo.sigla", "csharp.sigla" })
         {
             Assert.True(File.Exists(FjordServer.Schema(schema)), schema);
         }

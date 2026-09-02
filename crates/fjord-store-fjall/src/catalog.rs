@@ -23,9 +23,8 @@
 //!
 //! `<name>` holds one directory per **instance**, and `create` adds one rather than
 //! conflicting: a database-per-CI-run needs somewhere to go. This is the
-//! [Glean `Repo`](../../../docs/glean.md) shape — a name plus a version of
-//! it — with a generated [ULID](crate::ulid) where Glean takes a caller-supplied
-//! revision.
+//! Glean `Repo` shape — a name plus a version of it — with a generated
+//! [ULID](crate::ulid) where Glean takes a caller-supplied revision.
 //!
 //! Which instance an unqualified name means is [`Intent`]'s answer and depends on what
 //! the caller is about to do, because the cost of being wrong differs: a read ranks the
@@ -84,8 +83,8 @@ pub const INSTANCE_SEPARATOR: char = '@';
 
 /// Which database a caller means: a name, and optionally which instance of it.
 ///
-/// This is the [Glean `Repo`](../../../docs/glean.md) shape — a name plus a
-/// version of it — with one deliberate difference. Glean's second component is a
+/// This is Glean's `Repo` shape — a name plus a version of it — with one
+/// deliberate difference. Glean's second component is a
 /// caller-supplied hash, usually the revision indexed; ours is a generated
 /// [ULID](crate::ulid), so it is opaque and orders by creation time. Both systems order
 /// instances by a *recorded timestamp* rather than by the id itself, which is why the id

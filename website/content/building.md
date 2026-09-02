@@ -160,7 +160,6 @@ fjord/
 │                       against, and demo.sigla, the interactive site's own — six
 │                       predicates chosen so every shape the language has appears once
 ├── clients/dotnet/      the C# client, demo producer and real indexer
-├── docs/glean.md        where every idea stands against Glean
 ├── bench/FINDINGS.md    what has actually been measured
 ├── AGENTS.md            the working contract for contributors
 ├── PLAN.md              the roadmap, and the record of settled decisions

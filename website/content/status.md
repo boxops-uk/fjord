@@ -122,9 +122,9 @@ Four rules that look inherited are not. Glean does the opposite, or nothing, in 
 | Values never enter the scan hot loop | [I6](invariants.html#i6) |
 | Union discriminants are stable and append-only | [I10](invariants.html#i10) |
 
-The repository keeps the full ledger — what was taken, what was changed, and what has not
-been decided — in `docs/glean.md`. It is the file to read before proposing a feature Glean
-already has.
+What is decided and what is not is [the roadmap](https://github.com/boxops-uk/fjord/blob/main/PLAN.md)'s
+job: it carries the acceptance criteria for what is unbuilt and the settled decisions, so a
+feature is proposed against that rather than against a comparison.
 
 ## Two rules about what may change
 
@@ -152,6 +152,6 @@ history lives in git, where every step can be cited by commit.
 |---|---|
 | File ingestion (`fjord write`) | designed; the format is built and shared with the wire path |
 | Stored derivation | designed; gated on the re-derivation decision above |
-| The read-path comparison against Glean | planned with predictions; the write paths are measured and within 8% |
+| The read-path benchmark | the instruments exist; the corpus and the question set are owed |
 | Authentication | design of record written; nothing built |
 | Operational gaps and the language backlog | each listed with the seam that keeps it cheap |

@@ -1,9 +1,8 @@
 # Fjord and GitNexus
 
 > Reference doc. **Read this before claiming Fjord can or cannot answer a code-intelligence
-> question.** `glean.md` measures the engine against another database and answers *what can this
-> do*; this file measures it against a product and answers *what could be shipped on it*. The two
-> pull on different gaps, and the difference is the point.
+> question.** It measures the engine against a *product* rather than against its own
+> internals: seventeen features, one verdict each, and what each missing one would cost.
 
 GitNexus ships seventeen code-intelligence tools. This is a per-feature audit of how many Fjord
 could answer, under two assumptions stated up front because they are load-bearing:
@@ -35,9 +34,9 @@ axes — the table below is mostly the same three gaps counted repeatedly.
 |---|---|---|---|
 | 1 | **Recursion / transitive closure** | `impact`, `trace`, `api_impact`, `pdg_query`, half of `check`, most of `cypher` | A genuine machine reshape ([backlog](../PLAN.md#language-backlog)) |
 | 2 | **Ordering by a computed value (ranking)** | `query` outright; the confidence half of `impact` and `check` | A machine reshape — it materialises |
-| 3 | **Cross-database query** | `group_sync`, `group_list`, every cross-repo variant of the rest | Above the executor; `ops-I9` untouched ([glean.md §0](glean.md#0-the-question-that-opened-this-file-fact-ids-across-databases)) |
+| 3 | **Cross-database query** | `group_sync`, `group_list`, every cross-repo variant of the rest | Above the executor; `ops-I9` untouched |
 | 4 | No float, no vector distance, no ANN | the semantic half of `query` | A type-model change plus a second index kind |
-| 5 | No `distinct` | every "which *files* are affected" answer | Additive under the prefix condition ([glean.md §1.3a](glean.md#13a-why-we-cannot-deduplicate-yet-and-what-would-let-us)) |
+| 5 | No `distinct` | every "which *files* are affected" answer | Additive under the prefix condition |
 
 Fuzzy search moves exactly one thing: name lookup from prefix-only to edit-distance. It touches
 none of the five.
@@ -79,7 +78,7 @@ filtered — by name, by status, by how big something got.
 
 The one mismatch is paging. GitNexus offers `limit/offset`; Fjord offers `--limit` plus an opaque
 resume cursor. The cursor is the stronger primitive — it survives the connection and is verified
-against the plan fingerprint before use ([glean.md §1.3](glean.md#13-answering-paging-and-inspection))
+against the plan fingerprint before use
 — but it answers "the next page", not "page N". Offset paging over an immutable database is a
 client-side skip, and worth saying rather than papering over.
 
@@ -147,7 +146,7 @@ What is *not* supported is **deriving** flows at query time. That is reachabilit
 ### 4 · `impact` · 5 · `trace` · 13 · `api_impact` · 15 · `pdg_query`
 
 One gap, four features. sigla has no recursion —
-[glean.md §3](glean.md#recursion--glean-has-it-we-do-not) records this as *our* decision rather
+The roadmap records this as *our* decision rather
 than a shared one (Glean has an opt-in semi-naive fixpoint behind `--experimental-recursion`) and
 prices it as the one item that is a genuine machine reshape: the loop is driven by facts being
 *written* mid-query, `enumerate` has neither an arm that re-runs the body nor a write path, and
@@ -173,8 +172,8 @@ Three parts, and only the middle one is about the engine.
 
 `git diff` is the client's job. Fjord is immutable: a database is built against one commit and
 sealed. That is also the honest limit — there is no incremental re-index and no stacked delta.
-[glean.md §1.5](glean.md#15-lifecycle-and-operations) records per-fact ownership as declined, and
-[§0](glean.md#stacking-is-not-an-answer-to-this-and-cannot-be-made-into-one) works out that two
+Per-fact ownership is recorded as declined, and
+it follows that two
 independently-built databases can never be stacked, **in Glean either**, because the delta's ids
 must be allocated above the base's at create time. So `detect_changes` compares a working tree
 against *the commit that was indexed*, not against a continuously updated graph.
@@ -230,8 +229,8 @@ database, so `group_list` is half a query and half a config read.
 `group_sync` is the interesting one, and it deserves a paragraph because Fjord has already thought
 this through without building it. Rebuilding a group's Contract Registry is a *write*, and writes
 are fine. Querying **across** the group is not:
-[glean.md §1.5](glean.md#15-lifecycle-and-operations) marks cross-database query "—", and
-[§0](glean.md#0-the-question-that-opened-this-file-fact-ids-across-databases) works out why the
+Cross-database query is unbuilt, and
+`ops-I9` is why the
 obvious fixes fail — stacking is create-time only, and a fact id is database-local by construction
 (our snowflake at least catches a *predicate* mismatch; Glean's bare `uint64_t` catches nothing).
 
@@ -306,7 +305,7 @@ nesting order: [I1](../website/content/invariants.md#i1) makes encoded order val
 deterministic and **resume-stable** — resuming from a cursor produces exactly the rows, in exactly
 the order, an uninterrupted run would ([executor](../website/content/executor.md)).
 
-[glean.md §1.1](glean.md#11-query-language) records Glean making the weaker promise — `seek`
+Glean makes the weaker promise here — `seek`
 returns each key *"in no specified order"* — and notes that ours is the stricter one, which
 forecloses the key truncation Glean adopted.
 
@@ -319,7 +318,7 @@ parameter order, flow step order, and a file's cross-references in render order 
 ### (b) Ordering by a computed value — ranking — is the real gap, and it is not additive
 
 Top-k by score must see rows it will not emit, so it materialises. That is the property
-[glean.md §1.4](glean.md#14-aggregation) already names as the reason aggregation is absent, and it
+is already the reason aggregation is absent, and it
 is the same wall. It also breaks the claim [chapter 5](../website/content/executor.md) is built on:
 a suspended query holds one detached row per open level, bytes only, so a page held for an hour
 costs what one held for a millisecond does. A partial ranking buffer is state proportional to the
@@ -372,10 +371,10 @@ Listed so the reading has somewhere to go, roughly by ratio of features unblocke
 
 | Candidate | Unblocks | Shape |
 |---|---|---|
-| `distinct` under the prefix condition | the "which files" answer in #4, #6, #8, #13 | Additive; mechanism worked out in [glean.md §1.3a](glean.md#13a-why-we-cannot-deduplicate-yet-and-what-would-let-us), one row of cursor state |
+| `distinct` under the prefix condition | the "which files" answer in #4, #6, #8, #13 | Additive; mechanism worked out in the design record, one row of cursor state |
 | A fuzzy `Source` | #8, the discovery half of #2 | Additive; the assumption this audit was run under |
 | A same-row `EqField` residual | `nyi/repeated-variable`, the self-reference check in #7 | Additive; #7 is the first caller to ask for the operator |
-| Cross-database fan-out with a merge policy | #16, #17, cross-repo everything | Above the executor; designed in [glean.md §0](glean.md#0-the-question-that-opened-this-file-fact-ids-across-databases), `ops-I9` untouched |
+| Cross-database fan-out with a merge policy | #16, #17, cross-repo everything | Above the executor; designed in the design record, `ops-I9` untouched |
 | Recursion / transitive closure | #4, #5, #13, #15, half of #7, part of #9 | **Machine reshape** — no longer a candidate: it has a design and a movement plan ([`PLAN.md`](../PLAN.md#recursion--query-local-relations-magic-sets-stratified-negation)) |
 | Ranking / order-by-computed | #2, the confidence half of #4 and #7 | **Machine reshape** — it materialises |
 

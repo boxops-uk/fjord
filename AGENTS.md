@@ -13,7 +13,6 @@ book, not here.
 | **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — the pages. What **publishes** at <https://boxops-uk.github.io/fjord/> on every push to main is the interactive site, [`web/`](web/README.md); `python3 website/serve.py` browses the generated copy, which needs no toolchain. The reading order is [`website/nav.json`](website/nav.json), read by both |
 | **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
-| Where we stand against Glean — read **before proposing a feature Glean has** | [`docs/glean.md`](docs/glean.md) |
 | What a code-intelligence product could ship on this — read **before claiming a question is or is not answerable** | [`docs/gitnexus.md`](docs/gitnexus.md) |
 | What has been measured, and the method | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](website/content/performance.md) |
 
@@ -68,8 +67,7 @@ from outside — no shared constants, no shared enums — and is a checked-in go
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes, with
 corpus and schema stated independently on each side *on purpose* (a shared statement would
 make the two agree by construction). `Boxops.Fjord.Indexer` is that client pointed at real
-source via Roslyn, and it also writes Glean's batch format so the two systems can be measured
-over one producer.
+source via Roslyn.
 
 ## How to work here
 

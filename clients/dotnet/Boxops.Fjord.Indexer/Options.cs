@@ -52,26 +52,6 @@ internal sealed record Options
     /// <summary>Also write every block to this file, which is the fact-file format.</summary>
     public string? Emit { get; init; }
 
-    /// <summary>
-    /// Write the same facts into this directory as Glean JSON batches, instead of into an
-    /// Fjord database.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// One walk, two sinks — see <see cref="GleanFacts"/> for what the translation is and
-    /// why it is JSON. The walk, the batching and the writer threads are unchanged, which
-    /// is the point: what differs between the two runs is the database, not the producer.
-    /// </para>
-    /// <para>
-    /// <b>This is half of a measurement.</b> A file of JSON is a fact nobody has interned
-    /// yet; the load is a second step with its own clock
-    /// (<c>clients/dotnet/index-repo-glean.sh</c>). Nothing here connects to a Fjord
-    /// server, so there is nothing to query afterwards and no <c>created</c>/<c>deduped</c>
-    /// to report.
-    /// </para>
-    /// </remarks>
-    public string? GleanOut { get; init; }
-
     /// <summary>Emit <c>src.Ref</c> and <c>src.Import</c>. Off is a decls-only index.</summary>
     public bool References { get; init; } = true;
 
@@ -247,9 +227,6 @@ internal sealed record Options
           --syntax-only         skip MSBuild; glob *.cs and parse them
           --dry-run             index and encode, but connect to nothing
           --emit <path>         also write every block to a file
-          --glean-out <dir>     write the facts as Glean JSON batches here, not to Fjord
-                                (one file per block; load them with glean write — see
-                                clients/dotnet/index-repo-glean.sh)
           --no-smoke            do not query the index afterwards
           --verbose             let MSBuild's output through
           --help
@@ -275,7 +252,7 @@ internal sealed record Options
         options = null!;
         error = null;
 
-        string? source = null, root = null, emit = null, dotnet = null, gleanOut = null;
+        string? source = null, root = null, emit = null, dotnet = null;
         var at = $"{DefaultSocket}{FjordAddress.Separator}code";
         int batch = 4096, maxFiles = 0, maxProjects = 0, skipFiles = 0;
         var excludes = new List<string>();
@@ -323,7 +300,6 @@ internal sealed record Options
                     case "--socket": at = $"{Value()}{FjordAddress.Separator}{Database(at)}"; break;
                     case "--database": at = $"{Where(at)}{FjordAddress.Separator}{Value()}"; break;
                     case "--emit": emit = Value(); break;
-                    case "--glean-out": gleanOut = Value(); break;
                     case "--batch": batch = Number(); break;
                     case "--max-files": maxFiles = Number(); break;
                     case "--exclude": excludes.Add(Value().Replace('\\', '/').Trim('/')); break;
@@ -380,34 +356,6 @@ internal sealed record Options
             return false;
         }
 
-        // **`--glean-out` has no schema to translate into.** The Angle declaration it
-        // wrote against described the retired schema's shapes and went with it; the walk
-        // now produces `dotnet.sigla`'s. Without one, the translation would emit facts
-        // Glean cannot load — silently, into a directory somebody would then measure.
-        //
-        // `GleanFacts` itself stays: it maps a `FjordSchema` onto Glean's batch format
-        // and is not specific to the schema that is gone. What is owed is the Angle
-        // declaration of the new set, which Run 7 writes because it owns the comparison
-        // this exists for — and that comparison is invalidated by the schema move
-        // regardless.
-        if (gleanOut is not null)
-        {
-            error = "--glean-out is not available: the Angle schema it wrote against is "
-                + "retired with the schema it described. Run 7 re-establishes the "
-                + "comparison against the set that replaced it.";
-            return false;
-        }
-
-        // Each of these names where the facts go, and they name different places. Taking
-        // two would leave the run's timings covering a mixture of the two write paths,
-        // which is the one thing a comparison harness must not do quietly.
-        if (gleanOut is not null && (emit is not null || dryRun))
-        {
-            error = "--glean-out writes the facts somewhere else, so it cannot be combined "
-                + "with --emit or --dry-run";
-            return false;
-        }
-
         FjordAddress address;
         try
         {
@@ -426,7 +374,6 @@ internal sealed record Options
             Root = root is null ? null : Path.GetFullPath(root),
             Dotnet = dotnet is null ? Bootstrapped(source, root) : Path.GetFullPath(dotnet),
             Emit = emit is null ? null : Path.GetFullPath(emit),
-            GleanOut = gleanOut is null ? null : Path.GetFullPath(gleanOut),
             Batch = batch,
             MaxFiles = maxFiles,
             Excludes = [.. excludes],
@@ -443,7 +390,7 @@ internal sealed record Options
             Restore = restore,
             SyntaxOnly = syntaxOnly,
             DryRun = dryRun,
-            Smoke = smoke && !dryRun && gleanOut is null,
+            Smoke = smoke && !dryRun,
             Verbose = verbose,
         };
 

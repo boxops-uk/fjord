@@ -20,7 +20,7 @@
 pub mod catalog;
 pub mod error;
 pub mod identity;
-/// The ingest-time lookup cache (see `docs/glean.md` §2.3).
+/// The ingest-time lookup cache.
 mod lookup_cache;
 pub mod meta;
 pub mod schema_doc;

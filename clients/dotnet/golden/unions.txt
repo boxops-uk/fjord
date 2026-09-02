@@ -1,7 +1,8 @@
 # Union blocks produced by the .NET client, as hex — Phase 8.6's half of 9e's
 # criterion. `fjord-client` encodes the same facts and must produce the same bytes.
 #
-# A schema of its own, so a union costs `schemas/code.sigla` no flag day.
+# A schema of its own, so a tag past a varint byte costs the shared fixture
+# no flag day.
 # Regenerate with ./clients/dotnet/emit-golden.sh.
 schema-fingerprint 84c63c4ec408796e
 block uni.Thing 0 ffffffffffffffffffff464a424b090000000200000002000000cc4a0718756e692e5468696e670204

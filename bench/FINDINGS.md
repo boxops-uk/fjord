@@ -1,8 +1,8 @@
 # Findings — the measurement register
 
-> The method is [performance](../website/content/performance.md); the read-path comparison
-> plan is [`glean-read-path.md`](glean-read-path.md); the predictions this register was
-> opened to check are the [appendix](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured).
+> The method is [performance](../website/content/performance.md); the predictions this
+> register was opened to check are the
+> [appendix](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured).
 > One entry per thing measured: what was measured, the number, and what it costs to act on.
 > This file is deliberately a history — a number is only worth reading against the tree that
 > produced it, so entries cite commits and are amended rather than rewritten.
@@ -824,8 +824,8 @@ the 4.9M-row scan came from.
 
 ## 12. Ingest is 5.2k facts/s, and the write path was never the reason — three quarters of the work was re-reading, and half the wall clock was the producer waiting
 
-The one number [glean-capabilities §2.3](../docs/glean.md) said "nothing in
-`bench/FINDINGS.md` yet attributes". Attributed here. **Not an S-rung measurement** — there is no
+The one number the capability ledger said "nothing in `bench/FINDINGS.md` yet attributes".
+Attributed here. **Not an S-rung measurement** — there is no
 write-path instrument yet — but read off counters the indexer already reports, on a 25M-fact
 `dotnet/runtime` index: a larger run than §1's `--syntax-only` 18.2M-fact one, reaching the build
 and declaration layers as well as the source layer.
@@ -977,10 +977,17 @@ cost 20–30% before that. `queueing` on a real index is 1,019.4 s of 3,977.7 s 
 
 ## 15. Fjord and Glean over one corpus and one producer: the walk is 30%, the tail is 45%, and Glean's write path is 3.5× cheaper
 
+> **The comparison this measured is no longer maintained**, and the entry stays because a
+> ledger that deletes its entries is a ledger that claims a measurement was never taken.
+> The machinery is gone — the translation, the Angle declaration, the script that ran both
+> systems — so these two figures cannot be re-run as they stand, and no attempt should be
+> made to compare them against a later number. What survives them is [§17](#17-on-equal-footing-the-two-write-paths-are-within-8-and-15s-35-was-mostly-memory-pressure),
+> whose finding is about *this* system: the 3.5× below was mostly our own memory pressure,
+> which is why the allocator work in §18 exists.
+
 **What was measured.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree, four runs
 of the same producer: `clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8`, the line
-table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches
-(`--glean-out`, [§Into Glean instead](../clients/dotnet/Boxops.Fjord.Indexer/README.md)) which
+table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches which
 `glean create -j 8 --finish` then loads. **One walk, two sinks**, so what differs between
 the last two rows is the database and not the indexer.
 
@@ -1211,8 +1218,7 @@ question this makes worth asking.
 
 **Storage is still 3.7× on disk** (659 MB against 2.4 GB), 2.1× on the logical figures each
 system reports. Nothing here explains it, and it is the one gap that also acts on the read
-path — a database that fits in cache is a database that scans faster, which is
-[Phase 13](glean-read-path.md)'s F5.
+path — a database that fits in cache is a database that scans faster.
 
 **The indexer's gate amplifies ~12×, and this run measured it by accident.** The same walk,
 two sinks:

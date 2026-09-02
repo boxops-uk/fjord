@@ -134,10 +134,8 @@ a required check rather than a thing somebody remembers to run:
 | the fixture reader's counts and key order | `sample_schema`'s four tests |
 | the suite and the lint gate | the ordinary gate |
 
-What went with it is two nudges rather than two guarantees: it noticed goldens that had
-been regenerated and not committed, and it warned when the schema moved and the Glean
-translation did not. The first is a `git status` away; the second is moot while
-`--glean-out` refuses.
+What went with it is one nudge rather than one guarantee: it noticed goldens that had
+been regenerated and not committed, which is a `git status` away.
 
 So the order below is for a person, and nothing enforces it:
 
@@ -198,15 +196,3 @@ and does the database hold up when the facts were not chosen to be convenient. I
 own [README](Boxops.Fjord.Indexer/README.md) — what it maps onto the twenty-two predicates,
 what it resolves, and what the numbers it prints mean.
 
-**It also writes to Glean.** `--glean-out <dir>` puts the same facts into Glean's own JSON
-batch format instead, against [`glean/fjbench.angle`](glean/fjbench.angle) — a predicate,
-field and *field-order* preserving translation of `schemas/code.sigla`:
-
-```sh
-./clients/dotnet/index-repo-glean.sh ~/src/SomeSolution fjbench --syntax-only
-```
-
-One walk, two sinks, so a measurement of the two systems is a measurement of the two
-systems and not of two indexers. What that costs to keep honest — nested references on
-both paths, `int` becoming `nat`, and the fact that emitting is not writing — is in the
-indexer's README under *Into Glean instead*.

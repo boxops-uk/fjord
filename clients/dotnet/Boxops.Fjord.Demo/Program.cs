@@ -551,7 +551,8 @@ void EmitUnionGolden(string path)
         "# Union blocks produced by the .NET client, as hex — Phase 8.6's half of 9e's",
         "# criterion. `fjord-client` encodes the same facts and must produce the same bytes.",
         "#",
-        "# A schema of its own, so a union costs `schemas/code.sigla` no flag day.",
+        "# A schema of its own, so a tag past a varint byte costs the shared fixture",
+        "# no flag day.",
         "# Regenerate with ./clients/dotnet/emit-golden.sh.",
         $"schema-fingerprint {unionSchema.Fingerprint:x16}",
     ];
@@ -618,7 +619,8 @@ void EmitBytesGolden(string path)
         "# `bytes` blocks produced by the .NET client, as hex. `fjord-client` encodes the",
         "# same facts and must produce the same bytes.",
         "#",
-        "# A schema of its own, so a `bytes` field costs `schemas/code.sigla` no flag day.",
+        "# A schema of its own, so a payload no `string` could hold costs the shared",
+        "# fixture no flag day.",
         "# Regenerate with ./clients/dotnet/emit-golden.sh.",
         $"schema-fingerprint {bytesSchema.Fingerprint:x16}",
     ];

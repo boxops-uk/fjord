@@ -16,7 +16,7 @@ claim and acceptance criteria that are tests and commands rather than intentions
 amends it**, and where the two disagree W13 wins. Everything else here is new and this directory is
 its specification.
 
-**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — thirteen now, all answered,
+**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — fourteen now, all answered,
 with the consequence of each — plus ten corrections the plan makes to the issues and eight risks it
 carries. Three of them re-cut work already specified here: D11 retired `fjord-viewer`, which re-cut
 W11 and R9's gate and shrank W6's flag day; D12 retires `code.sigla`, which cancels R4 and adds

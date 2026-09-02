@@ -99,14 +99,6 @@ producer holding no fact ids is an elegance argument at six declarations; at eig
 facts it is the only tractable option, because the alternative is a second pass over an index that
 no longer fits in memory, ordered so that every target is written before every reference to it.
 
-It can also write the same facts into **Glean's** own JSON batch format
-(`--glean-out <dir>`, `./clients/dotnet/index-repo-glean.sh`) against a predicate-, field- and
-field-order-preserving translation of the sample schema. One walk, two sinks — so a comparison
-of the two systems is a comparison of the two systems and not of two indexers. Two honesty
-conditions are recorded with it: references stay nested on that path as well, and **emitting is
-not writing** — the load is a second phase with its own clock, so the honest total for Glean is
-emit plus load.
-
 ### What the .NET client does not do
 
 It mirrors the server, so it stops where the server does. Streams are issued sequentially — the

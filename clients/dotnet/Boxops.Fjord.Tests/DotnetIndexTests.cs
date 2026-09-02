@@ -152,7 +152,7 @@ public sealed class DotnetIndexTests
     /// **The project graph, written and asked back.** Sixteen predicates whose shapes this
     /// side states independently: a wrong one is refused at the write, because the server
     /// decodes against its own statement. The two answers asserted at the end are the ones
-    /// `code.sigla`'s build layer could not give — a project identified by its file alone,
+    /// the retired build layer could not give — a project identified by its file alone,
     /// and an edge between two projects.
     /// </summary>
     [Fact]

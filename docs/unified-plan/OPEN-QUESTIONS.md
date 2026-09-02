@@ -1,6 +1,6 @@
 # Decisions, corrections, and the risks this plan carries
 
-Three lists. The first is the thirteen decisions put for review and **answered** — recorded with
+Three lists. The first is the fourteen decisions put for review and **answered** — recorded with
 their consequence so the reasoning survives the sprint; the second is what the plan found to be wrong
 in the issues (recorded here so nobody re-derives it); the third is what remains risky after
 everything lands. **All of them are answered now**: D11 closed the one left open underneath D5, D12
@@ -11,7 +11,7 @@ and D13 takes the style payload out of the schema's hands entirely.
 
 ## 1 · Decisions taken
 
-All thirteen were put with a recommendation and all thirteen are answered. Recorded with their
+All fourteen were put with a recommendation and all fourteen are answered. Recorded with their
 consequence, so the reasoning survives the sprint.
 
 | | Decision | Consequence, and where it lands |
@@ -29,6 +29,7 @@ consequence, so the reasoning survives the sprint.
 | **D12** | **`code.sigla` retires**, and the C# indexer writes the new set. There are no consumers, so the freedom to break it exists now and will not later — the schema move goes first, before the runs that merely make the indexer better | [W15](15-retire-code-sigla.md). **R4 is cancelled**: it would spend a flag day giving `src.Decl` the semantic identity `csharp.Method`'s `docId` key already has, in a schema being deleted. R4.0 and R4c survive, re-aimed. Five new runs S1–S5 replace it, and **R7 must run after S5** because every published read number is keyed to predicates this deletes |
 | **D11** | **`fjord-viewer` is retired, now, before W6.** A browser application replaces it — React + Vite, a WebAssembly client and a JS wrapper | W11 is re-cut from "fix the viewer" to "what the new viewer needs from this side", and the crate is deleted before the flag day rather than migrated through it. **W6 loses two of its seven migration sites**; R9 loses its stated gate and needs another; and the protocol grows a **WebSocket listener**, because a browser can open neither a Unix socket nor raw TCP and those are the whole of `Transport` today |
 | **D13** | **`src.FileLineStyles` is `bytes`, and fjord defines no style vocabulary.** A producer writes what its tokeniser already emits and names the format in `config.Setting {dimension = "style-encoding"}` | Re-cuts **W6 D3** (which shipped `styles` as a run-length `string`) and **W6 c7**, and re-cuts **W15's S1**. The kind table, its `fjord-1` revision and the fold from Roslyn's 67 `ClassificationTypeNames` down into it are all **deleted** rather than deferred: a schema agnostic about a payload has no business shipping the payload, and the fold discarded distinctions a real tokeniser had already made. The dimension `style-vocabulary` is renamed, because it named half the thing. The round-trip property moves to the producer, where the format now lives |
+| **D14** | **The Glean comparison is retired, and Fjord stands on its own.** The capability ledger, the read-path comparison plan, the batch-format translation, the script that ran both systems and the `--glean-out` flag all go | The comparison was two documents and a translation, and every number it produced was already void: it was measured over `src.Decl` in a corpus `code.sigla` took with it. What stays is **provenance** — the citations that explain a rule, because deleting those loses the reasoning rather than the comparison. `csharp.sigla` still says it is a translation of Glean's schema and `codemarkup`'s vocabularies still name their source, which is what W8's risk 4 depends on: their discriminants are frozen *because* they are citations, and a reader who thought we invented the numbering would feel free to renumber it. `bench/FINDINGS.md` §15 and §17 are **annotated rather than deleted** — a ledger that deletes entries claims a measurement was never taken — and §17's finding survives them because it is about this system: the 3.5× was our own memory pressure |
 
 ## 2 · Corrections this plan makes to the issues
 

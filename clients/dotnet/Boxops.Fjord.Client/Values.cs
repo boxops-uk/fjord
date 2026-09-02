@@ -182,8 +182,7 @@ public static class ValueCodec
             // and an analyser that could see it does not exist. So the mechanism on
             // this side is the flag-day checklist — the schema fingerprint moves, this
             // client is refused by name at the handshake until it is rebuilt, and the
-            // rebuild is where this arm is revisited. `GleanFacts.WriteValue` has the
-            // same shape and the same absence.
+            // rebuild is where this arm is revisited.
             default:
                 throw new FjordProtocolException(
                     $"value {value.GetType().Name} does not fit type {type.GetType().Name}");
