@@ -189,20 +189,32 @@ per-predicate handshake claim is the alternative that would make W6 cost the cli
 
 ### R7 — re-measure
 
-**+ W12 may add to the re-run list.** If the benchmark databases were sealed before W12's flush fix,
-their read numbers were measured against a partly-unmerged tree, which `compact`'s own doc prices at
-up to 180× on a re-seek. W12 criterion 7 establishes whether they were; if so, `§1`, `§2`, `§6` and
-`§11` join R7's list for that reason as well as for the key move.
+**Re-cut: the register is closed, and R7 is what re-opens it.** The run was a list of sections to
+re-run — §1 and §2 for the key move, §1/§14/§15 for `--syntax-only`, §1/§2/§6/§11 again if the
+benchmark databases predated W12's flush fix. Chasing that list entry by entry is the wrong shape
+now, and it was becoming a longer list with every run: the schema the corpus was built over is
+deleted, the mode that built it is deleted, the Glean comparison is retired, and **cost-based
+reordering ([#18](https://github.com/boxops-uk/fjord/issues/18)) and recursion will change how a
+query is planned and what the language can express** — which is most of what the read-path entries
+measure.
 
-**+ Two more sections join the list, for reasons that are not the key move.** §1, §14 and §15 were
-measured with `--syntax-only` (`FINDINGS:20`, `:932`, `:965`), which R3.7 deletes — so they are
-re-run against a semantic walk on a named corpus, and the old figures are marked as produced by a
-mode that no longer exists. §1's `src.Line` row (`FINDINGS:70` — 8,583,810 rows) is re-run again for
-a second reason: W6 replaces that predicate with `src.FileLine`, whose value is four fields where it
-was one, so both the corpus's size and its per-row read cost move.
+So `bench/FINDINGS.md` carries one banner saying the whole register is superseded, and R7 is a
+**profiling pass nearer 1.0** rather than a repair of the old numbers. What it owes:
 
-**+ The three still-open items whose window is Runs 6–7** are carried here so they are not lost:
-`serve --commit-per-block` measured, the write rung over a real corpus, and the `--json` baseline.
+- **A corpus.** Named, rebuildable, and produced by the semantic walk — which means it is a
+  different and much larger workload than the one every figure was taken over.
+- **A question set.** The workload catalogue states one access class per entry; what it does not
+  have is a fixture shaped to ask them. `demo.sigla` is the *language* fixture — no search index,
+  nothing per line — so two retired workloads have no equivalent and `codesearch` refuses at
+  startup for want of one.
+- **The three still-open items whose window this is:** `serve --commit-per-block` measured, the
+  write rung over a real corpus, and the `--json` baseline (`bench/baselines/<host>.json`) so a
+  number can be re-run rather than re-argued.
+
+**What is deliberately not owed: amending the old entries to look current.** A measurement is only
+worth reading against the tree that produced it, and rewriting them would destroy the one thing
+they are still good for — the lessons the banner lists, each of which is banked in the tree with a
+guard.
 
 ### R8 — the seam
 

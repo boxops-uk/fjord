@@ -6,9 +6,9 @@ taken so they are not re-litigated. The design of record is the
 ([`web/`](web/README.md), the pages with the engine running in them) at
 <https://boxops-uk.github.io/fjord/> on every push to main, and shipped with each release as
 an attested `fjord-docs-site.tar.gz` beside the binaries; the working contract is
-[`AGENTS.md`](AGENTS.md); what has been measured is
-[`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was built lives in
-git, where it can be cited by commit.
+[`AGENTS.md`](AGENTS.md); what *was* measured is
+[`bench/FINDINGS.md`](bench/FINDINGS.md), a register closed until a 1.0 pass. The history
+of how the system was built lives in git, where it can be cited by commit.
 
 **Definition of done, everywhere:** a task ends in a green test (prefer a property), and
 every invariant a piece of work touches has its guard un-ignored and passing before the work

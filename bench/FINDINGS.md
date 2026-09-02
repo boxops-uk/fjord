@@ -1,4 +1,41 @@
-# Findings — the measurement register
+# Findings — the measurement register, closed until a 1.0 pass
+
+> **Every number in this file is superseded, and the register is closed rather than
+> stale.** Read it for what was *learned*, never for what anything currently costs.
+>
+> Four things happened to the tree underneath it, and any one of them would have been
+> enough. The schema every figure was measured over — `code.sigla`, 22 predicates — is
+> deleted; the producer writes a different set with a per-kind C# layer where this had one
+> declaration predicate. The mode that built the corpus, `--syntax-only`, is deleted, and a
+> semantic walk over the same tree is a different and much larger workload. The Glean
+> comparison the write-path entries turn on is retired. And the two largest pieces of work
+> still ahead — **cost-based reordering** and **recursion** — change how a query is planned
+> and what the language can express, which is most of what the read-path entries measure.
+>
+> **What survives is the lessons, and they are load-bearing rather than historical:**
+>
+> - **A join's cost is decided by key field order, and that order is the schema's to
+>   choose** (§2). This is why every predicate in `schemas/` carries a comment saying which
+>   question its key order answers, and why `sample_schema`'s `KEY_ORDER` is asserted.
+> - **Interning is most of what ingest spends** (§12, §13) — three quarters of the work was
+>   re-reading, and committing is 41% of it. The lookup cache exists because of this.
+> - **The plateau was the connect and the allocator, not the engine** (§18): 27× from
+>   pooling a connection, 5–10% from mimalloc. Both are in the tree with guards.
+> - **A connection dying mid-answer stranded the stream answering it** (§10), and **a
+>   sealed database's data was in its journal rather than its tables** (§20). Both fixed,
+>   both guarded.
+> - **A new scalar family is a compile error rather than a corrupt row** (§19), and the site
+>   count is the coverage ledger `scripts/check-exhaustive.sh` re-derives.
+>
+> **The instruments survive too**, and they are how the next pass happens:
+> `examples/engine.rs`, `examples/breakdown.rs`, `examples/ingest.rs` and the workload
+> catalogue in `workload.rs`, which states one access class per entry. What they lack is a
+> corpus and a chosen question set — Run 7's, and the pass itself is scheduled nearer 1.0,
+> when the planner and the language have stopped moving.
+>
+> Nothing below is amended to match the present tree. A measurement is only worth reading
+> against the tree that produced it, and rewriting these to look current would destroy the
+> one thing they are still good for.
 
 > The method is [performance](../website/content/performance.md); the predictions this
 > register was opened to check are the
@@ -21,14 +58,6 @@
 facts** across 22 predicates, 1.8 GB on disk, 4,613 s to build. This is the first
 database in the project's history large enough for a scaling question to mean anything,
 and every number below is from it.
-
-> **This corpus cannot be rebuilt, and the reason is a deletion rather than a drift.**
-> `--syntax-only` no longer exists: it globbed the `.cs` files and parsed them against the
-> running framework's reference set, which finds every declaration and loses every
-> reference into a package, and a producer that cannot resolve now refuses instead. A
-> semantic walk over the same tree is a *different and much larger* workload, so these are
-> not numbers a later run can be compared against. The predicates are gone too — 22 of
-> them were `code.sigla`'s. Run 7 re-measures on a named corpus.
 
 **The instrument.** `cargo run --release --example engine -- --store <instance>` —
 S1 (`--layer executor`), S2 (`--layer compile`), S3 (`--layer store`). In-process, no
@@ -953,8 +982,7 @@ stops below them deliberately, and the layer that adds them is what finding 12's
 Phase 12 made a database take as many writers as it has streams; `clients/dotnet` can now
 ask for them (`--writers n`, one connection each, since the C# client issues streams
 sequentially over one socket and cannot multiplex). Measured on this repository's own
-`clients/dotnet` tree — 16 files, 12,382 facts, `--syntax-only` (a mode since deleted, so
-this corpus is not rebuildable either — see the note under *The corpus* above):
+`clients/dotnet` tree — 16 files, 12,382 facts, `--syntax-only`:
 
 | | 1 writer | 4 writers |
 |---|---|---|
@@ -986,17 +1014,8 @@ cost 20–30% before that. `queueing` on a real index is 1,019.4 s of 3,977.7 s 
 
 ## 15. Fjord and Glean over one corpus and one producer: the walk is 30%, the tail is 45%, and Glean's write path is 3.5× cheaper
 
-> **The comparison this measured is no longer maintained**, and the entry stays because a
-> ledger that deletes its entries is a ledger that claims a measurement was never taken.
-> The machinery is gone — the translation, the Angle declaration, the script that ran both
-> systems — so these two figures cannot be re-run as they stand, and no attempt should be
-> made to compare them against a later number. What survives them is [§17](#17-on-equal-footing-the-two-write-paths-are-within-8-and-15s-35-was-mostly-memory-pressure),
-> whose finding is about *this* system: the 3.5× below was mostly our own memory pressure,
-> which is why the allocator work in §18 exists.
-
 **What was measured.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree, four runs
-of the same producer: `clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8` — a mode
-since deleted, so this run is not rebuildable — the line
+of the same producer: `clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8`, the line
 table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches which
 `glean create -j 8 --finish` then loads. **One walk, two sinks**, so what differs between
 the last two rows is the database and not the indexer.
@@ -1467,6 +1486,14 @@ where this bit hardest.
 ---
 
 ## What is still open
+
+This is the inbox for the pass that re-opens the register, not a list anybody is working
+through — it is the closure's other half, and it is kept whole because an unmeasured question
+is worth more than a stale answer. Read it with two exclusions: anything that names the
+retired Glean comparison (storage against Glean, the tail file, the re-index behind finding
+13) is void as *comparison* and survives only as a question about this system, and anything
+that names the old corpus needs Run 7's new one before it can be asked at all. What does not
+expire is the shape of each question, which is why they are stated rather than deleted.
 
 - **Finding 7's number, after its fix.** The per-query retention had a cause, the cause has a
   fix in the tree, and nobody has re-run the instrument — so "~3.5 kB per query" is what the

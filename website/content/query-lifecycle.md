@@ -364,9 +364,10 @@ size; encoding a row costs about 1.5× the executor's work, and the wire above i
 3.6×. Which is why `--count` exists: it runs the same plan and the same executor and throws
 away the part that costs.
 
-See [Performance](performance.html) for the method and the numbers; `bench/FINDINGS.md` in
-the repository is the register of what was measured, at what size, and what acting on it
-would cost.
+See [Performance](performance.html) for the method and the shape of these costs. The register
+of what was measured — at what size, and what acting on it would cost — is `bench/FINDINGS.md`
+in the repository, and it is closed until a 1.0 pass: the ratios above are what survives, and
+every absolute in it is read against a tree that no longer exists.
 
 ## Where a write goes instead
 

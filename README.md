@@ -137,5 +137,7 @@ them page for page.
 - [`docs/gitnexus.md`](docs/gitnexus.md) — the engine measured against a code-intelligence
   *product*: seventeen features, one verdict each, and the three gaps that account for almost
   all of the partial ones.
-- [`bench/FINDINGS.md`](bench/FINDINGS.md) — the measurement register, one entry per thing
-  measured.
+- [`bench/FINDINGS.md`](bench/FINDINGS.md) — the measurement register, **closed until a
+  1.0 pass**: read it for what was learned, not for what anything currently costs. The
+  schema its corpus was built over is gone, and cost-based reordering and recursion will
+  change how a query is planned.

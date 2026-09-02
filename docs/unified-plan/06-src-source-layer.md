@@ -155,10 +155,11 @@ planner fix already in the tree.
 5. **The two recipes are corpus'd, edge cases included.** Three queries, each with expected rows:
    offset exactly at a line start; offset mid-line; **offset past the last line's start, asserting
    zero rows**, with the `FileInfo` fallback shown in the test and in the schema comment.
-6. **The window's cost claim is measured, not asserted.** A bench or a counted test showing a
-   100 line window on a large synthetic file reads the window and not the offset — the same
-   construction `iter::a_bounded_seek_reads_the_window_and_not_the_offset` already uses. Recorded in
-   `bench/FINDINGS.md` with the corpus size.
+6. **The window's cost claim is measured, not asserted** — **re-cut**: the counted test is the
+   whole of it. `iter::a_bounded_seek_reads_the_window_and_not_the_offset` asserts ten reads for a
+   ten-row window against a table that starts it late, which is the claim; a *scale* figure over a
+   real corpus belongs to R7's pass, because `bench/FINDINGS.md` is closed and adding one entry to
+   a closed register would be the only number in it a reader could mistake for current.
 7. **The style payload has a producer, a property and a declared name** — re-cut by
    [D13](OPEN-QUESTIONS.md), which moved the format out of fjord. There is no fjord codec to
    round-trip, so the property belongs to whoever writes the bytes: the .NET indexer's

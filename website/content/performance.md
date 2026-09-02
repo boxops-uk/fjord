@@ -8,6 +8,13 @@ is read against — this page) from the **register** of what has actually been m
 `bench/FINDINGS.md` in the repository, which is deliberately a history: a number is only
 worth reading against the tree that produced it.
 
+**That register is closed until a 1.0 pass, and this page is the method it will be re-opened
+under.** The schema its corpus was built over has been replaced, the producer mode that
+built it is gone, and the two largest pieces of work still ahead — cost-based reordering and
+recursion — change how a query is planned and what the language can express. So the figures
+below are a record of what was true of a tree that no longer exists: read the shapes and the
+lessons, and expect the absolutes to be re-taken.
+
 :::note Ratios travel, absolutes do not
 Every absolute below is from one box: 8 cores, 32 GB, Linux 6.8, release build. Read the ratios
 and the shapes; re-measure the absolutes on your own hardware.
