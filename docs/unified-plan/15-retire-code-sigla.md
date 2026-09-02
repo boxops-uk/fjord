@@ -199,13 +199,23 @@ Hand-maintaining declarations with no producer behind them is a transcription su
 `index.sigla` stays what it is: the composite for an index that genuinely holds several languages,
 and the proof that the set composes.
 
-**The C# statement stays a transcription, and is written per namespace.** Generating it from the
-resolved Rust schema would make the two agree by construction, which is the one thing the
-independent statement exists to prevent — so the 67 are written from the `.sigla` files by hand.
-What makes that tractable is that **each layer's own fingerprint is already recorded**: `src.sigla`
-alone, `config.sigla` alone, and `codemarkup`/`msbuild`/`csharp` each with the `src` they import.
-So the transcription is checked a layer at a time rather than all-or-nothing against one composite
-hash, which is the difference between a bisect and a guess.
+**The C# statement stays a transcription.** Generating it from the resolved Rust schema would make
+the two agree by construction, which is the one thing the independent statement exists to prevent —
+so the 67 are written from the `.sigla` files by hand.
+
+**And it does not have to arrive all at once.** A client declares only the predicates it writes, and
+that is the protocol's contract rather than a shortcut: predicate ids are the client's own, a block
+header carries the predicate's **name**, and a nested reference takes its predicate from the field's
+declared target — nothing positional crosses the wire. The fingerprint is the database's, carried,
+and asserts provenance only. So `DotnetIndex` declares ten predicates against a 67-predicate
+database today, and each later layer adds its own with its own gate. Verified rather than assumed:
+`A_client_may_declare_only_the_predicates_it_writes`, and a stale fingerprint is still refused, so
+declaring less asserts nothing less.
+
+That also settles what checks a transcription, since the fingerprint cannot: **writing a fact of
+every declared predicate through a real server and reading it back**. The server decodes against
+its own statement, so a shape this side got wrong is refused at the write rather than discovered by
+a consumer. Each layer's gate is that round trip.
 
 ### S2 — `msbuild.*`
 
