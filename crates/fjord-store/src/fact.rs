@@ -123,6 +123,14 @@ impl ToValue for String {
     }
 }
 
+/// **`bytes` is a scalar too**, and this is the impl that was missing: the trait covers
+/// every scalar the language has, and `bytes` arrived after it was written.
+impl ToValue for [u8] {
+    fn to_value(&self) -> Value {
+        Value::Bytes(self.to_vec())
+    }
+}
+
 /// A reference to another fact — which is what the id a write returned *is*.
 impl ToValue for FactId {
     fn to_value(&self) -> Value {

@@ -1,15 +1,95 @@
+# The worked example: a small code index, and every construct this language offers.
+#
+# Two jobs, and they pull the same way. It is the schema the interactive site opens with —
+# the browser lowers *this file* and queries a database built from it — and it is the
+# fixture the instruments, the benchmarks and the corpus measure over. Both want the same
+# thing: small enough to read in one sitting, complete enough that no shape is untested.
+#
+# **Complete means every construct the type model can hold**, each appearing at least once:
+# the three scalars, records and nested records, a value side that is a scalar and one that
+# is a record, references, unions with payloads of every kind, a single-alternative union,
+# a keyword as a field name, and a named type. What the grammar parses and the model cannot
+# hold yet — arrays, `maybe`, `set`, `enum`, `evolves`, a `stored` derivation — is
+# deliberately absent: each draws its own `nyi/…` diagnostic, and the corpus is where those
+# are stated.
+#
+# **`import` is the one thing missing, and for a reason.** The site lowers this file alone
+# in the browser, so an import would oblige it to ship and resolve a second file. Imports
+# and qualified references are exercised where they belong: `src.sigla` and the composites
+# that build on it, and `the_embedded_reader_follows_imports`.
+
 schema code {
+
+  # ---- named types --------------------------------------------------------------------
+  #
+  # A named type is **structural**: it is inlined at every use and its name does not enter
+  # the canonical form, so a schema declaring its own and one importing this fingerprint
+  # the same.
+
+  type Position = { line : int, col : int }
+
+  # A union. **The discriminant is written down, never inferred from position** — 5 and 2
+  # rather than 0 and 1, which is this file saying so out loud. I10 freezes them once a
+  # fact is written.
   type What = { data : string = 5 | func : int = 2 }
 
+  # An alternative's payload may be anything, or nothing: `unresolved` writes no type,
+  # which is the empty record. The other three are a reference, a reference to a different
+  # predicate, and a record.
+  type Target =
+    { unresolved              = 0
+    | decl     : Decl         = 1
+    | file     : File         = 2
+    | external : { name : string, assembly : string } = 3
+    }
+
+  # **A single-alternative union needs the trailing `|` to be one at all.** A record and a
+  # sum share their braces and the separator after the first field is what tells them
+  # apart, so without it this is a one-field record.
+  type Rendered = { html : string = 0 | }
+
+  # ---- the index ----------------------------------------------------------------------
+
+  # A **scalar key**: a path is one string and needs no record. Every reference below is a
+  # `FactId` to one of these, so a path is stored once however many facts mention it.
   predicate File : string
 
+  # A record key and a **scalar value side**. Field order is key order: `file` leads, so
+  # "this file's declarations" is one prefix seek, and `line` trails so a window is a range
+  # on the last key field.
   predicate Decl : { file : File, name : string, line : int } -> string
 
+  # Two references to one predicate, which is what a graph edge is.
   predicate Ref : { from : Decl, to : Decl }
 
-  predicate Span : { decl : Decl, at : { line : int, col : int } }
+  # A **nested record** in a key, through a named type.
+  predicate Span : { decl : Decl, at : Position }
 
+  # A **record value side**, which a value may be as readily as a scalar — and the pair of
+  # positions a range needs.
+  predicate Extent : { decl : Decl } -> { from : Position, to : Position }
+
+  # A **union in a key**, and the same data keyed the other way. A predicate leads with one
+  # field, so "everything of this kind" and "this declaration's kind" are two seeks and two
+  # predicates.
   predicate Kind : { decl : Decl, what : What }
-
   predicate KindOf : { what : What, decl : Decl }
+
+  # A union carrying **payloads of every kind**, reached through an open pattern:
+  # `code.Resolves {to = {decl = D}}` names an alternative and binds its payload.
+  predicate Resolves : { at : int, to : Target }
+
+  # **`bytes` holds a run this language will not look inside** — a digest, a hash, a packed
+  # table. Not validated as anything, ordered by `memcmp`, and written in a query as `0x…`;
+  # a `string` against it is a type error, so the two never meet in a comparison.
+  predicate Digest : { file : File } -> { sha256 : bytes }
+
+  # **A keyword may be a field name.** `type` is how a named type is declared and is still
+  # legal here, because a field name is never in a position where a keyword could start
+  # something.
+  predicate Extends : { type : Decl, base : Decl }
+
+  # A single-alternative union, in the one place it earns its keep: a payload that has one
+  # shape today and is expected to grow one.
+  predicate Note : { decl : Decl, text : Rendered }
 }

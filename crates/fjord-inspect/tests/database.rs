@@ -13,7 +13,7 @@ use fjord_inspect::{SAMPLES, SCHEMA, database, trace};
 fn the_table_holds_every_fact_the_database_does() {
     let db = database(SCHEMA);
 
-    assert_eq!(db.predicates.len(), 6, "one entry per declared predicate");
+    assert_eq!(db.predicates.len(), 11, "one entry per declared predicate");
     assert_eq!(
         db.facts,
         db.predicates.iter().map(|p| p.rows.len()).sum::<usize>(),
