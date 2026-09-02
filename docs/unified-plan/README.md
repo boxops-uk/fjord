@@ -16,12 +16,13 @@ claim and acceptance criteria that are tests and commands rather than intentions
 amends it**, and where the two disagree W13 wins. Everything else here is new and this directory is
 its specification.
 
-**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — fourteen now, all answered,
+**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — fifteen now, all answered,
 with the consequence of each — plus ten corrections the plan makes to the issues and eight risks it
-carries. Three of them re-cut work already specified here: D11 retired `fjord-viewer`, which re-cut
+carries. Four of them re-cut work already specified here: D11 retired `fjord-viewer`, which re-cut
 W11 and R9's gate and shrank W6's flag day; D12 retires `code.sigla`, which cancels R4 and adds
-[W15](15-retire-code-sigla.md); and D13 makes the style payload opaque, which re-cuts W6's D3 and
-c7, W15's S1 and two rows of [W10](10-the-book.md).
+[W15](15-retire-code-sigla.md); D13 makes the style payload opaque, which re-cuts W6's D3 and
+c7, W15's S1 and two rows of [W10](10-the-book.md); and D15 closes `bench/FINDINGS.md`, which
+re-cuts the gates of R0, R3.6, R6 and R7.
 
 ---
 
@@ -95,8 +96,8 @@ W4   embedded resolution ──► W5 diagnostics   W4 is the gate on every sche
                                        │       W6 is a flag day: Breaking, `src.Line` goes
                                        └──► gates R9
 
-R0   ledger                   R3.5 fan-out (needs W7)              R6  writer default
-R0.5 .NET test job            R3.6 delete Declared.First           R7  re-measure (reads W12)
+R0   ledger (gate re-cut)     R3.5 fan-out (needs W7)              R6  writer default (D15)
+R0.5 .NET test job            R3.6 already deleted; unproven        R7  the 1.0 pass (D15)
 R1   #28 workspace load       R3.7 delete --syntax-only            R8  the seam
 R2   #29 retry                R4.0 conflict census                 R9  SCIP (needs W8)
 R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)

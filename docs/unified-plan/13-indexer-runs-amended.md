@@ -52,8 +52,36 @@ keeping — if it moves, something else broke. Add one line to Run 0: a moved ba
 a written cause, never as a diff someone approves.
 
 **+ The SDK pin applies to every later baseline, not only Run 0's.** `global.json` is `10.0.100`
-with `rollForward: latestFeature`, so a 10.0.2xx SDK brings different reference assemblies and
-`src.TypeOf` stores `type.ToDisplayString()` — a *value*, which a sealed identity hashes.
+with `rollForward: latestFeature`, so a 10.0.2xx SDK brings different reference assemblies, and a
+display string is stored as a *value*, which a sealed identity hashes. **Re-pointed:** it was
+`src.TypeOf` storing `type.ToDisplayString()`, and that predicate is gone. The exposure is not —
+`codemarkup.Definition` carries the hover signature (`CodeMarkup.cs:132`) and two `csharp`
+predicates fall back to `ToDisplayString()` when a symbol has no documentation comment id
+(`CsharpEntities.cs:422`, `:461`). Same argument, three sites instead of one: a sealed identity is
+more SDK-sensitive than counts, not less.
+
+**Re-cut: the gate names two things that no longer exist, and one that never existed.** Revision 2
+gates R0 on *"Identity equal across both axes; `Conflicts == 0`; `M == 0`; \"no project compiles\"
+== 0"*, and three quarters of that cannot be executed:
+
+- **`Conflicts == 0`** — there is no `Conflicts` counter. The producer's conflict bookkeeping is
+  gone, which was C9's point and D12's consequence: the key discriminates, so the hazard was
+  removed rather than made observable. Nothing replaces the assertion because nothing can conflict
+  quietly any more — `ops-I4` makes a conflicting fact a **rejected** fact, and `FactSink`'s
+  latched-failure rule makes a rejected fact a failed run. *The run completing* is the assertion.
+- **`M == 0`** names no counter this plan or the tree defines, here or anywhere else in revision 2.
+  A gate has to be executable by someone who did not write it, so it goes rather than being guessed
+  at.
+- **`"no project compiles" == 0`** survives, and is `indexer.Unattributed` — printed as *"N file(s)
+  no project compiles"* (`Program.cs:269-277`).
+
+**The replacement gate.** Sealed identity equal across `--jobs 1`/`--jobs 8` and
+`--writers 1`/`--writers 4`; the run completes, which is the conflict assertion; `Unattributed ==
+0` and **`Inexpressible == 0`** on a fixture built to make both true — the second is the counter
+that caught a fixture whose project had no metadata references and therefore indexed one type out
+of nine, so it is the gate that stops R0 baselining a nearly-empty database and calling it stable.
+Per-predicate stored counts queried back, as before. Recorded in the run's own commit message and
+in the .NET test project R0.5 built, **not** in `bench/FINDINGS.md`, which is closed.
 
 ### R0.5 — somewhere for a gate to live
 
@@ -185,7 +213,56 @@ the first block. Two additions there: the schema-level fingerprint is
 `0xb08eea634e866a75` today and is carried in **two** independently-pasted C# constants, and the
 per-predicate handshake claim is the alternative that would make W6 cost the clients nothing.
 
-### R5, R6 — unchanged
+### R3.6 — delete `Declared.First`
+
+**Re-cut: the target is already gone, and it went as a side effect rather than as this run.**
+`Indexer.cs:463` gated the whole of `Describe` on `First`, and `_kinds` was the run-global map it
+read; the S-runs' entity rewrite deleted both along with the predicate they served. `git grep
+'_kinds\|Declared\.First'` over `clients/dotnet` returns nothing.
+
+**So the claim is unproven rather than satisfied.** R3.6's whole point was that removing the gate
+*"is a semantic change, not a refactor"* — it moves `deduped` and the wire volume — and that
+burying it inside a larger run would hide the movement. It was buried inside a larger run. What is
+still owed is therefore the measurement the run existed to force, and it is now cheap: the fixture
+indexes in seconds and `deduped` is on the report.
+
+**And the successor has the same shape, one level down.** `CsharpEntities._entities` is
+`Dictionary<ISymbol, FjordFact?>` under `SymbolEqualityComparer.Default` (`CsharpEntities.cs:36`),
+built once per run (`Indexer.cs:181`) but keyed on `ISymbol` — which is **per-compilation**. A
+declaration re-reached from another compilation misses the memo, is rebuilt, and is re-emitted;
+the server interns it. That is exactly the cost `First` was suppressing, moved rather than removed,
+and the class comment says so — *"the memo exists to stop rebuilding it, not to remember an
+identity"*.
+
+**Gate.** `deduped` on the frozen fixture stated as a number, in the commit message and asserted in
+the .NET suite so it cannot drift silently; sealed identity unchanged by any change this run makes.
+The cross-compilation miss is **stated, not fixed** — a run-global key would be a descriptor
+string, which is R4's key by another name and was cancelled with it, so the question belongs to
+whoever prices `src.Symbol` as a memo key.
+
+### R5 — unchanged
+
+### R6 — the writer default
+
+**+ The `--emit` forcing landed.** Revision 2 records that *"the forcing does not exist on
+`origin/main`, and is latent only because the default is 1"*. It exists now: `Program.cs:195` is
+`options.Emit is null ? options.Writers : 1`, and `:196` says so on the console rather than
+silently overriding what was asked for. That was the one prerequisite in the run that was code
+rather than measurement.
+
+**Re-cut: the figure has nowhere to be recorded, so the run's output is a default and a test.**
+Revision 2's gate is *"the default is whatever this run measures, recorded with corpus, `--jobs`
+and figures"*, and `bench/FINDINGS.md` is closed — a single fresh entry in a closed register would
+be the only number in it a reader could mistake for current, which is worse than no entry.
+
+**Where each half goes instead.** The **measurement** is a decision record: the sweep's figures,
+the corpus and its size in the commit message that changes the default, which is where a reviewer
+can argue with them and where `git log` keeps them attached to the line of code they justify. The
+**invariants** are tests, and they are the half that can rot: fact totals identical at
+`--writers 1` and `--writers 8`, and `--emit` byte-identical across two runs. R7's pass re-derives
+the default if the crossover has moved — it is a function of corpus size, not core count
+(0.76 at 4,000 files, 1.27 at 24,000), so the number this run picks is right for a stated corpus
+and no other.
 
 ### R7 — re-measure
 
@@ -221,6 +298,24 @@ guard.
 **+ 8a names the real surface**: `IBlockTarget` and `FactSink` become public in
 `Boxops.Fjord.Client` (an accessibility change plus a move); an `IFactWriter` abstraction over the
 `Thread[]` writer pool is **new work**, not a re-marking, and is priced as such or dropped.
+
+**Re-cut: the gate's first clause is retired and its third is the only one that tested anything.**
+Revision 2 accepts R8 on *"Sealed identity unchanged; the Glean target rides 8a unmodified; Run 9's
+converter consumes the published write seam from outside the assembly"*. The Glean target is gone
+(D14), and it was carrying more weight than it looked: it was the run's only *existing* external
+consumer, so "the seam is usable from outside" had something to hold it up on the day R8 landed
+rather than on the day R9 did.
+
+**The replacement is a consumer this repository keeps.** `Boxops.Fjord.Tests` is outside
+`Boxops.Fjord.Indexer` and R0.5 built it: a test that writes a small block set through the
+published seam alone — no `InternalsVisibleTo`, no type from the indexer assembly — is the same
+claim, checked on every run instead of once. If that test needs an internal, the seam is not
+published yet, which is the finding rather than a nuisance.
+
+**Gate.** Sealed identity unchanged; a fact stream written through the published seam from
+`Boxops.Fjord.Tests` with no access to indexer internals; and R9's converter consumes that same
+surface from its own assembly, which remains the strongest form of the claim and is no longer the
+only one.
 
 ### R9 — SCIP as an ingestion path
 

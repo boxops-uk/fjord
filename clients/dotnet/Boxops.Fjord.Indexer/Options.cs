@@ -56,7 +56,7 @@ internal sealed record Options
     public bool References { get; init; } = true;
 
     /// <summary>
-    /// Emit <c>src.Line</c>: the file's line table, one fact per line of source.
+    /// Emit <c>src.FileLine</c>: the file's line table, one fact per line of source.
     /// </summary>
     /// <remarks>
     /// The largest predicate in the index by bytes and the second largest by count, and
