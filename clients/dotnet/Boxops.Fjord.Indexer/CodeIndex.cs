@@ -98,6 +98,31 @@ internal static class CodeIndex
         FileLineStyles,
     ];
 
+    /// <summary>
+    /// <c>src.Language</c>'s named alternatives, in discriminant order — so alternative
+    /// <c>n + 1</c> is <c>LanguageNames[n]</c>, and <c>other : string = 0</c> is the
+    /// valve that is not in this list.
+    /// </summary>
+    /// <remarks>
+    /// <b>Append only.</b> I10 froze these the day the layer shipped: a language added
+    /// here in the wrong place renumbers every one after it, which reads on disk as every
+    /// file having changed language. A producer resolves a name through this list rather
+    /// than carrying discriminants of its own — see <see cref="FileLanguageFact"/>.
+    /// <para>
+    /// <b>Declared above <see cref="Schema"/> on purpose.</b> Static field initializers
+    /// run in declaration order and <c>Schema</c>'s reads this array through
+    /// <see cref="LanguageType"/>, so moving it below turns every use of this class into
+    /// a <c>TypeInitializationException</c> — at run time, with nothing wrong at the site
+    /// that fails.
+    /// </para>
+    /// </remarks>
+    public static readonly string[] LanguageNames =
+    [
+        "csharp", "typescript", "javascript", "tsx", "jsx", "rust", "python",
+        "java", "cpp", "c", "go", "json", "yaml", "markdown", "css", "html",
+        "sql", "shell", "xml", "proto",
+    ];
+
     public static readonly FjordSchema Schema = new([
         new FjordPredicate("src.File", FjordType.String, null),
 
@@ -308,28 +333,21 @@ internal static class CodeIndex
 
     /// <summary>The language vocabulary — `other : string = 0`, then contiguous from 1.</summary>
     /// <remarks>
-    /// Built from a table rather than written out twenty-one times: a transcription slip
-    /// in a discriminant is what I10 makes permanent, and the fingerprint check is what
-    /// catches one either way.
+    /// Built from <see cref="LanguageNames"/> rather than written out twenty-one times: a
+    /// transcription slip in a discriminant is what I10 makes permanent, and the
+    /// fingerprint check is what catches one either way.
     /// </remarks>
     private static FjordType LanguageType
     {
         get
         {
-            string[] names =
-            [
-                "csharp", "typescript", "javascript", "tsx", "jsx", "rust", "python",
-                "java", "cpp", "c", "go", "json", "yaml", "markdown", "css", "html",
-                "sql", "shell", "xml", "proto",
-            ];
-
             var alternatives = new List<(string, uint, FjordType)>
             {
                 ("other", 0u, FjordType.String),
             };
-            for (var index = 0; index < names.Length; index++)
+            for (var index = 0; index < LanguageNames.Length; index++)
             {
-                alternatives.Add((names[index], (uint)index + 1, FjordType.Rec()));
+                alternatives.Add((LanguageNames[index], (uint)index + 1, FjordType.Rec()));
             }
 
             return FjordType.OneOf([.. alternatives]);
@@ -563,4 +581,39 @@ internal static class CodeIndex
                 FjordValue.Of(FjordRef.To(file)),
                 FjordValue.Of(start),
                 FjordValue.Of(line)));
+
+    /// <summary>
+    /// <c>src.FileLanguage</c>: what a file is written in, named rather than numbered.
+    /// </summary>
+    /// <remarks>
+    /// The discriminant is resolved through <see cref="LanguageNames"/>, so this producer
+    /// holds no numbers of its own and a language the vocabulary does not have goes
+    /// through the <c>other</c> valve carrying its own name. An unrecognised language is
+    /// therefore a fact rather than a gap — which is what makes the valve worth having.
+    /// </remarks>
+    public static FjordFact FileLanguageFact(FjordFact file, string language)
+    {
+        var named = Array.IndexOf(LanguageNames, language);
+
+        return new(FileLanguage,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(named < 0
+                ? FjordValue.Alt(0u, FjordValue.Of(language))
+                : FjordValue.Alt((uint)named + 1, FjordValue.Rec())));
+    }
+
+    /// <summary>
+    /// <c>src.FileDigest</c>: a content hash of the file, as lowercase hex.
+    /// </summary>
+    /// <remarks>
+    /// The schema leaves the algorithm to the producer and expects it named in
+    /// <c>config.Setting {dimension = "digest"}</c> — which this indexer cannot write
+    /// until it stops writing <c>code.sigla</c>, since that schema imports no
+    /// <c>config</c>. Until then the algorithm is documented at
+    /// <see cref="SourceLayer.Digest"/> and nowhere a consumer can read it.
+    /// </remarks>
+    public static FjordFact FileDigestFact(FjordFact file, string digest) =>
+        new(FileDigest,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(FjordValue.Of(digest)));
 }

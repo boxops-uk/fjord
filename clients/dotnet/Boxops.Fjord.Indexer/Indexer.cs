@@ -270,6 +270,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             here = ModuleFor(path, PrimaryNamespace(syntax));
         }
 
+        IndexFile(tree, file);
         IndexLines(tree, file, document);
 
         foreach (var node in syntax.DescendantNodes())
@@ -298,6 +299,27 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                     Reference(model, name, file, here);
                     break;
             }
+        }
+    }
+
+    /// <summary>
+    /// The two facts about a file that need no line table: what it is written in, and
+    /// what its contents hash to.
+    /// </summary>
+    /// <remarks>
+    /// Neither is gated by <c>--no-lines</c>: they are one fact each per file, and they
+    /// are what makes a file's row in a search result renderable — a language to
+    /// highlight by, and a digest to tell two checkouts of one path apart.
+    /// </remarks>
+    private void IndexFile(SyntaxTree tree, FjordFact file)
+    {
+        var language = CodeIndex.FileLanguageFact(file, SourceLayer.LanguageName(tree.FilePath));
+        var digest = CodeIndex.FileDigestFact(file, SourceLayer.Digest(tree.GetText()));
+
+        using (Enter())
+        {
+            sink.Add(CodeIndex.FileLanguage, language);
+            sink.Add(CodeIndex.FileDigest, digest);
         }
     }
 

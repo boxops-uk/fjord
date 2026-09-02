@@ -93,18 +93,31 @@ predicate asserting rows; the line-table arithmetic is a property over generated
 three examples — a file with and without a trailing newline, CRLF, a real blank final line, non-BMP
 text and a clipped line — and `FileLineAt` inverts `FileLine.start` for every row of it.
 
-**Landed so far.** The arithmetic is `SourceLayer` — separated from the walk because a walk needs a
-workspace and a property does not — with the phantom line gone, `FileInfo` and `FileLineAt` written,
-and the cap on a stored string defined once. Two test files: `SourceLayerTests` for the arithmetic
-(a seeded corpus whose population is asserted, because a generator that degenerates leaves its
-properties green and vacuous) and `SourceWalkTests` for the wiring, taken at the `IBlockTarget` seam
-so it needs no server. Six of them fail against the pre-fix behaviour, which is the check that they
-have teeth. `FileInfo` is written even under `--no-lines`: it is one fact per file, and it is what a
-consumer falls back to when an offset resolves past the last line's start.
+**Landed so far — seven of the nine.** The arithmetic is `SourceLayer`, separated from the walk
+because a walk needs a workspace and a property does not: the line table with the phantom line gone,
+`FileInfo`, `FileLineAt`, the extension-to-language mapping and the digest. Two test files, because
+the two halves fail differently — `SourceLayerTests` for the arithmetic (a seeded corpus whose
+population is asserted, since a generator that degenerates leaves its properties green and vacuous)
+and `SourceWalkTests` for the wiring, taken at the `IBlockTarget` seam so it needs no server. Six of
+them fail against the pre-fix line table, which is the check that they have teeth.
 
-**Still owed:** `FileLanguage`, `FileDigest`, `FileOrigin` and `Symbol` — the first two per-file and
-cheap, `FileOrigin` needing options a run states rather than data it can read, and `Symbol` the
-SCIP-form string `codemarkup` joins on, which is the one that is not arithmetic.
+Three decisions inside it, each recorded where a second producer will meet it:
+
+- **`FileInfo`, `FileLanguage` and `FileDigest` are not gated by `--no-lines`.** One fact each per
+  file; the switch is about the size of the per-line table.
+- **The language is by extension, not by the compiler that parsed it**, so the answer is the same
+  for a file no compilation reached — and the discriminant is resolved through `CodeIndex`'s own
+  vocabulary list rather than transcribed a second time, so a name this producer invents becomes an
+  `other` fact rather than a wrong one. Visual Basic is the live case: no alternative exists for it.
+- **The digest is SHA-256 over the UTF-8 encoding of the *decoded text***, not over the file's raw
+  bytes, because every byte number in the database is an offset into exactly those bytes. A BOM is
+  decoded away before any offset is counted, so hashing the file would make one file report two
+  lengths. The cost is that `sha256sum` disagrees for a BOM'd file, which is why the value owed to
+  `config.Setting {dimension = "digest"}` at S5 must name the input and not just the hash.
+
+**Still owed:** `FileOrigin` — per-file provenance, which needs options a run *states* rather than
+data it can read — and `Symbol`, the SCIP-form string `codemarkup` joins on, which is the one piece
+of this run that is not arithmetic.
 
 **One published number moves and is annotated rather than re-run.** The tour transcript in
 `walkthrough.md` was taken before the source layer and is now stale in four ways — the predicate's

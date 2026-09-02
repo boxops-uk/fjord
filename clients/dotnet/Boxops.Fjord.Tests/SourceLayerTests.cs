@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using Boxops.Fjord.Indexer;
@@ -136,6 +137,104 @@ public sealed class SourceLayerTests
         Assert.Equal(SourceLayer.MaxText, rows[0].Bytes);
         Assert.Equal(wide.Length + 1, rows[1].Start);
         Assert.Equal(wide.Length + 1 + 6, info.Bytes);
+    }
+
+    // ---- the two per-file facts ------------------------------------------------------
+
+    /// <summary>
+    /// **The vocabulary is a citation, not an invention.** `src.Language`'s discriminants
+    /// froze the day the layer shipped (I10), so a producer may only ever name an
+    /// alternative that is in it — anything else goes through the `other : string = 0`
+    /// valve. This asserts the mapping's targets against the schema's own list rather
+    /// than against a second copy of it.
+    /// </summary>
+    [Fact]
+    public void Every_language_the_mapping_names_is_in_the_schemas_vocabulary()
+    {
+        string[] paths =
+        [
+            "A.cs", "b.ts", "c.js", "d.tsx", "e.jsx", "f.rs", "g.py", "h.java",
+            "i.cpp", "j.c", "k.go", "l.json", "m.yaml", "n.md", "o.css", "p.html",
+            "q.sql", "r.sh", "s.xml", "t.proto",
+        ];
+
+        foreach (var path in paths)
+        {
+            var name = SourceLayer.LanguageName(path);
+            Assert.Contains(name, CodeIndex.LanguageNames);
+        }
+    }
+
+    /// <summary>
+    /// **The valve carries what the vocabulary cannot.** Visual Basic is in no
+    /// alternative — an MSBuild solution compiles it all the same — so it arrives as
+    /// `other`, spelled as the extension rather than as a guess at a display name.
+    /// </summary>
+    [Theory]
+    [InlineData("Program.vb", "vb")]
+    [InlineData("notes.rst", "rst")]
+    [InlineData("Makefile", "")]
+    [InlineData("archive.tar.gz", "gz")]
+    public void An_unlisted_extension_is_carried_rather_than_dropped(string path, string expected)
+    {
+        Assert.Equal(expected, SourceLayer.LanguageName(path));
+        Assert.DoesNotContain(SourceLayer.LanguageName(path), CodeIndex.LanguageNames);
+    }
+
+    [Theory]
+    [InlineData("A.cs", "csharp")]
+    [InlineData("A.CS", "csharp")]
+    [InlineData("dir/sub/A.cs", "csharp")]
+    [InlineData("app.tsx", "tsx")]
+    [InlineData("lib.mjs", "javascript")]
+    [InlineData("build.yml", "yaml")]
+    [InlineData("Boxops.Fjord.Indexer.csproj", "xml")]
+    public void An_extension_maps_to_the_language_it_names(string path, string expected) =>
+        Assert.Equal(expected, SourceLayer.LanguageName(path));
+
+    /// <summary>
+    /// **The digest is over the bytes the offsets count.** Every byte number in this
+    /// database is an offset into the decoded text's UTF-8 encoding, so the hash is taken
+    /// over the same thing rather than over what is on disk — a BOM or a non-UTF-8
+    /// encoding would otherwise make one file report two lengths.
+    /// </summary>
+    [Fact]
+    public void The_digest_is_sha256_over_the_utf8_text_in_lowercase_hex()
+    {
+        var text = SourceText.From("class A\n{\n}\n");
+        var expected = Convert.ToHexStringLower(
+            System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes("class A\n{\n}\n")));
+
+        Assert.Equal(expected, SourceLayer.Digest(text));
+        Assert.Equal(64, SourceLayer.Digest(text).Length);
+    }
+
+    [Fact]
+    public void The_digest_separates_texts_that_differ_by_one_character()
+    {
+        Assert.NotEqual(
+            SourceLayer.Digest(SourceText.From("a\n")),
+            SourceLayer.Digest(SourceText.From("b\n")));
+
+        Assert.Equal(
+            SourceLayer.Digest(SourceText.From("a\n")),
+            SourceLayer.Digest(SourceText.From("a\n")));
+    }
+
+    /// <summary>
+    /// A BOM is an encoding artifact rather than content, and Roslyn decodes it away — so
+    /// the same text with and without one is the same file to every fact in the layer.
+    /// This is the trade the digest choice makes, asserted rather than left implicit.
+    /// </summary>
+    [Fact]
+    public void A_byte_order_mark_is_not_content()
+    {
+        var plain = SourceText.From("a\n");
+        var marked = SourceText.From(new MemoryStream(
+            [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes("a\n")]));
+
+        Assert.Equal(SourceLayer.Digest(plain), SourceLayer.Digest(marked));
+        Assert.Equal(SourceLayer.LineTable(plain).Info.Bytes, SourceLayer.LineTable(marked).Info.Bytes);
     }
 
     // ---- the properties, over a generated corpus -------------------------------------

@@ -174,16 +174,54 @@ public sealed class SourceWalkTests
     }
 
     /// <summary>
-    /// **`--no-lines` drops the per-line facts and keeps the summary.** The switch is
-    /// about the size of the line table, and a file's length is one fact.
+    /// **`--no-lines` drops the per-line facts and keeps the per-file ones.** The switch
+    /// is about the size of the line table; a file's length, language and digest are one
+    /// fact each.
     /// </summary>
     [Fact]
-    public void Without_the_line_table_the_summary_is_still_written()
+    public void Without_the_line_table_the_per_file_facts_are_still_written()
     {
         var written = Walk("class A\n{\n}\n", lines: false);
 
         Assert.Single(written.Of(CodeIndex.FileInfo));
+        Assert.Single(written.Of(CodeIndex.FileLanguage));
+        Assert.Single(written.Of(CodeIndex.FileDigest));
         Assert.Empty(written.Of(CodeIndex.FileLine));
         Assert.Empty(written.Of(CodeIndex.FileLineAt));
+    }
+
+    /// <summary>
+    /// **The language is resolved to a discriminant, not written as a string.** A C# file
+    /// is alternative 1 of `src.Language`, and reaching the `other` valve here would mean
+    /// the extension table and the vocabulary had drifted apart.
+    /// </summary>
+    [Fact]
+    public void A_walked_file_is_the_language_its_extension_names()
+    {
+        var written = Walk("class A\n{\n}\n");
+
+        var language = Assert.Single(written.Of(CodeIndex.FileLanguage));
+        var alternative = Assert.IsType<FjordValue.Union>(Fields(language.Value)[0]);
+
+        Assert.Equal((uint)Array.IndexOf(CodeIndex.LanguageNames, "csharp") + 1, alternative.Disc);
+        Assert.Empty(Assert.IsType<FjordValue.Record>(alternative.Value).Fields);
+    }
+
+    /// <summary>
+    /// **The digest is over the text the offsets count**, which is the thing a second
+    /// implementation would most easily get wrong — and it is one fact per file, so a
+    /// walk that wrote none would look exactly like a walk that wrote them all.
+    /// </summary>
+    [Fact]
+    public void A_walked_file_carries_the_digest_of_its_own_text()
+    {
+        const string Source = "class A\n{\n}\n";
+        var written = Walk(Source);
+
+        var digest = Assert.Single(written.Of(CodeIndex.FileDigest));
+
+        Assert.Equal(
+            SourceLayer.Digest(Microsoft.CodeAnalysis.Text.SourceText.From(Source)),
+            Str(Fields(digest.Value)[0]));
     }
 }

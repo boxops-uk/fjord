@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.CodeAnalysis.Text;
 
@@ -31,6 +34,101 @@ internal static class SourceLayer
 
     /// <summary>Clip a string to <see cref="MaxText"/>.</summary>
     public static string Clip(string text) => text.Length <= MaxText ? text : text[..MaxText];
+
+    /// <summary>
+    /// File extension to the language it names — the vocabulary's spelling where there is
+    /// one, and the extension itself where there is not.
+    /// </summary>
+    /// <remarks>
+    /// The values are resolved against <see cref="CodeIndex.LanguageNames"/> by
+    /// <see cref="CodeIndex.FileLanguageFact"/>, so a name misspelled here becomes an
+    /// <c>other</c> fact rather than a wrong one — and a test asserts every value in this
+    /// table is in that vocabulary.
+    /// </remarks>
+    private static readonly Dictionary<string, string> Languages = new(StringComparer.Ordinal)
+    {
+        ["cs"] = "csharp",
+        ["ts"] = "typescript",
+        ["js"] = "javascript",
+        ["mjs"] = "javascript",
+        ["cjs"] = "javascript",
+        ["tsx"] = "tsx",
+        ["jsx"] = "jsx",
+        ["rs"] = "rust",
+        ["py"] = "python",
+        ["java"] = "java",
+        ["cpp"] = "cpp",
+        ["cc"] = "cpp",
+        ["cxx"] = "cpp",
+        ["hpp"] = "cpp",
+        ["hh"] = "cpp",
+        ["hxx"] = "cpp",
+        // `.h` is a coin toss between C and C++ that no extension can settle; C is the
+        // reading that is right for a header no C++ file includes, and the wrong one here
+        // is a filter's answer rather than a broken join.
+        ["c"] = "c",
+        ["h"] = "c",
+        ["go"] = "go",
+        ["json"] = "json",
+        ["yaml"] = "yaml",
+        ["yml"] = "yaml",
+        ["md"] = "markdown",
+        ["markdown"] = "markdown",
+        ["css"] = "css",
+        ["html"] = "html",
+        ["htm"] = "html",
+        ["sql"] = "sql",
+        ["sh"] = "shell",
+        ["bash"] = "shell",
+        // A project file is XML, and the project *graph* is `msbuild`'s layer rather than
+        // this one — so this says what the bytes are and claims nothing more.
+        ["xml"] = "xml",
+        ["csproj"] = "xml",
+        ["props"] = "xml",
+        ["targets"] = "xml",
+        ["slnx"] = "xml",
+        ["proto"] = "proto",
+    };
+
+    /// <summary>
+    /// What <paramref name="path"/> is written in, by extension: a name from
+    /// <c>src.Language</c> where one fits, the extension itself where none does, and the
+    /// empty string for a file with no extension.
+    /// </summary>
+    /// <remarks>
+    /// By extension and not by the compiler that parsed it, so that the answer is the same
+    /// for a file no compilation reached. A name that is not in the vocabulary is not a
+    /// failure: it is what <c>other : string = 0</c> exists for, and a consumer filtering
+    /// on language can still see the file.
+    /// </remarks>
+    public static string LanguageName(string path)
+    {
+        var extension = Path.GetExtension(path);
+        if (extension.Length <= 1)
+        {
+            return string.Empty;
+        }
+
+        var bare = extension[1..].ToLowerInvariant();
+        return Languages.TryGetValue(bare, out var language) ? language : bare;
+    }
+
+    /// <summary>
+    /// A content hash of the file: <b>SHA-256 over the UTF-8 encoding of the decoded
+    /// text</b>, lowercase hex.
+    /// </summary>
+    /// <remarks>
+    /// <b>Over the text, not over what is on disk</b>, because every byte number in this
+    /// database — <c>FileInfo.bytes</c>, <c>FileLine.start</c>, every <c>ByteSpan</c> — is
+    /// an offset into exactly these bytes. A byte-order mark and a non-UTF-8 encoding are
+    /// decoded away before any of them is counted, so hashing the raw file would make one
+    /// file report two lengths and a consumer could not tell which its offsets belonged
+    /// to. The cost is that <c>sha256sum</c> disagrees for a file with a BOM, which is why
+    /// the algorithm owes <c>config.Setting {dimension = "digest"}</c> a value that says
+    /// so rather than just naming the hash.
+    /// </remarks>
+    public static string Digest(SourceText text) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
 
     /// <summary>
     /// The line table: one row per line, one-based, with the two offsets that locate it
