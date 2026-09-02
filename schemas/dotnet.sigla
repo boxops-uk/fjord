@@ -1,0 +1,34 @@
+# What a .NET producer writes, resolved into one schema.
+#
+# This declares nothing of its own. It is what you pass to `fjord create` for a database a
+# C# indexer fills:
+#
+#     fjord --schema-path ./schemas create code --schema ./schemas/dotnet.sigla
+#
+# ## Why this and not `index.sigla`
+#
+# `index.sigla` composes all eight layers, including `typescript`, `npm` and `bundle` —
+# 71 predicates whose producer is a consumer's, not this repository's ([D1](../PLAN.md)).
+# A client handshakes on **one whole-schema fingerprint**, so a database created from the
+# everything-composite obliges every client of it to state all 138 predicates
+# independently. For the .NET client that would mean hand-maintaining 71 declarations it
+# will never write: a transcription surface with no producer behind it, which is liability
+# rather than coverage.
+#
+# So a C# repository's database is created from this file, and `index.sigla` stays what it
+# is — the composite for an index that genuinely holds several languages, and the proof
+# that the set composes.
+#
+# The layers here are the ones a .NET indexer can fill: the shared source primitives,
+# the axes the index was resolved against, the project graph, the C# entity model, and the
+# language-independent surface a UI reads.
+
+schema dotnet {
+
+  import src
+  import config
+  import msbuild
+  import csharp
+  import codemarkup
+
+}

@@ -190,16 +190,22 @@ S5b  the deletion              `schemas/code.sigla` goes when nothing references
 R7   re-measure                once, after S5b
 ```
 
-**What S5a costs turns on which schema it targets, and that is open:**
+**S5a targets `schemas/dotnet.sigla`** — `src` + `config` + `msbuild` + `csharp` + `codemarkup`,
+**67 predicates**, `0xc20dfe719b04e025`. Not `index.sigla`, and the reason is not the flag day's
+ceremony: a client handshakes on one whole-schema fingerprint, so a database created from the
+everything-composite obliges every client to state all 138 predicates independently — and for the
+.NET client 71 of those are `typescript`, `npm` and `bundle`, whose producer is a consumer's ([D1](OPEN-QUESTIONS.md)).
+Hand-maintaining declarations with no producer behind them is a transcription surface, not coverage.
+`index.sigla` stays what it is: the composite for an index that genuinely holds several languages,
+and the proof that the set composes.
 
-| Target | Predicates the C# constant must carry |
-|---|---|
-| `index.sigla` as it stands | **138**, including `typescript`, `npm` and `bundle` — layers this producer will never write |
-| a new C#-only composite (`src` + `config` + `msbuild` + `csharp` + `codemarkup`) | **67** |
-
-The second halves the flag day and is arguably the better shape: a C# repository's database has no
-use for the TypeScript layers, and `index.sigla` stays the everything-composite for a consumer that
-wants both. It costs one schema file and one more row in the fingerprint golden.
+**The C# statement stays a transcription, and is written per namespace.** Generating it from the
+resolved Rust schema would make the two agree by construction, which is the one thing the
+independent statement exists to prevent — so the 67 are written from the `.sigla` files by hand.
+What makes that tractable is that **each layer's own fingerprint is already recorded**: `src.sigla`
+alone, `config.sigla` alone, and `codemarkup`/`msbuild`/`csharp` each with the `src` they import.
+So the transcription is checked a layer at a time rather than all-or-nothing against one composite
+hash, which is the difference between a bisect and a guess.
 
 ### S2 — `msbuild.*`
 
