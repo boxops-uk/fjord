@@ -392,7 +392,7 @@ fn a_record_head_of_undeclared_names_holding_a_reference() {
 /// This is also **the flag day's own failure**, and the reason it is a flag day. A
 /// client carrying one whole-schema constant and claiming no predicates — which is what
 /// the .NET client sends, deliberately — takes this branch the moment
-/// `schemas/code.sigla` moves, and stays refused until it is rebuilt. So the message has
+/// a shipped schema moves, and stays refused until it is rebuilt. So the message has
 /// to carry **both numbers**: an operator seeing only "schema mismatch" cannot tell a
 /// stale client from a client pointed at the wrong database, and those have different
 /// fixes.

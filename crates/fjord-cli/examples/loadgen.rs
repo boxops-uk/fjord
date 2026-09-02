@@ -44,7 +44,7 @@ use fjord_schema::schema::{PredicateId, Schema};
 /// Ids, **looked up by name** rather than written down.
 ///
 /// A position comes from sorting the schema's names, so a literal here would be a second
-/// statement of something `schemas/code.sigla` already decides — and wrong the first time a
+/// statement of something `schemas/demo.sigla` already decides — and wrong the first time a
 /// predicate sorting earlier is added.
 fn p(name: &str) -> PredicateId {
     sample_schema::id(name)

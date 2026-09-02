@@ -44,75 +44,6 @@ fn the_embedded_reader_follows_imports() {
     assert_eq!(names, ["app.Use", "dep.Thing"]);
 }
 
-/// **The source layer breaks exactly one predicate, and it is `src.Line`.**
-///
-/// The flag day's whole claim, asserted rather than argued: eight predicates arrive, one
-/// is deleted, and **every survivor is byte-identical**. A second broken name, or a
-/// surviving predicate whose fingerprint moved, is a different change from the one that
-/// was reviewed — which is the failure this is here to make loud rather than to leave to
-/// somebody reading a diff of 34 predicates.
-///
-/// The eight is not nine: `src.File` **moves** from `code.sigla` into `src.sigla` rather
-/// than arriving, and a `Predicate` carries no file for the canonical form to read, so it
-/// is the same predicate in the same place with the same fingerprint.
-#[test]
-fn the_source_layer_breaks_exactly_one_predicate() {
-    use fjord_schema::fingerprint::Compatibility;
-
-    let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-
-    // The shipped schema as it was before the source layer, kept as a golden copy: the
-    // comparison has to be against what was *released*, not against whatever a previous
-    // commit happens to hold.
-    let before = resolve::resolve(
-        &std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/schemas/code-before-src.sigla"
-        )),
-        &[],
-    )
-    .expect("the previous schema resolves");
-
-    let after = resolve::resolve(&root.join("schemas/code.sigla"), &[root.join("schemas")])
-        .expect("the shipped schema resolves");
-
-    let (before, after) = (
-        fingerprint::identity(&before.schema),
-        fingerprint::identity(&after.schema),
-    );
-
-    match before.compatibility(&after) {
-        Compatibility::Breaking { broken } => assert_eq!(
-            broken,
-            ["src.Line"],
-            "the source layer was supposed to break exactly `src.Line`"
-        ),
-        other => panic!("expected Breaking, got {other:?} — `src.Line` should be gone"),
-    }
-
-    // Eight added, counted as the arithmetic rather than asserted as a total: 34 = 27
-    // − 1 removed + 8.
-    assert_eq!(
-        after.predicates().len(),
-        before.predicates().len() - 1 + 8,
-        "the source layer added something other than eight predicates"
-    );
-
-    // **And every survivor is byte-identical**, which is the half `Breaking` alone does
-    // not say: it names what broke and is silent about what did not.
-    for (name, was) in before.predicates() {
-        if name == "src.Line" {
-            continue;
-        }
-        assert_eq!(
-            after.predicates().get(name),
-            Some(was),
-            "`{name}` survived the source layer with a different fingerprint, so this is \
-             not the additive change it was reviewed as"
-        );
-    }
-}
-
 /// **A schema split across files is fingerprint-identical to the same declarations in
 /// one**, so the split W6 lands costs nothing at the predicate level.
 ///
@@ -256,7 +187,6 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
 
     let expected = [
         ("bundle.sigla", "0xf67c15e97c486055"),
-        ("code.sigla", "0x32853889cb63fdd7"),
         ("codemarkup.sigla", "0x71c5a26efad9c90a"),
         ("config.sigla", "0xac3c414ab7ff574f"),
         ("csharp.sigla", "0xcd1ded4ad8d8b187"),

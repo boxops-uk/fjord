@@ -112,7 +112,7 @@ fn main() {
         eprintln!(
             "codesearch: the fixture declares no search index, so there is nothing here \
              to seek into.\n  This instrument measured `src.SearchByName` over \
-             `code.sigla`, which is retired.\n  Run 7 re-establishes the read-path \
+             the retired sample schema.\n  Run 7 re-establishes the read-path \
              measurements against the schema that replaced it."
         );
         std::process::exit(2);

@@ -136,7 +136,7 @@ pub fn database(schema: &str) -> String {
 }
 
 /// The schema the site opens with — `schemas/demo.sigla`, the database in the
-/// page rather than the code index `schemas/code.sigla` describes.
+/// page rather than the code index `schemas/dotnet.sigla` describes.
 #[wasm_bindgen]
 #[must_use]
 pub fn sample_schema() -> String {

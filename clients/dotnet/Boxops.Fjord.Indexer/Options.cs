@@ -380,16 +380,21 @@ internal sealed record Options
             return false;
         }
 
-        // **`--glean-out` translates the schema this indexer no longer writes.**
-        // `clients/dotnet/glean/fjbench.angle` describes `code.sigla`'s shapes, and the
-        // walk now produces `dotnet.sigla`'s — so the translation would emit facts Glean
-        // cannot load, silently, into a directory somebody would then try to measure.
-        // Re-established by Run 7, which re-runs the comparison it exists for; the
-        // comparison itself is invalidated by the schema move regardless.
+        // **`--glean-out` has no schema to translate into.** The Angle declaration it
+        // wrote against described the retired schema's shapes and went with it; the walk
+        // now produces `dotnet.sigla`'s. Without one, the translation would emit facts
+        // Glean cannot load — silently, into a directory somebody would then measure.
+        //
+        // `GleanFacts` itself stays: it maps a `FjordSchema` onto Glean's batch format
+        // and is not specific to the schema that is gone. What is owed is the Angle
+        // declaration of the new set, which Run 7 writes because it owns the comparison
+        // this exists for — and that comparison is invalidated by the schema move
+        // regardless.
         if (gleanOut is not null)
         {
-            error = "--glean-out is not available: it translates `code.sigla`, which this "
-                + "indexer no longer writes. Run 7 re-establishes it against the new set.";
+            error = "--glean-out is not available: the Angle schema it wrote against is "
+                + "retired with the schema it described. Run 7 re-establishes the "
+                + "comparison against the set that replaced it.";
             return false;
         }
 

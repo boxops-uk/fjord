@@ -1,7 +1,7 @@
 //! The `fjord` command-line tool, as a library.
 //!
 //! The binary is a thin dispatcher over this; what lives here is what more than one
-//! target needs **one** statement of: the sample code index — `schemas/code.sigla`, parsed
+//! target needs **one** statement of: the sample code index — `schemas/demo.sigla`, parsed
 //! by [`sample_schema`] — and the workload catalogue every instrument in `examples/`
 //! measures.
 //!
