@@ -22,7 +22,7 @@ use std::{
 /// `create` requires a schema, and this is the file the instruments, the .NET clients and
 /// the viewer all build against. Absolute, so a test does not depend on the working
 /// directory it was launched from.
-const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas/code.sigla");
+const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas/demo.sigla");
 
 /// Run `fjord` against a store root.
 fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {
@@ -128,7 +128,7 @@ fn the_lifecycle_works_against_a_running_server() {
 
     let described = ok(&root, &["describe", "code"]);
     assert!(described.contains("status    writable"), "{described}");
-    assert!(described.contains("src.Decl"), "{described}");
+    assert!(described.contains("code.Decl"), "{described}");
 
     // Empty, so sealing takes saying so — the same refusal, in the same words, as the
     // offline path gives, because it is the same code behind both doors.
@@ -197,7 +197,7 @@ fn what_the_server_made_outlives_it() {
     // and finds a database it did not make.
     let described = ok(&root, &["describe", "code"]);
     assert!(described.contains("status    writable"), "{described}");
-    assert!(described.contains("src.Decl"), "{described}");
+    assert!(described.contains("code.Decl"), "{described}");
 
     let sealed = ok(&root, &["finish", "code", "--allow-zero-facts"]);
     assert!(sealed.contains("sealed code"), "{sealed}");
@@ -221,7 +221,7 @@ fn query_speaks_to_the_server_and_renders_client_side() {
     ok(&root, &["create", "code", "--schema", SAMPLE]);
 
     // A scalar head: one unnamed column.
-    let table = ok(&root, &["query", "code", "F where src.File F"]);
+    let table = ok(&root, &["query", "code", "F where code.File F"]);
     assert!(table.contains("VALUE"), "{table}");
     assert!(table.contains("0 row(s)"), "{table}");
 
@@ -229,7 +229,7 @@ fn query_speaks_to_the_server_and_renders_client_side() {
     assert_eq!(
         ok(
             &root,
-            &["query", "code", "F where src.File F", "--format", "count"]
+            &["query", "code", "F where code.File F", "--format", "count"]
         ),
         "0\n"
     );
@@ -238,7 +238,7 @@ fn query_speaks_to_the_server_and_renders_client_side() {
     // than special-casing nothing.
     let json = ok(
         &root,
-        &["query", "code", "F where src.File F", "--format", "json"],
+        &["query", "code", "F where code.File F", "--format", "json"],
     );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&json).expect("valid JSON"),
@@ -251,7 +251,7 @@ fn query_speaks_to_the_server_and_renders_client_side() {
     assert!(stderr.contains("invalid syntax"), "{stderr}");
 
     // An unknown database is named rather than reported as an empty result.
-    let stderr = fails(&root, &["query", "nope", "F where src.File F"]);
+    let stderr = fails(&root, &["query", "nope", "F where code.File F"]);
     assert!(stderr.contains("nope"), "{stderr}");
 }
 
@@ -396,7 +396,7 @@ fn a_query_with_no_server_says_so() {
     // Created offline, so the database exists and only the server is missing.
     ok(&root, &["create", "code", "--schema", SAMPLE]);
 
-    let stderr = fails(&root, &["query", "code", "F where src.File F"]);
+    let stderr = fails(&root, &["query", "code", "F where code.File F"]);
     assert!(stderr.contains("could not connect"), "{stderr}");
     assert!(stderr.contains("fjord serve"), "{stderr}");
     assert!(stderr.contains("fjord.sock"), "{stderr}");

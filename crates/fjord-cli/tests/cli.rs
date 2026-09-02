@@ -12,7 +12,7 @@ use std::{path::Path, process::Command};
 /// `create` requires a schema, and this is the file the instruments, the .NET clients and
 /// the viewer all build against. Absolute, so a test does not depend on the working
 /// directory it was launched from.
-const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas/code.sigla");
+const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas/demo.sigla");
 
 /// Run `fjord` against a scratch store root.
 fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {
@@ -67,9 +67,9 @@ fn a_database_lives_and_dies_through_the_command_tree() {
 
     // ...and `describe` shows the schema, read from the copy inside the database
     // rather than from anything compiled in.
-    assert!(described.contains("src.Decl"), "{described}");
+    assert!(described.contains("code.Decl"), "{described}");
     assert!(
-        described.contains("{ file: src.File, name: string }"),
+        described.contains("{ file: code.File, name: string, line: int }"),
         "{described}"
     );
 
@@ -330,7 +330,7 @@ fn a_database_is_created_against_a_schema_file_and_carries_it() {
 
     let described = ok(root, &["describe", "tiny"]);
     assert!(described.contains("log.Line"), "{described}");
-    assert!(!described.contains("src.File"), "{described}");
+    assert!(!described.contains("code.File"), "{described}");
 
     // `--schema` dumps the copy itself, which is text `create --schema` would take back.
     let dumped = ok(root, &["describe", "tiny", "--schema"]);

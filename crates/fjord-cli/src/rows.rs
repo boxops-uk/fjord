@@ -626,40 +626,41 @@ mod tests {
     ///
     /// A descriptor says `Fact(p)` — which is what the row carried — so the fields of the
     /// fact underneath it have no names in it at all. Rendering them positionally was the
-    /// easy half of this job and would have made `{"module": ["f.py", "store"]}` out of
-    /// the interesting rows, which is the same mistake nesting a *record* by position
+    /// easy half of this job and would have made `{"decl": ["f.py", "encode", 12]}` out
+    /// of the interesting rows, which is the same mistake nesting a *record* by position
     /// was. The schema is the only thing that knows the shape, so it renders against the
     /// target predicate's key.
     ///
-    /// The chain is the sample schema's: a declaration's `module` is a `src.Module`, whose
-    /// own `file` is a `src.File` — one hop expanded, one left as an id, which is also
-    /// what a bounded `:expand 1` produces.
+    /// The chain is the sample schema's: a `code.Decl`'s own `file` is a `code.File` —
+    /// one hop expanded, one left as an id, which is also what a bounded `:expand 1`
+    /// produces.
     #[test]
     fn an_expanded_reference_is_named_by_the_schema() {
         use fjord_client::{WireFact, WireRef};
 
         let schema = Arc::new(crate::sample_schema::schema());
-        let file = fjord_schema::id::FactId::new(crate::sample_schema::id("src.File"), 4)
+        let file = fjord_schema::id::FactId::new(crate::sample_schema::id("code.File"), 4)
             .expect("a fact id");
 
         let desc = Desc::Record(Box::from([
-            ("name".to_owned(), Desc::Str),
+            ("at".to_owned(), Desc::Int),
             (
-                "module".to_owned(),
-                Desc::Fact(crate::sample_schema::id("src.Module")),
+                "decl".to_owned(),
+                Desc::Fact(crate::sample_schema::id("code.Decl")),
             ),
         ]));
 
-        let module = WireValue::Ref(WireRef::Nested(Box::new(WireFact {
-            predicate: crate::sample_schema::id("src.Module"),
+        let decl = WireValue::Ref(WireRef::Nested(Box::new(WireFact {
+            predicate: crate::sample_schema::id("code.Decl"),
             key: record(vec![
                 WireValue::Ref(WireRef::Id(file)),
-                WireValue::Str("store".to_owned()),
+                WireValue::Str("encode".to_owned()),
+                WireValue::Int(12),
             ]),
             value: None,
         })));
 
-        let row = record(vec![WireValue::Str("encode".to_owned()), module.clone()]);
+        let row = record(vec![WireValue::Int(3), decl.clone()]);
 
         let mut out = vec![];
         let mut sink =
@@ -670,10 +671,10 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&String::from_utf8(out).unwrap()).expect("valid JSON");
 
-        assert_eq!(parsed["module"]["name"], "store", "{parsed}");
+        assert_eq!(parsed["decl"]["name"], "encode", "{parsed}");
         assert_eq!(
-            parsed["module"]["file"],
-            format!("#{}:4", crate::sample_schema::id("src.File").0),
+            parsed["decl"]["file"],
+            format!("#{}:4", crate::sample_schema::id("code.File").0),
             "the hop that was not taken is still an id: {parsed}"
         );
 
@@ -687,13 +688,16 @@ mod tests {
 
         let parsed: serde_json::Value =
             serde_json::from_str(&String::from_utf8(bare).unwrap()).expect("valid JSON");
-        assert_eq!(parsed["module"][1], "store", "{parsed}");
+        assert_eq!(parsed["decl"][1], "encode", "{parsed}");
 
         // And in a table it is the target's key, with nothing marking it as having been
         // a reference — which is what somebody turned expansion on to see.
         assert_eq!(
-            render(&module),
-            format!("{{#{}:4, store}}", crate::sample_schema::id("src.File").0)
+            render(&decl),
+            format!(
+                "{{#{}:4, encode, 12}}",
+                crate::sample_schema::id("code.File").0
+            )
         );
     }
 

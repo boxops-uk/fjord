@@ -66,7 +66,7 @@ pub fn serving(files: usize) -> Serving {
 /// A file, by index — the same key the seeder writes, so a test can name one.
 fn file_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: sample_schema::id("src.File"),
+        predicate: sample_schema::id("code.File"),
         // Zero-padded, so the order rows come back in is the order they were written —
         // which is what lets a paging test compare sequences rather than sets.
         key: WireValue::Str(format!("f{n:05}.py")),
@@ -74,29 +74,35 @@ fn file_fact(n: usize) -> WireFact {
     }
 }
 
-/// A module in that file, nesting it — so something in this corpus holds a **reference**.
-fn module_fact(n: usize) -> WireFact {
-    WireFact {
-        predicate: sample_schema::id("src.Module"),
-        key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(file_fact(n)))),
-            WireValue::Str(format!("m{n:05}")),
-        ])),
-        value: None,
-    }
-}
-
-/// A declaration in that module, nesting it — two levels deep, so a query can read
-/// *through* a reference and make the store answer a point read.
+/// A declaration in that file, nesting it — so a query can read *through* a reference
+/// and make the store answer a point read.
 fn decl_fact(n: usize) -> WireFact {
     WireFact {
-        predicate: sample_schema::id("src.Decl"),
+        predicate: sample_schema::id("code.Decl"),
         key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(module_fact(n)))),
+            WireValue::Ref(WireRef::Nested(Box::new(file_fact(n)))),
             WireValue::Str(format!("d{n:05}")),
             WireValue::Int(n as i64),
         ])),
         value: Some(WireValue::Str("def".to_owned())),
+    }
+}
+
+/// A reference from one declaration to the next, **wrapping round** — so every
+/// declaration is both a source and a target, the fetch has a row for each, and the
+/// corpus is exactly the size the caller asked for.
+///
+/// Wrapping is the whole of it: `n + 1` unwrapped would nest a declaration one past the
+/// end, which interns a declaration *and* a file nobody counted, and every test that
+/// asserts a row count against `files` would then be off by one.
+fn ref_fact(n: usize, files: usize) -> WireFact {
+    WireFact {
+        predicate: sample_schema::id("code.Ref"),
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(decl_fact(n)))),
+            WireValue::Ref(WireRef::Nested(Box::new(decl_fact((n + 1) % files)))),
+        ])),
+        value: None,
     }
 }
 
@@ -121,21 +127,24 @@ fn seed(serving: &Serving, files: usize) {
     let facts: Vec<WireFact> = (0..files).map(file_fact).collect();
 
     writer
-        .write(sample_schema::id("src.File"), &facts)
+        .write(sample_schema::id("code.File"), &facts)
         .expect("the files are written");
 
     // One block per predicate, because a block is a run of one predicate's facts. The
-    // modules and declarations nest what came before them, so the server interns rather
-    // than creating — which is the write path a real producer takes.
-    let modules: Vec<WireFact> = (0..files).map(module_fact).collect();
-    writer
-        .write(sample_schema::id("src.Module"), &modules)
-        .expect("the modules are written");
-
+    // declarations nest the files, so the server interns rather than creating — which is
+    // the write path a real producer takes.
     let decls: Vec<WireFact> = (0..files).map(decl_fact).collect();
     writer
-        .write(sample_schema::id("src.Decl"), &decls)
+        .write(sample_schema::id("code.Decl"), &decls)
         .expect("the declarations are written");
+
+    // **An edge, so something here is two levels deep.** A declaration nests its file
+    // and a file is a bare string, so a query over either alone never reads *through* a
+    // reference — and `FactStore::point`, the second of its two methods, goes untested.
+    let refs: Vec<WireFact> = (0..files).map(|n| ref_fact(n, files)).collect();
+    writer
+        .write(sample_schema::id("code.Ref"), &refs)
+        .expect("the references are written");
 }
 
 /// A server holding one database, `code`, listening on **both** doors.

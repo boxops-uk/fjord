@@ -112,8 +112,7 @@ usage: cargo run --release --example ingest -- [options]
   --iterations N       timed runs per layer, best reported (default 3)
   --scratch PATH       where the throwaway databases go (default: a temp dir)
   --files N            files in the corpus (default 100)
-  --modules N          modules per file (default 2)
-  --decls N            declarations per module (default 20)
+  --decls N            declarations per file (default 40)
   --refs N             references per declaration (default 5)
   --per-block          commit once per block, as `serve --commit-per-block` does
 
@@ -185,8 +184,7 @@ fn parse() -> Result<Options, String> {
             }
             "--scratch" => options.scratch = PathBuf::from(value()?),
             "--files" => options.corpus.files = count("--files", value()?)?,
-            "--modules" => options.corpus.modules_per_file = count("--modules", value()?)?,
-            "--decls" => options.corpus.decls_per_module = count("--decls", value()?)?,
+            "--decls" => options.corpus.decls_per_file = count("--decls", value()?)?,
             "--refs" => options.corpus.refs_per_decl = count("--refs", value()?)?,
             "--per-block" => options.per_block = true,
             "--help" | "-h" => {
