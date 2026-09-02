@@ -237,6 +237,111 @@ public sealed class SourceLayerTests
         Assert.Equal(SourceLayer.LineTable(plain).Info.Bytes, SourceLayer.LineTable(marked).Info.Bytes);
     }
 
+    // ---- UTF-16 positions to UTF-8 byte offsets ---------------------------------------
+
+    private static SourceLayer.Offsets OffsetsOf(string source)
+    {
+        var text = SourceText.From(source);
+        var (rows, info) = SourceLayer.LineTable(text);
+        return new SourceLayer.Offsets(text, rows, info);
+    }
+
+    /// <summary>
+    /// **A span from the compiler is UTF-16 and a `src.ByteSpan` is UTF-8.** Every
+    /// position after a non-BMP codepoint differs, and both numbers are in range for the
+    /// file — so using one as the other points at the wrong text rather than failing.
+    /// </summary>
+    [Fact]
+    public void A_position_after_a_non_bmp_codepoint_converts_to_a_larger_byte_offset()
+    {
+        // `x`, newline, the grinning face, then `ab` on the same line.
+        var offsets = OffsetsOf("x\n\U0001F600ab\n");
+
+        Assert.Equal(0, offsets.Of(0));
+        Assert.Equal(2, offsets.Of(2));
+
+        // The emoji is two UTF-16 code units and four UTF-8 bytes, so the `a` after it is
+        // at code unit 4 and byte 6.
+        Assert.Equal(6, offsets.Of(4));
+        Assert.Equal(7, offsets.Of(5));
+    }
+
+    /// <summary>
+    /// **A span's length is the difference of its converted ends**, not its converted
+    /// length: a span holding a non-BMP codepoint is longer in bytes than in code units.
+    /// </summary>
+    [Fact]
+    public void A_span_over_a_non_bmp_codepoint_is_longer_in_bytes_than_in_code_units()
+    {
+        var offsets = OffsetsOf("\U0001F600ab\n");
+
+        // Code units 0..3 — the emoji plus `ab` — is 4 units and 6 bytes.
+        var (start, length) = offsets.Span(new TextSpan(0, 4));
+
+        Assert.Equal(0, start);
+        Assert.Equal(6, length);
+    }
+
+    [Fact]
+    public void An_ascii_span_converts_to_itself()
+    {
+        var offsets = OffsetsOf("class A\n{\n}\n");
+        var (start, length) = offsets.Span(new TextSpan(6, 1));
+
+        Assert.Equal(6, start);
+        Assert.Equal(1, length);
+    }
+
+    /// <summary>
+    /// Positions past the last line the table holds — the phantom line, or the very end
+    /// of the text — resolve to the file's length rather than throwing or wrapping.
+    /// </summary>
+    [Fact]
+    public void A_position_at_the_end_of_the_file_is_the_files_byte_length()
+    {
+        var source = "a\n\U0001F600\n";
+        var offsets = OffsetsOf(source);
+
+        Assert.Equal(Encoding.UTF8.GetByteCount(source), offsets.Of(source.Length));
+    }
+
+    [Fact]
+    public void An_empty_file_converts_every_position_to_zero()
+    {
+        var offsets = OffsetsOf(string.Empty);
+
+        Assert.Equal(0, offsets.Of(0));
+        Assert.Equal(0, offsets.Of(5));
+    }
+
+    /// <summary>
+    /// **Over the generated corpus: a converted position is the byte count of the text
+    /// before it.** The oracle is the obvious, quadratic implementation — which is what
+    /// the line-table shortcut has to agree with.
+    /// </summary>
+    [Fact]
+    public void Every_position_converts_to_what_re_encoding_the_prefix_would_say()
+    {
+        foreach (var file in Corpus())
+        {
+            var offsets = OffsetsOf(file);
+
+            for (var position = 0; position <= file.Length; position++)
+            {
+                // Splitting a surrogate pair is not a position any span has, and the
+                // prefix would not be valid UTF-16 to re-encode.
+                if (position < file.Length && char.IsLowSurrogate(file[position]))
+                {
+                    continue;
+                }
+
+                Assert.Equal(
+                    Encoding.UTF8.GetByteCount(file[..position]),
+                    offsets.Of(position));
+            }
+        }
+    }
+
     // ---- the properties, over a generated corpus -------------------------------------
 
     /// <summary>

@@ -190,4 +190,91 @@ internal static class SourceLayer
 
         return (rows, new Summary(start, count, endsInNewline));
     }
+
+    /// <summary>
+    /// <b>UTF-16 positions to UTF-8 byte offsets, for one file.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Roslyn counts UTF-16 code units everywhere and every offset in this database is a
+    /// count of UTF-8 bytes, so a span from the compiler has to be converted before it can
+    /// be a <c>src.ByteSpan</c>. Doing it by re-encoding the prefix per span is quadratic
+    /// in the file; the line table already holds each line's byte start, so a conversion is
+    /// that plus the bytes of one line's prefix.
+    /// </para>
+    /// <para>
+    /// <b>The failure this exists to prevent is silent.</b> A UTF-16 offset used as a byte
+    /// offset is in range for any file and points at the wrong text, which reads as a
+    /// rendering bug three layers away.
+    /// </para>
+    /// </remarks>
+    internal sealed class Offsets(SourceText text, List<Row> rows, Summary info)
+    {
+        /// <summary>The UTF-8 byte offset of a UTF-16 position.</summary>
+        public long Of(int position)
+        {
+            if (position <= 0 || rows.Count == 0)
+            {
+                return 0;
+            }
+
+            var line = text.Lines.GetLinePosition(Math.Min(position, text.Length));
+
+            // **Past the last line the table holds** — the phantom line Roslyn reports at
+            // the end of a newline-terminated file. The answer is the file's own length,
+            // *including* that terminator: reconstructing it from the last row's start
+            // plus its text loses exactly the newline, which is the off-by-one this
+            // conversion exists to avoid.
+            if (line.Line >= rows.Count)
+            {
+                return info.Bytes;
+            }
+
+            // **The line *including* its terminator.** A position can land inside a CRLF
+            // pair, and measuring only the line's text would drop the `\r` — exact here
+            // rather than narrowed to "positions a token boundary can take", because the
+            // set of representable positions is not something a caller should have to
+            // reason about.
+            var whole = LineText(line.Line);
+            var characters = Math.Min(line.Character, whole.Length);
+
+            return rows[line.Line].Start + Encoding.UTF8.GetByteCount(whole[..characters]);
+        }
+
+        /// <summary>
+        /// A Roslyn span as a <c>src.ByteSpan</c> — a byte start and a byte length.
+        /// </summary>
+        /// <remarks>
+        /// The length is the difference of the two converted ends rather than a converted
+        /// length: a span holding a non-BMP codepoint is longer in bytes than in code
+        /// units, and converting the length alone would keep the UTF-16 number.
+        /// </remarks>
+        public (long Start, long Length) Span(TextSpan span)
+        {
+            var start = Of(span.Start);
+            return (start, Of(span.End) - start);
+        }
+
+        private int _cachedLine = -1;
+        private string _cached = string.Empty;
+
+        /// <summary>
+        /// The line and its terminator, unclipped — what the offsets were counted over.
+        /// </summary>
+        /// <remarks>
+        /// Cached one deep, because the walk converts many spans per line and each miss
+        /// materialises the line. A single entry is enough: references arrive in document
+        /// order.
+        /// </remarks>
+        private string LineText(int line)
+        {
+            if (line != _cachedLine)
+            {
+                _cached = text.ToString(text.Lines[line].SpanIncludingLineBreak);
+                _cachedLine = line;
+            }
+
+            return _cached;
+        }
+    }
 }
