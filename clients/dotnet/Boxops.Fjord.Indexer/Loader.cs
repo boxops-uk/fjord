@@ -89,7 +89,7 @@ internal static class Loader
             results[index] = BuildOne(analyzers[index], options, log);
         });
 
-        var built = 0;
+        var added = new List<(IAnalyzerResult Result, ProjectId Id)>();
         var failed = 0;
 
         // Added in the order the solution lists them rather than the order they
@@ -102,56 +102,20 @@ internal static class Loader
                 continue;
             }
 
-            // **It may already be here, and by its own doing.** The previous project's
-            // add pulled its project references in with it, and one of those may be this
-            // one — a test project sorts before the library it tests as often as not.
-            // Adding it twice throws and takes the whole run with it.
-            if (Holds(workspace, result.ProjectFilePath))
-            {
-                built++;
-                continue;
-            }
-
             try
             {
-                // `addProjectReferences: true` pulls in whatever this project references
-                // and is not already here, which is what makes a cross-project reference
-                // resolve to source rather than to a metadata symbol with no location to
-                // point at.
-                result.AddToWorkspace(workspace, addProjectReferences: true);
-                built++;
-            }
-            catch (ArgumentException)
-            {
-                // **The references are what failed, not this project.** `addProjectReferences`
-                // walks to every project this one names, and one whose own design-time
-                // build failed has no result to add. Dropping this project too would
-                // spend a successful build on nothing; added alone, its own file's
-                // declarations are still exact and only the symbols it reached *through*
-                // that reference degrade to metadata.
+                // **`addProjectReferences: false`, and the graph wired below instead.**
+                // The `true` form walks to every project this one names and *builds* the
+                // ones nobody asked for — so a solution listing two projects loaded three,
+                // and one design-time build happened inside what is supposed to be pure
+                // bookkeeping. It also left the compilation holding the referenced project
+                // twice, once as a project and once as its assembly, which makes every type
+                // in it ambiguous.
                 //
-                // The add is not atomic, so ask before retrying: it walks references
-                // depth-first and may well have added *this* project before reaching the
-                // one it could not resolve, and adding it a second time throws again —
-                // this time saying the solution already contains it, which would report
-                // a project that is in the workspace as one that failed.
-                if (Holds(workspace, result.ProjectFilePath))
-                {
-                    built++;
-                    continue;
-                }
-
-                try
-                {
-                    result.AddToWorkspace(workspace, addProjectReferences: false);
-                    built++;
-                }
-                catch (Exception alone) when (alone is InvalidOperationException or ArgumentException)
-                {
-                    log.WriteLine($"  ! {Path.GetFileName(result.ProjectFilePath)}: "
-                        + $"the workspace refused it — {alone.Message}");
-                    failed++;
-                }
+                // Nothing is lost by refusing: a project this one references and the run
+                // did not build is a project outside the indexed set, and its assembly is
+                // already on the compiler's reference list.
+                added.Add((result, result.AddToWorkspace(workspace, addProjectReferences: false).Id));
             }
             catch (InvalidOperationException refused)
             {
@@ -162,6 +126,8 @@ internal static class Loader
                 failed++;
             }
         }
+
+        var built = added.Count;
 
         // **A run that cannot resolve fails, and must not fall back to a syntax walk.**
         // Globbing the `.cs` files and parsing them against the running framework's
@@ -189,6 +155,8 @@ internal static class Loader
             log.WriteLine($"  {failed} project(s) skipped, {built} built");
         }
 
+        Wire(workspace, added, log);
+
         // Ordered by path, not by whatever order the workspace hands them back: with
         // `--max-files` the order decides *which* files get indexed, and a run that
         // indexes a different two thousand each time is not a measurement.
@@ -214,12 +182,123 @@ internal static class Loader
         return new LoadedSolution(walking, build);
     }
 
-    /// <summary>Whether the workspace already has the project at <paramref name="path"/>.</summary>
-    private static bool Holds(Workspace workspace, string? path) =>
-        path is not null
-        && workspace.CurrentSolution.Projects.Any(project =>
-            project.FilePath is { } held
-            && string.Equals(Path.GetFullPath(held), Path.GetFullPath(path), StringComparison.Ordinal));
+    /// <summary>
+    /// The reference graph, wired between the projects that were built.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Keyed on the project file <i>and</i> its framework, not on the file alone.</b> A
+    /// multi-targeting project is several results at one path, and a reference from
+    /// something built for <c>net10.0</c> means that project's <c>net10.0</c> target.
+    /// Keyed on the path, the second sighting would look like a duplicate to be skipped —
+    /// which is also the thing a fan-out over frameworks consumes, so it would be
+    /// discarding the run after next's input.
+    /// </para>
+    /// <para>
+    /// <b>Adding the edge is half of it; removing the assembly is the other half.</b> The
+    /// compiler's reference list names the *output* of every project this one references,
+    /// so a project reference added beside it puts the same types in the compilation
+    /// twice — from source and from a dll — and every one of them becomes ambiguous.
+    /// Roslyn answers <c>null</c> for such a type rather than choosing, and a walk asking
+    /// what a name means gets nothing back.
+    /// </para>
+    /// <para>
+    /// A reference to a project the run did not build is left exactly as MSBuild resolved
+    /// it: an assembly on the reference list, with no source behind it. That is the honest
+    /// answer — the project is outside the indexed set — and it is what the run reports as
+    /// a reference to a declaration outside the index.
+    /// </para>
+    /// </remarks>
+    private static void Wire(
+        AdhocWorkspace workspace,
+        IReadOnlyList<(IAnalyzerResult Result, ProjectId Id)> added,
+        TextWriter log)
+    {
+        var targets = new Dictionary<(string Path, string Framework), (ProjectId Id, string? Output)>();
+
+        foreach (var (result, id) in added)
+        {
+            targets[(Full(result.ProjectFilePath), result.TargetFramework ?? string.Empty)] =
+                (id, result.GetProperty("TargetPath"));
+        }
+
+        foreach (var (result, id) in added)
+        {
+            foreach (var reference in result.ProjectReferences)
+            {
+                if (Target(targets, Full(reference), result.TargetFramework) is not { } target)
+                {
+                    continue;
+                }
+
+                var solution = workspace.CurrentSolution;
+                var project = solution.GetProject(id);
+
+                if (project is null)
+                {
+                    continue;
+                }
+
+                if (!project.ProjectReferences.Any(held => held.ProjectId == target.Id))
+                {
+                    solution = solution.AddProjectReference(id, new ProjectReference(target.Id));
+                }
+
+                // The metadata reference this replaces, matched on the path MSBuild said
+                // the referenced project writes.
+                if (target.Output is { Length: > 0 } output)
+                {
+                    foreach (var metadata in solution.GetProject(id)!.MetadataReferences
+                        .OfType<PortableExecutableReference>()
+                        .Where(held => string.Equals(held.FilePath, output, StringComparison.Ordinal))
+                        .ToList())
+                    {
+                        solution = solution.RemoveMetadataReference(id, metadata);
+                    }
+                }
+
+                if (!workspace.TryApplyChanges(solution))
+                {
+                    log.WriteLine($"  ! {Path.GetFileName(result.ProjectFilePath)}: "
+                        + $"the workspace refused a reference to {Path.GetFileName(reference)}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The built target a project reference names: this framework's, or the best one this
+    /// project was built for.
+    /// </summary>
+    /// <remarks>
+    /// The fallback is what makes a reference across frameworks resolve at all — a
+    /// <c>net10.0</c> project referencing a <c>netstandard2.0</c> library names a project
+    /// with no <c>net10.0</c> target, and MSBuild picked the compatible one long before
+    /// this. Ranked rather than first-found, so two runs agree.
+    /// </remarks>
+    private static (ProjectId Id, string? Output)? Target(
+        Dictionary<(string Path, string Framework), (ProjectId Id, string? Output)> targets,
+        string path,
+        string? framework)
+    {
+        if (targets.TryGetValue((path, framework ?? string.Empty), out var exact))
+        {
+            return exact;
+        }
+
+        foreach (var entry in targets
+            .Where(entry => string.Equals(entry.Key.Path, path, StringComparison.Ordinal))
+            .OrderByDescending(entry => Rank(entry.Key.Framework)))
+        {
+            return entry.Value;
+        }
+
+        return null;
+    }
+
+    /// <summary>One spelling of a path, so two of them can be compared.</summary>
+    private static string Full(string? path) =>
+        string.IsNullOrEmpty(path) ? string.Empty : Path.GetFullPath(path);
 
     /// <summary>One project's design-time build, or nothing and a reason.</summary>
     private static IAnalyzerResult? BuildOne(IProjectAnalyzer analyzer, Options options, TextWriter log)
@@ -375,6 +454,7 @@ internal static class Loader
         {
             environment.TargetsToBuild.Add("Compile");
         }
+
 
         // Node reuse leaves MSBuild processes alive between builds, which over a few
         // hundred projects is a few hundred idle processes holding a machine's memory.
