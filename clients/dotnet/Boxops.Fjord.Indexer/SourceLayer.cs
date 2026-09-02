@@ -241,6 +241,14 @@ internal static class SourceLayer
             return rows[line.Line].Start + Encoding.UTF8.GetByteCount(whole[..characters]);
         }
 
+        /// <summary>The one-based line a UTF-16 position is on.</summary>
+        /// <remarks>
+        /// One-based to match <c>src.FileLine</c>, which every other line number in this
+        /// database is keyed by — Roslyn counts from zero.
+        /// </remarks>
+        public long Line(int position) =>
+            text.Length == 0 ? 1 : text.Lines.GetLinePosition(Math.Min(position, text.Length)).Line + 1;
+
         /// <summary>
         /// A Roslyn span as a <c>src.ByteSpan</c> — a byte start and a byte length.
         /// </summary>

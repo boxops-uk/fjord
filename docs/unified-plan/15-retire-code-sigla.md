@@ -305,7 +305,25 @@ a UI asks. Each carries the query that would derive it as a comment; while `nyi/
 that comment is the specification the producer is checked against, and a discrepancy is a diff.
 
 **Gate.** The two headline joins in `index.sigla`'s header answer against an indexer-produced
-database, not a hand-built one.
+database, not a hand-built one. **Green**, and widened to the questions the layer exists for: go to
+definition, every reference in one file resolved to its definition, find-references keyed by the
+target, a case-insensitive prefix search, containment in both directions, and the hover card — plus
+completeness, because a UI surface with one empty predicate is a UI with one dead feature and the
+joins each touch only three or four of the ten.
+
+Two things the gate found, both in the fixture-and-wiring seam rather than the schema:
+
+- **A fixture of declarations produces no cross-references at all.** A class with two members and no
+  method bodies made every join pass on an empty collection. The fixture now has bodies, and the
+  assertions are `NotEmpty` for exactly that reason.
+- **The two layers must be written independently.** A local has no `csharp.Definition` — this
+  producer mints none, deliberately — so hanging the `codemarkup` facts off the `csharp` one dropped
+  every reference to a local, which is the majority of references in real code and the whole reason
+  `FileLocalXRef` exists. They answer different questions and each is now written where it can be.
+
+`nyi/value-field` shaped the queries: a value is fetched whole, so `D.value.span.start` is not
+expressible and the assertions project `D.value`. That is the same constraint that makes
+`FileXRef` all-key, met from the consumer's side.
 
 ### S5 — retire `code.sigla`
 

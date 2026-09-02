@@ -30,16 +30,25 @@ public sealed class DotnetIndexTests
     {
         using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
 
-        // Ten declarations against a sixty-seven predicate database. The handshake
-        // compares the *database's* fingerprint, which this client carries.
-        using var connection = FjordConnection.Connect(server.Socket, "dotnet", DotnetIndex.Schema);
+        // **One declaration against a sixty-seven predicate database.** Asserted with a
+        // deliberately narrow schema rather than with `DotnetIndex`, which now states all
+        // sixty-seven: the property belongs to the protocol, not to what this client
+        // happens to write, and a test that read the client's count would have stopped
+        // asserting anything the moment the transcription finished.
+        var narrow = new FjordSchema(
+            [DotnetIndex.Schema.Predicates.Single(p => p.Name == "src.File")],
+            DotnetIndex.SchemaFingerprint);
+
+        using var connection = FjordConnection.Connect(server.Socket, "dotnet", narrow);
 
         Assert.Equal(DotnetIndex.SchemaFingerprint, connection.Hello.SchemaFingerprint);
+        Assert.Single(narrow.Predicates);
 
-        // Fewer than the database's sixty-seven, which is the whole claim. The exact
-        // number grows with each layer's emission and is not what this asserts.
-        Assert.Equal(DotnetIndex.Predicates.Length, DotnetIndex.Schema.Predicates.Count);
-        Assert.InRange(DotnetIndex.Schema.Predicates.Count, 1, 66);
+        // And it can write, which is the half that would fail if ids were positional
+        // across the wire: this client calls `src.File` predicate 0 and the server does
+        // not.
+        Assert.Equal(1UL, connection.Write(0u, [new FjordFact(0u, FjordValue.Of("a/b.cs"))]).Created);
+        Assert.NotEmpty(connection.Query("F where src.File F").Rows);
     }
 
     /// <summary>

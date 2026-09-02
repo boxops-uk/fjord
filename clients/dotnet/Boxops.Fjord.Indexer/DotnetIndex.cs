@@ -105,6 +105,21 @@ internal static class DotnetIndex
     public const uint SymbolOf = 55;
     public const uint DefinitionBySymbol = 56;
 
+    // ---- codemarkup: the surface a UI reads ------------------------------------------
+
+    /// <summary>`codemarkup.Definition` — named to keep it apart from `csharp.Definition`,
+    /// which is a union and not a predicate.</summary>
+    public const uint MarkupDefinition = 57;
+    public const uint SymbolInfo = 58;
+    public const uint FileDefinition = 59;
+    public const uint FileXRef = 60;
+    public const uint SymbolXRef = 61;
+    public const uint FileLocalXRef = 62;
+    public const uint SearchEntry = 63;
+    public const uint SymbolByName = 64;
+    public const uint Relation = 65;
+    public const uint RelationOf = 66;
+
     /// <summary>Every predicate id this client holds, in schema order.</summary>
     public static readonly uint[] Predicates =
     [
@@ -120,6 +135,8 @@ internal static class DotnetIndex
         PointerType, FunctionPointerType, DefinitionLocation, ObjectCreationLocation,
         MethodInvocationLocation, MemberAccessLocation, TypeLocation, EntityXRef,
         EntityRef, SymbolOf, DefinitionBySymbol,
+        MarkupDefinition, SymbolInfo, FileDefinition, FileXRef, SymbolXRef,
+        FileLocalXRef, SearchEntry, SymbolByName, Relation, RelationOf,
     ];
 
     /// <summary>
@@ -460,7 +477,136 @@ internal static class DotnetIndex
         new FjordPredicate("csharp.DefinitionBySymbol", FjordType.Rec(
             ("symbol", FjordType.Reference(Symbol)),
             ("definition", DefinitionUnion)), null),
+
+        // ---- codemarkup --------------------------------------------------------------
+        //
+        // **The join key is a string**, `src.Symbol`, and not a union over languages: a
+        // union alternative is Breaking (I10), so a C#-only index and a C#-plus-TypeScript
+        // one would carry different `Definition` predicates and one UI could not read
+        // both. A string also survives leaving the database, which a `FactId` does not.
+        //
+        // Anything a consumer joins *through* is in the key, which is stricter than it
+        // looks: a value can neither be matched nor read field-wise, so a reference behind
+        // the `->` is reachable only by projecting the whole value.
+
+        new FjordPredicate("codemarkup.Definition",
+            FjordType.Rec(
+                ("symbol", FjordType.Reference(Symbol)),
+                ("file", FjordType.Reference(File))),
+            FjordType.Rec(
+                ("span", ByteSpanType),
+                ("kind", KindUnion),
+                ("name", FjordType.String),
+                ("qualified", FjordType.String))),
+
+        new FjordPredicate("codemarkup.SymbolInfo",
+            FjordType.Rec(("symbol", FjordType.Reference(Symbol))),
+            FjordType.Rec(
+                ("signature", FjordType.String),
+                ("doc", FjordType.String),
+                ("modifiers", FjordType.String))),
+
+        new FjordPredicate("codemarkup.FileDefinition",
+            FjordType.Rec(
+                ("file", FjordType.Reference(File)),
+                ("span", ByteSpanType),
+                ("symbol", FjordType.Reference(Symbol))),
+            FjordType.Rec(
+                ("kind", KindUnion),
+                ("name", FjordType.String))),
+
+        new FjordPredicate("codemarkup.FileXRef", FjordType.Rec(
+            ("file", FjordType.Reference(File)),
+            ("span", ByteSpanType),
+            ("target", FjordType.Reference(Symbol)),
+            ("role", RoleUnion)), null),
+
+        new FjordPredicate("codemarkup.SymbolXRef", FjordType.Rec(
+            ("target", FjordType.Reference(Symbol)),
+            ("file", FjordType.Reference(File)),
+            ("span", ByteSpanType)), null),
+
+        new FjordPredicate("codemarkup.FileLocalXRef", FjordType.Rec(
+            ("file", FjordType.Reference(File)),
+            ("span", ByteSpanType),
+            ("target", ByteSpanType),
+            ("role", RoleUnion)), null),
+
+        new FjordPredicate("codemarkup.SearchEntry", FjordType.Rec(
+            ("nameLowercase", FjordType.String),
+            ("name", FjordType.String),
+            ("kind", KindUnion),
+            ("symbol", FjordType.Reference(Symbol)),
+            ("file", FjordType.Reference(File)),
+            ("line", FjordType.Integer)), null),
+
+        new FjordPredicate("codemarkup.SymbolByName", FjordType.Rec(
+            ("name", FjordType.String),
+            ("symbol", FjordType.Reference(Symbol))), null),
+
+        new FjordPredicate("codemarkup.Relation", FjordType.Rec(
+            ("from", FjordType.Reference(Symbol)),
+            ("kind", RelationKindUnion),
+            ("to", FjordType.Reference(Symbol))), null),
+
+        new FjordPredicate("codemarkup.RelationOf", FjordType.Rec(
+            ("to", FjordType.Reference(Symbol)),
+            ("kind", RelationKindUnion),
+            ("from", FjordType.Reference(Symbol))), null),
     ], SchemaFingerprint);
+
+    /// <summary>
+    /// `codemarkup.Kind` — LSP's `SymbolKind`, 1–26 verbatim, with `other : string = 0`
+    /// in the slot LSP does not use.
+    /// </summary>
+    /// <remarks>
+    /// A citation rather than an invention, and it sits in a key: I10 froze these the day
+    /// the layer shipped, so every future value arrives through `other`.
+    /// </remarks>
+    private static FjordType KindUnion => Vocabulary(
+        "file", "module_", "namespace_", "package_", "class_", "method_", "property_",
+        "field", "constructor_", "enum_", "interface_", "function_", "variable",
+        "constant", "string_", "number", "boolean_", "array", "object_", "key", "null_",
+        "enumMember", "struct_", "event", "operator", "typeParameter");
+
+    /// <summary>
+    /// `codemarkup.Role` — SCIP's `SymbolRole`, projected.
+    /// </summary>
+    /// <remarks>
+    /// **A bitmask is lost here and it is stated rather than hidden.** SCIP's role is a
+    /// bitmask — a reference can be a definition *and* an import at once — which a sigla
+    /// union cannot express and an `int` of flags would make unmatchable. This is the
+    /// mutually-exclusive projection a UI filters by.
+    /// </remarks>
+    private static FjordType RoleUnion => Vocabulary(
+        "definition", "read", "write", "call", "typeRef", "new_", "import_", "export_",
+        "heritage", "decorator", "jsx");
+
+    private static FjordType RelationKindUnion => Vocabulary(
+        "contains", "extends", "implements", "overrides", "calls", "imports",
+        "instantiates", "annotates");
+
+    /// <summary>
+    /// A vocabulary with the `other : string = 0` valve, then the names contiguous from 1.
+    /// </summary>
+    /// <remarks>
+    /// Built from a list rather than written out three times over forty-five
+    /// alternatives: a transcription slip in a discriminant is what I10 makes permanent.
+    /// </remarks>
+    private static FjordType Vocabulary(params string[] names)
+    {
+        var alternatives = new List<(string, uint, FjordType)>
+        {
+            ("other", 0u, FjordType.String),
+        };
+
+        for (var index = 0; index < names.Length; index++)
+        {
+            alternatives.Add((names[index], (uint)index + 1, FjordType.Rec()));
+        }
+
+        return FjordType.OneOf([.. alternatives]);
+    }
 
     /// <summary>`{ nothing = 0 | just : T = 1 }` — the optional, one per payload.</summary>
     /// <remarks>
@@ -825,6 +971,113 @@ internal static class DotnetIndex
     public static FjordFact DefinitionBySymbolFact(FjordFact symbol, FjordValue definition) =>
         new(DefinitionBySymbol, FjordValue.Rec(
             FjordValue.Of(FjordRef.To(symbol)), definition));
+
+    // ---- codemarkup facts ------------------------------------------------------------
+
+    /// <summary>A vocabulary value: a named alternative, or the `other` valve.</summary>
+    /// <remarks>
+    /// A producer that cannot name something in the frozen list says so through `other`
+    /// rather than picking the nearest alternative — a wrong `kind` is a filter answering
+    /// wrongly with nothing to notice it.
+    /// </remarks>
+    public static FjordValue Tagged(uint disc, string? unnamed = null) =>
+        disc == 0
+            ? FjordValue.Alt(0u, FjordValue.Of(unnamed ?? string.Empty))
+            : FjordValue.Alt(disc, FjordValue.Rec());
+
+    public static FjordFact MarkupDefinitionFact(
+        FjordFact symbol,
+        FjordFact file,
+        long start,
+        long length,
+        FjordValue kind,
+        string name,
+        string qualified) =>
+        new(MarkupDefinition,
+            FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(symbol)),
+                FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(
+                Span(start, length),
+                kind,
+                FjordValue.Of(name),
+                FjordValue.Of(qualified)));
+
+    public static FjordFact SymbolInfoFact(
+        FjordFact symbol, string signature, string doc, string modifiers) =>
+        new(SymbolInfo,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(symbol))),
+            FjordValue.Rec(
+                FjordValue.Of(signature),
+                FjordValue.Of(doc),
+                FjordValue.Of(modifiers)));
+
+    public static FjordFact FileDefinitionFact(
+        FjordFact file, long start, long length, FjordFact symbol, FjordValue kind, string name) =>
+        new(FileDefinition,
+            FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(file)),
+                Span(start, length),
+                FjordValue.Of(FjordRef.To(symbol))),
+            FjordValue.Rec(kind, FjordValue.Of(name)));
+
+    public static FjordFact FileXRefFact(
+        FjordFact file, long start, long length, FjordFact target, FjordValue role) =>
+        new(FileXRef, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(file)),
+            Span(start, length),
+            FjordValue.Of(FjordRef.To(target)),
+            role));
+
+    public static FjordFact SymbolXRefFact(
+        FjordFact target, FjordFact file, long start, long length) =>
+        new(SymbolXRef, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(target)),
+            FjordValue.Of(FjordRef.To(file)),
+            Span(start, length)));
+
+    /// <summary>
+    /// <c>codemarkup.FileLocalXRef</c>: a file-local reference, answered span to span.
+    /// </summary>
+    /// <remarks>
+    /// No interned string, because a local has no global name worth minting — and a
+    /// jump-to-declaration is then one seek with no symbol table.
+    /// </remarks>
+    public static FjordFact FileLocalXRefFact(
+        FjordFact file,
+        long start,
+        long length,
+        long targetStart,
+        long targetLength,
+        FjordValue role) =>
+        new(FileLocalXRef, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(file)),
+            Span(start, length),
+            Span(targetStart, targetLength),
+            role));
+
+    public static FjordFact SearchEntryFact(
+        string name, FjordValue kind, FjordFact symbol, FjordFact file, long line) =>
+        new(SearchEntry, FjordValue.Rec(
+            FjordValue.Of(name.ToLowerInvariant()),
+            FjordValue.Of(name),
+            kind,
+            FjordValue.Of(FjordRef.To(symbol)),
+            FjordValue.Of(FjordRef.To(file)),
+            FjordValue.Of(line)));
+
+    public static FjordFact SymbolByNameFact(string name, FjordFact symbol) =>
+        new(SymbolByName, FjordValue.Rec(
+            FjordValue.Of(name),
+            FjordValue.Of(FjordRef.To(symbol))));
+
+    public static FjordFact RelationFact(FjordFact from, FjordValue kind, FjordFact to) =>
+        new(Relation, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(from)), kind, FjordValue.Of(FjordRef.To(to))));
+
+    public static FjordFact RelationOfFact(FjordFact to, FjordValue kind, FjordFact from) =>
+        new(RelationOf, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(to)), kind, FjordValue.Of(FjordRef.To(from))));
 
     public static FjordFact ProjectCompilationFact(FjordFact project, string framework, FjordFact assembly) =>
         new(ProjectCompilation,

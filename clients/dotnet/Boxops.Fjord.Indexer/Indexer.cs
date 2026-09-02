@@ -439,9 +439,16 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             return;
         }
 
-        // Built outside the lock: both walk the symbol graph, and neither needs the sink.
+        // Built outside the lock: all of this walks the symbol graph or the syntax, and
+        // none of it needs the sink.
         var scip = ScipSymbols.Of(symbol);
-        var (start, length) = offsets.Span(NameLocation(node).SourceSpan);
+        var span = NameLocation(node).SourceSpan;
+        var (start, length) = offsets.Span(span);
+        var line = offsets.Line(span.Start);
+        var kind = CodeMarkup.Kind(symbol);
+        var signature = CodeMarkup.Signature(symbol);
+        var modifiers = CodeMarkup.Modifiers(symbol);
+        var doc = options.Docs ? DocComment(symbol) : string.Empty;
 
         using (Enter())
         {
@@ -465,6 +472,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 sink.Add(
                     DotnetIndex.DefinitionBySymbol,
                     DotnetIndex.DefinitionBySymbolFact(named, definition));
+
+                Markup(symbol, named, file, start, length, line, kind, signature, modifiers, doc);
             }
 
             Declarations++;
@@ -514,12 +523,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             return;
         }
 
-        // **A local is deliberately not given a global name.** `Definition` has an
-        // alternative for one, but SCIP models a local as an occurrence ordinal that
-        // moves when the file is edited, and `codemarkup.FileLocalXRef` answers a
-        // file-local jump span to span. Namespaces, labels and aliases have no
-        // alternative at all.
-        if (symbol.Kind is SymbolKind.Namespace or SymbolKind.Label or SymbolKind.Local
+        // Namespaces, labels and aliases have no `Definition` alternative at all.
+        if (symbol.Kind is SymbolKind.Namespace or SymbolKind.Label
             or SymbolKind.RangeVariable or SymbolKind.Preprocessing or SymbolKind.Discard
             or SymbolKind.Alias)
         {
@@ -528,25 +533,67 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         var outside = !symbol.Locations.Any(location => location.IsInSource);
         var (start, length) = offsets.Span(name.Identifier.Span);
+        var role = CodeMarkup.Role(name, symbol);
+
+        // **A local gets no global name, deliberately.** SCIP models one as an occurrence
+        // ordinal that moves when the file is edited, so `FileLocalXRef` answers it span
+        // to span instead — which needs the declaration's span, and only when it is in
+        // *this* file.
+        var scip = symbol.Kind is SymbolKind.Local ? null : ScipSymbols.Of(symbol);
+        var local = scip is null ? Declared(symbol, name, offsets) : null;
+
+        if (scip is null && local is null && symbol.Kind is SymbolKind.Local)
+        {
+            return;
+        }
 
         using (Enter())
         {
-            if (_entities.Definition(symbol) is not { } definition)
+            // **The two layers are written independently, and that is not tidiness.** A
+            // local has no `csharp.Definition` — this producer mints none, deliberately —
+            // so a reference to one would be dropped entirely if the `codemarkup` facts
+            // hung off the `csharp` one. They answer different questions and each is
+            // written where it can be.
+            if (_entities.Definition(symbol) is { } definition)
             {
-                return;
+                sink.Add(
+                    DotnetIndex.EntityXRef,
+                    DotnetIndex.EntityXRefFact(file, start, length, definition));
+
+                // The same reference keyed by what it points at. Written twice because a
+                // predicate leads with one field: find-references needs the target to
+                // lead and a file view needs the file to, and until a derived predicate
+                // can be declared the producer is what states the second order.
+                sink.Add(
+                    DotnetIndex.EntityRef,
+                    DotnetIndex.EntityRefFact(definition, file, start, length));
             }
 
-            sink.Add(
-                DotnetIndex.EntityXRef,
-                DotnetIndex.EntityXRefFact(file, start, length, definition));
+            if (scip is not null)
+            {
+                // The same reference on the language-independent surface, keyed by a
+                // symbol rather than a `Definition` — which costs an interned string and
+                // buys the ability to leave this database.
+                var target = DotnetIndex.SymbolFact(scip);
 
-            // The same reference keyed by what it points at. Written twice because a
-            // predicate leads with one field: find-references needs the target to lead
-            // and a file view needs the file to, and until a derived predicate can be
-            // declared the producer is what states the second order.
-            sink.Add(
-                DotnetIndex.EntityRef,
-                DotnetIndex.EntityRefFact(definition, file, start, length));
+                sink.Add(DotnetIndex.Symbol, target);
+                sink.Add(
+                    DotnetIndex.FileXRef,
+                    DotnetIndex.FileXRefFact(file, start, length, target, role));
+                sink.Add(
+                    DotnetIndex.SymbolXRef,
+                    DotnetIndex.SymbolXRefFact(target, file, start, length));
+            }
+            else if (local is { } declared)
+            {
+                // **A file-local target, answered span to span.** No interned string: a
+                // local has no global name worth minting, and a jump-to-declaration is
+                // then one seek with no symbol table.
+                sink.Add(
+                    DotnetIndex.FileLocalXRef,
+                    DotnetIndex.FileLocalXRefFact(
+                        file, start, length, declared.Start, declared.Length, role));
+            }
 
             References++;
 
@@ -565,6 +612,169 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 SampleName = canonical.Name;
             }
         }
+    }
+
+    /// <summary>
+    /// The <c>codemarkup</c> projection of one declaration: the same facts, re-keyed for
+    /// the questions a UI asks.
+    /// </summary>
+    /// <remarks>
+    /// Every one of these is redundant with the <c>csharp</c> facts beside it by
+    /// construction — while <c>nyi/derivation</c> stands, a producer is what states the
+    /// second keying, and the query that *would* derive each is a comment in the schema.
+    /// </remarks>
+    private void Markup(
+        ISymbol symbol,
+        FjordFact named,
+        FjordFact file,
+        long start,
+        long length,
+        long line,
+        FjordValue kind,
+        string signature,
+        string modifiers,
+        string doc)
+    {
+        Debug.Assert(_gate.IsHeldByCurrentThread, "the sink is shared");
+
+        var name = symbol.Name;
+
+        sink.Add(
+            DotnetIndex.MarkupDefinition,
+            DotnetIndex.MarkupDefinitionFact(
+                named, file, start, length, kind, name, symbol.ToDisplayString()));
+
+        sink.Add(
+            DotnetIndex.FileDefinition,
+            DotnetIndex.FileDefinitionFact(file, start, length, named, kind, name));
+
+        sink.Add(
+            DotnetIndex.SymbolInfo,
+            DotnetIndex.SymbolInfoFact(named, signature, doc, modifiers));
+
+        // The two search rows: the case-folded one a prefix or fuzzy match seeks on, and
+        // the exact one, because "find exactly `Parse`" and "find anything spelled like
+        // parse" are different questions.
+        sink.Add(
+            DotnetIndex.SearchEntry,
+            DotnetIndex.SearchEntryFact(name, kind, named, file, line));
+        sink.Add(DotnetIndex.SymbolByName, DotnetIndex.SymbolByNameFact(name, named));
+
+        Relate(symbol, named);
+    }
+
+    /// <summary>The relation edges a declaration implies, in both directions.</summary>
+    /// <remarks>
+    /// Containment is a relation rather than a field on the definition, so that it is
+    /// joinable both ways — <c>Relation {from = C, kind = {contains}, to = S}</c> answers
+    /// "what is in this" and <c>RelationOf</c> answers "what contains this".
+    /// </remarks>
+    private void Relate(ISymbol symbol, FjordFact named)
+    {
+        void Edge(ISymbol? other, uint kind)
+        {
+            if (other is null || ScipSymbols.Of(other) is not { } text)
+            {
+                return;
+            }
+
+            var target = DotnetIndex.SymbolFact(text);
+            var value = DotnetIndex.Tagged(kind);
+
+            sink.Add(DotnetIndex.Symbol, target);
+            sink.Add(DotnetIndex.Relation, DotnetIndex.RelationFact(target, value, named));
+            sink.Add(DotnetIndex.RelationOf, DotnetIndex.RelationOfFact(named, value, target));
+        }
+
+        // `contains`, written from the container's side: the argument order above is
+        // (from, kind, to), so the container is `from`.
+        Edge(symbol.ContainingSymbol as INamedTypeSymbol, 1u);
+
+        if (symbol is INamedTypeSymbol type)
+        {
+            if (type.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
+            {
+                Edge(baseType, 2u);
+            }
+
+            foreach (var iface in type.Interfaces)
+            {
+                Edge(iface, 3u);
+            }
+        }
+
+        if (symbol.IsOverride)
+        {
+            Edge(
+                symbol switch
+                {
+                    IMethodSymbol method => method.OverriddenMethod,
+                    IPropertySymbol property => property.OverriddenProperty,
+                    IEventSymbol @event => @event.OverriddenEvent,
+                    _ => null,
+                },
+                4u);
+        }
+    }
+
+    /// <summary>
+    /// A declaration's doc comment as plain text — the summary, collapsed.
+    /// </summary>
+    /// <remarks>
+    /// <b>The summary only, and no markup.</b> Roslyn hands back the whole XML block, and
+    /// a hover card wants a sentence: the tags would have to be stripped by every
+    /// consumer, and stripping them here means the fact is the same for a consumer that
+    /// cannot parse XML. What is lost is <c>&lt;param&gt;</c> and <c>&lt;returns&gt;</c>,
+    /// which a signature already carries.
+    /// </remarks>
+    private static string DocComment(ISymbol symbol)
+    {
+        if (symbol.GetDocumentationCommentXml() is not { Length: > 0 } xml)
+        {
+            return string.Empty;
+        }
+
+        var opened = xml.IndexOf("<summary>", StringComparison.Ordinal);
+        var closed = xml.IndexOf("</summary>", StringComparison.Ordinal);
+
+        if (opened < 0 || closed <= opened)
+        {
+            return string.Empty;
+        }
+
+        var summary = xml[(opened + "<summary>".Length)..closed];
+
+        // Inner tags — `<see cref="X"/>`, `<c>x</c>` — become their text, and the
+        // line-wrapped source becomes one line.
+        var text = System.Text.RegularExpressions.Regex.Replace(summary, "<[^>]*>", string.Empty);
+
+        return SourceLayer.Clip(
+            string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
+    }
+
+    /// <summary>
+    /// Where a file-local target is declared, as a byte span in this file.
+    /// </summary>
+    /// <remarks>
+    /// Null when the declaration is in another file, which for a local cannot happen and
+    /// for anything else means there is no span in *this* file to point at.
+    /// </remarks>
+    private static (long Start, long Length)? Declared(
+        ISymbol symbol,
+        SimpleNameSyntax name,
+        SourceLayer.Offsets offsets)
+    {
+        var here = name.SyntaxTree;
+
+        foreach (var location in symbol.Locations)
+        {
+            if (location.IsInSource && location.SourceTree == here)
+            {
+                return offsets.Span(location.SourceSpan);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>The file fact for a path, and the project edges that go with it.</summary>

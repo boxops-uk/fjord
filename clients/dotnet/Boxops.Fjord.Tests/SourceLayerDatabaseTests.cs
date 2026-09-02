@@ -28,18 +28,33 @@ namespace Boxops.Fjord.Tests;
 /// </summary>
 public sealed class SourceLayerDatabaseTests
 {
+    /// <summary>
+    /// The fixture, which has to contain <b>references</b> and not only declarations: a
+    /// class with two members and no method bodies produces no cross-reference facts at
+    /// all, and the joins this file exists to assert would pass on an empty collection.
+    /// </summary>
     private const string Source = """
         namespace Fixture.Deep
         {
+            /// <summary>A thing with a <c>Count</c>.</summary>
             public class Thing
             {
                 public int Count;
 
-                public string Name { get; set; }
+                public string Label { get; set; }
 
-                public void Do() {}
+                public void Do()
+                {
+                    Count = Helper(1);
+                }
 
-                public void Do(int times) {}
+                public void Do(int times)
+                {
+                    var local = times;
+                    Count = local;
+                }
+
+                private int Helper(int a) => a;
             }
         }
         """;
@@ -95,6 +110,90 @@ public sealed class SourceLayerDatabaseTests
 
             Assert.Contains(symbols, symbol =>
                 symbol.EndsWith("Fixture/Deep/Thing#Do(+1).", StringComparison.Ordinal));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// <para>
+    /// <b>S4's gate: the questions a UI asks, against an index this producer wrote.</b>
+    /// </para>
+    /// <para>
+    /// `codemarkup` is the same facts as `csharp` re-keyed, so what is worth asserting is
+    /// not that the predicates have rows — the round-trip test covers that — but that the
+    /// *joins they exist for* answer. These are the two `index.sigla`'s own header names,
+    /// narrowed to the one language this producer fills.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void The_ui_surface_answers_the_joins_it_exists_for()
+    {
+        using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
+        var directory = Directory.CreateTempSubdirectory("fjord-markup-db");
+
+        try
+        {
+            var path = Path.Combine(directory.FullName, "Thing.cs");
+            File.WriteAllText(path, Source);
+
+            Index(directory.FullName, path, server.Socket);
+
+            using var connection = FjordConnection.Connect(server.Socket, "dotnet", DotnetIndex.Schema);
+
+            // **Go to definition.** A symbol in, the file and span it is declared at out —
+            // one seek, and the row a cross-database fan-out returns.
+            Assert.NotEmpty(connection.Query(
+                "{at = D.value} where "
+                + "D = codemarkup.Definition {symbol = S, file = F}").Rows);
+
+            // **Every reference in one file, resolved to its definition.** The join the
+            // whole layer exists for: a renderer asks it once per file and splices links
+            // over the text.
+            Assert.NotEmpty(connection.Query(
+                "{use = SP, defined = D.value} where "
+                + "codemarkup.FileXRef {file = F, span = SP, target = S, role = R}; "
+                + "D = codemarkup.Definition {symbol = S, file = DF}").Rows);
+
+            // **Find references**, keyed by the target so it is a seek rather than a scan
+            // of the largest table in the index.
+            Assert.NotEmpty(connection.Query(
+                "{file = P, at = SP} where "
+                + "codemarkup.SymbolXRef {target = S, file = F, span = SP}; F = src.File P").Rows);
+
+            // **A case-insensitive prefix search**, which is what `nameLowercase` leads
+            // for — a guided seek rather than a scan over every name in the index.
+            Assert.NotEmpty(connection.Query(
+                "{name = N, kind = K, line = L} where "
+                + "codemarkup.SearchEntry {nameLowercase = \"th\".., name = N, kind = K, "
+                + "symbol = S, file = F, line = L}").Rows);
+
+            // **Containment, both ways.** A relation rather than a field, so "what is in
+            // this type" and "what contains this member" are both seeks.
+            Assert.NotEmpty(connection.Query(
+                "{kind = K} where codemarkup.Relation {from = A, kind = K, to = B}").Rows);
+            Assert.NotEmpty(connection.Query(
+                "{kind = K} where codemarkup.RelationOf {to = A, kind = K, from = B}").Rows);
+
+            // **The hover card**, which is a value fetch on one symbol rather than a join.
+            Assert.NotEmpty(connection.Query(
+                "X.value where X = codemarkup.SymbolInfo {symbol = S}").Rows);
+
+            // And completeness: every predicate of the layer has facts. A UI surface with
+            // one empty predicate is a UI with one dead feature, and nothing else here
+            // would notice — the joins above each touch only three or four of the ten.
+            foreach (var predicate in new[]
+            {
+                "codemarkup.Definition", "codemarkup.SymbolInfo", "codemarkup.FileDefinition",
+                "codemarkup.FileXRef", "codemarkup.SymbolXRef", "codemarkup.FileLocalXRef",
+                "codemarkup.SearchEntry", "codemarkup.SymbolByName", "codemarkup.Relation",
+                "codemarkup.RelationOf",
+            })
+            {
+                Assert.NotEmpty(connection.Query($"X where X = {predicate} _").Rows);
+            }
         }
         finally
         {
