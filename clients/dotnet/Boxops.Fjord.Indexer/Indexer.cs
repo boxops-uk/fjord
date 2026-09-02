@@ -441,11 +441,21 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     {
         if (model.GetDeclaredSymbol(node) is { } symbol)
         {
+            // Built outside the lock: it walks the containing chain and sorts the
+            // declaration's same-named siblings, which is real work and none of it needs
+            // the sink. Null for anything file-local, which has no global name.
+            var scip = ScipSymbols.Of(symbol);
+
             using (Enter())
             {
                 // The fact is emitted by `DeclFor` the first time the symbol is reached,
                 // by whichever path reaches it first. Here that is its own declaration.
                 DeclFor(symbol);
+
+                if (scip is not null)
+                {
+                    sink.Add(CodeIndex.Symbol, CodeIndex.SymbolFact(scip));
+                }
             }
         }
     }

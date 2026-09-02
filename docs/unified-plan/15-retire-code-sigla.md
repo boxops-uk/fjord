@@ -115,9 +115,35 @@ Three decisions inside it, each recorded where a second producer will meet it:
   lengths. The cost is that `sha256sum` disagrees for a BOM'd file, which is why the value owed to
   `config.Setting {dimension = "digest"}` at S5 must name the input and not just the hash.
 
+**`src.Symbol` is spec-conformant SCIP under this producer's own scheme token, `scip-csharp`.**
+That is a decision, and it was taken against the reference indexer rather than against the
+specification alone, because `scip-dotnet` — verified from its source and its checked-in snapshots —
+does two things that a cross-database join key cannot survive:
+
+| What it emits | Why it is unusable here |
+|---|---|
+| `Model/DiffPaneModel#` for `DiffPlex.DiffBuilder.Model.DiffPaneModel` — the innermost namespace only, because a namespace descriptor is attached to the package rather than to its parent | `A.B.T` and `C.B.T` collide inside one package |
+| `nuget . .` as the package of the code being indexed, by default and on purpose | every repository's `Main/Program#` is the same string, and the fan-out joins on exactly this |
+| `Overload1(+1).`, counting `ContainingType.GetMembers()` | for a partial class that order follows the order the compiler was handed the files, so one commit has two symbol sets and a sealed identity hashes the facts |
+
+So this producer writes full qualification, the containing assembly's own identity as the package,
+and the same `+N` disambiguator format counted over a `docId`-sorted order. **A different scheme
+token is the honest part**: claiming `scip-dotnet` without matching it byte for byte would be worse
+than either, and neither difference is repairable downstream — nothing can recover a namespace a
+producer never wrote, or a signature from an ordinal. An ingested foreign index keeps its own token,
+and a join is within one scheme.
+
+What survives of the instability is stated rather than hidden: an ordinal still renumbers when an
+overload that sorts earlier is inserted, so nothing keys on a symbol across revisions —
+`csharp.Method` carries `docId` itself and is reached through `csharp.SymbolOf`. The reasoning lives
+in `src.sigla`'s charter, `ScipSymbols`' own, and twelve tests, rather than in a decision record.
+
+**A third `config` dimension is now owed at S5.** `symbol-scheme` joins `style-encoding` and
+`digest`: three things a consumer must read out of the database and cannot, until the indexer stops
+writing a schema that imports no `config`.
+
 **Still owed:** `FileOrigin` — per-file provenance, which needs options a run *states* rather than
-data it can read — and `Symbol`, the SCIP-form string `codemarkup` joins on, which is the one piece
-of this run that is not arithmetic.
+data it can read. It is the last of the nine.
 
 **One published number moves and is annotated rather than re-run.** The tour transcript in
 `walkthrough.md` was taken before the source layer and is now stale in four ways — the predicate's

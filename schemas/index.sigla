@@ -17,7 +17,7 @@
 #
 #     # A symbol, its declaration site, and the project that compiled the file it sits in.
 #     {def = D.value, proj = P.value} where
-#       S = src.Symbol "scip-dotnet . Company.Domain . Company/Domain/Order#Total().";
+#       S = src.Symbol "scip-csharp nuget Company.Domain 1.4.0 Company/Domain/Order#Total().";
 #       D = codemarkup.Definition {symbol = S, file = F};
 #       msbuild.SourceFileToProject {src = F, project = P}
 #

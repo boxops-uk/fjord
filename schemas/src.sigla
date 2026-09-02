@@ -22,13 +22,49 @@ schema src {
   # per-database sequence ([I11](invariants.html#i11)), a symbol means the same thing in
   # every database that mints it the same way.
   #
-  # Spelled as SCIP: a scheme token, a package coordinate, then a descriptor —
+  # Spelled as SCIP: a scheme token, a package coordinate — manager, name, version — then
+  # the descriptors, suffix-encoded (`/` a namespace, `#` a type, `.` a term, `(…).` a
+  # method, `(…)` a parameter, `[…]` a type parameter), each name ASCII-simple or
+  # backtick-escaped.
   #
-  #     csharp nuget Newtonsoft.Json 13.0.3 Newtonsoft/Json/JsonConvert#SerializeObject().
-  #     ts npm @angular/core 17.0.0 `src/lib`/Component#
+  #     scip-csharp nuget Newtonsoft.Json 13.0.3 Newtonsoft/Json/JsonConvert#SerializeObject().
+  #     scip-typescript npm @angular/core 17.0.0 `src/lib`/Component#
   #
   # The scheme token comes first so the string space is partitioned by producer, and
   # `..`-prefix matching over the whole string is a package or namespace search.
+  #
+  # ## The scheme token is the producer's, and a join is within one scheme
+  #
+  # `config.Setting {dimension = "symbol-scheme"}` says which scheme(s) a database holds,
+  # and a fan-out checks it before trusting a string match. That check is load-bearing
+  # rather than defensive, because **two conformant producers of one language can disagree**
+  # and one cannot be repaired into the other: nothing downstream can recover a namespace a
+  # producer did not write, or a signature from an ordinal.
+  #
+  # The reference C# indexer, `scip-dotnet`, is the live example. Verified against its own
+  # checked-in snapshots, it emits `Model/DiffPaneModel#` for
+  # `DiffPlex.DiffBuilder.Model.DiffPaneModel` — **the innermost namespace only**, since a
+  # namespace descriptor is attached to the package rather than to its parent — so `A.B.T`
+  # and `C.B.T` collide inside one package. It also writes the package as `. .` for the code
+  # being indexed, by default and on purpose, which collides across repositories. Both are
+  # fine for its own purpose and neither is usable as the key a cross-database join seeks,
+  # so this schema's producer writes spec-conformant symbols under **its own token** and an
+  # ingested `scip-dotnet` index keeps that one. A string claiming a scheme it does not match
+  # byte for byte would be worse than either.
+  #
+  # ## A method's overload disambiguator, and what it costs
+  #
+  # SCIP leaves the disambiguator to the indexer. `scip-dotnet` counts same-named members in
+  # `ContainingType.GetMembers()` order — `Overload1().`, then `Overload1(+1).` — which for
+  # a partial class follows whichever order the compiler was handed the files. This producer
+  # keeps that format and counts a **deterministic** order instead, same-named members
+  # sorted by `docId`, because a sealed identity hashes the facts and two indexes of one
+  # commit must not disagree.
+  #
+  # The cost is stated rather than hidden: an ordinal is **not stable across an edit that
+  # inserts an overload**. Anything needing that keys on the language layer's structural
+  # entity, which never carries one — `csharp.Method` trails `docId`, Roslyn's own signature
+  # encoding — and reaches the symbol through `csharp.SymbolOf`.
   predicate Symbol : string
 
   # ======================================================================================

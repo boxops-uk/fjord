@@ -208,6 +208,35 @@ public sealed class SourceWalkTests
     }
 
     /// <summary>
+    /// **A declaration gets its global name.** `src.Symbol` is the key a cross-database
+    /// fan-out seeks, and it is written by the walk rather than derived later — so the gate
+    /// is that a walked declaration has one, spelled the way `ScipSymbols` says.
+    /// </summary>
+    [Fact]
+    public void A_walked_declaration_carries_its_scip_symbol()
+    {
+        var written = Walk(
+            """
+            namespace N.Deep
+            {
+                public class T
+                {
+                    public void M() {}
+                    public void M(int a) {}
+                }
+            }
+            """);
+
+        var symbols = written.Of(CodeIndex.Symbol)
+            .Select(fact => Assert.IsType<FjordValue.Str>(fact.Key).Value)
+            .ToList();
+
+        Assert.Contains("scip-csharp nuget Walked 0.0.0.0 N/Deep/T#", symbols);
+        Assert.Contains("scip-csharp nuget Walked 0.0.0.0 N/Deep/T#M().", symbols);
+        Assert.Contains("scip-csharp nuget Walked 0.0.0.0 N/Deep/T#M(+1).", symbols);
+    }
+
+    /// <summary>
     /// **The digest is over the text the offsets count**, which is the thing a second
     /// implementation would most easily get wrong — and it is one fact per file, so a
     /// walk that wrote none would look exactly like a walk that wrote them all.

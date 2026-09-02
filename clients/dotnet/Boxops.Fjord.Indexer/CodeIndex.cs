@@ -359,6 +359,17 @@ internal static class CodeIndex
     public static FjordFact FileFact(string path) =>
         new(File, FjordValue.Of(path));
 
+    /// <summary>
+    /// <c>src.Symbol</c>: a global name, interned. Key-only, so the string is the fact.
+    /// </summary>
+    /// <remarks>
+    /// The string's shape and the reasoning behind it are <see cref="ScipSymbols"/>'s. What
+    /// matters here is that it is the join key a cross-database fan-out seeks, so a
+    /// database says which scheme minted it — and nothing about a `FactId` travels.
+    /// </remarks>
+    public static FjordFact SymbolFact(string symbol) =>
+        new(Symbol, FjordValue.Of(symbol));
+
     public static FjordFact ModuleFact(FjordFact file, string name) =>
         new(Module, FjordValue.Rec(
             FjordValue.Of(FjordRef.To(file)),
