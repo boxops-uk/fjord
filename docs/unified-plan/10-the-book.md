@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Issues** | [#36](https://github.com/boxops-uk/fjord/issues/36) (the style format), [#39](https://github.com/boxops-uk/fjord/issues/39), [#41](https://github.com/boxops-uk/fjord/issues/41) item 4, [#42](https://github.com/boxops-uk/fjord/issues/42) item 3, [#43](https://github.com/boxops-uk/fjord/issues/43) |
-| **Area** | `website/content/`, `website/nav.json`, `docs/glean.md`, `AGENTS.md` |
+| **Area** | `website/content/`, `website/nav.json`, the Glean transcription (retired since — D14), `AGENTS.md` |
 | **Depends on** | each item it documents; lands **with** that item, not after it |
 | **Blocks** | nothing |
 
@@ -38,7 +38,7 @@ is checked by nothing.**
 | `operations.md` | what a sealed directory contains after `finish`, and the artifact-size statement `FJORD_META.bytes` makes | W12 |
 | `clients.md` | **landed with W11**: `fjord-viewer` is retired, why, and the three things its replacement needs from this side — including the position-encoding rule, which the retired viewer got wrong by indexing with `str::chars()` | W11 |
 | `invariants.md` | no invariant moves. If W12 adds a guard for the sealed-artifact claim, the `ops-I*` table gains its first Guard column entry | W12 |
-| `docs/glean.md` | **landed**: it said `ops-I5` adopts the conflict-reject rule where `invariants.md:408` assigns order-independent rejection to **`ops-I4`**, as revision 2's own correction table says. One line | research |
+| the Glean transcription | **landed**, and the file has since been retired whole (D14): it said `ops-I5` adopts the conflict-reject rule where `invariants.md:408` assigns order-independent rejection to **`ops-I4`**, as revision 2's own correction table says. One line | research |
 | `AGENTS.md` | the build list gains `cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown` (W4 c2) and the exhaustiveness recipe (W2 c3) | W2, W4 |
 
 ## Acceptance criteria

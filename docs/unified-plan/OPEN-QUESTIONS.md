@@ -50,7 +50,8 @@ change the work.
 | C10 | `src.sigla` is "8 predicates" (#39 appendix A header) | It lists **nine**, and `index.sigla`'s own total only adds up with nine: 9+1+10+16+31+14+22+35 = 138. Verify at implementation |
 
 And one correction the plan makes to **itself**: revision 2 declared the `ops-I4`/`ops-I5` slip
-corrected and then carried it twice — in its own C5 row, and in `docs/glean.md`, which C5 cites.
+corrected and then carried it twice — in its own C5 row, and in the Glean transcription C5 cited,
+retired since under D14.
 **Both landed**, in W10: the conflict-reject rule is `ops-I4`, as `invariants.md:408` has it, and
 `ops-I5` is the one-write-funnel rule it was being confused with.
 

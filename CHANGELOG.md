@@ -446,7 +446,8 @@ that reads with no toolchain.
 The design book is the website, verified claim by claim against the tree; its
 invariants page is the canonical registry. `AGENTS.md` is the working contract for
 contributors, `PLAN.md` is a roadmap rather than a phase tree (with the auth design and the
-settled-decisions record inside it), and the two Glean documents merged into `docs/glean.md`.
+settled-decisions record inside it), and the two Glean documents merged into one (retired whole
+in a later release, when the comparison was).
 CI builds the site strictly and runs `scripts/check-docs.py`, which fails on a broken link, an
 invariant citation the registry does not declare, a reference to a retired document, or a
 build-plan phase number in code — each a way the documentation actually went stale once.

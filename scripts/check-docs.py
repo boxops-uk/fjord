@@ -78,7 +78,7 @@ for area in ("crates", "docs", "clients", "bench"):
 RETIRED = re.compile(
     r"docs/(0[1-7]-[a-z-]+|invariants|conventions|testing|fjord-cli-design|glossary"
     r"|open-decisions|performance|auth|query-surface|repository-rules"
-    r"|glean-comparison|glean-capabilities|phase-[0-9.]+[a-z-]*)\.md"
+    r"|glean|glean-comparison|glean-capabilities|phase-[0-9.]+[a-z-]*)\.md"
 )
 
 for area in ("crates", "docs", "clients", "bench", "website", "scripts", ".github"):
