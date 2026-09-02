@@ -480,6 +480,21 @@ internal static class CodeIndex
             FjordValue.Of(attribute),
             FjordValue.Of(FjordRef.To(target))));
 
+    /// <summary>
+    /// <c>src.FileLineStyles</c>: one line's syntax highlighting, as opaque bytes.
+    /// </summary>
+    /// <remarks>
+    /// The payload is whatever the producer's <c>style-encoding</c> declares. This indexer
+    /// writes LSP semantic-tokens data — see <see cref="SemanticTokens"/> — but the fact
+    /// carries bytes and the schema asks no questions about them.
+    /// </remarks>
+    public static FjordFact FileLineStylesFact(FjordFact file, long line, ReadOnlyMemory<byte> styles) =>
+        new(FileLineStyles,
+            FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(file)),
+                FjordValue.Of(line)),
+            FjordValue.Rec(FjordValue.Of(styles)));
+
     /// <summary>One line of a file: its text, and the three offsets that locate it.</summary>
     /// <remarks>
     /// <para>
@@ -496,21 +511,6 @@ internal static class CodeIndex
     /// language its <c>Length</c> <i>is</i> the count.
     /// </para>
     /// </remarks>
-    /// <summary>
-    /// <c>src.FileLineStyles</c>: one line's syntax highlighting, as opaque bytes.
-    /// </summary>
-    /// <remarks>
-    /// The payload is whatever the producer's <c>style-encoding</c> declares. This indexer
-    /// writes LSP semantic-tokens data — see <see cref="SemanticTokens"/> — but the fact
-    /// carries bytes and the schema asks no questions about them.
-    /// </remarks>
-    public static FjordFact FileLineStylesFact(FjordFact file, long line, ReadOnlyMemory<byte> styles) =>
-        new(FileLineStyles,
-            FjordValue.Rec(
-                FjordValue.Of(FjordRef.To(file)),
-                FjordValue.Of(line)),
-            FjordValue.Rec(FjordValue.Of(styles)));
-
     public static FjordFact FileLineFact(
         FjordFact file,
         long line,
@@ -527,4 +527,40 @@ internal static class CodeIndex
                 FjordValue.Of(start),
                 FjordValue.Of(bytes),
                 FjordValue.Of(cstart)));
+
+    /// <summary>
+    /// <c>src.FileInfo</c>: a file's size in bytes and in lines, and whether its last
+    /// byte is a terminator.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="lines"/> must be the number of <c>src.FileLine</c> facts written
+    /// for the file. A consumer resolving an offset past the last line's start falls back
+    /// to this number, so a count that disagrees with the table sends it to a line that
+    /// does not exist — which is why <see cref="SourceLayer.LineTable"/> produces both.
+    /// </remarks>
+    public static FjordFact FileInfoFact(FjordFact file, long bytes, long lines, bool endsInNewline) =>
+        new(FileInfo,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+            FjordValue.Rec(
+                FjordValue.Of(bytes),
+                FjordValue.Of(lines),
+                // `false_ = 0 | true_ = 1`, and an alternative with no type is the empty
+                // record — I10 freezes both discriminants.
+                FjordValue.Alt(endsInNewline ? 1u : 0u, FjordValue.Rec())));
+
+    /// <summary>
+    /// <c>src.FileLineAt</c>: the line table keyed by offset, all key — "which line is
+    /// byte 12345 in".
+    /// </summary>
+    /// <remarks>
+    /// The same rows as <c>src.FileLine</c> with <c>start</c> promoted into the key,
+    /// because a value can neither be matched nor read field-wise: the question is a seek
+    /// here and a scan of the whole line table otherwise.
+    /// </remarks>
+    public static FjordFact FileLineAtFact(FjordFact file, long start, long line) =>
+        new(FileLineAt,
+            FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(file)),
+                FjordValue.Of(start),
+                FjordValue.Of(line)));
 }

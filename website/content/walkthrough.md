@@ -118,6 +118,17 @@ indexed 20 file(s) in 4.0s
 references: 2,672 resolved, 1,718 to declarations outside the index, 1 unresolved
 ```
 
+:::note This transcript is older than the schema it ran against
+It was taken before the shared source layer landed, and the numbers in it are the ones
+that run produced. Three things have moved since: `src.Line` is `src.FileLine`, the
+predicate count and the fingerprint are both larger, and the line table no longer carries
+a row for the empty line Roslyn reports at the end of a newline-terminated file — one
+fewer fact per file, plus a `src.FileInfo` and a `src.FileLineAt` per line. The tour is
+re-run once, with the read measurements, after the indexer stops writing `code.sigla`;
+re-running it twice would spend the same afternoon on numbers that are about to move
+again.
+:::
+
 Read the two server counts together: 55,421 facts touched, 15,039 rows exist — because
 every reference the walk wrote was **the target fact nested inline** rather than an id:
 

@@ -71,15 +71,46 @@ varints, per line so `deltaLine` is always 0, over a fixed legend of Roslyn's ow
 to round-trip, and the cases that matter (overlapping spans, spans crossing a line boundary, no
 token for whitespace) are asserted in `Boxops.Fjord.Tests.SemanticTokensTests`.
 
-**What that leaves owed here.** Nothing consumes `style-encoding` yet, and the indexer holds
-`roslyn-lsp-1` as a constant without writing the `config.Setting` fact that publishes it — so a
-consumer today receives bytes it has no declared way to read. Emitting `config.Setting` is not on
-any run's list and belongs on this one, with the six remaining `src.*`.
+**`config.Setting` cannot land here, and that is a sequencing fact rather than a choice.** The
+indexer holds `roslyn-lsp-1` as a constant and writes no `config.Setting` fact, so a consumer
+receives style bytes with no declared way to read them. But `code.sigla` imports `src` and **not**
+`config`, and the indexer writes against `code.sigla`'s fingerprint — so emitting the fact needs
+either an `import config` in a schema that is being deleted (a flag day for nothing) or the move
+onto the new set. It is therefore **S5's**, listed there, and until S5 the style payload is readable
+only by knowing which indexer produced it. Recorded rather than left to be discovered by whoever
+writes the first consumer.
 
-**Gate.** Every `src.*` predicate has facts after a fixture run, one query per predicate asserting
-rows; and a database the indexer wrote with `--styles` carries
-`config.Setting {dimension = "style-encoding", value = "roslyn-lsp-1"}`, so the payload is readable
-by the contract rather than by knowing which indexer produced it.
+**The line table is wrong today, and S1 starts by fixing it.** Roslyn's `SourceText.Lines` ends a
+file that ends in a newline with an empty final line, and the walk writes a `FileLine` fact for it —
+so nearly every file in every index carries a phantom last line. `src.sigla` says the opposite in as
+many words (*"a\nb\n" is two lines, and so is "a\nb"*; `endsInNewline` is what tells them apart)
+and `source_layer.rs` pins that reading with hand-built facts, which is why no test caught the
+producer disagreeing with it. It is the off-by-one [risk 2](OPEN-QUESTIONS.md) predicted, in the
+place it predicted, found by writing `FileInfo.lines` next to it — the two cannot both be right.
+
+**Gate.** Every `src.*` predicate this schema can carry has facts after a fixture run, one query per
+predicate asserting rows; the line-table arithmetic is a property over generated text rather than
+three examples — a file with and without a trailing newline, CRLF, a real blank final line, non-BMP
+text and a clipped line — and `FileLineAt` inverts `FileLine.start` for every row of it.
+
+**Landed so far.** The arithmetic is `SourceLayer` — separated from the walk because a walk needs a
+workspace and a property does not — with the phantom line gone, `FileInfo` and `FileLineAt` written,
+and the cap on a stored string defined once. Two test files: `SourceLayerTests` for the arithmetic
+(a seeded corpus whose population is asserted, because a generator that degenerates leaves its
+properties green and vacuous) and `SourceWalkTests` for the wiring, taken at the `IBlockTarget` seam
+so it needs no server. Six of them fail against the pre-fix behaviour, which is the check that they
+have teeth. `FileInfo` is written even under `--no-lines`: it is one fact per file, and it is what a
+consumer falls back to when an offset resolves past the last line's start.
+
+**Still owed:** `FileLanguage`, `FileDigest`, `FileOrigin` and `Symbol` — the first two per-file and
+cheap, `FileOrigin` needing options a run states rather than data it can read, and `Symbol` the
+SCIP-form string `codemarkup` joins on, which is the one that is not arithmetic.
+
+**One published number moves and is annotated rather than re-run.** The tour transcript in
+`walkthrough.md` was taken before the source layer and is now stale in four ways — the predicate's
+name, the predicate count, the fingerprint, and one fewer line fact per file plus the two new
+predicates. It is re-run **with R7, after S5**, for D12's reason: the alternative is spending the
+same afternoon twice on numbers that are about to move again.
 
 ### S2 — `msbuild.*`
 

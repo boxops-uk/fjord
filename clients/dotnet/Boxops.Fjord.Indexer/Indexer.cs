@@ -167,7 +167,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// <summary>Declaration keys reached with two different kinds. See <see cref="_kinds"/>.</summary>
     public int Conflicts { get; private set; }
 
-    /// <summary>Lines of source written as <c>src.Line</c> facts.</summary>
+    /// <summary>Lines of source written as <c>src.FileLine</c> facts.</summary>
     public long Lines { get; private set; }
 
     /// <summary>Lines carrying syntax highlighting, as <c>src.FileLineStyles</c> facts.</summary>
@@ -302,15 +302,22 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     }
 
     /// <summary>
-    /// The file's line table: one <c>src.Line</c> fact per line, the text on the value
-    /// side.
+    /// The file's line table — <c>src.FileLine</c> and the <c>src.FileLineAt</c> that
+    /// inverts it — and the <c>src.FileInfo</c> that summarises the file.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>Every line, including the blank ones.</b> A line table whose gaps mean
     /// "empty" is a table a consumer has to know a rule about, and the rule is
     /// indistinguishable from "that line was never indexed". Completeness is the
-    /// property that makes it a table.
+    /// property that makes it a table. The arithmetic that decides which lines those
+    /// are lives in <see cref="SourceLayer"/>, where it is a property rather than a walk.
+    /// </para>
+    /// <para>
+    /// <b><c>FileInfo</c> is written even with <c>--no-lines</c>.</b> It is one fact per
+    /// file and it is what a consumer falls back to when an offset resolves past the last
+    /// line's start; the switch is about the size of the per-line table, and a database
+    /// that knows how many lines a file has but not what is on them is a coherent one.
     /// </para>
     /// <para>
     /// Built outside the lock and added inside it. A large file is a few thousand facts,
@@ -320,52 +327,45 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// </remarks>
     private void IndexLines(SyntaxTree tree, FjordFact file, Document? document)
     {
+        var text = tree.GetText();
+        var (rows, info) = SourceLayer.LineTable(text);
+        var summary = CodeIndex.FileInfoFact(file, info.Bytes, info.Lines, info.EndsInNewline);
+
         if (!options.Lines)
         {
+            using (Enter())
+            {
+                sink.Add(CodeIndex.FileInfo, summary);
+            }
+
             return;
         }
 
-        var text = tree.GetText();
-        var facts = new List<FjordFact>(text.Lines.Count);
+        var lines = new List<FjordFact>(rows.Count);
+        var offsets = new List<FjordFact>(rows.Count);
 
-        // **Three offsets per line, and only one of them is free.** Roslyn hands back
-        // UTF-16 positions, so `cstart` is `line.Start` as it stands; `start` and `bytes`
-        // are UTF-8 and have to be counted. Accumulated rather than recomputed per line,
-        // because `Encoding.UTF8.GetByteCount` over a prefix is quadratic in the file.
-        //
-        // `Clip` may shorten the text, so `bytes` is measured on what is *stored* while
-        // `start` advances by the whole line — a clipped line still occupies its full
-        // width in the file, and an offset that pretended otherwise would put every
-        // later line in the wrong place.
-        long start = 0;
-
-        foreach (var line in text.Lines)
+        foreach (var row in rows)
         {
-            var whole = line.ToString();
-            var stored = Clip(whole);
-
-            facts.Add(CodeIndex.FileLineFact(
-                file,
-                line.LineNumber + 1,
-                stored,
-                start,
-                Encoding.UTF8.GetByteCount(stored),
-                line.Start));
-
-            // The line, plus its terminator. `line.EndIncludingLineBreak - line.Start` is
-            // UTF-16, so the span is re-measured in bytes rather than added to.
-            start += Encoding.UTF8.GetByteCount(
-                text.ToString(line.SpanIncludingLineBreak));
+            lines.Add(CodeIndex.FileLineFact(
+                file, row.Number, row.Text, row.Start, row.Bytes, row.CStart));
+            offsets.Add(CodeIndex.FileLineAtFact(file, row.Start, row.Number));
         }
 
         using (Enter())
         {
-            foreach (var fact in facts)
+            sink.Add(CodeIndex.FileInfo, summary);
+
+            foreach (var fact in lines)
             {
                 sink.Add(CodeIndex.FileLine, fact);
             }
 
-            Lines += facts.Count;
+            foreach (var fact in offsets)
+            {
+                sink.Add(CodeIndex.FileLineAt, fact);
+            }
+
+            Lines += lines.Count;
         }
 
         IndexStyles(document, text, file);
@@ -1090,10 +1090,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// fact. Four thousand characters is past anything a person writes on a line and
     /// leaves the default batch two orders of magnitude clear of the cap.
     /// </remarks>
-    private static string Clip(string text) =>
-        text.Length <= MaxText ? text : text[..MaxText];
-
-    private const int MaxText = 4096;
+    private static string Clip(string text) => SourceLayer.Clip(text);
 
     private static string KindOf(ISymbol symbol) => symbol switch
     {
