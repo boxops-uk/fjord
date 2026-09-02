@@ -25,9 +25,6 @@
 # dies half-way leaves a half-filled composite, and a completed database is immutable, so
 # every producer must finish before any of them is served. The usual shape is one composed
 # database per repository, with a fan-out across repositories joined on `src.Symbol`.
-#
-# `code.sigla` is deliberately not imported: its `src` namespace is an older, separate
-# declaration layer. The two resolve alongside each other and share only `src.File`.
 
 schema index {
 

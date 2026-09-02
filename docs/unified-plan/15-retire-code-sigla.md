@@ -353,10 +353,13 @@ finding, §2's join costs, §6's 67 q/s mix and §11's ~6,000 q/s are all measur
 `csharp` splits one declaration predicate into a dozen, and `codemarkup` re-keys the same facts a
 second time, so the fact count for one corpus goes up rather than staying still.
 
-R7 re-runs them, and it must run **after** S5 rather than after R4. Until then the record carries
-numbers no command can reproduce, and `FINDINGS` says so at each of them — which is a state this
-repository has already been in once (D9's `--syntax-only` deletion) and got through by writing it
-down rather than by pretending.
+**Settled by closing the register rather than by annotating it.** The plan here was for `FINDINGS`
+to say so at each invalidated entry and for R7 to re-run them after S5 — which is a state this
+repository had been in once before (D9's `--syntax-only` deletion) and got through by writing it
+down. What changed the answer is that the list kept growing: R3.7 deleted the mode that built the
+corpus, D14 retired the comparison, and cost-based reordering and recursion are still ahead of the
+read path. So `bench/FINDINGS.md` carries **one** banner rather than a caveat per section, the
+whole register is closed, and R7 becomes a profiling pass nearer 1.0 instead of a repair.
 
 ## Sequencing
 
