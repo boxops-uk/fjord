@@ -58,7 +58,11 @@ internal static class Program
 
         loading.Stop();
         Console.WriteLine($"  {solution.Projects.Count} project(s) to walk, "
-            + $"loaded in {loading.Elapsed.TotalSeconds:F1}s");
+            + $"loaded in {loading.Elapsed.TotalSeconds:F1}s"
+            // Said out loud because it is the difference between a machine under load and
+            // a repository that does not build: a retried build is one that threw, and a
+            // run with many of them was fighting for a machine rather than reading code.
+            + (solution.Retried > 0 ? $", {solution.Retried} build(s) retried" : string.Empty));
         Console.WriteLine();
 
         List<FjordConnection> connections = Connect(options);

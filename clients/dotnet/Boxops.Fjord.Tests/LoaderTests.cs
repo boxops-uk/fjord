@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Threading;
 
 using Boxops.Fjord.Indexer;
 
@@ -21,9 +22,9 @@ namespace Boxops.Fjord.Tests;
 /// </summary>
 public sealed class LoaderTests
 {
-    private static Options Over(Fixture fixture) => new()
+    private static Options Over(Fixture fixture, string solution = "Graph.slnx") => new()
     {
-        Source = fixture.Path("Graph.slnx"),
+        Source = fixture.Path(solution),
         Jobs = 2,
     };
 
@@ -168,5 +169,97 @@ public sealed class LoaderTests
             ["external/C/C.csproj", "src/A/A.csproj", "src/B/B.csproj"],
             solution.Build.Projects.Select(project => project.Path).Order());
         Assert.Equal(2, solution.Build.Built);
+    }
+
+    /// <summary>
+    /// <b>A build that throws is asked again; the count says how often that happened.</b>
+    /// </summary>
+    /// <remarks>
+    /// The transient half. MSBuild is asked out of process and several at once over one
+    /// machine occasionally lose a pipe — a failure of the asking, which says nothing about
+    /// the project and comes back different next time. The throw is injected because the
+    /// real race needs several processes and a fixture small enough to run here cannot
+    /// reach it: a repro-based gate would be green with the bug fully present.
+    /// </remarks>
+    [Fact]
+    public void A_design_time_build_that_throws_is_asked_again_and_counted()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        var calls = 0;
+
+        var solution = Loader.Load(
+            Over(fixture) with { Jobs = 1 },
+            fixture.Root,
+            TextWriter.Null,
+            (analyzer, environment) => Interlocked.Increment(ref calls) == 1
+                ? throw new IOException("the pipe went away")
+                : analyzer.Build(environment));
+
+        Assert.Equal(1, solution.Retried);
+        Assert.Equal(["A", "B"], solution.Projects.Select(project => project.Name).Order());
+    }
+
+    /// <summary>
+    /// <b>A build that answers with nothing is asked twice, and never a third time.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The deterministic half, and the reason the distinction is worth drawing: a build
+    /// that returns without error and without a compiler invocation has told the truth
+    /// about this project, so asking again produces the same answer more slowly. Twice is
+    /// the pair — <c>Compile</c> for a single-targeted project, <c>DispatchToInnerBuilds</c>
+    /// for a multi-targeted one — and neither is a retry.
+    /// </para>
+    /// <para>
+    /// Answering <see langword="null"/> is how a result with nothing usable in it reaches
+    /// the loader: what it does with the answer is the subject, not how Buildalyzer spells
+    /// an empty one.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_design_time_build_that_answers_with_nothing_is_asked_twice_and_not_retried()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        var calls = 0;
+
+        var refused = Assert.Throws<InvalidOperationException>(() => Loader.Load(
+            Over(fixture) with { Jobs = 1 },
+            fixture.Root,
+            TextWriter.Null,
+            (_, _) =>
+            {
+                Interlocked.Increment(ref calls);
+                return null;
+            }));
+
+        // Two projects, the pair each, and nothing asked a third time.
+        Assert.Equal(4, calls);
+        Assert.Contains("every project failed to build", refused.Message);
+    }
+
+    /// <summary>
+    /// <b>The reason a project was skipped is its own reason.</b>
+    /// </summary>
+    /// <remarks>
+    /// One of the two attempts is always wrong about any given project by construction — a
+    /// single-targeted project has no <c>DispatchToInnerBuilds</c> — so reporting the last
+    /// error tells every reader the wrong thing about why their project was skipped, and
+    /// sends them looking for a target rather than for the import that is missing.
+    /// </remarks>
+    [Fact]
+    public void The_reason_a_project_was_skipped_is_its_own_and_not_the_wrong_attempts()
+    {
+        using var fixture = Fixture.Copy("broken");
+        var log = new StringWriter();
+
+        var solution = Loader.Load(Over(fixture, "Broken.slnx"), fixture.Root, log);
+
+        Assert.Equal(["Good"], solution.Projects.Select(project => project.Name));
+
+        var said = log.ToString();
+        Assert.Contains("Missing.props", said, StringComparison.Ordinal);
+        Assert.DoesNotContain("DispatchToInnerBuilds", said, StringComparison.Ordinal);
     }
 }

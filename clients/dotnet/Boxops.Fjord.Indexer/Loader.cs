@@ -31,7 +31,24 @@ internal sealed record LoadedProject(string Name, Func<Compilation?> Compile, Pr
 /// build that produces a compilation is also the only thing that knows the project's
 /// resolved framework, its assembly name and its real source list.
 /// </remarks>
-internal sealed record LoadedSolution(IReadOnlyList<LoadedProject> Projects, ProjectIndex Build);
+internal sealed record LoadedSolution(
+    IReadOnlyList<LoadedProject> Projects,
+    ProjectIndex Build,
+    int Retried);
+
+/// <summary>
+/// One design-time build, as the thing that can be swapped for a test.
+/// </summary>
+/// <remarks>
+/// <b>A seam rather than a race.</b> The failure this exists for needs several MSBuild
+/// processes racing over one pipe, and a fixture small enough to run in a test cannot
+/// reach it — so a repro-based gate would be green with the bug fully present. Injected
+/// here, "a throw is retried and a clean empty result is not" is a statement about the
+/// loader, checked in milliseconds.
+/// </remarks>
+internal delegate IAnalyzerResults? DesignTimeBuild(
+    IProjectAnalyzer analyzer,
+    EnvironmentOptions environment);
 
 /// <summary>
 /// Turning a checkout into compilations, which is the half of an indexer that is not
@@ -64,8 +81,22 @@ internal sealed record LoadedSolution(IReadOnlyList<LoadedProject> Projects, Pro
 /// </remarks>
 internal static class Loader
 {
-    public static LoadedSolution Load(Options options, string root, TextWriter log)
+    /// <summary>How many times the pair of attempts is tried before a project is skipped.</summary>
+    /// <remarks>
+    /// Three, and the number is the point of the run: two would make one unlucky project
+    /// a coin toss, and more would spend minutes on a repository that is simply broken.
+    /// </remarks>
+    private const int Attempts = 3;
+
+    public static LoadedSolution Load(
+        Options options,
+        string root,
+        TextWriter log,
+        DesignTimeBuild? design = null)
     {
+        var build = design ?? ((analyzer, environment) => analyzer.Build(environment));
+        var retried = 0;
+
         var entry = ResolveEntryPoint(options.Source);
         log.WriteLine($"  entry point {entry}");
 
@@ -86,7 +117,7 @@ internal static class Loader
 
         Parallel.For(0, analyzers.Count, new ParallelOptions { MaxDegreeOfParallelism = options.Jobs }, index =>
         {
-            results[index] = BuildOne(analyzers[index], options, log);
+            results[index] = BuildOne(analyzers[index], options, log, build, ref retried);
         });
 
         var added = new List<(IAnalyzerResult Result, ProjectId Id)>();
@@ -173,13 +204,13 @@ internal static class Loader
         // the ones that built: a project MSBuild refused is still a project, its
         // references are still in its XML, and the files under it still have somewhere
         // to belong. The results that did succeed then overwrite what they know better.
-        var build = ProjectIndex.Build(
+        var layer = ProjectIndex.Build(
             root,
             options.Source,
             results.Where(result => result is not null).Select(result => result!).ToList(),
             log);
 
-        return new LoadedSolution(walking, build);
+        return new LoadedSolution(walking, layer, retried);
     }
 
     /// <summary>
@@ -301,72 +332,81 @@ internal static class Loader
         string.IsNullOrEmpty(path) ? string.Empty : Path.GetFullPath(path);
 
     /// <summary>One project's design-time build, or nothing and a reason.</summary>
-    private static IAnalyzerResult? BuildOne(IProjectAnalyzer analyzer, Options options, TextWriter log)
+    /// <remarks>
+    /// <para>
+    /// <b>A throw is retried and a clean answer is not, and that is the whole distinction.</b>
+    /// MSBuild is asked out of process, and several at once over one machine occasionally
+    /// lose a pipe — a transient failure of the asking, which says nothing about the
+    /// project and comes back different the next time. A build that *returns*, without
+    /// error and without a compiler invocation to read, has told the truth about this
+    /// project: asking again produces the same answer more slowly. Retrying both is how a
+    /// broken repository takes three times as long to say so; retrying neither is how a
+    /// project set depends on <c>--jobs</c>.
+    /// </para>
+    /// <para>
+    /// <b>The pair is the unit.</b> A multi-targeting project needs the second attempt and
+    /// a single-targeted one needs the first, so a throw in either is a throw of the
+    /// question rather than of one phrasing of it.
+    /// </para>
+    /// </remarks>
+    private static IAnalyzerResult? BuildOne(
+        IProjectAnalyzer analyzer,
+        Options options,
+        TextWriter log,
+        DesignTimeBuild build,
+        ref int retried)
     {
         var name = Path.GetFileName(analyzer.ProjectFile.Path);
         var started = DateTime.UtcNow;
 
-        var plain = Attempt(innerBuilds: false);
-        var results = plain;
-
-        // **A multi-targeting project has no `Compile` target to run.** `TargetFrameworks`
-        // plural makes the project an *outer* build whose whole job is to dispatch to one
-        // inner build per framework, and `Compile` lives only on the inner ones — so the
-        // first attempt comes back `MSB4057: the target does not exist`. Asking the outer
-        // build to dispatch `Compile` rather than its default `Build` reaches the same
-        // `CoreCompile`, once per framework, and `Preferred` still picks one to walk.
-        //
-        // Tried second rather than first because which of the two is right is a property
-        // of the project, not of the repository: a single-targeted project has no
-        // `DispatchToInnerBuilds` either, and would fail the mirror-image way.
-        if (Preferred(results) is null)
-        {
-            results = Attempt(innerBuilds: true);
-        }
-
-        if (results is null)
-        {
-            return null;
-        }
-
-        if (Preferred(results) is not { } result)
-        {
-            // The first error is nearly always the real one, and a repository that will
-            // not restore says so in the same three words four hundred times.
-            //
-            // **Both attempts are asked, and "no such target" is discounted.** One of
-            // the two is always wrong about this project by construction — a
-            // single-targeted project has no `DispatchToInnerBuilds` and a
-            // multi-targeted one has no `Compile` — so reporting the last attempt's
-            // error tells every reader the wrong thing about why their project was
-            // skipped. What is wanted is whichever attempt failed for a reason of its
-            // own.
-            var reason = Reasons(plain).Concat(Reasons(results))
-                .FirstOrDefault(error => !error.Contains("does not exist in the project", StringComparison.Ordinal))
-                ?? Reasons(plain).Concat(Reasons(results)).FirstOrDefault();
-
-            Say($"  ! {name}: the design-time build failed, skipping it"
-                + (reason is null ? string.Empty : $" — {reason}"));
-
-            return null;
-        }
-
-        var elapsed = (DateTime.UtcNow - started).TotalSeconds;
-        Say($"  built {name} ({result.TargetFramework}, {result.SourceFiles.Length} files, {elapsed:F1}s)");
-
-        return result;
-
-        // One design-time build, or nothing and a reason. A throw is this project's
-        // failure and not the run's, exactly as a build error is.
-        IAnalyzerResults? Attempt(bool innerBuilds)
+        for (var attempt = 1; ; attempt++)
         {
             try
             {
-                return analyzer.Build(BuildOptions(options, innerBuilds));
+                var plain = build(analyzer, BuildOptions(options, innerBuilds: false));
+
+                // **A multi-targeting project has no `Compile` target to run.**
+                // `TargetFrameworks` plural makes the project an *outer* build whose whole
+                // job is to dispatch to one inner build per framework, and `Compile` lives
+                // only on the inner ones — so the first attempt comes back `MSB4057: the
+                // target does not exist`. Asking the outer build to dispatch `Compile`
+                // rather than its default `Build` reaches the same `CoreCompile`, once per
+                // framework, and `Preferred` still picks one to walk.
+                //
+                // Tried second rather than first because which of the two is right is a
+                // property of the project, not of the repository: a single-targeted
+                // project has no `DispatchToInnerBuilds` either, and would fail the
+                // mirror-image way.
+                var results = Preferred(plain) is null
+                    ? build(analyzer, BuildOptions(options, innerBuilds: true))
+                    : plain;
+
+                if (Preferred(results) is { } result)
+                {
+                    var elapsed = (DateTime.UtcNow - started).TotalSeconds;
+                    Say($"  built {name} ({result.TargetFramework}, "
+                        + $"{result.SourceFiles.Length} files, {elapsed:F1}s)");
+
+                    return result;
+                }
+
+                Say($"  ! {name}: the design-time build failed, skipping it — {Because(plain, results)}");
+                return null;
+            }
+            catch (Exception failure) when (attempt < Attempts)
+            {
+                Interlocked.Increment(ref retried);
+                Say($"  .. {name}: the design-time build threw, asking again "
+                    + $"({attempt} of {Attempts}) — {failure.Message}");
+
+                // Escalating, because the thing being waited out is another process
+                // finishing with a resource this one wants.
+                Thread.Sleep(TimeSpan.FromMilliseconds(200 * attempt));
             }
             catch (Exception failure)
             {
-                Say($"  ! {name}: the design-time build threw — {failure.Message}");
+                Say($"  ! {name}: the design-time build threw {Attempts} times, "
+                    + $"skipping it — {failure.Message}");
                 return null;
             }
         }
@@ -380,6 +420,35 @@ internal static class Loader
                 log.WriteLine(line);
             }
         }
+    }
+
+    /// <summary>Why a project was skipped, in words a reader can act on.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both attempts are asked, and "no such target" is discounted.</b> One of the two
+    /// is always wrong about this project by construction — a single-targeted project has
+    /// no <c>DispatchToInnerBuilds</c> and a multi-targeted one has no <c>Compile</c> — so
+    /// reporting the last attempt's error tells every reader the wrong thing about why
+    /// their project was skipped. What is wanted is whichever attempt failed for a reason
+    /// of its own, and the first error is nearly always the real one: a repository that
+    /// will not restore says so in the same three words four hundred times.
+    /// </para>
+    /// <para>
+    /// <b>And when every error is discounted, say that instead of printing one.</b> A
+    /// build that succeeds without running the compiler leaves nothing to read, and the
+    /// only messages left are the two that are wrong by construction — so the report used
+    /// to name a target the project was never going to have. It is a real state with a
+    /// real cause, and naming it is the difference between a fixable run and a mystery.
+    /// </para>
+    /// </remarks>
+    private static string Because(IAnalyzerResults? plain, IAnalyzerResults? inner)
+    {
+        var reasons = Reasons(plain).Concat(Reasons(inner)).ToList();
+
+        return reasons.FirstOrDefault(error =>
+                !error.Contains("does not exist in the project", StringComparison.Ordinal))
+            ?? "MSBuild reported no error and logged no compiler invocation, so there is "
+                + "nothing to read. A target skipped as up to date does this";
     }
 
     /// <summary>Every project the entry point names.</summary>
