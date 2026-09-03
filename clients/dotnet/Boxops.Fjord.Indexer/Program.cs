@@ -39,16 +39,20 @@ internal static class Program
         var root = options.Root
             ?? (Directory.Exists(options.Source) ? options.Source : Path.GetDirectoryName(options.Source)!);
 
-        Console.WriteLine($"indexing {options.Source}");
-        Console.WriteLine($"  paths relative to {root}");
-        Console.WriteLine($"  schema fingerprint {DotnetIndex.Schema.Fingerprint:x16}");
+        // **`--list-frameworks` answers on stdout and says everything else on stderr**, so
+        // a caller can read the list with `$(...)` rather than by filtering a log.
+        var say = options.ListFrameworks ? Console.Error : Console.Out;
+
+        say.WriteLine($"indexing {options.Source}");
+        say.WriteLine($"  paths relative to {root}");
+        say.WriteLine($"  schema fingerprint {DotnetIndex.Schema.Fingerprint:x16}");
 
         var loading = Stopwatch.StartNew();
         LoadedSolution solution;
 
         try
         {
-            solution = Loader.Load(options, root, Console.Out);
+            solution = Loader.Load(options, root, say);
         }
         catch (Exception failure) when (failure is IOException or InvalidOperationException or ArgumentException)
         {
@@ -57,14 +61,88 @@ internal static class Program
         }
 
         loading.Stop();
-        Console.WriteLine($"  {solution.Projects.Count} project(s) to walk, "
-            + $"loaded in {loading.Elapsed.TotalSeconds:F1}s"
+
+        var flavoured = solution.Targets.Count > 1;
+
+        // Asked and answered: the caller that has to create these databases cannot be told
+        // by a run that has already tried to write to them.
+        if (options.ListFrameworks)
+        {
+            foreach (var target in solution.Targets)
+            {
+                Console.WriteLine(target.Framework);
+            }
+
+            return 0;
+        }
+
+        say.WriteLine($"  {solution.Targets.Count} target framework(s) — "
+            + $"{string.Join(", ", solution.Targets.Select(target => target.Framework))}"
+            + $", loaded in {loading.Elapsed.TotalSeconds:F1}s"
             // Said out loud because it is the difference between a machine under load and
             // a repository that does not build: a retried build is one that threw, and a
             // run with many of them was fighting for a machine rather than reading code.
             + (solution.Retried > 0 ? $", {solution.Retried} build(s) retried" : string.Empty));
+
+        // **`--strict` is for CI, where "the index is complete" should be a check rather
+        // than a line somebody reads.** A developer indexing a repository with one
+        // unbuildable project wants the other four hundred, so this is off by default and
+        // the run says what it left out either way.
+        if (options.Strict && solution.Skipped.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"--strict: {solution.Skipped.Count} project(s) were left out of this index — "
+                + string.Join(", ", solution.Skipped));
+            return 1;
+        }
+
         Console.WriteLine();
 
+        foreach (var target in solution.Targets)
+        {
+            // **One database per target, and the flavour is only added when there is one
+            // to add.** A checkout with a single target framework writes the database it
+            // always wrote; a checkout with two writes `code#net10.0` and `code#net8.0`,
+            // because a project compiled twice is two programs and there is no key in the
+            // schema that could hold both.
+            //
+            // **`#` and not `@`**: the server's name check refuses `@`, which separates a
+            // name from an instance, and would resolve `code@net9.0` as a lookup by id.
+            var each = flavoured
+                ? options with
+                {
+                    Address = FjordAddress.Parse($"{options.Address}#{target.Framework}"),
+
+                    // **The emitted file is flavoured too, or the second target silently
+                    // replaces the first's.** `--emit` opens its path for writing, so a
+                    // fan-out over two frameworks would leave one file holding whichever
+                    // ran last — a golden that depends on the order of a loop.
+                    Emit = options.Emit is { } path
+                        ? Path.Combine(
+                            Path.GetDirectoryName(path) ?? string.Empty,
+                            $"{Path.GetFileNameWithoutExtension(path)}.{target.Framework}"
+                                + Path.GetExtension(path))
+                        : null,
+                }
+                : options;
+
+            if (flavoured)
+            {
+                Console.WriteLine($"== {target.Framework} → {each.Address}");
+            }
+
+            if (Walk(each, root, target) is var code and not 0)
+            {
+                return code;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>One target framework: connect, write its facts, and say what it wrote.</summary>
+    private static int Walk(Options options, string root, LoadedTarget target)
+    {
         List<FjordConnection> connections = Connect(options);
         using var closing = new Closing<FjordConnection>(connections);
         var connection = connections.Count > 0 ? connections[0] : null;
@@ -85,15 +163,23 @@ internal static class Program
 
         using (var sink = new FactSink(options, targets))
         {
-            indexer = new Indexer(options, sink, root, solution.Build);
+            indexer = new Indexer(options, sink, root, target.Build);
             var reported = TimeSpan.Zero;
+
+            // What this database is, before what is in it: the axes it was resolved
+            // against are the first thing a consumer has to agree with, and a database
+            // that does not say them can only be guessed at.
+            foreach (var setting in Provenance.Of(options, root, target.Framework, Version))
+            {
+                sink.Add(DotnetIndex.Setting, setting);
+            }
 
             // The build layer first, and whole: this is what the repository *is*, not
             // what the walk reached, so a run stopped early by `--max-files` still says
             // which projects exist and what they depend on.
-            solution.Build.Emit(sink);
+            target.Build.Emit(sink);
 
-            foreach (var project in solution.Projects)
+            foreach (var project in target.Projects)
             {
                 if (indexer.Exhausted)
                 {
@@ -144,6 +230,18 @@ internal static class Program
 
         return 0;
     }
+
+    /// <summary>This indexer's version, as the assembly records it.</summary>
+    /// <remarks>
+    /// Read rather than written down, so <c>config.Setting {dimension = "producer"}</c>
+    /// cannot drift from the package a consumer would go and fetch.
+    /// </remarks>
+    private static string Version =>
+        typeof(Program).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion.Split('+')[0]
+        ?? "unknown";
 
     /// <summary>Closes every one of them when the run ends, however it ends.</summary>
     /// <remarks>

@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Multi/Multi.csproj" />
+  <Project Path="Old/Old.csproj" />
+  <Project Path="Single/Single.csproj" />
+</Solution>

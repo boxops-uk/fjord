@@ -29,6 +29,16 @@ public sealed class LoaderTests
     };
 
     /// <summary>
+    /// The one target framework these fixtures have.
+    /// </summary>
+    /// <remarks>
+    /// Asserting there is one is part of every test below: a checkout that compiles for a
+    /// single framework fans out to a single database, and would otherwise have had every
+    /// one of its databases renamed the day the fan-out landed.
+    /// </remarks>
+    private static LoadedTarget Only(LoadedSolution solution) => Assert.Single(solution.Targets);
+
+    /// <summary>
     /// <b>The workspace holds what was built, and nothing it built to find out.</b>
     /// </summary>
     /// <remarks>
@@ -52,7 +62,7 @@ public sealed class LoaderTests
 
         var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
 
-        Assert.Equal(["A", "B"], solution.Projects.Select(project => project.Name).Order());
+        Assert.Equal(["A", "B"], Only(solution).Projects.Select(project => project.Name).Order());
     }
 
     /// <summary>
@@ -76,7 +86,7 @@ public sealed class LoaderTests
 
         var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
 
-        var b = Assert.Single(solution.Projects, project => project.Name == "B");
+        var b = Assert.Single(Only(solution).Projects, project => project.Name == "B");
         var compilation = b.Compile()!;
 
         var thing = Assert.IsAssignableFrom<INamedTypeSymbol>(
@@ -104,7 +114,7 @@ public sealed class LoaderTests
 
         var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
 
-        var walked = solution.Projects
+        var walked = Only(solution).Projects
             .SelectMany(project => project.Compile()!.SyntaxTrees)
             .Select(tree => tree.FilePath)
             .ToList();
@@ -141,12 +151,12 @@ public sealed class LoaderTests
 
         var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
 
-        Assert.Equal(["A", "B"], solution.Projects.Select(project => project.Name).Order());
+        Assert.Equal(["A", "B"], Only(solution).Projects.Select(project => project.Name).Order());
 
         // And the compilations are real ones, not empty shells: an up-to-date project
         // whose source list came back empty would still count as a project.
         Assert.All(
-            solution.Projects,
+            Only(solution).Projects,
             project => Assert.NotEmpty(project.Compile()!.SyntaxTrees));
     }
 
@@ -167,8 +177,8 @@ public sealed class LoaderTests
 
         Assert.Equal(
             ["external/C/C.csproj", "src/A/A.csproj", "src/B/B.csproj"],
-            solution.Build.Projects.Select(project => project.Path).Order());
-        Assert.Equal(2, solution.Build.Built);
+            Only(solution).Build.Projects.Select(project => project.Path).Order());
+        Assert.Equal(2, Only(solution).Build.Built);
     }
 
     /// <summary>
@@ -197,7 +207,7 @@ public sealed class LoaderTests
                 : analyzer.Build(environment));
 
         Assert.Equal(1, solution.Retried);
-        Assert.Equal(["A", "B"], solution.Projects.Select(project => project.Name).Order());
+        Assert.Equal(["A", "B"], Only(solution).Projects.Select(project => project.Name).Order());
     }
 
     /// <summary>
@@ -256,7 +266,7 @@ public sealed class LoaderTests
 
         var solution = Loader.Load(Over(fixture, "Broken.slnx"), fixture.Root, log);
 
-        Assert.Equal(["Good"], solution.Projects.Select(project => project.Name));
+        Assert.Equal(["Good"], Only(solution).Projects.Select(project => project.Name));
 
         var said = log.ToString();
         Assert.Contains("Missing.props", said, StringComparison.Ordinal);
@@ -286,16 +296,16 @@ public sealed class LoaderTests
 
         Assert.Equal(
             ["app/Main/Main.csproj", "lib/Lib.csproj"],
-            solution.Build.Projects.Select(project => project.Path).Order());
+            Only(solution).Build.Projects.Select(project => project.Path).Order());
 
         // Refined, not merely present: the framework is the one MSBuild resolved rather
         // than one the XML happened to spell.
-        var lib = Assert.Single(solution.Build.Projects, project => project.Path == "lib/Lib.csproj");
+        var lib = Assert.Single(Only(solution).Build.Projects, project => project.Path == "lib/Lib.csproj");
         Assert.True(lib.Built);
         Assert.Equal(["net10.0"], lib.Frameworks);
 
         // And the edge is no longer dropped for want of a target to point at.
-        var main = Assert.Single(solution.Build.Projects, project => project.Path.EndsWith("Main.csproj", StringComparison.Ordinal));
+        var main = Assert.Single(Only(solution).Build.Projects, project => project.Path.EndsWith("Main.csproj", StringComparison.Ordinal));
         Assert.Contains("lib/Lib.csproj", main.ProjectRefs);
     }
 
@@ -319,7 +329,7 @@ public sealed class LoaderTests
             fixture.Root,
             TextWriter.Null);
 
-        Assert.NotEmpty(solution.Projects);
-        Assert.Equal(solution.Projects.Count, solution.Build.Built);
+        Assert.NotEmpty(Only(solution).Projects);
+        Assert.Equal(Only(solution).Projects.Count, Only(solution).Build.Built);
     }
 }

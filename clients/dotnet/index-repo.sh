@@ -43,10 +43,39 @@ fjord="$root/target/release/fjord"
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
+# **One database per target framework, so they have to be known before anything is
+# created.** A checkout that compiles for two frameworks is two programs, and the indexer
+# writes `<database>#<tfm>` for each; creating a database is a server operation the
+# producer cannot do for itself. Asking costs a second load, which is why a large checkout
+# is better off pinning `--framework` — pass it and this asks for that one.
+frameworks=()
+while IFS= read -r line; do
+    [ -n "$line" ] && frameworks+=("$line")
+done < <(dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Indexer" --configuration Release -- \
+    --source "$source_path" --list-frameworks "$@" 2>/dev/null)
+
+if [ ${#frameworks[@]} -eq 0 ]; then
+    echo "nothing in $source_path compiles, so there is nothing to index" >&2
+    exit 1
+fi
+
+# The flavour is only added when there is one to add, exactly as the indexer adds it.
+databases=("$database")
+if [ ${#frameworks[@]} -gt 1 ]; then
+    databases=()
+    for framework in "${frameworks[@]}"; do
+        databases+=("$database#$framework")
+    done
+fi
+
+echo "target framework(s): ${frameworks[*]}"
+
 # `--schema` is required, and this is the file `DotnetIndex.cs` states independently.
 # `--schema-path` because `dotnet.sigla` composes five files by import.
-"$fjord" --data-dir "$scratch/db" --schema-path "$root/schemas" create "$database" \
-    --schema "$root/schemas/dotnet.sigla"
+for name in "${databases[@]}"; do
+    "$fjord" --data-dir "$scratch/db" --schema-path "$root/schemas" create "$name" \
+        --schema "$root/schemas/dotnet.sigla"
+done
 
 "$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/ready" &
 server=$!
@@ -65,7 +94,9 @@ dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Indexer" --configuration
     "$@"
 
 echo
-echo "the database is at $scratch/db, and the server is about to stop. To ask it things:"
+echo "the database(s) are at $scratch/db, and the server is about to stop. To ask them things:"
 echo "  $fjord --data-dir $scratch/db serve &"
-echo "  $fjord --data-dir $scratch/db query $database 'N where src.Module {name = N}' --limit 20 --timing"
-echo "  $fjord --data-dir $scratch/db query $database 'X where X = src.SearchByName {name = \"Parse\"}' --profile"
+for name in "${databases[@]}"; do
+    echo "  $fjord --data-dir $scratch/db query '$name' 'F where src.File F' --limit 20 --timing"
+    echo "  $fjord --data-dir $scratch/db query '$name' 'D where codemarkup.SearchEntry {name = \"Parse\", target = D}' --profile"
+done

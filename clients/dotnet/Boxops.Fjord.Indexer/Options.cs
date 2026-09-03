@@ -173,6 +173,49 @@ internal sealed record Options
     /// <summary>The revision indexed. Paired with <see cref="Repo"/>.</summary>
     public string? Revision { get; init; }
 
+    /// <summary>
+    /// Index only this target framework, rather than fanning out over every one the
+    /// checkout compiles for.
+    /// </summary>
+    /// <remarks>
+    /// <b>Selects, never reduces.</b> A project is indexed under a framework only if
+    /// MSBuild compiled it as that framework; there is no nearest-compatible fallback, so
+    /// asking for <c>net10.0</c> in a solution half of which is <c>net8.0</c> leaves that
+    /// half out and says which projects those were. That is the honest answer — a
+    /// <c>net8.0</c> compilation is a different program — and <see cref="Strict"/> is how
+    /// a run refuses to accept it quietly.
+    /// </remarks>
+    public string? Framework { get; init; }
+
+    /// <summary>The build configuration the index was resolved against.</summary>
+    /// <remarks>
+    /// Recorded rather than pinned: nothing here passes it to MSBuild, so what this says
+    /// is what the design-time build defaulted to. Silence was the thing to fix — a
+    /// database that does not say which configuration it was built for cannot be told from
+    /// one built for the other.
+    /// </remarks>
+    public string Configuration { get; init; } = "Debug";
+
+    /// <summary>
+    /// Print the target frameworks this checkout compiles for, and write nothing.
+    /// </summary>
+    /// <remarks>
+    /// For the caller that has to <i>create</i> the databases a fan-out writes to, which
+    /// is a server operation this producer cannot do. It costs a full load, so a large
+    /// checkout is better off pinning <c>--framework</c> than asking twice.
+    /// </remarks>
+    public bool ListFrameworks { get; init; }
+
+    /// <summary>
+    /// Any project or target left out makes the run fail rather than warn.
+    /// </summary>
+    /// <remarks>
+    /// For CI, which wants "the index is complete" to be a check rather than a line
+    /// somebody reads. Off by default, because a developer indexing a repository with one
+    /// unbuildable project wants the other four hundred.
+    /// </remarks>
+    public bool Strict { get; init; }
+
     public const string Usage = """
         fjord-indexer — index a .NET solution into a Fjord database
 
@@ -193,6 +236,12 @@ internal sealed record Options
           --no-refs             declarations only: no src.Ref, no src.Import
           --no-lines            do not write the line table (src.FileLine)
           --styles              also write syntax highlighting (src.FileLineStyles)
+          --framework <tfm>     index only this target framework (default: one database
+                                per framework the checkout compiles for, named <at>#<tfm>)
+          --configuration <c>   the configuration this index is resolved against, recorded
+                                as config.Setting (default: Debug)
+          --strict              a project or target left out fails the run
+          --list-frameworks     print the frameworks this checkout compiles for, and stop
           --repo <id>           the repository this checkout is of, per file
           --revision <rev>      the revision indexed (both, or neither: src.FileOrigin)
           --no-docs             do not write doc comments (src.Doc)
@@ -232,8 +281,10 @@ internal sealed record Options
         int? writers = null;
         bool references = true, restore = true;
         bool lines = true, docs = true, styles = false;
-        string? repo = null, revision = null;
-        bool dryRun = false, smoke = true, verbose = false;
+        string? repo = null, revision = null, framework = null;
+        var configuration = "Debug";
+        bool dryRun = false, smoke = true, verbose = false, strict = false;
+        var listFrameworks = false;
 
         for (var index = 0; index < argv.Length; index++)
         {
@@ -283,6 +334,10 @@ internal sealed record Options
                     case "--styles": styles = true; break;
                     case "--repo": repo = Value(); break;
                     case "--revision": revision = Value(); break;
+                    case "--framework": framework = Value(); break;
+                    case "--configuration": configuration = Value(); break;
+                    case "--strict": strict = true; break;
+                    case "--list-frameworks": listFrameworks = true; break;
                     case "--no-docs": docs = false; break;
                     case "--no-restore": restore = false; break;
                     case "--dry-run": dryRun = true; break;
@@ -353,6 +408,10 @@ internal sealed record Options
             References = references,
             Lines = lines,
             Styles = styles,
+            Framework = framework,
+            Configuration = configuration,
+            Strict = strict,
+            ListFrameworks = listFrameworks,
             Repo = repo,
             Revision = revision,
             Docs = docs,

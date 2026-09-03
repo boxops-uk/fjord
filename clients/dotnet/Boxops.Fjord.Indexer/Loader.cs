@@ -31,10 +31,23 @@ internal sealed record LoadedProject(string Name, Func<Compilation?> Compile, Pr
 /// build that produces a compilation is also the only thing that knows the project's
 /// resolved framework, its assembly name and its real source list.
 /// </remarks>
-internal sealed record LoadedSolution(
+/// <summary>One target framework's worth of a checkout: what to walk, and what compiled it.</summary>
+/// <remarks>
+/// <b>One of these becomes one database.</b> A project compiled for two frameworks is two
+/// compilations with different preprocessor symbols, different references and, often,
+/// different members — so the facts belong to the target rather than to the project, and
+/// there is no key in the schema that could hold both. Fanning out is the only shape that
+/// does not quietly index one of the two and call it the project.
+/// </remarks>
+internal sealed record LoadedTarget(
+    string Framework,
     IReadOnlyList<LoadedProject> Projects,
-    ProjectIndex Build,
-    int Retried);
+    ProjectIndex Build);
+
+internal sealed record LoadedSolution(
+    IReadOnlyList<LoadedTarget> Targets,
+    int Retried,
+    IReadOnlyList<string> Skipped);
 
 /// <summary>
 /// One design-time build, as the thing that can be swapped for a test.
@@ -113,26 +126,119 @@ internal static class Loader
         // is several processes and not several threads in this one. That is what makes
         // it worth doing: a few hundred projects at three seconds each is the difference
         // between a coffee and a lunch, and the results are independent.
-        var results = new IAnalyzerResult?[analyzers.Count];
+        var results = new IReadOnlyList<IAnalyzerResult>[analyzers.Count];
 
         Parallel.For(0, analyzers.Count, new ParallelOptions { MaxDegreeOfParallelism = options.Jobs }, index =>
         {
             results[index] = BuildOne(analyzers[index], options, log, build, ref retried);
         });
 
+        // Flattened in the order the solution lists them, so two runs over one checkout
+        // produce the same index.
+        var every = results.SelectMany(one => one).ToList();
+
+        if (every.Count == 0)
+        {
+            // **A run that cannot resolve fails, and must not fall back to a syntax walk.**
+            // Globbing the `.cs` files and parsing them against the running framework's
+            // reference set finds every declaration and loses every reference into a NuGet
+            // package — the type is an error type, so the member on it binds to nothing —
+            // and the result is an index that looks complete while missing most of its
+            // edges, with nothing in it to say so.
+            //
+            // The rule this protects: a producer that cannot resolve emits nothing rather
+            // than a degraded fact.
+            throw new InvalidOperationException(
+                analyzers.Count == 0
+                    ? "no projects were found under --source, so there is nothing to "
+                        + "resolve against and nothing to index"
+                    : $"every project failed to build ({analyzers.Count} of them), so no "
+                        + "type in this checkout can be resolved. Fix the build — a "
+                        + "restore, an SDK, a missing reference — and run again; this "
+                        + "indexer writes no facts it cannot resolve");
+        }
+
+        // **Sorted and deduped here, because nothing else does it.** The server's name
+        // check accepts `#` and says nothing about what follows it, so two runs that
+        // disagreed about the order would be two sets of databases.
+        var present = every
+            .Select(result => result.TargetFramework!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderByDescending(Rank)
+            .ThenBy(framework => framework, StringComparer.Ordinal)
+            .ToList();
+
+        var wanted = options.Framework is { Length: > 0 } asked
+            ? present.Where(framework =>
+                string.Equals(framework, asked, StringComparison.OrdinalIgnoreCase)).ToList()
+            : present;
+
+        if (wanted.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"no project in this checkout compiles as {options.Framework}. "
+                + $"It builds for: {string.Join(", ", present)}");
+        }
+
+        // **Named, because a project silently absent from an index is the failure mode
+        // this run exists to remove.** A project that compiles for none of the frameworks
+        // being indexed is not broken and not indexed, and only the run can say so.
+        var skipped = every
+            .Where(result => !wanted.Contains(result.TargetFramework!, StringComparer.Ordinal))
+            .Select(result => Path.GetFileName(result.ProjectFilePath))
+            .Concat(analyzers
+                .Where(analyzer => !every.Any(result => string.Equals(
+                    Full(result.ProjectFilePath), Full(analyzer.ProjectFile.Path.ToString()), StringComparison.Ordinal)))
+                .Select(analyzer => Path.GetFileName(analyzer.ProjectFile.Path.ToString())))
+            .Distinct(StringComparer.Ordinal)
+            .Where(name => !every
+                .Where(result => wanted.Contains(result.TargetFramework!, StringComparer.Ordinal))
+                .Any(result => string.Equals(Path.GetFileName(result.ProjectFilePath), name, StringComparison.Ordinal)))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var name in skipped)
+        {
+            log.WriteLine($"  ! {name}: compiles for none of {string.Join(", ", wanted)}, skipping it");
+        }
+
+        var targets = new List<LoadedTarget>();
+
+        foreach (var framework in wanted)
+        {
+            targets.Add(Target(
+                framework,
+                [.. every.Where(result => string.Equals(
+                    result.TargetFramework, framework, StringComparison.Ordinal))],
+                options,
+                root,
+                log));
+        }
+
+        return new LoadedSolution(targets, retried, skipped);
+    }
+
+    /// <summary>One framework's workspace and build layer, from that framework's results.</summary>
+    /// <remarks>
+    /// A workspace each, because a project compiled for two frameworks is two compilations
+    /// and Roslyn holds one per project. A build layer each for the same reason: the
+    /// <c>msbuild.Compilation</c> facts name this framework, so a database built for
+    /// <c>net8.0</c> says <c>net8.0</c> everywhere rather than saying both and leaving a
+    /// consumer to guess which half it is holding.
+    /// </remarks>
+    private static LoadedTarget Target(
+        string framework,
+        IReadOnlyList<IAnalyzerResult> results,
+        Options options,
+        string root,
+        TextWriter log)
+    {
+        var workspace = new AdhocWorkspace();
         var added = new List<(IAnalyzerResult Result, ProjectId Id)>();
         var failed = 0;
 
-        // Added in the order the solution lists them rather than the order they
-        // finished, so two runs over one checkout produce the same index.
         foreach (var result in results)
         {
-            if (result is null)
-            {
-                failed++;
-                continue;
-            }
-
             try
             {
                 // **`addProjectReferences: false`, and the graph wired below instead.**
@@ -158,32 +264,9 @@ internal static class Loader
             }
         }
 
-        var built = added.Count;
-
-        // **A run that cannot resolve fails, and must not fall back to a syntax walk.**
-        // Globbing the `.cs` files and parsing them against the running framework's
-        // reference set finds every declaration and loses every reference into a NuGet
-        // package — the type is an error type, so the member on it binds to nothing — and
-        // the result is an index that looks complete while missing most of its edges,
-        // with nothing in it to say so.
-        //
-        // The rule this protects: a producer that cannot resolve emits nothing rather
-        // than a degraded fact.
-        if (built == 0)
-        {
-            throw new InvalidOperationException(
-                failed == 0
-                    ? "no projects were found under --source, so there is nothing to "
-                        + "resolve against and nothing to index"
-                    : $"every project failed to build ({failed} of them), so no type in "
-                        + "this checkout can be resolved. Fix the build — a restore, an "
-                        + "SDK, a missing reference — and run again; this indexer writes "
-                        + "no facts it cannot resolve");
-        }
-
         if (failed > 0)
         {
-            log.WriteLine($"  {failed} project(s) skipped, {built} built");
+            log.WriteLine($"  {failed} project(s) refused for {framework}, {added.Count} added");
         }
 
         Wire(workspace, added, log);
@@ -204,13 +287,9 @@ internal static class Loader
         // the ones that built: a project MSBuild refused is still a project, its
         // references are still in its XML, and the files under it still have somewhere
         // to belong. The results that did succeed then overwrite what they know better.
-        var layer = ProjectIndex.Build(
-            root,
-            options.Source,
-            results.Where(result => result is not null).Select(result => result!).ToList(),
-            log);
+        var layer = ProjectIndex.Build(root, options.Source, results, log);
 
-        return new LoadedSolution(walking, layer, retried);
+        return new LoadedTarget(framework, walking, layer);
     }
 
     /// <summary>
@@ -349,7 +428,7 @@ internal static class Loader
     /// question rather than of one phrasing of it.
     /// </para>
     /// </remarks>
-    private static IAnalyzerResult? BuildOne(
+    private static IReadOnlyList<IAnalyzerResult> BuildOne(
         IProjectAnalyzer analyzer,
         Options options,
         TextWriter log,
@@ -377,21 +456,21 @@ internal static class Loader
                 // property of the project, not of the repository: a single-targeted
                 // project has no `DispatchToInnerBuilds` either, and would fail the
                 // mirror-image way.
-                var results = Preferred(plain) is null
+                var results = Usable(plain).Count == 0
                     ? build(analyzer, BuildOptions(options, innerBuilds: true))
                     : plain;
 
-                if (Preferred(results) is { } result)
+                if (Usable(results) is { Count: > 0 } usable)
                 {
                     var elapsed = (DateTime.UtcNow - started).TotalSeconds;
-                    Say($"  built {name} ({result.TargetFramework}, "
-                        + $"{result.SourceFiles.Length} files, {elapsed:F1}s)");
+                    Say($"  built {name} ({string.Join(", ", usable.Select(one => one.TargetFramework))}, "
+                        + $"{usable[0].SourceFiles.Length} files, {elapsed:F1}s)");
 
-                    return result;
+                    return usable;
                 }
 
                 Say($"  ! {name}: the design-time build failed, skipping it — {Because(plain, results)}");
-                return null;
+                return [];
             }
             catch (Exception failure) when (attempt < Attempts)
             {
@@ -407,7 +486,7 @@ internal static class Loader
             {
                 Say($"  ! {name}: the design-time build threw {Attempts} times, "
                     + $"skipping it — {failure.Message}");
-                return null;
+                return [];
             }
         }
 
@@ -574,15 +653,6 @@ internal static class Loader
         return environment;
     }
 
-    /// <summary>
-    /// One target framework's result, preferring the newest .NET a multi-targeted
-    /// project builds for.
-    /// </summary>
-    /// <remarks>
-    /// Indexing every target framework of a multi-targeted project would index the same
-    /// files two or three times over. They dedup on the way in — the facts are
-    /// identical — but the work is not, so one is picked here.
-    /// </remarks>
     /// <summary>What MSBuild said went wrong, in the order it said it.</summary>
     private static IEnumerable<string> Reasons(IAnalyzerResults? results) =>
         results is null
@@ -592,11 +662,33 @@ internal static class Loader
                 .Select(error => error.Message)
                 .OfType<string>();
 
-    private static IAnalyzerResult? Preferred(IAnalyzerResults? results) =>
-        results?.Results
-            .Where(result => result.Succeeded && result.SourceFiles is { Length: > 0 })
-            .OrderByDescending(result => Rank(result.TargetFramework))
-            .FirstOrDefault();
+    /// <summary>
+    /// Every target framework this project actually compiled as, newest first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>All of them, not the best of them.</b> An outer build dispatched to its inner
+    /// builds answers once per framework, and this used to keep the newest and throw the
+    /// rest away — so a project targeting <c>net8.0</c> and <c>net10.0</c> was indexed as
+    /// the second, and its <c>net8.0</c> compilation, which is a different program, was
+    /// never seen. The fan-out consumes exactly what was being discarded, which is why it
+    /// costs another walk and not another build.
+    /// </para>
+    /// <para>
+    /// <b>Compiled as, rather than compatible with.</b> A result is here only if MSBuild
+    /// ran the compiler for that framework; there is no nearest-compatible reduction, so a
+    /// project with no <c>net8.0</c> result is absent from the <c>net8.0</c> index rather
+    /// than present under a target it was never built for.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<IAnalyzerResult> Usable(IAnalyzerResults? results) =>
+        results is null
+            ? []
+            : [.. results.Results
+                .Where(result => result.Succeeded
+                    && result.SourceFiles is { Length: > 0 }
+                    && result.TargetFramework is { Length: > 0 })
+                .OrderByDescending(result => Rank(result.TargetFramework))];
 
     private static (int Family, int Version) Rank(string? framework)
     {
