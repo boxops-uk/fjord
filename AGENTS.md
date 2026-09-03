@@ -67,7 +67,10 @@ from outside — no shared constants, no shared enums — and is a checked-in go
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes, with
 corpus and schema stated independently on each side *on purpose* (a shared statement would
 make the two agree by construction). `Boxops.Fjord.Indexer` is that client pointed at real
-source via Roslyn.
+source via Roslyn, and `Boxops.Fjord.Scip` is a second producer that reaches the same write
+seam without referencing the first — which is what keeps "the seam is published" a fact
+rather than a name. Its gates drive real MSBuild and a real server, because every defect they
+are about is a defect in what those two do with each other.
 
 ## How to work here
 
@@ -113,6 +116,10 @@ cargo check -p fjord-engine --target wasm32-unknown-unknown   # the browser buil
 cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown  # no filesystem
 ./scripts/build-wasm.sh             # the module the interactive site imports
 (cd web && npm run smoke)           # that demo, driven in a real browser
+
+# The other implementation of the protocol, and where the indexer runs' gates live.
+(cd clients/dotnet && dotnet build Boxops.Fjord.slnx -warnaserror)
+(cd clients/dotnet && dotnet test)  # drives real MSBuild and a real server; ~2 minutes
 ```
 
 The `--no-default-features` line is what makes "the embedded schema path touches no
