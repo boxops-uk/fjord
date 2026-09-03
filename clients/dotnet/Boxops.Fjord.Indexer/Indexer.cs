@@ -772,17 +772,20 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             return null;
         }
 
-        var relative = Path.GetRelativePath(root, absolute).Replace(Path.DirectorySeparatorChar, '/');
-
-        // Build output, not source. `obj/` in particular holds the generated assembly
-        // attributes every project has, which would be the same six declarations in
-        // every project and none of them anything anyone wants to find.
-        return relative.Contains("/obj/", StringComparison.Ordinal)
-            || relative.Contains("/bin/", StringComparison.Ordinal)
-            || relative.StartsWith("obj/", StringComparison.Ordinal)
-            || relative.StartsWith("bin/", StringComparison.Ordinal)
-            ? null
-            : relative;
+        // **Outside the root is not a name.** `Paths.Relative` refuses a path that climbs
+        // out — it would come back as `../../../elsewhere`, which depends on where the
+        // root happens to be, so two runs of one repository would disagree about it — and
+        // this walk used to do its own arithmetic without that check. A test project
+        // referencing a package with source in it therefore put
+        // `../../../.nuget/packages/…/Program.cs` in the index, where it named nothing a
+        // consumer could open and nothing a second run would agree with.
+        //
+        // Build output is not source either. `obj/` in particular holds the generated
+        // assembly attributes every project has, which would be the same six declarations
+        // in every project and none of them anything anyone wants to find.
+        return Paths.Relative(root, absolute) is { } relative && !Paths.IsBuildOutput(relative)
+            ? relative
+            : null;
     }
 
     /// <summary>Where a declaration's name is written, rather than where its syntax starts.</summary>

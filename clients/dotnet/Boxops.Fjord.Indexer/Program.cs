@@ -131,7 +131,24 @@ internal static class Program
                 Console.WriteLine($"== {target.Framework} → {each.Address}");
             }
 
-            if (Walk(each, root, target) is var code and not 0)
+            int code;
+
+            try
+            {
+                code = Walk(each, root, target);
+            }
+            catch (FjordServerException refused)
+            {
+                // **A refusal is an answer, not a crash.** The server says no for reasons a
+                // person can act on — the database is sealed, the schema does not match,
+                // the name is not there — and every one of them arrived as an unhandled
+                // exception with a stack trace through `Connect`, which buries the sentence
+                // that matters under twenty frames of this program's own plumbing.
+                Console.Error.WriteLine($"could not write to {each.Address}: {refused.Message}");
+                return 1;
+            }
+
+            if (code != 0)
             {
                 return code;
             }

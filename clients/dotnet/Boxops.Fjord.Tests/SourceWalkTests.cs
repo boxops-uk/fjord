@@ -288,4 +288,61 @@ public sealed class SourceWalkTests
             SourceLayer.Digest(Microsoft.CodeAnalysis.Text.SourceText.From(Source)),
             Str(Fields(digest.Value)[0]));
     }
+
+    /// <summary>
+    /// <b>A file outside the index root is not indexed under a name that climbs out.</b>
+    /// </summary>
+    /// <remarks>
+    /// A compilation's source list is MSBuild's, not the walk's, and it reaches wherever
+    /// the project points — a test project referencing a package with source in it puts
+    /// files from the NuGet cache on the list. Named relative to the root, those come back
+    /// as <c>../../../.nuget/packages/…</c>, which depends on where the root happens to be:
+    /// two runs of one repository disagree about it, and nothing downstream can open it.
+    /// </remarks>
+    [Fact]
+    public void A_file_outside_the_root_is_not_given_a_name_that_climbs_out()
+    {
+        var directory = Directory.CreateTempSubdirectory("fjord-outside");
+
+        try
+        {
+            var inside = Path.Combine(directory.FullName, "root");
+            Directory.CreateDirectory(inside);
+
+            var here = Path.Combine(inside, "Here.cs");
+            var elsewhere = Path.Combine(directory.FullName, "Elsewhere.cs");
+
+            File.WriteAllText(here, "namespace N;\n\npublic class Here { }\n");
+            File.WriteAllText(elsewhere, "namespace N;\n\npublic class Elsewhere { }\n");
+
+            var options = new Options { Source = inside };
+            var projects = ProjectIndex.Build(inside, inside, [], TextWriter.Null);
+            var recorder = new Recorder();
+
+            var compilation = CSharpCompilation.Create(
+                "Walked",
+                [
+                    CSharpSyntaxTree.ParseText(File.ReadAllText(here), path: here),
+                    CSharpSyntaxTree.ParseText(File.ReadAllText(elsewhere), path: elsewhere),
+                ],
+                [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)]);
+
+            using (var sink = new FactSink(DotnetIndex.Schema, [recorder]))
+            {
+                new Boxops.Fjord.Indexer.Indexer(options, sink, inside, projects)
+                    .Index(compilation, null);
+                sink.Drain();
+            }
+
+            var files = recorder.Of(DotnetIndex.File)
+                .Select(fact => Assert.IsType<FjordValue.Str>(fact.Key).Value)
+                .ToList();
+
+            Assert.Equal(["Here.cs"], files);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
 }
