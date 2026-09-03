@@ -7,6 +7,99 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### A SCIP index is an ingestion path — `scip2fjord`
+
+Every language with a SCIP indexer reaches a Fjord database through one program:
+TypeScript, Java, Scala, Rust, Python, Go, Ruby. It reads the index, converts the positions,
+projects the kinds, and writes the same `codemarkup` surface a C# index has — so a UI reads
+one shape whatever produced the facts.
+
+It references the client library and **no indexer**, which is what proves the write seam was
+really published rather than merely renamed. No protobuf package either: four messages and
+eleven fields, in a format that is varints and length-delimited bytes.
+
+**Positions are the work.** SCIP counts characters — UTF-8, UTF-16 or UTF-32 code units
+depending on what the indexer was written in — and this schema counts UTF-8 bytes from the
+start of the file. The fixture index has an `é` in it for that reason: an implementation
+right about ASCII and wrong about everything else passes every other assertion.
+
+What it does not write is a declaration layer or a type graph. A SCIP index contains
+neither, and inventing them per occurrence would put facts in a database nothing could stand
+behind.
+
+### The write path is `Boxops.Fjord.Client`'s, not the indexer's
+
+`IBlockTarget`, `BlockWritten`, `FjordTarget` and `FactSink` are public in the client
+library. None of them says anything about Roslyn: the batching, the bounded queue, the
+writer threads and the latched-failure rule are generic write support, and the only reason
+they lived in the indexer is that the indexer is where they were written.
+
+`FactSink` takes a **schema**, not a producer. It needs to know how many predicates exist
+and how to encode one, and nothing else.
+
+A refusal now names the predicate whose block was in the writer's hands. A database rejects
+a *fact* and can say which predicate; it has never heard of the declaration behind it — so
+without this the answer to a multi-hour run that ended in a refusal was "one of eighteen
+million facts".
+
+### One database per target framework
+
+A project compiled for `net8.0` and one compiled for `net10.0` are different programs, and
+no key in the schema can hold both. The indexer used to keep the newest and throw the rest
+away; it now writes `code#net8.0` and `code#net10.0`, and each says which framework it holds.
+
+**Compiled as, not compatible with.** There is no nearest-compatible reduction: a project
+with no `net8.0` result is absent from the `net8.0` index rather than present under a target
+MSBuild never built it for. `--framework` selects one, the run names every project it leaves
+out, and `--strict` makes that a failure.
+
+`config.Setting` has a producer at last — nine dimensions, `framework` exactly once. Every
+axis a database was resolved against used to be implicit, and one of them cost real time:
+an index whose paths are relative to a root nobody wrote down can only be matched to a
+checkout by inference.
+
+### A checkout that had been built indexed as nothing at all
+
+`CoreCompile` is incremental, so after any ordinary `dotnet build` MSBuild skipped it — and
+the compiler command line it would have logged is the entire content of a design-time build.
+Every project came back succeeded-with-no-result, which the loader reported as a failed
+build, naming a target the project was never going to have. **A run over a repository
+anybody had built wrote nothing.**
+
+Four more defects in the same area, each invisible from inside the code:
+
+- **Adding a project pulled in projects nobody asked for**, building them during what is
+  supposed to be pure bookkeeping — and left the compilation holding each referenced project
+  twice, once as a project and once as its assembly, so every type in it was ambiguous and
+  Roslyn answered `null` rather than choosing.
+- **A solution naming a project through `..`** produced no results for it: the path is
+  carried unnormalised while MSBuild reports the normalised one.
+- **A project the glob missed and the build found** contributed nothing, and the reference
+  edge pointing at it was dropped for want of a target.
+- **A file outside the index root** was named `../../../.nuget/packages/…`, which depends on
+  where the root happens to be.
+
+A transient MSBuild failure is now retried and a deterministic one is not — the distinction
+being that a throw says nothing about the project while a clean answer with no compiler
+invocation has told the truth about it. Retrying both is how a broken repository takes three
+times as long to say so; retrying neither is how the project set depends on `--jobs`.
+
+### The walk has no gate, and the index does not depend on how many threads walked it
+
+One lock stood around everything downstream of a symbol — the memos, the counters, the sink
+— so eight walker threads took turns to write. It is striped per predicate now, and the
+memos follow the rule that makes concurrency safe here: built outside, published with
+`TryAdd`, emitted by the winner, and **a cycle broken on the thread's own stack** rather than
+on a shared marker, which would have had two threads writing facts of different depths under
+one key.
+
+Over this repository: 103,106 facts at one job and 103,106 at eight, 8,161 facts/s against
+12,282, and 523 of those facts waited for a batch for under a twentieth of a second.
+
+The writer default was measured rather than assumed and stays at 1: more writers remove the
+stall and the walk gets slower anyway, which is the crossover being a property of corpus size
+rather than core count.
+
 ### The measurement register is closed until a 1.0 pass
 
 `bench/FINDINGS.md` carries one banner saying every number in it is superseded, and the

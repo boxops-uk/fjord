@@ -159,7 +159,8 @@ fjord/
 ├── schemas/             demo.sigla, the sample schema and the interactive site's own —
 │                       eleven predicates, one per construct the language has; and
 │                       dotnet.sigla, the set a real producer writes
-├── clients/dotnet/      the C# client, demo producer and real indexer
+├── clients/dotnet/      the C# client, demo producer, real indexer, and a SCIP
+│                       converter that reaches all of it through the same seam
 ├── bench/FINDINGS.md    what was measured, and why each number is now superseded
 ├── AGENTS.md            the working contract for contributors
 ├── PLAN.md              the roadmap, and the record of settled decisions

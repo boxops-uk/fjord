@@ -42,7 +42,9 @@ an **extraction** for the third. Amend 8a to say which, and price it accordingly
 
 ## B · Run-by-run amendments
 
-> **Landed: R0.5, R1, R2, R3, R3.5, R3.7, R4.0's census, R5.** What they found is recorded
+> **Landed: every run in this document.** R0, R0.5, R1, R2, R3, R3.5, R3.6, R3.7, R4.0's census,
+> R5, R6, R8 and R9. R4 was cancelled by [D12](OPEN-QUESTIONS.md) and R7 deferred to a 1.0
+> profiling pass by [D15](OPEN-QUESTIONS.md). What they found is recorded
 > in each run below and in the commits. Four defects turned up that no issue had named, and
 > each is worth more than the run that found it:
 >
@@ -60,10 +62,24 @@ an **extraction** for the third. Amend 8a to say which, and price it accordingly
 >   rather than choosing.
 > - **`--emit` would have had two targets overwrite one file** the day the fan-out landed.
 >
-> **Still open from these runs:** R3.5's gate also asks that unqualified resolution find a
-> flavoured name — `code` resolving to `code#net10.0`. No such thing exists in the
-> catalogue, and adding it is an engine change with its own naming rules and its own
-> answer for what happens when two flavours match. It is not the producer's to do.
+> Four more turned up in the runs after that, and two of them were only visible from outside the
+> code:
+>
+> - **A file outside the index root was named by a path that climbs out of it** —
+>   `../../../.nuget/packages/…`, which depends on where the root happens to be. Found by
+>   re-taking the guided tour's first query.
+> - **A sealed database refused a writer with an unhandled stack trace**, burying the sentence
+>   that mattered under twenty frames. Found by re-taking the tour's last step.
+> - **`--emit` was not reproducible**: it forced one writer so blocks would not interleave, but
+>   the block *order* is the walk's, so eight threads produced a different file every run with
+>   the same facts in it.
+> - **`FjordServer.Serving` delegating to a `params` overload called itself**, which the compiler
+>   is right not to warn about and which presents as a stack overflow in the test host.
+>
+> **Still open, and not the producer's to do:** R3.5's gate also asks that unqualified resolution
+> find a flavoured name — `code` resolving to `code#net10.0`. No such thing exists in the
+> catalogue, and adding it is an engine change with its own naming rules and its own answer for
+> what happens when two flavours match.
 
 ### R0 — the ledger
 

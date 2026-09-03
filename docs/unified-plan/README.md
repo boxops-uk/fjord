@@ -68,8 +68,14 @@ knowing is that W6/W8/W9 add predicates whose cardinalities a cost model would r
 
 **W13 is a tier of its own.** It is not one work item: it carries amendments to all ten of
 revision 2's runs, a new sub-run (R3.7), an edit to the required CI job, a 61-file migration, and one
-piece of work it explicitly declines to price (extracting an `IFactWriter` from a raw `Thread[]`).
-Its acceptance criteria are the runs' own gates, which is why it contributes none of the 106 below.
+piece of work it explicitly declines to price (extracting an `IFactWriter` from a raw `Thread[]` —
+**dropped**, with the reason recorded: it would be an abstraction over a `Thread[]` with one
+implementation and no second caller, and `IBlockTarget` is already the swappable thing). Its
+acceptance criteria are the runs' own gates, which is why it contributes none of the 106 below.
+
+**All fifteen items have landed.** W13's runs are done except R4, cancelled by D12, and R7,
+deferred to a 1.0 profiling pass by D15. What each run found — including six defects no issue had
+named — is recorded in [W13](13-indexer-runs-amended.md).
 
 **W1 has been spiked and reverted.** The arm was written, the shared-union query planned and ran
 against the existing fixture (`20; 40; 10; 30`), the alternative-narrowed form was unchanged, and

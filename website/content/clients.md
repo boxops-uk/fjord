@@ -84,20 +84,42 @@ costs the fixture no fingerprint move and no flag day.
 
 The demo's argument made at scale: the same library, the same nested references and the same
 handshake, driven by a design-time build per project and a compiler that answers what every name
-means. It is where a database large enough to be worth measuring comes from — and where twenty-one
-of the sample schema's predicates come from, because the build layer and the declaration graph
-cannot be answered by a syntax walk at all.
+means. It writes `schemas/dotnet.sigla` — sixty-seven predicates across five composed schemas —
+and most of them cannot be answered by a syntax walk at all: the project graph is MSBuild's, the
+entity model is Roslyn's, and the surface a UI reads is both of those re-keyed.
+
+**A checkout that compiles for two frameworks is two indexes.** A project built for `net8.0` and
+one built for `net10.0` are different programs — different preprocessor symbols, different
+references, often different members — so the run fans out, writing `code#net8.0` and
+`code#net10.0`, and each database says which framework it holds through
+`config.Setting {dimension = "framework"}`.
 
 The run reports what interning cost:
 
 ```text
-  server                  18,176,899 created, 44,422,889 deduped
+  server                     105,126 created, 910,367 deduped
 ```
 
-Five million references naming nine hundred thousand declarations **is** that dedup count. A
-producer holding no fact ids is an elegance argument at six declarations; at eighteen million
-facts it is the only tractable option, because the alternative is a second pass over an index that
-no longer fits in memory, ordered so that every target is written before every reference to it.
+Sixteen thousand references naming nine hundred declarations **is** that dedup count: a factor of
+eight between facts sent and facts touched, because every reference carries its target nested
+inside it. A producer holding no fact ids is an elegance argument at six declarations; at a
+million it is the only tractable option, because the alternative is a second pass over an index
+that no longer fits in memory, ordered so that every target is written before every reference to
+it.
+
+### What it writes with, and what else uses that
+
+The batching, the bounded queue, the writer threads and the latched-failure rule are
+`Boxops.Fjord.Client`'s, not the indexer's: `FactSink` takes a schema and a list of targets and
+says nothing about Roslyn. That is what makes a second producer possible without a second
+implementation of any of it.
+
+`scip2fjord` is the second producer. It reads a [SCIP](https://sourcegraph.com/docs/code-search/code-navigation/writing_an_indexer)
+index — the format TypeScript, Java, Scala, Rust, Python, Go and Ruby indexers already emit — and
+writes the same `codemarkup` surface the C# indexer does, through that same seam, referencing no
+part of the indexer. What it does *not* write is a declaration layer or a type graph: a SCIP index
+contains neither, and inventing them per occurrence would put facts in a database that nothing
+could stand behind.
 
 ### What the .NET client does not do
 
@@ -105,8 +127,10 @@ It mirrors the server, so it stops where the server does. Streams are issued seq
 ids are real and the server tags every reply — but it sends a stream's frames and reads its
 replies before starting the next. There is no cancellation and no flow control on that side.
 
-There is no test project either, deliberately: the console program *is* the test, and a unit test
-of this codec against constants copied from the Rust would only prove the constants were copied.
+The test project is `Boxops.Fjord.Tests`, and what it does *not* contain is a unit test of this
+codec against constants copied from the Rust — that would only prove the constants were copied.
+What it does contain is the shapes written and read back through a real server, which is the only
+thing that proves a transcription.
 
 ## The viewer
 
