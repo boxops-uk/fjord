@@ -36,13 +36,18 @@ case "${1:-}" in
         ;;
 esac
 
-restore() { git checkout -- "$file"; }
-trap restore EXIT
-
 if ! git diff --quiet -- "$file"; then
     echo "$file has uncommitted changes; commit or stash them first" >&2
     exit 2
 fi
+
+# **Armed below the guard above, and the order is the whole point.** `restore` is a
+# `git checkout` of a tracked file, so a trap installed before the dirty-tree check
+# fires on that check's own `exit 2` and deletes the edit the message just refused to
+# touch — with no stash and no reflog to recover from. `scripts/test_check_exhaustive.py`
+# holds it here.
+restore() { git checkout -- "$file"; }
+trap restore EXIT
 
 # A name no arm can already be matching.
 perl -0pi -e "s/\Q$anchor\E/$anchor\n    Probe,/" "$file"

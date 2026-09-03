@@ -159,6 +159,12 @@ jobs:
         run: python3 -m unittest scripts/test_check_guards.py
       - name: The ledger names an owner for every guard
         run: python3 scripts/check-guards.py
+      # **The probe itself is not in CI — it fails the build by design — but its guards
+      # are.** It edits a tracked file and restores it with an `EXIT` trap, so the order
+      # of that trap and its dirty-tree refusal decides whether the refusal deletes the
+      # work it declined to touch. Cheap to check and silent to get wrong.
+      - name: The exhaustiveness probe refuses a dirty tree without eating it
+        run: python3 -m unittest scripts/test_check_exhaustive.py
       # **The other configuration.** `fjord-inspect` turns the engine's `trace`
       # feature on, so the workspace run above builds the engine *traced* — which
       # is what puts the alloc-free and no-value-fetch guards on the build the

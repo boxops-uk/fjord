@@ -7,6 +7,25 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### The exhaustiveness probe no longer eats the edit it refuses to touch
+
+`scripts/check-exhaustive.sh` armed `trap restore EXIT` — a `git checkout` of the file it is
+about to edit — *above* its dirty-tree guard. So the guard's own `exit 2` fired the trap: the
+script printed "commit or stash them first" and then discarded exactly the unstaged changes it
+had just declined to touch, with no stash and no reflog entry behind it.
+
+The window is the one the script is for. `AGENTS.md` says to run it "when adding one, or when
+changing a match that dispatches on a type" — which is to say while `schema.rs` or `syntax.rs`
+is open and half-written.
+
+The trap is armed below the guard now, and `scripts/test_check_exhaustive.py` holds the order
+against a throwaway repository rather than this one, because a control for *does it destroy
+uncommitted work* must not be able to destroy any. Three exits are provoked: a dirty target is
+refused with its edit byte-for-byte intact, an unknown argument touches neither file, and the
+throwaway `Probe` variant is still gone after a run that ends in failure — so the restore is
+not conditional on success. It joins the required `test` job; the probe it guards stays out of
+CI, because that one fails the build by design.
+
 ### A SCIP index is an ingestion path — `scip2fjord`
 
 Every language with a SCIP indexer reaches a Fjord database through one program:

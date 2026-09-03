@@ -106,6 +106,7 @@ cargo test                          # the green suite — default-members is the
 cargo test -- --ignored --list      # the invariant coverage ledger
 python3 scripts/check-guards.py     # every pending guard names a claim and a live owner
 python3 -m unittest scripts/test_check_guards.py  # the ledger gate's mutation controls
+python3 -m unittest scripts/test_check_exhaustive.py  # the exhaustiveness probe's guards
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)
@@ -140,7 +141,10 @@ adds a throwaway variant to `PredicateTyNamed` or to `fjord_engine::syntax::Ty` 
 the build *fails*, naming every site that must handle a new scalar family. Run it when
 adding one, or when changing a match that dispatches on a type — a shorter list than
 [`bench/FINDINGS.md`](bench/FINDINGS.md) §19's is a regression. It restores the file it
-edited on the way out, so run it on a clean tree.
+edited on the way out, so run it on a clean tree — and it refuses a dirty one **without**
+touching it, which is what `scripts/test_check_exhaustive.py` holds: the restore is a
+`git checkout`, so a trap armed above that refusal would delete the edit it declined to
+touch. That script *is* in the gate list above, even though the probe it guards is not.
 
 **The `+1.97.1` is not decoration.** CI's lint gate runs on that pinned toolchain and the
 suite runs on `stable`, because a required check that can go red because an upstream released
