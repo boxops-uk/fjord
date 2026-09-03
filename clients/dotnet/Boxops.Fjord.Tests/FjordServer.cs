@@ -103,14 +103,27 @@ public sealed class FjordServer : IDisposable
     }
 
     /// <summary>Create a database from a shipped schema, then serve the root it is in.</summary>
-    public static FjordServer Serving(string database, string schema)
+    public static FjordServer Serving(string database, string schema) =>
+        Serving(schema, database);
+
+    /// <summary>
+    /// Create several databases from one schema, then serve the root they are in.
+    /// </summary>
+    /// <remarks>
+    /// Several because a run that compares one index with another needs both of them at
+    /// once — and a second server over the same root is refused, as it should be.
+    /// </remarks>
+    public static FjordServer Serving(string schema, params string[] databases)
     {
         // Short, and directly under /tmp: see the SUN_LEN note above.
         var root = Path.Combine("/tmp", $"fjt-{Guid.NewGuid():N}"[..14]);
         Directory.CreateDirectory(root);
 
-        Run(root, "--schema-path", Path.Combine(RepositoryRoot, "schemas"),
-            "create", database, "--schema", Schema(schema));
+        foreach (var database in databases)
+        {
+            Run(root, "--schema-path", Path.Combine(RepositoryRoot, "schemas"),
+                "create", database, "--schema", Schema(schema));
+        }
 
         var ready = Path.Combine(root, "ready");
         var start = new ProcessStartInfo(Binary)
