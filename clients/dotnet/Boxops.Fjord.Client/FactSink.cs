@@ -1,9 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
-using Boxops.Fjord.Client;
-
-namespace Boxops.Fjord.Indexer;
+namespace Boxops.Fjord.Client;
 
 /// <summary>
 /// Where facts go: batched by predicate, encoded as blocks, and written.
@@ -44,7 +42,7 @@ namespace Boxops.Fjord.Indexer;
 /// fact it has queued depends on one it has already sent.
 /// </para>
 /// </remarks>
-internal sealed class FactSink : IDisposable
+public sealed class FactSink : IDisposable
 {
     /// <summary>Blocks that may wait <em>per writer</em> before producers block.</summary>
     /// <remarks>
@@ -55,7 +53,18 @@ internal sealed class FactSink : IDisposable
     /// </remarks>
     private const int QueueDepthPerWriter = 4;
 
-    private readonly Options _options;
+    private readonly FjordSchema _schema;
+    private readonly int _batch;
+
+    /// <summary>Whether to encode a block even when no target wants the bytes.</summary>
+    /// <remarks>
+    /// A connected run hands its facts to the client, which encodes them once on the way
+    /// out, so encoding here as well would be measuring this sink twice. A run with no
+    /// target at all is measuring exactly that encoding, and a run writing a file needs
+    /// the bytes anyway.
+    /// </remarks>
+    private readonly bool _encode;
+
     private readonly FileStream? _emit;
     private readonly List<FjordFact>[] _pending;
 
@@ -89,6 +98,9 @@ internal sealed class FactSink : IDisposable
     /// </remarks>
     private Exception? _failure;
 
+    /// <summary>The predicate the first failing block belonged to, or -1.</summary>
+    private long _failedOn = -1;
+
     private long _queueingTicks;
 
     /// <summary>Time producers spent waiting for a predicate's batch, summed over threads.</summary>
@@ -113,23 +125,44 @@ internal sealed class FactSink : IDisposable
 
     /// <summary>A sink writing through <paramref name="targets"/>, one writer thread each.</summary>
     /// <remarks>
-    /// An empty list is a run that writes to nothing (<c>--dry-run</c>), which still wants
-    /// one thread so the encoding it measures happens off the walk.
+    /// <para>
+    /// An empty list is a run that writes to nothing, which still wants one thread so the
+    /// encoding it measures happens off the producer's own.
+    /// </para>
+    /// <para>
+    /// <b>A schema and not a producer.</b> Everything here — the batching, the bounded
+    /// queue, the writer threads, the latched failure — is generic write support: it needs
+    /// to know how many predicates there are and how to encode one, and nothing else. A
+    /// sink that reached into a particular producer's constants would be usable by that
+    /// producer alone, which is the opposite of a seam.
+    /// </para>
     /// </remarks>
-    public FactSink(Options options, IReadOnlyList<IBlockTarget> targets)
+    /// <param name="schema">What the facts are shaped like, and how many predicates there are.</param>
+    /// <param name="targets">Where blocks go; empty writes to nothing.</param>
+    /// <param name="batch">Facts per block before it is flushed.</param>
+    /// <param name="emit">A file to write every block to as well, or nothing.</param>
+    public FactSink(
+        FjordSchema schema,
+        IReadOnlyList<IBlockTarget> targets,
+        int batch = 4096,
+        string? emit = null)
     {
-        _options = options;
-        _emit = options.Emit is null ? null : File.Create(options.Emit);
-        _pending = new List<FjordFact>[DotnetIndex.Predicates.Length];
-        _locks = new object[DotnetIndex.Predicates.Length];
+        _schema = schema;
+        _batch = Math.Max(1, batch);
+        _encode = emit is not null || targets.Count == 0;
+        _emit = emit is null ? null : File.Create(emit);
 
-        foreach (var predicate in DotnetIndex.Predicates)
+        var count = schema.Predicates.Count;
+        _pending = new List<FjordFact>[count];
+        _locks = new object[count];
+
+        for (var predicate = 0; predicate < count; predicate++)
         {
-            _pending[predicate] = new List<FjordFact>(options.Batch);
+            _pending[predicate] = new List<FjordFact>(_batch);
             _locks[predicate] = new object();
         }
 
-        Facts = new long[DotnetIndex.Predicates.Length];
+        Facts = new long[count];
 
         var writers = Math.Max(1, targets.Count);
         _queue = new BlockingCollection<(uint, List<FjordFact>)>(QueueDepthPerWriter * writers);
@@ -244,7 +277,7 @@ internal sealed class FactSink : IDisposable
             batch.Add(fact);
             Interlocked.Increment(ref Facts[predicate]);
 
-            if (batch.Count >= _options.Batch)
+            if (batch.Count >= _batch)
             {
                 Flush(predicate);
             }
@@ -262,7 +295,7 @@ internal sealed class FactSink : IDisposable
 
     public void FlushAll()
     {
-        foreach (var predicate in DotnetIndex.Predicates)
+        for (var predicate = 0u; predicate < _pending.Length; predicate++)
         {
             lock (_locks[predicate])
             {
@@ -290,7 +323,7 @@ internal sealed class FactSink : IDisposable
 
         // A fresh list rather than Clear(): the writer thread owns the one we hand over
         // until it has encoded and sent it, and clearing it here would race that.
-        _pending[predicate] = new List<FjordFact>(_options.Batch);
+        _pending[predicate] = new List<FjordFact>(_batch);
 
         var started = Stopwatch.GetTimestamp();
         try
@@ -315,15 +348,24 @@ internal sealed class FactSink : IDisposable
     /// </remarks>
     private void WriteLoop(IBlockTarget? target)
     {
+        // Which block was in the writer's hands when it failed. A database rejects a
+        // *fact*, and it can name the predicate and nothing else — it has never heard of
+        // the declaration this producer was describing or the file it came out of. Saying
+        // which predicate is the last thing this side can add before the answer is "one of
+        // eighteen million facts was refused".
+        var writing = -1L;
+
         try
         {
             foreach (var (predicate, facts) in _queue.GetConsumingEnumerable())
             {
+                Volatile.Write(ref writing, predicate);
+
                 // Encoded here only when the bytes are wanted for themselves: a connected
                 // run hands the facts to the client, which encodes them once on the way out.
-                if (_emit is not null || _options.DryRun)
+                if (_encode)
                 {
-                    var block = Block.Encode(DotnetIndex.Schema, predicate, facts);
+                    var block = Block.Encode(_schema, predicate, facts);
                     Interlocked.Add(ref _bytes, block.Length);
 
                     // Only ever one writer when emitting — see `Program.Connect` — so the
@@ -348,7 +390,11 @@ internal sealed class FactSink : IDisposable
         catch (Exception error)
         {
             // First failure wins; the rest are consequences of the queue closing.
-            Interlocked.CompareExchange(ref _failure, error, null);
+            if (Interlocked.CompareExchange(ref _failure, error, null) is null)
+            {
+                Volatile.Write(ref _failedOn, Volatile.Read(ref writing));
+            }
+
             _queue.CompleteAdding();
 
             // Drain, so a producer parked on a full queue is released rather than left
@@ -394,8 +440,16 @@ internal sealed class FactSink : IDisposable
     /// latch rather than describing the queue — the cause a person needs is the socket
     /// that closed or the disk that filled, not the collection that was completed.
     /// </remarks>
-    private InvalidOperationException Failed() =>
-        new("the fact writer failed", Volatile.Read(ref _failure));
+    private InvalidOperationException Failed()
+    {
+        var predicate = Volatile.Read(ref _failedOn);
+        var where = predicate >= 0 && predicate < _schema.Predicates.Count
+            ? $" while writing {_schema.NameOf((uint)predicate)}"
+            : string.Empty;
+
+        return new InvalidOperationException(
+            $"the fact writer failed{where}", Volatile.Read(ref _failure));
+    }
 
     public void Dispose()
     {

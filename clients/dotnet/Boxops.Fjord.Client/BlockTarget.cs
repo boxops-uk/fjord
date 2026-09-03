@@ -1,6 +1,4 @@
-using Boxops.Fjord.Client;
-
-namespace Boxops.Fjord.Indexer;
+namespace Boxops.Fjord.Client;
 
 /// <summary>
 /// Where a full block goes, once the walk has let go of it.
@@ -16,13 +14,13 @@ namespace Boxops.Fjord.Indexer;
 /// </para>
 /// <para>
 /// <b>The unit is a block of one predicate</b>, because that is what both ends want: an
-/// Fjord write stream carries one predicate per <c>CopyData</c> frame, and a Glean
-/// JSON batch is a list of <c>{predicate, facts}</c> items. Nothing here holds a fact
+/// Fjord write stream carries one predicate per <c>CopyData</c> frame, and a file of
+/// blocks is a list of them. Nothing here holds a fact
 /// id — every reference is the target fact nested inline — so a target may write its
 /// blocks in any order, and several targets may write at once.
 /// </para>
 /// </remarks>
-internal interface IBlockTarget : IDisposable
+public interface IBlockTarget : IDisposable
 {
     /// <summary>Write one block, and say what that did.</summary>
     BlockWritten Write(uint predicate, IReadOnlyList<FjordFact> facts);
@@ -37,15 +35,15 @@ internal interface IBlockTarget : IDisposable
 /// target that does not know — the Fjord client encodes inside itself and does not
 /// report a size.
 /// </remarks>
-internal readonly record struct BlockWritten(ulong Created, ulong Deduped, long Bytes);
+public readonly record struct BlockWritten(ulong Created, ulong Deduped, long Bytes);
 
 /// <summary>A block written down one Fjord connection.</summary>
 /// <remarks>
-/// The connection outlives this: <c>Program</c> closes every one of them when the run
-/// ends, however it ends, so this is a way of pointing the sink at a connection and not
-/// a claim of ownership over it.
+/// The connection outlives this, and disposing a target does not close it: this is a way
+/// of pointing a sink at a connection rather than a claim of ownership over it. Whoever
+/// opened the connection closes it.
 /// </remarks>
-internal sealed class FjordTarget(FjordConnection connection) : IBlockTarget
+public sealed class FjordTarget(FjordConnection connection) : IBlockTarget
 {
     public BlockWritten Write(uint predicate, IReadOnlyList<FjordFact> facts)
     {

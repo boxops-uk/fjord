@@ -247,7 +247,7 @@ public sealed class SourceLayerDatabaseTests
         var projects = ProjectIndex.Build(root, root, [], TextWriter.Null);
 
         using var writing = FjordConnection.Connect(socket, "dotnet", DotnetIndex.Schema);
-        using var sink = new FactSink(options, [new FjordTarget(writing)]);
+        using var sink = new FactSink(DotnetIndex.Schema, [new FjordTarget(writing)]);
 
         var indexer = new Boxops.Fjord.Indexer.Indexer(options, sink, root, projects);
         indexer.Index(compilation, document.Project);

@@ -136,7 +136,7 @@ public sealed class LedgerTests
         // sibling *namespace* rather than the type in it.
         Boxops.Fjord.Indexer.Indexer indexer;
 
-        using (var sink = new FactSink(options, [recorder]))
+        using (var sink = new FactSink(DotnetIndex.Schema, [recorder]))
         {
             indexer = new Boxops.Fjord.Indexer.Indexer(options, sink, fixture.Root, target.Build);
 
@@ -221,7 +221,7 @@ public sealed class LedgerTests
         ulong created;
         ulong deduped;
 
-        using (var sink = new FactSink(options, [new FjordTarget(connection)]))
+        using (var sink = new FactSink(DotnetIndex.Schema, [new FjordTarget(connection)]))
         {
             var indexer = new Boxops.Fjord.Indexer.Indexer(
                 options, sink, fixture.Root, target.Build);
@@ -231,7 +231,7 @@ public sealed class LedgerTests
                 sink.Add(DotnetIndex.Setting, setting);
             }
 
-            target.Build.Emit(sink);
+            target.Build.Emit(sink.Add);
 
             foreach (var project in target.Projects)
             {

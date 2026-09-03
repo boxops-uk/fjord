@@ -96,7 +96,7 @@ public sealed class SourceWalkTests
                 [tree],
                 [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)]);
 
-            using (var sink = new FactSink(options, [recorder]))
+            using (var sink = new FactSink(DotnetIndex.Schema, [recorder]))
             {
                 // Fully qualified: from `Boxops.Fjord.Tests`, the bare name `Indexer`
                 // resolves to the sibling *namespace* rather than the type in it.

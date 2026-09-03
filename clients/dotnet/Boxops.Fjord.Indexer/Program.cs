@@ -161,7 +161,8 @@ internal static class Program
         int files;
         Indexer indexer;
 
-        using (var sink = new FactSink(options, targets))
+        using (var sink = new FactSink(
+            DotnetIndex.Schema, targets, options.Batch, options.Emit))
         {
             // **`--emit` walks on one thread as well as writing on one.** The flag exists
             // to produce a file whose bytes can be compared — a golden — and one writer is
@@ -187,7 +188,7 @@ internal static class Program
             // The build layer first, and whole: this is what the repository *is*, not
             // what the walk reached, so a run stopped early by `--max-files` still says
             // which projects exist and what they depend on.
-            target.Build.Emit(sink);
+            target.Build.Emit(sink.Add);
 
             foreach (var project in target.Projects)
             {

@@ -129,7 +129,7 @@ public sealed class ConcurrentWalkTests
                 trees,
                 [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)]);
 
-            using (var sink = new FactSink(options, [recorder]))
+            using (var sink = new FactSink(DotnetIndex.Schema, [recorder]))
             {
                 new Boxops.Fjord.Indexer.Indexer(options, sink, directory.FullName, projects)
                     .Index(compilation, null);

@@ -213,18 +213,26 @@ internal sealed class ProjectIndex
     /// pair them, and the two dependency graphs.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Emitted once, up front, rather than as files are reached — this is what the
     /// repository is, not what the walk found, and a run stopped early by
     /// <c>--max-files</c> should still say so.
+    /// </para>
+    /// <para>
+    /// <b>An emitter rather than a sink.</b> The build layer's job is to know what MSBuild
+    /// resolved; where those facts go is somebody else's, and a class that takes the write
+    /// path as an argument cannot accidentally start depending on how it batches. Same
+    /// shape <c>CsharpEntities</c> takes, for the same reason.
+    /// </para>
     /// </remarks>
-    public void Emit(FactSink sink)
+    public void Emit(Action<uint, FjordFact> emit)
     {
         foreach (var project in _byPath.Values)
         {
-            sink.Add(DotnetIndex.Project, project.Fact);
+            emit(DotnetIndex.Project, project.Fact);
 
             var assembly = DotnetIndex.AssemblyFact(project.Assembly);
-            sink.Add(DotnetIndex.Assembly, assembly);
+            emit(DotnetIndex.Assembly, assembly);
 
             // A project that names no framework still compiles into an assembly, and the
             // compilation is the only fact that says which — so it gets one, with the
@@ -232,14 +240,14 @@ internal sealed class ProjectIndex
             // target framework, which is the whole requirement.
             foreach (var framework in project.Frameworks.Count > 0 ? project.Frameworks : [""])
             {
-                sink.Add(
+                emit(
                     DotnetIndex.Compilation,
                     DotnetIndex.CompilationFact(assembly, framework, project.Fact));
 
                 // The same crossing from the project's side, for the panel that opens on
                 // a project. A second predicate rather than a sort, because a predicate
                 // leads with one field.
-                sink.Add(
+                emit(
                     DotnetIndex.ProjectCompilation,
                     DotnetIndex.ProjectCompilationFact(project.Fact, framework, assembly));
             }
@@ -258,10 +266,10 @@ internal sealed class ProjectIndex
                 // **The edge between two projects, in both directions.** The old build
                 // layer had neither: it carried a reference to a project keyed on a path
                 // string, and no reverse at all — so "who depends on this" was a scan.
-                sink.Add(
+                emit(
                     DotnetIndex.ProjectReference,
                     DotnetIndex.ProjectReferenceFact(project.Fact, target.Fact));
-                sink.Add(
+                emit(
                     DotnetIndex.ProjectReferencedBy,
                     DotnetIndex.ProjectReferencedByFact(target.Fact, project.Fact));
             }
@@ -269,7 +277,8 @@ internal sealed class ProjectIndex
             foreach (var (name, version) in project.Packages)
             {
                 var package = DotnetIndex.PackageFact(name, version);
-                sink.Add(DotnetIndex.Package, package);
+                emit(
+                    DotnetIndex.Package, package);
 
                 // **`range` is what the file said and `Package.version` is the identity.**
                 // This producer has one number for both: the declared version, after
@@ -277,10 +286,10 @@ internal sealed class ProjectIndex
                 // the assets file, which is a restore this walk does not read — so the
                 // range is the same string, and improving `Package.version` later will not
                 // disturb it.
-                sink.Add(
+                emit(
                     DotnetIndex.PackageReference,
                     DotnetIndex.PackageReferenceFact(project.Fact, package, version));
-                sink.Add(
+                emit(
                     DotnetIndex.PackageDependent,
                     DotnetIndex.PackageDependentFact(package, project.Fact));
             }
