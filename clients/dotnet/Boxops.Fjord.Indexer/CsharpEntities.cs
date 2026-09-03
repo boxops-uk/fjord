@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+
 using Boxops.Fjord.Client;
+
 using Microsoft.CodeAnalysis;
 
 namespace Boxops.Fjord.Indexer;
@@ -33,12 +36,32 @@ namespace Boxops.Fjord.Indexer;
 /// </summary>
 internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
 {
-    private readonly Dictionary<ISymbol, FjordFact?> _entities = new(SymbolEqualityComparer.Default);
-    private readonly Dictionary<string, FjordFact> _names = new(StringComparer.Ordinal);
-    private readonly Dictionary<ISymbol, FjordFact> _namespaces = new(SymbolEqualityComparer.Default);
+    private readonly ConcurrentDictionary<ISymbol, FjordFact?> _entities =
+        new(SymbolEqualityComparer.Default);
+
+    private readonly ConcurrentDictionary<string, FjordFact> _names = new(StringComparer.Ordinal);
+
+    private readonly ConcurrentDictionary<ISymbol, FjordFact> _namespaces =
+        new(SymbolEqualityComparer.Default);
+
+    /// <summary>
+    /// The symbols this thread is in the middle of building.
+    /// </summary>
+    /// <remarks>
+    /// <b>Per thread, and consulted before the memo.</b> A cycle is broken by seeing a
+    /// symbol already on this thread's own stack — <c>class C&lt;T&gt; where T : C&lt;T&gt;</c>
+    /// is the shape — and it must not be broken by seeing one another thread happens to be
+    /// working on. A shared in-progress marker would do exactly that, and the two threads
+    /// would write facts of different depths under one key: a conflict this producer
+    /// created, on a machine with more cores.
+    /// </remarks>
+    [ThreadStatic]
+    private static HashSet<ISymbol>? _building;
+
+    private int _inexpressible;
 
     /// <summary>Types this producer could not express, counted rather than hidden.</summary>
-    public int Inexpressible { get; private set; }
+    public int Inexpressible => Volatile.Read(ref _inexpressible);
 
     // ---- the vocabularies ------------------------------------------------------------
 
@@ -102,8 +125,17 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
             return known;
         }
 
+        // **Built outside, published with `TryAdd`, emitted by the winner.** The fact is a
+        // function of the text, so two threads that race build the same one and only the
+        // thread that published it says so — a factory that emitted would emit once per
+        // loser as well, and `ConcurrentDictionary` runs the losing factories too.
         var fact = new FjordFact(DotnetIndex.Name, FjordValue.Of(text));
-        _names[text] = fact;
+
+        if (!_names.TryAdd(text, fact))
+        {
+            return _names[text];
+        }
+
         emit(DotnetIndex.Name, fact);
 
         // The search index, written beside the name it lowercases: a case-insensitive
@@ -140,7 +172,11 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
             FjordValue.Of(FjordRef.To(Name(symbol.Name))),
             Maybe(containing)));
 
-        _namespaces[symbol] = fact;
+        if (!_namespaces.TryAdd(symbol, fact))
+        {
+            return _namespaces[symbol];
+        }
+
         emit(DotnetIndex.Namespace, fact);
         return fact;
     }
@@ -238,14 +274,14 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
 
             case IErrorTypeSymbol:
             case IDynamicTypeSymbol:
-                Inexpressible++;
+                Interlocked.Increment(ref _inexpressible);
                 return null;
 
             case INamedTypeSymbol named:
                 return Named(named) is { } value ? FjordValue.Alt(1u, value) : null;
 
             default:
-                Inexpressible++;
+                Interlocked.Increment(ref _inexpressible);
                 return null;
         }
     }
@@ -310,9 +346,33 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
             return known;
         }
 
-        _entities[symbol] = null;
-        var built = Build(symbol);
-        _entities[symbol] = built;
+        // **The cycle break, on this thread's own stack.** A symbol reached from itself
+        // has no fact yet and cannot wait for one, so it is answered `null` — the same
+        // answer a type this layer cannot express gets, and the same shallower fact
+        // results. What must never happen is one thread answering `null` because *another*
+        // is mid-build: the two would then write different facts under one key.
+        var building = _building ??= new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+
+        if (!building.Add(symbol))
+        {
+            return null;
+        }
+
+        FjordFact? built;
+
+        try
+        {
+            built = Build(symbol);
+        }
+        finally
+        {
+            building.Remove(symbol);
+        }
+
+        if (!_entities.TryAdd(symbol, built))
+        {
+            return _entities[symbol];
+        }
 
         if (built is not null)
         {
@@ -347,7 +407,7 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     {
         if (type is IErrorTypeSymbol || type.TypeKind is TypeKind.Error)
         {
-            Inexpressible++;
+            Interlocked.Increment(ref _inexpressible);
             return null;
         }
 

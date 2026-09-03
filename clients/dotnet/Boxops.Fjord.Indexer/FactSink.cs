@@ -58,6 +58,15 @@ internal sealed class FactSink : IDisposable
     private readonly Options _options;
     private readonly FileStream? _emit;
     private readonly List<FjordFact>[] _pending;
+
+    /// <summary>One lock per predicate, and it outlives the batch it guards.</summary>
+    /// <remarks>
+    /// <b>Not the list itself.</b> A flush hands the batch to a writer and puts a fresh
+    /// list in its place, so a thread that had locked the old one would be excluding
+    /// nobody — and could append to a list a writer was already encoding. The lock has to
+    /// be the thing that does not move.
+    /// </remarks>
+    private readonly object[] _locks;
     private readonly BlockingCollection<(uint Predicate, List<FjordFact> Facts)> _queue;
     private readonly Thread[] _writers;
 
@@ -82,6 +91,16 @@ internal sealed class FactSink : IDisposable
 
     private long _queueingTicks;
 
+    /// <summary>Time producers spent waiting for a predicate's batch, summed over threads.</summary>
+    /// <remarks>
+    /// The successor to the walk's single gate, and the reason it can be retired with a
+    /// number rather than a hope: if this is a real share of the run, striping by
+    /// predicate was the wrong axis.
+    /// </remarks>
+    private long _contendedTicks;
+
+    private long _contentions;
+
     // Written by every writer thread, so every one of them is interlocked and the
     // properties below are projections rather than fields.
     private long _blocks;
@@ -102,10 +121,12 @@ internal sealed class FactSink : IDisposable
         _options = options;
         _emit = options.Emit is null ? null : File.Create(options.Emit);
         _pending = new List<FjordFact>[DotnetIndex.Predicates.Length];
+        _locks = new object[DotnetIndex.Predicates.Length];
 
         foreach (var predicate in DotnetIndex.Predicates)
         {
             _pending[predicate] = new List<FjordFact>(options.Batch);
+            _locks[predicate] = new object();
         }
 
         Facts = new long[DotnetIndex.Predicates.Length];
@@ -163,6 +184,12 @@ internal sealed class FactSink : IDisposable
     /// <summary>Time producers spent blocked on a full queue, i.e. waiting for the writer.</summary>
     public TimeSpan Queueing => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _queueingTicks));
 
+    /// <summary>Time producers spent waiting for a predicate's batch.</summary>
+    public TimeSpan Contended => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _contendedTicks));
+
+    /// <summary>How many <see cref="Add"/> calls found a batch already held.</summary>
+    public long Contentions => Interlocked.Read(ref _contentions);
+
     public long Total
     {
         get
@@ -177,15 +204,59 @@ internal sealed class FactSink : IDisposable
         }
     }
 
+    /// <summary>
+    /// Queue one fact, from any thread.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One lock per predicate, and the batch is its own lock.</b> The walk's threads
+    /// almost never want the same predicate at the same instant — a declaration is
+    /// touching <c>csharp.Method</c> while a reference is touching
+    /// <c>codemarkup.FileXRef</c> — so striping by predicate turns what was one gate
+    /// around the whole of fact production into sixty-seven that are each held for a
+    /// list append.
+    /// </para>
+    /// <para>
+    /// <b>Not per-thread buffers</b>, which would look cheaper and are not: every thread
+    /// would build its own <c>src.File</c> and <c>csharp.Name</c> facts, multiplying the
+    /// duplicates by the thread count and destroying the dedup ratio that is the whole
+    /// measurement this producer exists to take.
+    /// </para>
+    /// </remarks>
     public void Add(uint predicate, FjordFact fact)
     {
-        var batch = _pending[predicate];
-        batch.Add(fact);
-        Facts[predicate]++;
+        var gate = _locks[predicate];
+        var contended = false;
 
-        if (batch.Count >= _options.Batch)
+        if (!Monitor.TryEnter(gate))
         {
-            Flush(predicate);
+            // Measured rather than assumed: the gate this replaced reported what it cost,
+            // and a replacement that reports nothing cannot be compared with it.
+            var before = Stopwatch.GetTimestamp();
+            Monitor.Enter(gate);
+            Interlocked.Add(ref _contendedTicks, Stopwatch.GetTimestamp() - before);
+            contended = true;
+        }
+
+        try
+        {
+            var batch = _pending[predicate];
+            batch.Add(fact);
+            Interlocked.Increment(ref Facts[predicate]);
+
+            if (batch.Count >= _options.Batch)
+            {
+                Flush(predicate);
+            }
+        }
+        finally
+        {
+            Monitor.Exit(gate);
+        }
+
+        if (contended)
+        {
+            Interlocked.Increment(ref _contentions);
         }
     }
 
@@ -193,11 +264,21 @@ internal sealed class FactSink : IDisposable
     {
         foreach (var predicate in DotnetIndex.Predicates)
         {
-            Flush(predicate);
+            lock (_locks[predicate])
+            {
+                Flush(predicate);
+            }
         }
     }
 
-    /// <summary>Detach the pending block and hand it to the writer. Never writes here.</summary>
+    /// <summary>
+    /// Detach the pending block and hand it to the writer. Never writes here.
+    /// </summary>
+    /// <remarks>
+    /// <b>Called with this predicate's lock held</b>, by <see cref="Add"/> or
+    /// <see cref="FlushAll"/>: it swaps the list, and a swap racing an append is a fact
+    /// written into a batch a writer has already taken.
+    /// </remarks>
     private void Flush(uint predicate)
     {
         var batch = _pending[predicate];

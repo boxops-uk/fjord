@@ -355,9 +355,10 @@ internal static class Program
         }
 
         {
-            Console.WriteLine($"  {"gate wait",-20}{indexer.GateWait.TotalSeconds,14:F1}s"
-                + $"  (walkers blocked on the gate)");
-            Console.WriteLine($"  {"gate held",-20}{indexer.GateHeld.TotalSeconds,14:F1}s");
+            // The successor to `gate wait`/`gate held`. The walk no longer has a gate; what
+            // it has is one lock per predicate, and this is what they cost together.
+            Console.WriteLine($"  {"contended",-20}{sink.Contended.TotalSeconds,14:F1}s"
+                + $"  ({Count(sink.Contentions)} of {Count(sink.Total)} facts waited for a batch)");
         }
 
         var rate = sink.Total / Math.Max(elapsed.TotalSeconds, 0.001);

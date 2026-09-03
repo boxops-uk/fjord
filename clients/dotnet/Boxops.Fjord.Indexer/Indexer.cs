@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 
@@ -40,65 +41,16 @@ namespace Boxops.Fjord.Indexer;
 /// </remarks>
 internal sealed class Indexer(Options options, FactSink sink, string root, ProjectIndex projects)
 {
-    /// <summary>Path to its `src.File` fact, for one compilation.</summary>
-    private readonly Dictionary<string, FjordFact> _files = new(StringComparer.Ordinal);
+    /// <summary>Path to its `src.File` fact, and whether this run has emitted it.</summary>
+    private readonly ConcurrentDictionary<string, FjordFact> _files = new(StringComparer.Ordinal);
 
     /// <summary>Files already walked — the same file is often in two projects.</summary>
+    /// <remarks>
+    /// Not concurrent, and it does not need to be: which files a project contributes is
+    /// decided in <see cref="Index"/> before any thread is started, which is what keeps
+    /// <c>--max-files 2000</c> the same two thousand files on every run.
+    /// </remarks>
     private readonly HashSet<string> _walked = new(StringComparer.Ordinal);
-
-    /// <summary>
-    /// The one lock: everything above, the counters, and the sink.
-    /// </summary>
-    /// <remarks>
-    /// One rather than several because the things it guards are reached through each
-    /// other — a reference wants a declaration, which wants a module, which wants a
-    /// file, and each may emit a fact. Several locks in that shape is an ordering
-    /// problem nobody needs for critical sections this short.
-    /// </remarks>
-    private readonly Lock _gate = new();
-
-    /// <summary>Ticks spent waiting to enter <see cref="_gate"/>, summed over all walkers.</summary>
-    /// <remarks>
-    /// The point of measuring it: the gate is the only thing eight walker threads share,
-    /// so it is the ceiling on how much of the walk is actually parallel. Both counters
-    /// are accumulated while the gate is *held*, so neither needs an interlocked add.
-    /// </remarks>
-    private long _gateWaitTicks;
-
-    /// <summary>Ticks the gate was held, summed over all walkers.</summary>
-    private long _gateHeldTicks;
-
-    /// <summary>Total time walkers spent blocked on the gate.</summary>
-    public TimeSpan GateWait => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _gateWaitTicks));
-
-    /// <summary>Total time the gate was held.</summary>
-    public TimeSpan GateHeld => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _gateHeldTicks));
-
-    /// <summary>Enter the gate, timing the wait and the hold.</summary>
-    private Guard Enter() => new(this);
-
-    /// <summary>A timed <see cref="_gate"/> acquisition; dispose to release.</summary>
-    private readonly struct Guard : IDisposable
-    {
-        private readonly Indexer _owner;
-        private readonly long _entered;
-
-        public Guard(Indexer owner)
-        {
-            _owner = owner;
-            var before = Stopwatch.GetTimestamp();
-            owner._gate.Enter();
-            _entered = Stopwatch.GetTimestamp();
-            // Safe unsynchronised: we hold the gate.
-            owner._gateWaitTicks += _entered - before;
-        }
-
-        public void Dispose()
-        {
-            _owner._gateHeldTicks += Stopwatch.GetTimestamp() - _entered;
-            _owner._gate.Exit();
-        }
-    }
 
     /// <summary>
     /// Symbol to declaration, for one compilation.
@@ -111,17 +63,24 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// </remarks>
     private CsharpEntities _entities = new((_, _) => { });
 
-    public int Files { get; private set; }
+    // **Interlocked, and read as projections.** Every one of these is incremented from
+    // whichever walker thread reached the thing being counted; a `++` on a shared int is
+    // the classic lost update, and a fact count that is quietly low is a measurement
+    // nobody can tell from a smaller repository.
+    private int _files_, _declarations, _references, _external, _unresolved, _unattributed;
+    private long _lines, _styled;
 
-    public int Declarations { get; private set; }
+    public int Files => Volatile.Read(ref _files_);
 
-    public int References { get; private set; }
+    public int Declarations => Volatile.Read(ref _declarations);
+
+    public int References => Volatile.Read(ref _references);
 
     /// <summary>References to something declared outside the index — the BCL, a package.</summary>
-    public int External { get; private set; }
+    public int External => Volatile.Read(ref _external);
 
     /// <summary>Names the compiler could not bind at all: missing references, broken code.</summary>
-    public int Unresolved { get; private set; }
+    public int Unresolved => Volatile.Read(ref _unresolved);
 
     /// <summary>Types the layer cannot express — `dynamic`, an unresolved name.</summary>
     /// <remarks>
@@ -133,20 +92,29 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     public int Inexpressible => _entities.Inexpressible;
 
     /// <summary>Lines of source written as <c>src.FileLine</c> facts.</summary>
-    public long Lines { get; private set; }
+    public long Lines => Interlocked.Read(ref _lines);
 
     /// <summary>Lines carrying syntax highlighting, as <c>src.FileLineStyles</c> facts.</summary>
-    public long Styled { get; private set; }
+    public long Styled => Interlocked.Read(ref _styled);
 
     /// <summary>Files no project compiles — shared source, or a checkout with no project files.</summary>
-    public int Unattributed { get; private set; }
+    public int Unattributed => Volatile.Read(ref _unattributed);
 
-    /// <summary>The most-referenced declaration's short name — something to query for.</summary>
+    /// <summary>
+    /// The most-referenced declaration's short name — something to query for.
+    /// </summary>
+    /// <remarks>
+    /// <b>Approximate, and deliberately not in the ledger.</b> Picking the maximum over a
+    /// concurrent count has no cheap deterministic form: two threads reading a count,
+    /// comparing, and writing back will disagree about which of two near-equal names won.
+    /// It appears in one console line and one smoke query, so first-past-the-post is the
+    /// right trade — no fact carries it, and nothing that is asserted depends on it.
+    /// </remarks>
     public string? SampleName { get; private set; }
 
     private int _sampleUses;
 
-    private readonly Dictionary<ISymbol, int> _uses = new(SymbolEqualityComparer.Default);
+    private readonly ConcurrentDictionary<ISymbol, int> _uses = new(SymbolEqualityComparer.Default);
 
     public bool Exhausted => options.MaxFiles > 0 && _claimed >= options.MaxFiles;
 
@@ -211,11 +179,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                     item.Path,
                     project?.GetDocument(item.Tree));
 
-                using (Enter())
-                {
-                    Files++;
-                    onFile?.Invoke(item.Path);
-                }
+                Interlocked.Increment(ref _files_);
+                onFile?.Invoke(item.Path);
             });
     }
 
@@ -232,10 +197,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         FjordFact file;
 
-        using (Enter())
-        {
-            file = FileOf(path);
-        }
+        file = FileOf(path);
 
         IndexFile(tree, file);
         IndexLines(text, rows, info, file, document);
@@ -288,15 +250,12 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             ? DotnetIndex.FileOriginFact(file, repo, revision)
             : null;
 
-        using (Enter())
-        {
-            sink.Add(DotnetIndex.FileLanguage, language);
-            sink.Add(DotnetIndex.FileDigest, digest);
+        sink.Add(DotnetIndex.FileLanguage, language);
+        sink.Add(DotnetIndex.FileDigest, digest);
 
-            if (origin is not null)
-            {
-                sink.Add(DotnetIndex.FileOrigin, origin);
-            }
+        if (origin is not null)
+        {
+            sink.Add(DotnetIndex.FileOrigin, origin);
         }
     }
 
@@ -335,10 +294,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         if (!options.Lines)
         {
-            using (Enter())
-            {
-                sink.Add(DotnetIndex.FileInfo, summary);
-            }
+            sink.Add(DotnetIndex.FileInfo, summary);
 
             return;
         }
@@ -353,22 +309,19 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             offsets.Add(DotnetIndex.FileLineAtFact(file, row.Start, row.Number));
         }
 
-        using (Enter())
+        sink.Add(DotnetIndex.FileInfo, summary);
+
+        foreach (var fact in lines)
         {
-            sink.Add(DotnetIndex.FileInfo, summary);
-
-            foreach (var fact in lines)
-            {
-                sink.Add(DotnetIndex.FileLine, fact);
-            }
-
-            foreach (var fact in offsets)
-            {
-                sink.Add(DotnetIndex.FileLineAt, fact);
-            }
-
-            Lines += lines.Count;
+            sink.Add(DotnetIndex.FileLine, fact);
         }
+
+        foreach (var fact in offsets)
+        {
+            sink.Add(DotnetIndex.FileLineAt, fact);
+        }
+
+        Interlocked.Add(ref _lines, lines.Count);
 
         IndexStyles(document, text, file);
     }
@@ -404,17 +357,14 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         var lines = SemanticTokens.Encode(spans, text);
 
-        using (Enter())
+        foreach (var line in lines)
         {
-            foreach (var line in lines)
-            {
-                sink.Add(
-                    DotnetIndex.FileLineStyles,
-                    DotnetIndex.FileLineStylesFact(file, line.Line, line.Payload));
-            }
-
-            Styled += lines.Count;
+            sink.Add(
+                DotnetIndex.FileLineStyles,
+                DotnetIndex.FileLineStylesFact(file, line.Line, line.Payload));
         }
+
+        Interlocked.Add(ref _styled, lines.Count);
     }
 
     /// <summary>
@@ -450,34 +400,31 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         var modifiers = CodeMarkup.Modifiers(symbol);
         var doc = options.Docs ? DocComment(symbol) : string.Empty;
 
-        using (Enter())
+        if (_entities.Definition(symbol) is not { } definition)
         {
-            if (_entities.Definition(symbol) is not { } definition)
-            {
-                return;
-            }
-
-            _entities.Edges(symbol);
-
-            sink.Add(
-                DotnetIndex.DefinitionLocation,
-                DotnetIndex.DefinitionLocationFact(definition, file, start, length));
-
-            if (scip is not null)
-            {
-                var named = DotnetIndex.SymbolFact(scip);
-
-                sink.Add(DotnetIndex.Symbol, named);
-                sink.Add(DotnetIndex.SymbolOf, DotnetIndex.SymbolOfFact(definition, named));
-                sink.Add(
-                    DotnetIndex.DefinitionBySymbol,
-                    DotnetIndex.DefinitionBySymbolFact(named, definition));
-
-                Markup(symbol, named, file, start, length, line, kind, signature, modifiers, doc);
-            }
-
-            Declarations++;
+            return;
         }
+
+        _entities.Edges(symbol);
+
+        sink.Add(
+            DotnetIndex.DefinitionLocation,
+            DotnetIndex.DefinitionLocationFact(definition, file, start, length));
+
+        if (scip is not null)
+        {
+            var named = DotnetIndex.SymbolFact(scip);
+
+            sink.Add(DotnetIndex.Symbol, named);
+            sink.Add(DotnetIndex.SymbolOf, DotnetIndex.SymbolOfFact(definition, named));
+            sink.Add(
+                DotnetIndex.DefinitionBySymbol,
+                DotnetIndex.DefinitionBySymbolFact(named, definition));
+
+            Markup(symbol, named, file, start, length, line, kind, signature, modifiers, doc);
+        }
+
+        Interlocked.Increment(ref _declarations);
     }
 
     /// <summary>
@@ -515,10 +462,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         if (symbol is null)
         {
-            using (Enter())
-            {
-                Unresolved++;
-            }
+            Interlocked.Increment(ref _unresolved);
 
             return;
         }
@@ -547,70 +491,68 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             return;
         }
 
-        using (Enter())
+        // **The two layers are written independently, and that is not tidiness.** A
+        // local has no `csharp.Definition` — this producer mints none, deliberately —
+        // so a reference to one would be dropped entirely if the `codemarkup` facts
+        // hung off the `csharp` one. They answer different questions and each is
+        // written where it can be.
+        if (_entities.Definition(symbol) is { } definition)
         {
-            // **The two layers are written independently, and that is not tidiness.** A
-            // local has no `csharp.Definition` — this producer mints none, deliberately —
-            // so a reference to one would be dropped entirely if the `codemarkup` facts
-            // hung off the `csharp` one. They answer different questions and each is
-            // written where it can be.
-            if (_entities.Definition(symbol) is { } definition)
-            {
-                sink.Add(
-                    DotnetIndex.EntityXRef,
-                    DotnetIndex.EntityXRefFact(file, start, length, definition));
+            sink.Add(
+                DotnetIndex.EntityXRef,
+                DotnetIndex.EntityXRefFact(file, start, length, definition));
 
-                // The same reference keyed by what it points at. Written twice because a
-                // predicate leads with one field: find-references needs the target to
-                // lead and a file view needs the file to, and until a derived predicate
-                // can be declared the producer is what states the second order.
-                sink.Add(
-                    DotnetIndex.EntityRef,
-                    DotnetIndex.EntityRefFact(definition, file, start, length));
-            }
+            // The same reference keyed by what it points at. Written twice because a
+            // predicate leads with one field: find-references needs the target to
+            // lead and a file view needs the file to, and until a derived predicate
+            // can be declared the producer is what states the second order.
+            sink.Add(
+                DotnetIndex.EntityRef,
+                DotnetIndex.EntityRefFact(definition, file, start, length));
+        }
 
-            if (scip is not null)
-            {
-                // The same reference on the language-independent surface, keyed by a
-                // symbol rather than a `Definition` — which costs an interned string and
-                // buys the ability to leave this database.
-                var target = DotnetIndex.SymbolFact(scip);
+        if (scip is not null)
+        {
+            // The same reference on the language-independent surface, keyed by a
+            // symbol rather than a `Definition` — which costs an interned string and
+            // buys the ability to leave this database.
+            var target = DotnetIndex.SymbolFact(scip);
 
-                sink.Add(DotnetIndex.Symbol, target);
-                sink.Add(
-                    DotnetIndex.FileXRef,
-                    DotnetIndex.FileXRefFact(file, start, length, target, role));
-                sink.Add(
-                    DotnetIndex.SymbolXRef,
-                    DotnetIndex.SymbolXRefFact(target, file, start, length));
-            }
-            else if (local is { } declared)
-            {
-                // **A file-local target, answered span to span.** No interned string: a
-                // local has no global name worth minting, and a jump-to-declaration is
-                // then one seek with no symbol table.
-                sink.Add(
-                    DotnetIndex.FileLocalXRef,
-                    DotnetIndex.FileLocalXRefFact(
-                        file, start, length, declared.Start, declared.Length, role));
-            }
+            sink.Add(DotnetIndex.Symbol, target);
+            sink.Add(
+                DotnetIndex.FileXRef,
+                DotnetIndex.FileXRefFact(file, start, length, target, role));
+            sink.Add(
+                DotnetIndex.SymbolXRef,
+                DotnetIndex.SymbolXRefFact(target, file, start, length));
+        }
+        else if (local is { } declared)
+        {
+            // **A file-local target, answered span to span.** No interned string: a
+            // local has no global name worth minting, and a jump-to-declaration is
+            // then one seek with no symbol table.
+            sink.Add(
+                DotnetIndex.FileLocalXRef,
+                DotnetIndex.FileLocalXRefFact(
+                    file, start, length, declared.Start, declared.Length, role));
+        }
 
-            References++;
+        Interlocked.Increment(ref _references);
 
-            if (outside)
-            {
-                External++;
-            }
+        if (outside)
+        {
+            Interlocked.Increment(ref _external);
+        }
 
-            var canonical = symbol.OriginalDefinition;
-            var uses = _uses.TryGetValue(canonical, out var seen) ? seen + 1 : 1;
-            _uses[canonical] = uses;
+        var canonical = symbol.OriginalDefinition;
+        var uses = _uses.AddOrUpdate(canonical, 1, (_, seen) => seen + 1);
 
-            if (uses > _sampleUses)
-            {
-                _sampleUses = uses;
-                SampleName = canonical.Name;
-            }
+        // Racy by design, and the class comment says why: the winner of a near-tie is not
+        // worth a lock, no fact carries this, and nothing asserted depends on it.
+        if (uses > Volatile.Read(ref _sampleUses))
+        {
+            Volatile.Write(ref _sampleUses, uses);
+            SampleName = canonical.Name;
         }
     }
 
@@ -635,8 +577,6 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         string modifiers,
         string doc)
     {
-        Debug.Assert(_gate.IsHeldByCurrentThread, "the sink is shared");
-
         var name = symbol.Name;
 
         sink.Add(
@@ -780,15 +720,22 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// <summary>The file fact for a path, and the project edges that go with it.</summary>
     private FjordFact FileOf(string path)
     {
-        Debug.Assert(_gate.IsHeldByCurrentThread, "the file memo is shared");
-
         if (_files.TryGetValue(path, out var known))
         {
             return known;
         }
 
+        // **Built outside, published with `TryAdd`, and only the winner writes.** The fact
+        // is a function of the path, so two threads reaching one file build the same one —
+        // but the project edges beside it, and the count of files nobody compiles, must
+        // happen once. A `GetOrAdd` factory would not do: it runs on the losers too.
         var fact = DotnetIndex.FileFact(path);
-        _files[path] = fact;
+
+        if (!_files.TryAdd(path, fact))
+        {
+            return _files[path];
+        }
+
         sink.Add(DotnetIndex.File, fact);
 
         // **What compiles this file** — here rather than in the walk, because a file fact
@@ -809,7 +756,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         if (owners.Count == 0)
         {
-            Unattributed++;
+            Interlocked.Increment(ref _unattributed);
         }
 
         return fact;
