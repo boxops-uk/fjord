@@ -11,8 +11,8 @@ namespace Boxops.Fjord.Indexer;
 /// </summary>
 /// <remarks>
 /// Held rather than recomputed because the <see cref="Fact"/> is nested into every
-/// <c>src.ProjectSource</c> edge, and a repository's larger projects have thousands of
-/// files each.
+/// <c>msbuild.SourceFileToProject</c> edge, and a repository's larger projects have
+/// thousands of files each.
 /// </remarks>
 internal sealed class ProjectInfo(string path)
 {
@@ -97,8 +97,8 @@ internal sealed class ProjectInfo(string path)
 /// nearest project at or above it. That is right for the ordinary layout and wrong for
 /// shared source — <c>src/libraries/Common</c> in dotnet/runtime is compiled into a
 /// hundred assemblies by explicit <c>&lt;Compile Include&gt;</c> and lives under no
-/// project at all. Such a file gets no <c>src.ProjectSource</c> edge rather than a
-/// plausible one: an index that quietly attributes shared code to whichever project
+/// project at all. Such a file gets no <c>msbuild.SourceFileToProject</c> edge rather
+/// than a plausible one: an index that quietly attributes shared code to whichever project
 /// happens to sit above it answers "what builds this" wrongly, and nothing downstream
 /// can tell.
 /// </para>

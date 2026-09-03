@@ -26,11 +26,11 @@ namespace Boxops.Fjord.Indexer;
 /// would be needed.
 /// </para>
 /// <para>
-/// <b>One function decides what a declaration is.</b> <see cref="DeclFor"/> maps a
-/// symbol to the <c>src.Decl</c> fact that names it, and both paths go through it: the
-/// walk that emits declarations, and the reference that points at one. They cannot
-/// disagree, because there is nothing for them to disagree with — the reference nests
-/// the very fact the declaration emitted.
+/// <b>One function decides what a declaration is.</b> <see cref="CsharpEntities.Entity"/>
+/// maps a symbol to the entity fact that names it, and both paths go through it: the walk
+/// that emits declarations, and the reference that points at one. They cannot disagree,
+/// because there is nothing for them to disagree with — the reference nests the very fact
+/// the declaration emitted.
 /// </para>
 /// <para>
 /// <b>No fact ids anywhere.</b> A reference carries its target inline and the server

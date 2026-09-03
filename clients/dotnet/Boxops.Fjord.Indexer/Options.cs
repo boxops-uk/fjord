@@ -106,7 +106,7 @@ internal sealed record Options
     /// <b>The build layer is still whole</b>, which is the same decision <c>--max-files</c>
     /// already made: what projects a repository has and what they reference is a fact about
     /// the repository, not about which files this run reached. So an excluded tree's
-    /// projects still appear, and `src.ProjectSource` still names its files — which
+    /// projects still appear, and `msbuild.SourceFileToProject` still names its files —
     /// interning creates as `src.File` facts with nothing else said about them.
     /// </para>
     /// </remarks>
