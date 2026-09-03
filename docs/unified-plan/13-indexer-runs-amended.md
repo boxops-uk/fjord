@@ -379,6 +379,21 @@ changed a stylesheet. R9 therefore depends on **W8**, and no longer on W11.
 syntax kind over one span, so one pass fills both the cross-reference layer and
 `src.FileLineStyles`.
 
+**Landed as `clients/dotnet/Boxops.Fjord.Scip`** — `scip2fjord`, referencing
+`Boxops.Fjord.Client` and no indexer, which is R8a's claim checked by a second consumer.
+Twelve predicates against a database of a hundred and thirty-eight; the four gate queries
+answered against a converted TypeScript index. Two things worth knowing beyond the run's
+own spec:
+
+- **The fixture is written, not captured**, by a Python encoder beside it. There is no SCIP
+  indexer here and there is not going to be one, so a fixture produced by the code that
+  reads it would test only self-consistency. The two implementations meet in the wire
+  format instead. **The field numbers are the one thing a reviewer must check** — they are
+  the only part of either side that cannot be derived.
+- **No protobuf package.** Four messages and eleven fields, in a format that is varints and
+  length-delimited bytes; a code generator and a package feed would be a poor trade for two
+  hundred readable lines.
+
 ---
 
 ## C · What review #34 asked for that revision 2 still does not carry

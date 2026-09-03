@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="../Boxops.Fjord.Client/Boxops.Fjord.Client.csproj" />
     <ProjectReference Include="../Boxops.Fjord.Indexer/Boxops.Fjord.Indexer.csproj" />
+    <ProjectReference Include="../Boxops.Fjord.Scip/Boxops.Fjord.Scip.csproj" />
   </ItemGroup>
 
 </Project>
