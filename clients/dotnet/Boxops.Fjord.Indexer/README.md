@@ -223,8 +223,17 @@ collision nobody would have predicted.
 --max-projects <n>    stop after n projects
 --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
 --writers <n>         concurrent write streams, one connection each (default: 1)
+--framework <tfm>     index only this target framework (default: one database per
+                      framework the checkout compiles for, named <at>#<tfm>)
+--configuration <c>   the configuration this index is resolved against, recorded as
+                      config.Setting (default: Debug)
+--strict              a project or target left out fails the run
+--list-frameworks     print the frameworks this checkout compiles for, and stop
 --no-refs             declarations only: no src.Ref, no src.Import
---no-lines            do not write the line table (src.Line)
+--no-lines            do not write the line table (src.FileLine)
+--styles              also write syntax highlighting (src.FileLineStyles)
+--repo <id>           the repository this checkout is of, per file
+--revision <rev>      the revision indexed (both, or neither: src.FileOrigin)
 --no-docs             do not write doc comments (src.Doc)
 --no-restore          do not let the design-time build restore first
 --dry-run             index and encode, but connect to nothing
@@ -233,9 +242,26 @@ collision nobody would have predicted.
 --verbose             let MSBuild's output through
 ```
 
+> **This README is otherwise out of date, and knowingly.** The predicate tables and the
+> sample run below describe `code.sigla`, which was deleted: twenty-one of the twenty-two
+> predicates they name no longer exist, and the figures were taken over a corpus built by
+> a mode that no longer exists either. What the indexer writes today is
+> `schemas/dotnet.sigla` — 67 predicates across `src`, `config`, `msbuild`, `csharp` and
+> `codemarkup`. Read the schemas for the shapes until this is rewritten.
+
 **`--batch` is a flag because finding out what it should be is the point of having
 something to measure with.** A flush is a write stream, and the server interns a block
 inside its per-database writer lock: bigger means fewer round trips and a longer hold.
+
+**A checkout that compiles for two frameworks is indexed twice, into two databases.** A
+project built for `net8.0` and one built for `net10.0` are different programs — different
+preprocessor symbols, different references, often different members — and no key in the
+schema can hold both. So the default fans out, writing `<at>#net8.0` and `<at>#net10.0`,
+and each database says which framework it is through
+`config.Setting {dimension = "framework"}`. A checkout with one framework writes one
+database under the name it was given. `--framework` pins one; `--strict` refuses a run that
+leaves a project out; `--list-frameworks` answers the caller who has to create the
+databases first, which is a server operation this producer cannot do for itself.
 
 **`--dry-run` is how to measure the volume**, since it encodes every block and writes
 none. A connected run hands its facts to the client, which encodes them on the way out,

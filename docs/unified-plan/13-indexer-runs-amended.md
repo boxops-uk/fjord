@@ -42,6 +42,29 @@ an **extraction** for the third. Amend 8a to say which, and price it accordingly
 
 ## B · Run-by-run amendments
 
+> **Landed: R0.5, R1, R2, R3, R3.5, R3.7, R4.0's census, R5.** What they found is recorded
+> in each run below and in the commits. Four defects turned up that no issue had named, and
+> each is worth more than the run that found it:
+>
+> - **A checkout that had been built indexed as nothing at all.** `CoreCompile` is
+>   incremental, so after any ordinary `dotnet build` MSBuild skipped it — and the compiler
+>   command line it would have logged is the whole of what a design-time build reads. Every
+>   project came back succeeded-with-no-result, reported as a failed build. `$(NonExistentFile)`
+>   is the target's own escape hatch.
+> - **A solution naming a project through `..` produced no results for it.** The path is
+>   carried unnormalised while MSBuild reports the normalised one, and Buildalyzer pairs
+>   them by string. R3's own fixture had nothing to rescue until this was fixed.
+> - **A cross-project type was ambiguous on any checkout that had been built.**
+>   `addProjectReferences: true` left the referenced project in the compilation twice, once
+>   as a project and once as its assembly, and Roslyn answers `null` for an ambiguous type
+>   rather than choosing.
+> - **`--emit` would have had two targets overwrite one file** the day the fan-out landed.
+>
+> **Still open from these runs:** R3.5's gate also asks that unqualified resolution find a
+> flavoured name — `code` resolving to `code#net10.0`. No such thing exists in the
+> catalogue, and adding it is an engine change with its own naming rules and its own
+> answer for what happens when two flavours match. It is not the producer's to do.
+
 ### R0 — the ledger
 
 **+ A re-baseline is a reviewed change with a stated cause.** The primary assertion is the sealed
