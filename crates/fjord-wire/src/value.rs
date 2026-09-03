@@ -712,10 +712,22 @@ pub mod proptest {
         }
 
         /// A string's bytes with a non-UTF-8 tail, so a `bytes` draw is a run a
-        /// `String` could not have held.
+        /// `String` could not have held — and, on the draws the tape picks, a run of
+        /// `0xFF` longer than a block's ten-byte sync marker.
+        ///
+        /// That run is injected rather than drawn: `bytes` is the one family whose
+        /// payload reaches the wire unescaped, so it is the only way a marker can
+        /// land inside a block, and random draws over UTF-8 text reach a run of one.
+        /// A generator that cannot reach the case leaves
+        /// [`block`](crate::block)'s splitter properties green and vacuous.
         fn next_blob(&mut self) -> Vec<u8> {
             let mut out = self.next_text().into_bytes();
             out.extend_from_slice(&[0x00, 0xFF, 0x80, 0xC0]);
+
+            if self.next_pick() % 2 == 0 {
+                out.extend_from_slice(&[0xFF; 12]);
+            }
+
             out
         }
 

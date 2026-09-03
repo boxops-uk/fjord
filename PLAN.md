@@ -40,18 +40,41 @@ runtime waits on it.
 (`fjord-wire::block` — sync marker, magic, fixed-width header fields, CRC over header and
 payload, the predicate **named** rather than numbered) and *a file and a socket carry the
 same bytes* is a test, not an intention (`tests/one_encoding.rs`). The ten-`0xFF` sync marker
-is unreachable inside a payload **by the encoding rather than by luck** — UTF-8 never uses
-`0xF8`–`0xFF`, a varint's final byte is below `0x80`, and the header's `count`/`length` are
-capped to keep a zero top byte — so a scan from any offset finds boundaries and nothing else,
-and validation (magic, then CRC) is for torn writes and flipped bits, not disambiguation.
-This splittability is a real advantage over Glean, whose binary `Batch` is one opaque
-sequential blob that cannot be split, so it parallelises across batches and pushes the
-chunking decision onto the producer.
+is **rare inside a payload, not unreachable** — UTF-8 never uses `0xF8`–`0xFF`, a varint's
+final byte is below `0x80`, and the header's `count`/`length` are capped to keep a zero top
+byte, so no *string, varint or header* can make one; but a `bytes` payload is written raw and
+unescaped, and ten `0xFF` inside a blob are ordinary data. **No fixed marker can be
+structurally impossible in a family that carries arbitrary bytes**, and escaping the payload
+would cost the property this format exists for. So validation (magic, then CRC) is
+disambiguation *as well as* a check for torn writes and flipped bits: a scan finds candidates,
+and `fjord_wire::find_block` is what turns them into boundaries. This splittability is a real
+advantage over Glean, whose binary `Batch` is one opaque sequential blob that cannot be split,
+so it parallelises across batches and pushes the chunking decision onto the producer.
 
 **What is left is the pipeline:** the file envelope (header: magic, format version,
 producing-schema fingerprint; optional footer of block offsets), the splitter (seek anywhere
-→ scan to next sync → hand blocks to workers, checked from *every* offset of a multi-block
-file), and a pool of workers that decode blocks and `intern_block` them concurrently.
+→ `find_block` to the next *validated* boundary → hand blocks to workers, checked from
+*every* offset of a multi-block file), and a pool of workers that decode blocks and
+`intern_block` them concurrently.
+
+**The splitter owes an answer on `Scan::damaged`, and it is not "ignore it".** A validated
+scan cannot distinguish a damaged block from a false candidate — both are a marker whose
+header fails — so scanning past one scans past the other, and a corruption `decode_block`
+would have *reported* becomes a file that quietly holds fewer facts. `find_block` returns the
+skipped candidate alongside the boundary for exactly this reason; the pipeline has to decide
+whether a damaged block fails the write, is logged, or is skipped on purpose. A footer of
+block offsets sidesteps the question entirely for files this writer produced — the chain is
+exact and no payload byte is ever weighed as a boundary — which is an argument for making the
+footer required rather than optional.
+
+**The scan's double CRC pass is deliberate, and stays until a caller measures it.**
+`find_block` checksums the whole declared payload to accept a boundary and `decode_block`
+checksums it again, so a scan-then-decode reads up to 64 MiB per block twice. Handing the
+validated header out of the scan to save the second pass would mean a decode that trusts a
+CRC it did not compute — the one thing the CRC is there to prevent — bought on a path with no
+production caller. The pipeline above should not scan at all except to recover, so the pass to
+remove is the first one, by not scanning; if a measurement ever says otherwise, it is an NFR
+this item owes a guard for.
 
 **Two acceptance criteria are inherited rather than owed** — shuffle-invariance
 (`writer_count_and_write_order_do_not_change_the_database`) and deterministic rejection under

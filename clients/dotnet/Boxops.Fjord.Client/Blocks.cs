@@ -22,12 +22,18 @@ namespace Boxops.Fjord.Client;
 /// never uses <c>0xF8</c>–<c>0xFF</c>.
 /// </para>
 /// <para>
-/// The ten <c>0xFF</c> bytes are a marker this encoding <i>cannot otherwise
-/// produce</i>: UTF-8 never uses <c>0xF8</c>–<c>0xFF</c>, and a varint's last byte is
-/// below <c>0x80</c> so a run ends where the varint does — the longest reachable is
-/// nine. That is what lets a fact file be split at an arbitrary offset. A client does
-/// not have to care, but a client that <i>emitted</i> a marker inside a payload would
-/// break it, which is why the encoding here has to match rather than merely decode.
+/// The ten <c>0xFF</c> bytes are a marker this encoding makes <i>rare</i> inside a
+/// payload, not one it cannot produce. No <i>string</i> or <i>varint</i> can carry
+/// one — UTF-8 never uses <c>0xF8</c>–<c>0xFF</c>, and a varint's last byte is below
+/// <c>0x80</c> so a run ends where the varint does, the longest reachable being nine
+/// — but a <see cref="FjordType.Bytes"/> payload is a length varint and then the
+/// bytes raw, unvalidated, so ten <c>0xFF</c> inside a blob are ordinary data.
+/// <b>No fixed marker can be structurally impossible in a family that carries
+/// arbitrary bytes.</b> A client that emits one inside a <c>bytes</c> payload is
+/// therefore writing valid facts and breaks nothing: a reader confirms the magic and
+/// then the CRC, and scans on when a candidate fails. What the encoding buys is that
+/// a <i>false</i> candidate is rare rather than routine — which is why the encoding
+/// here still has to match rather than merely decode.
 /// </para>
 /// <para>
 /// Header fields are little-endian; the checksum covers the header's own fields as

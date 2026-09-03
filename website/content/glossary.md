@@ -224,8 +224,9 @@ test asserting that is the cheapest guard in the project.
 **suspend** — a voluntary, resumable yield producing a cursor. Distinct from a cancel and from a
 terminal unwind.
 
-**sync marker** — ten `0xFF` bytes marking a block boundary. Unreachable inside a payload **by the
-encoding**, which is what makes one file splittable for parallel ingest.
+**sync marker** — ten `0xFF` bytes marking a block boundary. A hit is **only a candidate**: a
+`bytes` payload carries arbitrary content, so a marker can occur inside one, and a splitter
+confirms the magic and the header CRC before believing it.
 
 **transport codec** — the wire format: compact, schema-driven, not order-preserving. A sibling of the
 storage codec, sharing no bytes with it.
