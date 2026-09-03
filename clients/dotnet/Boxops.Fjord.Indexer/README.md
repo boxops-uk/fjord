@@ -25,7 +25,7 @@ Four things, in the order they matter:
 1. **Volume.** A million facts, written the way a producer really writes them, is the
    only way to find out what interning costs, what a scan costs when the predicate is
    not six rows, and whether a plan that looks fine on the fixture still looks fine when
-   `src.Ref` has seven figures in it.
+   `codemarkup.FileXRef` has seven figures in it.
 2. **A second implementation, doing something harder.** The demo proved the protocol is
    implementable from outside. This proves it is *usable* from outside — that a producer
    with a real workload, emitting in the order a syntax walk reaches things, needs
@@ -40,10 +40,10 @@ Four things, in the order they matter:
 ## The shape of the run
 
 **A producer that holds no fact ids.** Roslyn hands this program a symbol; it turns the
-symbol into the `src.Decl` fact that names it and nests *that whole fact* wherever a
-reference to it goes — through the module that holds it, down to the file that holds
-that. It keeps no map from entities to identities, and it emits in whatever order the
-walk reaches things.
+symbol into the entity fact that names it and nests *that whole fact* wherever a
+reference to it goes — through the type that contains it, its full name, its namespace,
+down to the interned identifier at the bottom. It keeps no map from entities to
+identities, and it emits in whatever order the walk reaches things.
 
 At six declarations that is an elegance argument. At a million facts it is the only
 tractable option: the alternative is a second pass over an index that no longer fits in
@@ -67,94 +67,101 @@ fingerprint is for. **Declaration order is not part of that agreement**: the
 fingerprint sorts by name on both sides, so this file may list predicates in whatever
 order reads well.
 
-**The source layer**, which every indexer here fills:
+**The source layer**, which every indexer fills whatever language it reads:
 
 | predicate | what it holds | how it is decided |
 |---|---|---|
-| `src.File` | a path, relative to `--root` | every syntax tree with a file behind it, minus `bin/` and `obj/` |
-| `src.Module` | `{file, name}` | the **namespace**, per file. A file declaring two namespaces is two modules; the C# analogue of a Python module is not the project, because a project spans namespaces and a namespace spans projects |
-| `src.Decl` | `{module, name, line}`, value = kind | every symbol with syntax of its own: types, methods, constructors, operators, properties, indexers, events, fields, enum members, delegates, local functions. The name is qualified by its containing *types* — `Store.Cursor.Next` — and the line is the identifier's, not the first attribute's |
-| `src.SearchByName` | `{name, to}` | the same declaration keyed by its **short** name, which is what someone searching types |
-| `src.Ref` | `{to, file, at: {line, col}}` | every identifier that binds to a declaration this index holds |
-| `src.Import` | `{from, to}` | module → module, deduped, implied by where the references actually resolved |
-| `src.Line` | `{file, line}`, value = the text | every line of every file walked, blanks included |
+| `src.File` | a path, relative to `--root` | every syntax tree with a file behind it, minus `bin/`, `obj/`, and anything outside the root — a path that climbs out is not a name two runs would agree on |
+| `src.Symbol` | a SCIP symbol | the cross-language identity: `scip-csharp nuget <assembly> <version> <descriptors>`, minted for everything with a global name and for nothing without one |
+| `src.FileInfo` | `{file}` → bytes, lines, whether it ends in a newline | one per file, and what a consumer falls back to when an offset resolves past the last line |
+| `src.FileLine` | `{file, line}` → the text, and three offsets | every line, blanks included. `start` is a UTF-8 byte offset and `cstart` a UTF-16 one — not the same number — so the line table is also the conversion table |
+| `src.FileLineAt` | `{file, start, line}` | the inverse: which line an offset is on, as a seek rather than a scan |
+| `src.FileLanguage` · `src.FileDigest` | `{file}` → the language · the content hash | what to highlight it as, and what tells two checkouts of one path apart |
+| `src.FileLineStyles` | `{file, line}` → opaque bytes | syntax highlighting from Roslyn's own classifier, off unless `--styles`. fjord defines nothing about the bytes; `config.Setting {dimension = "style-encoding"}` names the format |
+| `src.FileOrigin` | `{file}` → repo, revision | only where the run states them: provenance is not in the code |
+
+**`config.Setting`** — what the database was built *against*: the target framework
+(exactly one), the configuration, the index root, the position encoding, the symbol
+scheme, the languages, and the producer. Every one of these was implicit once, and one of
+them cost real time: an index whose paths are relative to a root nobody wrote down can only
+be matched to a checkout by inference.
 
 **The build layer** — what compiled a file, and into what:
 
-| predicate | what it holds | how it is decided |
-|---|---|---|
-| `src.Project` | a `.csproj` path | every project file under `--source`, whether or not it built |
-| `src.Assembly` | an assembly name | `AssemblyName` if the build or the project file states one, else the project file's base name — which is MSBuild's own default |
-| `src.Compilation` | `{assembly, framework, project}` | one per project per target framework: the resolved TFM after a design-time build, the TFM as the project file spells it otherwise |
-| `src.ProjectSource` | `{file, project}` | MSBuild's source list where there is one; the nearest enclosing project otherwise; nothing at all where neither answers |
-| `src.ProjectRef` | `{from, to}` | `<ProjectReference>`, resolved to a project this index holds |
-| `src.Package` · `src.PackageRef` | `{name, version}` · `{package, project}` | `<PackageReference>`, with the version MSBuild resolved where it was asked |
+| predicate | what it holds |
+|---|---|
+| `msbuild.Project` | a `.csproj`, with what MSBuild evaluated on the value side: SDK, output type, assembly name, root namespace, platform |
+| `msbuild.Assembly` · `msbuild.Compilation` | the assembly a project produces, and the crossing of the two per target framework |
+| `msbuild.SourceFileToProject` · `msbuild.ProjectToSourceFile` | both directions, because neither is a seek from the other |
+| `msbuild.ProjectReference` · `msbuild.ProjectReferencedBy` | the project graph, both ways: "what does this need" and "who needs this" |
+| `msbuild.Package` · `msbuild.PackageReference` · `msbuild.PackageDependent` | `<PackageReference>`, with the version after central package management has had its say |
 
-**The declaration graph** — what a syntax walk cannot see:
+**The C# layer** — the entity model, which is what a syntax walk cannot see:
 
-| predicate | what it holds | how it is decided |
-|---|---|---|
-| `src.Member` | `{container, member}` | every declaration with a containing type, including nested types |
-| `src.Extends` | `{base, type}` | the base type, unless it is `System.Object` |
-| `src.Implements` | `{iface, type}` | **`AllInterfaces`** — the closure, not the list the declaration writes |
-| `src.Override` | `{base, member}` | `override`, plus implicit and explicit interface implementation, which are the same question |
-| `src.Param` | `{decl, index, name}`, value = the type | methods, constructors, operators, indexers, and a delegate's invoke signature |
-| `src.TypeOf` | `{decl}`, value = the type | a field's or property's type, a method's return type, an event's handler type |
-| `src.Doc` | `{decl}`, value = the text | the `///` comment above the declaration, slashes stripped, tags kept |
-| `src.Attribute` | `{attribute, target}` | every attribute applied to a declaration, by its full type name |
+| predicate | what it holds |
+|---|---|
+| `csharp.Name` · `csharp.NameLowerCase` · `csharp.Namespace` | interned identifiers, and the search row that folds their case |
+| `csharp.Class` · `Interface` · `Record` · `Struct` | the named types, each keyed on its full name and carrying its modifiers |
+| `csharp.Method` · `Property` · `Field` · `Parameter` · `Local` · `TypeParameter` | the members, keyed on what the compiler knows rather than on where they are written |
+| `csharp.MethodParameter` · `MethodTypeParameter` · `TypeTypeParameter` · `PropertyParameter` | the ordered lists, one fact per position, because the type model has no arrays |
+| `csharp.ArrayType` · `PointerType` · `FunctionPointerType` | the type shapes a name alone cannot spell |
+| `csharp.Implements` | **the closure**, not the list the declaration writes: a type that says `: List<T>` *is* an `IEnumerable`, and sigla has no recursion to close it at query time |
+| `csharp.DefinitionLocation` · `EntityXRef` · `EntityRef` | where an entity is written, and every reference to it in both directions |
+| `csharp.SymbolOf` · `DefinitionBySymbol` | the crossing between an entity and its SCIP symbol |
+
+**The `codemarkup` layer** — the same facts re-keyed for the questions a UI asks, with the
+language taken out of them:
+
+| predicate | the question it answers |
+|---|---|
+| `codemarkup.Definition` | "where is this symbol defined", keyed by symbol |
+| `codemarkup.FileDefinition` | "what is defined in this file", keyed by file and position |
+| `codemarkup.FileXRef` | "what does this file reference, in reading order" |
+| `codemarkup.SymbolXRef` | "who references this", across every file |
+| `codemarkup.FileLocalXRef` | the same, span to span, for a local that has no global name worth minting |
+| `codemarkup.SearchEntry` · `SymbolByName` | prefix search on a case-folded name, and exact search on the written one |
+| `codemarkup.Relation` · `RelationOf` | contains, extends, implements, overrides — both directions |
+| `codemarkup.SymbolInfo` | the signature, the doc comment and the modifiers a hover card shows |
 
 Several of those deserve their reasoning stated.
 
-**`src.Decl`'s value side is the kind** — `class`, `method`, `ctor`, `property` — because
-a value cannot be matched on ([I6](../../../website/content/invariants.md#i6)), which makes it
-exactly right for something a query wants to *read* and never to filter by.
+**`src.Symbol` is a string, and that is what makes a fan-out possible.** A `FactId` is a
+predicate tag plus a per-predicate sequence, so it means nothing in another database — and
+"who references this, anywhere" is a question across several. A SCIP symbol survives the
+trip. It costs an interned string per reference and buys the ability to leave the database.
 
-**`src.SearchByName` earns itself here in a way the fixture cannot show.** A declaration's
-key begins with its module, so `src.Decl {name = "Parse"..}` reaches the name only after
-the scan has opened — a filter over every declaration in the database. Keyed by the name
-instead, the same prefix is a range. On six declarations that is a debating point; on
-several hundred thousand it is the difference the `--profile` flag prints.
+**Identity and location are separate.** A `csharp.Method` is keyed on what the compiler
+knows — its name, its containing type, its signature — and `csharp.DefinitionLocation`
+says where it is written. Reformatting a file moves every location and no identity, which
+is the property the old `{module, name, line}` key did not have: a blank line inserted at
+the top of a file re-keyed every declaration below it.
 
-**`src.Import` is not the `using` directives.** In C# a `using` names a namespace, and a
-namespace is declared across many files in many projects — it says nothing about which
-file this one needs. What carries that is where the names actually resolved to, so the
-edge here is "a name in this file resolved to a declaration in that module", deduped.
-That is a dependency graph a question can be asked of; the `using` list is not.
+**`codemarkup` is redundant with `csharp` by construction, and deliberately.** Every fact
+in it could be derived from the layer beside it — while `nyi/derivation` stands, a producer
+is what states the second keying, and the query that *would* derive each one is a comment
+in the schema. What it buys is a surface a UI reads without knowing C# exists, which is the
+same surface a SCIP converter fills for TypeScript.
 
-**`src.Implements` stores the closure, and that is a decision.** A type that says
-`: List<T>` *is* an `IEnumerable`, and someone asking for every enumerable in a
-repository is asking the semantic question, not the syntactic one. sigla has no
-recursion to close a transitive relation with at query time, so the closure is written
-down — the same trade `src.SearchByName` makes, and the same one Glean makes for its
-`InheritedMembers`: more facts on the way in, one seek on the way out.
+**`csharp.Implements` stores the closure, and that is a decision.** Someone asking for every
+enumerable in a repository is asking the semantic question, not the syntactic one. More
+facts on the way in, one seek on the way out.
 
-**`src.Param` and `src.TypeOf` hold a type as a *spelling*, not as an identity.**
-`ReadOnlySpan<byte>` is what a signature renders as and what a person reads; the identity
-is already in the index, because the type name in a parameter list is an ordinary
-identifier that the walk resolves into a `src.Ref` like any other. Storing the display
-string as a *value* rather than a key field says exactly that: read it, do not join on
-it.
+**A declaration this layer cannot express is dropped and counted.** A signature mentioning
+`dynamic`, or a name that did not resolve, has no `csharp.AType` alternative — and that type
+sits in the key of `Method`, `Field` and `Parameter`. The run prints how many, because a
+layer that silently loses declarations is worse than one that says how many it lost. On a
+healthy checkout it is zero, and a number other than zero found a broken workspace once.
 
-**`src.Line` is the line table, and it is complete on purpose.** There are no arrays in
-the type model yet ([the settled record](../../../PLAN.md)), so a sequence is
-said the only way this schema can say one — a fact per element with the position in the
-key. Blank lines are included: a table whose gaps mean "empty" is indistinguishable from
-one whose gaps mean "not indexed". It is the largest predicate by bytes, the widest row
-in the database, and the reason a search hit can be rendered with its context without
-opening a file — and `--no-lines` leaves it out when what is being measured is the
-semantic index.
-
-**The build layer degrades rather than disappears.** A design-time build knows the
-resolved framework, the assembly name MSBuild computed, versions after central package
-management, and the exact source list. Without one, the project files are still on disk
-and still say what they reference — so `ProjectIndex` reads their XML, attributes each
-source file to the nearest enclosing project, and records an unexpanded
-`$(NetCoreAppCurrent)` as exactly that rather than inventing a framework. Two things it
-will not do: guess a version a project file does not state (the empty string means "not
-stated"), and attribute *shared* source — `src/libraries/Common` in dotnet/runtime lives
-under no project and is compiled into a hundred assemblies by explicit `<Compile
-Include>`, so it gets no edge at all rather than a plausible one. The run says how many
-files that was.
+**The build layer degrades rather than disappears.** A design-time build knows the resolved
+framework, the assembly name MSBuild computed, versions after central package management,
+and the exact source list. Without one, the project files are still on disk and still say
+what they reference — so `ProjectIndex` reads their XML, attributes each source file to the
+nearest enclosing project, and records an unexpanded `$(NetCoreAppCurrent)` as exactly that
+rather than inventing a framework. Two things it will not do: guess a version a project
+file does not state (the empty string means "not stated"), and attribute *shared* source —
+`src/libraries/Common` in dotnet/runtime lives under no project and is compiled into a
+hundred assemblies by explicit `<Compile Include>`, so it gets no edge at all rather than a
+plausible one. The run says how many files that was.
 
 ## What it resolves, and what it does not
 
@@ -177,15 +184,13 @@ What it still does not do, each for a reason:
   would not.
 - **Generic instantiations are collapsed to their definition** — `List<int>.Add` and
   `List<T>.Add` are one declaration — and a type parameter is not a declaration at all.
-  The hierarchy itself *is* indexed now, as `src.Extends` and `src.Implements`.
-- **A type the compiler could not resolve is not recorded as one.** `src.TypeOf`,
-  `src.Param` and `src.Attribute` skip an error type, because an unresolved type
-  displays as whatever the source wrote — so the same declaration reached from a run
-  that resolved it and one that did not would be a same-key-different-value conflict for
-  the first two, and two spellings of one key for the third.
-- **The extras are written once per declaration key.** Two symbols landing on one
-  (module, name, line) — overloads written on a single line — give the first one's kind,
-  type, parameters and doc comment, and the run counts the collision.
+  The hierarchy itself *is* indexed, as `csharp.Implements` and `codemarkup.Relation`.
+- **A type the compiler could not resolve is not recorded as one.** `csharp.AType` has no
+  alternative for an error type or for `dynamic`, and that type sits in the *key* of
+  `Method`, `Field` and `Parameter` — so the declaration is dropped rather than written
+  under a fabricated one, and `Inexpressible` counts it. An unresolved type displays as
+  whatever the source wrote, so recording it would mean the same declaration reached from
+  a run that resolved it and one that did not were two different facts.
 
 ## Two things that had to be got right
 
@@ -195,13 +200,14 @@ last build wrote and this one did not, and a design-time build writes nothing. P
 the default at a checkout empties every `bin` in it. It did that here, to this program's
 own output, while it was running out of it.
 
-**One declaration key, one kind.** A `src.Decl` key is (module, name, line) and its value
-is the kind, so two declarations agreeing on the key and differing on the kind are a
-same-key-different-value conflict — which the server rejects deterministically and by
-name (`ops-I5`), failing the stream carrying it. Right for a database, and the wrong way
-to lose an hour of indexing. So a constructor is `Store.ctor` rather than `Store` —
-otherwise a type and its constructor written on one line collide — and where two symbols
-still land on one key, the first kind wins and the run counts it.
+**A key the compiler decides, not the formatting.** The old declaration key was
+`{module, name, line}` — so a blank line inserted at the top of a file re-keyed every
+declaration below it, two overloads written on one line collided, and the producer had to
+carry conflict bookkeeping to notice. The entity key is what the compiler knows: a method
+is its name, its containing type and its signature. Reformatting a file now moves every
+`DefinitionLocation` and no identity, and the bookkeeping is gone because there is nothing
+left for it to catch — a conflicting fact is refused by the server, by name (`ops-I4`),
+and the run stops.
 
 That rule now guards more than the kind. A declaration's type, its parameters' types and
 its doc comment are values too, so **everything carrying one is emitted once per key**:
@@ -229,25 +235,18 @@ collision nobody would have predicted.
                       config.Setting (default: Debug)
 --strict              a project or target left out fails the run
 --list-frameworks     print the frameworks this checkout compiles for, and stop
---no-refs             declarations only: no src.Ref, no src.Import
+--no-refs             declarations only: no cross-references
 --no-lines            do not write the line table (src.FileLine)
 --styles              also write syntax highlighting (src.FileLineStyles)
 --repo <id>           the repository this checkout is of, per file
 --revision <rev>      the revision indexed (both, or neither: src.FileOrigin)
---no-docs             do not write doc comments (src.Doc)
+--no-docs             do not read doc comments (codemarkup.SymbolInfo.doc)
 --no-restore          do not let the design-time build restore first
 --dry-run             index and encode, but connect to nothing
 --emit <path>         also write every block to a file
 --no-smoke            do not query the index afterwards
 --verbose             let MSBuild's output through
 ```
-
-> **This README is otherwise out of date, and knowingly.** The predicate tables and the
-> sample run below describe `code.sigla`, which was deleted: twenty-one of the twenty-two
-> predicates they name no longer exist, and the figures were taken over a corpus built by
-> a mode that no longer exists either. What the indexer writes today is
-> `schemas/dotnet.sigla` — 67 predicates across `src`, `config`, `msbuild`, `csharp` and
-> `codemarkup`. Read the schemas for the shapes until this is rewritten.
 
 **`--batch` is a flag because finding out what it should be is the point of having
 something to measure with.** A flush is a write stream, and the server interns a block
@@ -314,150 +313,74 @@ or relax the `global.json` in the checkout to get the full semantic index.
 
 ## What a run prints
 
-This is a real one: **all of dotnet/runtime's `src/`** — 32,710 C# files, 430 MB of
-source — indexed into a release server on an eight-core machine, one compilation,
-`--jobs 8`. It was taken with a mode this program no longer has, so the figures are a
-record rather than a target.
+This is a real one, and a small one: this repository's own solution, `--framework net10.0`,
+against a release server.
 
 ```
-indexed 32,710 file(s) in 4613.4s
-  src.File                    32,710
-  src.Module                  36,192
-  src.Decl                   888,292
-  src.SearchByName           888,292
-  src.Ref                  4,879,151
-  src.Import                 271,553
-  src.Project                  5,607
-  src.Assembly                 5,607
-  src.Compilation              6,906
-  src.ProjectSource           26,685
-  src.ProjectRef               1,281
-  src.Package                    437
-  src.PackageRef                 437
-  src.Member                 835,542
-  src.Extends                 16,446
-  src.Implements              32,581
-  src.Override                98,651
-  src.Param                  578,271
-  src.TypeOf                 761,197
-  src.Doc                     73,975
-  src.Attribute              175,405
-  src.Line                 8,583,810
-  total                   18,199,028 facts in 4,454 blocks
-  server                  18,176,899 created, 44,422,889 deduped
-  writing                     1827.5s of 4613.4s
-  throughput                   3,944 facts/s
+indexed 52 file(s) in 10.5s
+  src.File                                    52
+  src.Symbol                              15,176
+  src.FileLine                            14,481
+  config.Setting                               7
+  msbuild.Project                             17
+  csharp.Name                              3,152
+  csharp.Method                            1,735
+  codemarkup.Definition                      906
+  codemarkup.FileXRef                     13,398
+  codemarkup.SearchEntry                     906
+  …
+  total                      121,678 facts in 72 blocks
+  server                     105,126 created, 910,367 deduped
+  contended                      0.0s  (1,005 of 121,678 facts waited for a batch)
+  throughput                  11,637 facts/s
 
-references: 4,879,151 resolved, 190,888 to declarations outside the index, 3,130,214 unresolved
-  6,025 file(s) no project compiles (shared source, or outside every project directory)
+references: 16,172 resolved, 4,738 to declarations outside the index, 12 unresolved
 ```
 
-**1.8 GB on disk**, about a hundred bytes a fact — which is what a fact costs once its
-references are ids and its strings are stored once.
-
-Five of those numbers are worth reading twice.
-
-**`src.Line` is 8.6 million of the 18.2 million.** A line table is a fact per line and
-this repository has eight and a half million lines of C#; it is also most of the bytes,
-since its value is the line. `--no-lines` halves the index for the runs where the
-semantic half is the point.
-
-**The build layer is the whole repository, not the walk.** 5,607 projects, because a
-project is a fact about the checkout and a run stopped early by `--max-files` should
-still say which projects exist.
-
-**`src.ProjectSource` is 26,685 against 32,710 files, and the gap is the honest part.**
-Six thousand files have no project the containment rule can name: shared source under
-`src/libraries/Common`, and directories like `src/tests/JIT/CodeGenBringUpTests` that
-hold **645 project files beside their sources**, one per test. Containment says "one of
-these 645", so the run says nothing and counts it. A design-time build answers all of
-them exactly.
-
-**3.13 million names went unresolved — one in three.** That is not the usual figure for
-a walk without MSBuild (one in eight) and the reason is instructive: this is a whole
-repository compiled as *one* compilation, and dotnet/runtime defines the same type many
-times over — a reference assembly, an implementation, a per-platform variant. Roslyn
-cannot pick, so the name binds to nothing. Slicing per project, or a design-time build,
-resolves it; indexing the whole tree at once is what buys the cross-library edges that
-do resolve.
-
-**Writing was 1,827 of 4,613 seconds — 40%.** The rest is Roslyn: five million names
-asked what they mean, and every declaration asked what it extends, implements,
-overrides, takes as parameters and says in its doc comment.
+Four of those numbers are worth reading twice.
 
 **`created` counts every fact written, nested targets included; `deduped` those already
-there.** Eighteen million facts *sent* were sixty-two million facts *touched* — a factor
-of 3.4, which is what it costs to send each reference with its declaration, that
-declaration's module and that module's file nested inside it. Forty-four million of them
-were already in the database. That number is interning working, and producing it is the
-whole point of the exercise; `--dry-run` is the honest way to measure the client without
-it.
+there.** A hundred and twenty-one thousand facts *sent* were a million facts *touched* — a
+factor of eight, which is what it costs to send each reference with its symbol and that
+symbol's file nested inside it. Nine hundred thousand of them were already in the database.
+That number is interning working, and producing it is the whole point of the exercise;
+`--dry-run` is the honest way to measure this side without one.
 
-Then it asks the database a handful of questions, chosen for what they cost rather than
-for what they mean. These are `--profile` runs against the whole index above, and the
-`examined` column is the point of printing them:
+**`contended` is what the walk pays for sharing.** Several threads produce facts into
+sixty-nine per-predicate batches, and a thousand of a hundred and twenty-one thousand found
+one already held — for under a twentieth of a second in total. It replaced a single lock
+around the whole of fact production, and the number is here so the replacement can be
+compared with what it replaced rather than assumed better.
 
-```
-  every type implementing IDisposable — the closure, so one seek
-  sigla> {type = T.name} where src.SearchByName {name = "IDisposable", to = I};
-         src.Implements {iface = I, type = T}
-    src.SearchByName        2
-    src.Implements      3,879
-    fetch src.Decl      3,879
-    3,879 row(s) in 39 ms
+**`4,738 to declarations outside the index` is the honest part.** Real code points at the
+BCL and at packages; those references resolve to entities with no source location, and the
+run counts them rather than dropping them or inventing targets. `12 unresolved` is a name
+the compiler could not bind at all, which on a healthy checkout should be nearly zero.
 
-  everything marked [Obsolete] — a string leading the key, so also one seek
-  sigla> {name = D.name} where src.Attribute {attribute = "System.ObsoleteAttribute", target = D}
-    src.Attribute       1,960
-    fetch src.Decl      1,960
-    1,960 row(s) in 17 ms
+**The line table is most of the bytes and none of the meaning.** A fact per line, blanks
+included, because a table whose gaps mean "empty" cannot be told from one whose gaps mean
+"not indexed" — and it is what lets a search hit be rendered with its context without
+opening a file. `--no-lines` leaves it out when the semantic half is the point.
 
-  the parameters of every `TryParse`, in order
-  sigla> {at = P.index, name = P.name, type = P.value}
-         where src.SearchByName {name = "TryParse", to = D}; P = src.Param {decl = D}
-    {at = 0, name = "s", type = "string?"}
-    {at = 2, name = "provider", type = "System.IFormatProvider?"}
-    {at = 3, name = "result", type = "TSelf"}
-    6 row(s) in 3 ms
+## What this does not tell you
 
-  what compiles the file that declares `Utf8JsonReader`
-  sigla> {assembly = Y, framework = F, project = X}
-         where src.SearchByName {name = "Utf8JsonReader", to = D};
-               src.ProjectSource {file = D.module.file, project = src.Project X};
-               src.ProjectSource {file = D.module.file, project = P};
-               src.Compilation {assembly = src.Assembly Y, framework = F, project = P}
-    {assembly = "System.Text.Json", framework = "netstandard2.0",
-     project = "src/libraries/System.Text.Json/ref/System.Text.Json.csproj"}
-    {assembly = "System.Text.Json", framework = "$(NetFrameworkMinimum)", ...}
+**Nothing here is a measurement at scale, and the figures that were have been retired.**
+This README used to carry a run over the whole of dotnet/runtime — 32,710 files, 18.2
+million facts — and every number in it was taken over a schema that no longer exists, by a
+mode that no longer exists, in a corpus nobody can rebuild. Annotating those figures would
+have made them look current; they are gone instead, along with the register that held them.
 
-  uses of `SyntaxKind`, which is a join and still a scan
-  sigla> {line = R.at.line, col = R.at.col} where R = src.Ref {to = D};
-         src.SearchByName {name = "SyntaxKind", to = D}
-```
+[`bench/FINDINGS.md`](../../../bench/FINDINGS.md) is closed until a 1.0 pass for the same
+reason, and it says what survives: the lessons, each banked in the tree with a guard. The
+pass that re-takes the numbers owes a corpus first.
 
-Four things those show, in the order they matter.
+What is still true and worth knowing before pointing this at something large:
 
-**The container-first keys work.** Every one of the 3,879 rows `src.Implements`
-examined it also produced, out of a predicate holding 32,581 — that is a seek into
-`iface`, not a scan filtered afterwards. `src.Attribute` says the same for
-`[Obsolete]`: 1,960 examined, 1,960 produced, out of 175,405. Both are what the field
-*names* bought, since sorted field order is the key order.
-
-**A scalar key is read back with a nested pattern, not a field access.**
-`src.Project`'s key is a bare string, so `project = P` binds a *reference* and prints as
-one; `project = src.Project X` matches the target and binds its key. It is the same
-spelling the write side uses, which is the point — but it is worth knowing before
-writing the query the other way and getting `#7:675`.
-
-**The unexpanded `$(NetFrameworkMinimum)` in that answer is the degradation, visible in
-the data.** No design-time build ran here, so the framework is what the project file
-literally says. A run with MSBuild answers `net462` for the same row.
-
-**`src.Ref` is still the one that scans**, and it is a finding rather than a
-disappointment: its key begins with a *position*, so "every use of this declaration"
-reads the predicate rather than narrowing into it — five million rows on this index.
-The shape of the argument is exactly the one `src.SearchByName` settles at the
-declaration level, and the answer is the same: a predicate keyed by `to` would make it a
-seek. That is a derived predicate nobody can declare yet
-([Phase 8b](../../../PLAN.md)), which is a thing worth knowing from a measurement rather
-than from an opinion.
+- **Memory is proportional to the compilation, not the checkout.** A project is a
+  compilation and a compilation holds every symbol table it needs; `--max-projects` is the
+  knob, because slicing a single compilation by *file* drops every reference that crosses a
+  slice boundary — a cost paid in missing edges rather than in time.
+- **A repository that pins its SDK will not design-time build here**, and that is not a bug
+  in either party: `global.json` names a version and `dotnet` refuses to substitute another.
+  Every project then fails to build, and this indexer refuses the run rather than writing a
+  degraded index — which is the rule it exists to keep.

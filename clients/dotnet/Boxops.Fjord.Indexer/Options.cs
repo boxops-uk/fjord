@@ -52,7 +52,7 @@ internal sealed record Options
     /// <summary>Also write every block to this file, which is the fact-file format.</summary>
     public string? Emit { get; init; }
 
-    /// <summary>Emit <c>src.Ref</c> and <c>src.Import</c>. Off is a decls-only index.</summary>
+    /// <summary>Emit cross-references. Off is a declarations-only index.</summary>
     public bool References { get; init; } = true;
 
     /// <summary>
@@ -65,7 +65,7 @@ internal sealed record Options
     /// </remarks>
     public bool Lines { get; init; } = true;
 
-    /// <summary>Emit <c>src.Doc</c>: the doc comment above a declaration.</summary>
+    /// <summary>Read the doc comment above a declaration, for `codemarkup.SymbolInfo`.</summary>
     public bool Docs { get; init; } = true;
 
     /// <summary>
@@ -233,7 +233,7 @@ internal sealed record Options
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
           --writers <n>         concurrent write streams, one connection each (default: 1;
                                 raise it when the report's `queueing` is a real share of the run)
-          --no-refs             declarations only: no src.Ref, no src.Import
+          --no-refs             declarations only: no cross-references
           --no-lines            do not write the line table (src.FileLine)
           --styles              also write syntax highlighting (src.FileLineStyles)
           --framework <tfm>     index only this target framework (default: one database
@@ -244,7 +244,7 @@ internal sealed record Options
           --list-frameworks     print the frameworks this checkout compiles for, and stop
           --repo <id>           the repository this checkout is of, per file
           --revision <rev>      the revision indexed (both, or neither: src.FileOrigin)
-          --no-docs             do not write doc comments (src.Doc)
+          --no-docs             do not read doc comments (codemarkup.SymbolInfo.doc)
           --no-restore          do not let the design-time build restore first
           --dry-run             index and encode, but connect to nothing
           --emit <path>         also write every block to a file

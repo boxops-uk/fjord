@@ -423,10 +423,10 @@ internal static class Program
     /// <remarks>
     /// Three questions, chosen for what they cost rather than for what they mean: a scan
     /// of a small predicate, a seek into the search index, and the join that reaches
-    /// through a reference. The last one is the interesting number — <c>src.Ref</c>'s
-    /// key begins with a position, so finding every use of a declaration reads the
-    /// predicate rather than narrowing into it, which is exactly the shape of argument
-    /// <c>src.SearchByName</c> exists to answer at the declaration level.
+    /// through a reference. The last one is the interesting number — a cross-reference
+    /// keyed by the file it is in reads the whole table to answer "every use of this",
+    /// and one keyed by what it points at seeks. Both keyings are stored, which is the
+    /// whole argument for a derived predicate.
     /// </remarks>
     private static void Smoke(FjordConnection connection, Indexer indexer)
     {
@@ -455,7 +455,7 @@ internal static class Program
             // **The join that reaches through a reference**, and the one this schema
             // changes the cost of: `EntityRef` leads with the target, so every use of a
             // definition is a seek rather than a read of the whole cross-reference table
-            // — which is what `src.Ref` could not do, its key beginning with a position.
+            // — which a cross-reference keyed by its own position cannot do.
             Run($"every use of `{sample}`, which is a seek because the target leads",
                 $"{{file = P, at = X.use.start}} where "
                 + $"X = csharp.EntityRef {{target = D, file = F}}; F = src.File P; "
