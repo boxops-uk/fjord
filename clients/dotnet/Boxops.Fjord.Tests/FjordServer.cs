@@ -104,16 +104,24 @@ public sealed class FjordServer : IDisposable
 
     /// <summary>Create a database from a shipped schema, then serve the root it is in.</summary>
     public static FjordServer Serving(string database, string schema) =>
-        Serving(schema, database);
+        ServingAll(schema, database);
 
     /// <summary>
     /// Create several databases from one schema, then serve the root they are in.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Several because a run that compares one index with another needs both of them at
     /// once — and a second server over the same root is refused, as it should be.
+    /// </para>
+    /// <para>
+    /// <b>A name of its own rather than an overload.</b> Two strings bind to
+    /// <c>(database, schema)</c> ahead of <c>(schema, params[])</c>, so the pair delegating
+    /// to the list called itself — which the compiler is right not to warn about and which
+    /// presents as a stack overflow in the test host.
+    /// </para>
     /// </remarks>
-    public static FjordServer Serving(string schema, params string[] databases)
+    public static FjordServer ServingAll(string schema, params string[] databases)
     {
         // Short, and directly under /tmp: see the SUN_LEN note above.
         var root = Path.Combine("/tmp", $"fjt-{Guid.NewGuid():N}"[..14]);

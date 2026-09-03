@@ -52,7 +52,7 @@ public sealed class LedgerTests
     public void One_corpus_indexed_four_ways_seals_to_one_identity()
     {
         using var fixture = Fixture.Copy("ledger");
-        using var server = FjordServer.Serving(
+        using var server = FjordServer.ServingAll(
             "dotnet.sigla",
             [.. Axes.Select(axis => Name(axis.Jobs, axis.Writers))]);
 
@@ -172,5 +172,78 @@ public sealed class LedgerTests
         }
 
         return stored;
+    }
+
+    /// <summary>
+    /// <b>What interning costs over the frozen corpus, as a number that cannot drift.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// R3.6's claim, taken where it can be taken. The run existed because deleting the
+    /// <c>Declared.First</c> gate <i>moves</i> <c>deduped</c> — it is a semantic change,
+    /// not a refactor — and burying it inside a larger run would hide the movement. It
+    /// was buried inside a larger run: the gate and the map it read went with the entity
+    /// rewrite, and nobody stated the delta. So the claim is unproven rather than
+    /// satisfied, and what is owed is the number.
+    /// </para>
+    /// <para>
+    /// <b>The exact figures, so a change to what this producer emits has to say so.</b>
+    /// A ratio of seven repeats to every new fact is what a code index looks like — a
+    /// million references naming ten thousand declarations — and it is the measurement
+    /// this producer exists to make. A silent move in either direction is either a
+    /// duplicate nobody meant to write or a fact nobody is writing any more.
+    /// </para>
+    /// <para>
+    /// <b>The memo's cross-compilation miss is stated, not fixed.</b>
+    /// <c>CsharpEntities</c> keys on <c>ISymbol</c>, which is per-compilation, so a
+    /// declaration re-reached from another project is rebuilt and re-emitted — and lands
+    /// here, in <c>deduped</c>, rather than being suppressed. A run-global key would be a
+    /// descriptor string, which is R4's key by another name and was cancelled with it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Interning_over_the_frozen_corpus_costs_what_it_says_it_costs()
+    {
+        using var fixture = Fixture.Copy("ledger");
+        using var server = FjordServer.Serving("interning", "dotnet.sigla");
+
+        var solution = Loader.Load(
+            new Options { Source = fixture.Path("Ledger.slnx"), Jobs = 2 },
+            fixture.Root,
+            TextWriter.Null);
+
+        var target = Assert.Single(solution.Targets);
+        var options = new Options { Source = fixture.Path("Ledger.slnx") };
+
+        using var connection = FjordConnection.Connect(
+            server.Socket, "interning", DotnetIndex.Schema);
+
+        ulong created;
+        ulong deduped;
+
+        using (var sink = new FactSink(options, [new FjordTarget(connection)]))
+        {
+            var indexer = new Boxops.Fjord.Indexer.Indexer(
+                options, sink, fixture.Root, target.Build);
+
+            foreach (var setting in Provenance.Of(options, fixture.Root, target.Framework, "0.2.0"))
+            {
+                sink.Add(DotnetIndex.Setting, setting);
+            }
+
+            target.Build.Emit(sink);
+
+            foreach (var project in target.Projects)
+            {
+                indexer.Index(project.Compile()!, project.Roslyn);
+            }
+
+            sink.Drain();
+            created = sink.Created;
+            deduped = sink.Deduped;
+        }
+
+        Assert.Equal(1202ul, created);
+        Assert.Equal(8668ul, deduped);
     }
 }

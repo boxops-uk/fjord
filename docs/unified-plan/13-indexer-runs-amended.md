@@ -263,6 +263,10 @@ The cross-compilation miss is **stated, not fixed** — a run-global key would b
 string, which is R4's key by another name and was cancelled with it, so the question belongs to
 whoever prices `src.Symbol` as a memo key.
 
+**Landed.** Over the `ledger` fixture: **1,202 created, 8,668 deduped** — seven repeats for every
+new fact, which is what a code index looks like and what the whole exercise is a measurement of.
+Asserted exactly, so a change to what this producer emits has to say so.
+
 ### R5 — unchanged
 
 ### R6 — the writer default
