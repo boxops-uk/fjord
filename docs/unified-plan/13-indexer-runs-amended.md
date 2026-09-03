@@ -291,6 +291,15 @@ the default if the crossover has moved — it is a function of corpus size, not 
 (0.76 at 4,000 files, 1.27 at 24,000), so the number this run picks is right for a stated corpus
 and no other.
 
+**Landed, and the default does not move.** Over `clients/dotnet` at `net10.0` — 41 files, 105,036
+facts — at `--jobs 8`, median of three, end to end including `finish`: **1 writer 25.7 s, 2 writers
+33.0 s, 4 writers 34.7 s, 8 writers 31.1 s**. More writers do remove the stall (`queueing`
+2.4 → 1.2 → 0.2 → 0.0 s) and the walk gets *slower* anyway (11.5 → 16.1 → 15.7 → 13.7 s) while
+summed `writing` triples. That is §15c's finding again — the stall moves rather than going away —
+and at a corpus this far below the crossover buying it back costs more than it saves. **The
+default stays 1, measured rather than assumed**, and the run this corpus cannot settle is the one
+above the crossover, which is R7's.
+
 ### R7 — re-measure
 
 **Re-cut: the register is closed, and R7 is what re-opens it.** The run was a list of sections to

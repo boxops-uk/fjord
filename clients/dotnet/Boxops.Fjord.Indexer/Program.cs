@@ -163,7 +163,17 @@ internal static class Program
 
         using (var sink = new FactSink(options, targets))
         {
-            indexer = new Indexer(options, sink, root, target.Build);
+            // **`--emit` walks on one thread as well as writing on one.** The flag exists
+            // to produce a file whose bytes can be compared — a golden — and one writer is
+            // only half of what that takes: the block *order* is the order the walk
+            // reached things, so eight walker threads produce a different file every run
+            // with the same facts in it. The design-time builds have already happened by
+            // here, so `--jobs` keeps its meaning for the half of the run that is slow.
+            indexer = new Indexer(
+                options.Emit is null ? options : options with { Jobs = 1 },
+                sink,
+                root,
+                target.Build);
             var reported = TimeSpan.Zero;
 
             // What this database is, before what is in it: the axes it was resolved
@@ -295,9 +305,10 @@ internal static class Program
         }
 
         var writers = options.Emit is null ? options.Writers : 1;
-        if (options.Emit is not null && options.Writers > 1)
+        if (options.Emit is not null && (options.Writers > 1 || options.Jobs > 1))
         {
-            Console.WriteLine("  --emit: one writer, so the file is a deterministic run of blocks");
+            Console.WriteLine(
+                "  --emit: one writer and one walker, so the file is a deterministic run of blocks");
         }
 
         Console.WriteLine($"connecting to {options.Address}, {writers} writer(s)");
