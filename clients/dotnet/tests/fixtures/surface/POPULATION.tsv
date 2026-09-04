@@ -1,0 +1,1130 @@
+id	declares	area	hazard	title
+1	neither	ecma-1		Scope
+2	neither	ecma-2		Normative references
+3	neither	ecma-3	yes	Terms and definitions
+4	neither	ecma-4		General description
+5	neither	ecma-5	yes	Conformance
+6	neither	ecma-6		Lexical structure
+6.1	neither	ecma-6	yes	Programs
+6.2	neither	ecma-6		Grammars
+6.2.1	neither	ecma-6		General
+6.2.2	neither	ecma-6		Grammar notation
+6.2.3	neither	ecma-6		Lexical grammar
+6.2.4	neither	ecma-6		Syntactic grammar
+6.2.5	both	ecma-6	yes	Grammar ambiguities
+6.3	neither	ecma-6		Lexical analysis
+6.3.1	neither	ecma-6		General
+6.3.2	neither	ecma-6	yes	Line terminators
+6.3.3	neither	ecma-6		Comments
+6.3.4	neither	ecma-6		White space
+6.4	neither	ecma-6		Tokens
+6.4.1	neither	ecma-6		General
+6.4.2	both	ecma-6	yes	Unicode character escape sequences
+6.4.3	both	ecma-6	yes	Identifiers
+6.4.4	both	ecma-6	yes	Keywords
+6.4.5	neither	ecma-6		Literals
+6.4.5.1	neither	ecma-6		General
+6.4.5.2	neither	ecma-6		Boolean literals
+6.4.5.3	neither	ecma-6	yes	Integer literals
+6.4.5.4	neither	ecma-6	yes	Real literals
+6.4.5.5	neither	ecma-6		Character literals
+6.4.5.6	neither	ecma-6	yes	String literals
+6.4.5.7	neither	ecma-6		The null literal
+6.4.6	neither	ecma-6	yes	Operators and punctuators
+6.5	neither	ecma-6		Pre-processing directives
+6.5.1	neither	ecma-6	yes	General
+6.5.2	declaration	ecma-6	yes	Conditional compilation symbols
+6.5.3	reference	ecma-6	yes	Pre-processing expressions
+6.5.4	declaration	ecma-6	yes	Definition directives
+6.5.5	neither	ecma-6	yes	Conditional compilation directives
+6.5.6	neither	ecma-6		Diagnostic directives
+6.5.7	neither	ecma-6		Region directives
+6.5.8	neither	ecma-6	yes	Line directives
+6.5.9	neither	ecma-6	yes	Nullable directive
+6.5.10	neither	ecma-6		Pragma directives
+7	neither	ecma-7		Basic concepts
+7.1	declaration	ecma-7	yes	Application startup
+7.2	neither	ecma-7		Application termination
+7.3	declaration	ecma-7	yes	Declarations
+7.4	neither	ecma-7		Members
+7.4.1	reference	ecma-7	yes	General
+7.4.2	declaration	ecma-7	yes	Namespace members
+7.4.3	declaration	ecma-7	yes	Struct members
+7.4.4	declaration	ecma-7	yes	Enumeration members
+7.4.5	declaration	ecma-7	yes	Class members
+7.4.6	declaration	ecma-7	yes	Interface members
+7.4.7	reference	ecma-7	yes	Array members
+7.4.8	declaration	ecma-7	yes	Delegate members
+7.5	neither	ecma-7		Member access
+7.5.1	neither	ecma-7		General
+7.5.2	neither	ecma-7		Declared accessibility
+7.5.3	neither	ecma-7		Accessibility domains
+7.5.4	reference	ecma-7	yes	Protected access
+7.5.5	neither	ecma-7		Accessibility constraints
+7.6	declaration	ecma-7	yes	Signatures and overloading
+7.7	neither	ecma-7		Scopes
+7.7.1	both	ecma-7	yes	General
+7.7.2	neither	ecma-7		Name hiding
+7.7.2.1	neither	ecma-7		General
+7.7.2.2	declaration	ecma-7	yes	Hiding through nesting
+7.7.2.3	declaration	ecma-7	yes	Hiding through inheritance
+7.8	neither	ecma-7		Namespace and type names
+7.8.1	reference	ecma-7	yes	General
+7.8.2	declaration	ecma-7	yes	Unqualified names
+7.8.3	declaration	ecma-7	yes	Fully qualified names
+7.9	neither	ecma-7		Automatic memory management
+7.10	neither	ecma-7		Execution order
+8	neither	ecma-8		Types
+8.1	neither	ecma-8	yes	General
+8.2	neither	ecma-8		Reference types
+8.2.1	declaration	ecma-8	yes	General
+8.2.2	declaration	ecma-8		Class types
+8.2.3	reference	ecma-8	yes	The object type
+8.2.4	reference	ecma-8	yes	The dynamic type
+8.2.5	reference	ecma-8	yes	The string type
+8.2.6	declaration	ecma-8	yes	Interface types
+8.2.7	declaration	ecma-8	yes	Array types
+8.2.8	declaration	ecma-8	yes	Delegate types
+8.3	neither	ecma-8		Value types
+8.3.1	declaration	ecma-8	yes	General
+8.3.2	reference	ecma-8	yes	The System.ValueType type
+8.3.3	declaration	ecma-8	yes	Default constructors
+8.3.4	declaration	ecma-8	yes	Struct types
+8.3.5	reference	ecma-8	yes	Simple types
+8.3.6	reference	ecma-8	yes	Integral types
+8.3.7	reference	ecma-8		Floating-point types
+8.3.8	reference	ecma-8		The Decimal type
+8.3.9	reference	ecma-8		The Bool type
+8.3.10	declaration	ecma-8	yes	Enumeration types
+8.3.11	neither	ecma-8		Tuple types
+8.3.11.1	declaration	ecma-8	yes	General
+8.3.11.2	neither	ecma-8	yes	Eliding intermediate tuple creation
+8.3.11.3	reference	ecma-8	yes	Runtime representation
+8.3.12	reference	ecma-8	yes	Nullable value types
+8.3.13	neither	ecma-8		Boxing and unboxing
+8.4	neither	ecma-8		Constructed types
+8.4.1	reference	ecma-8	yes	General
+8.4.2	reference	ecma-8	yes	Type arguments
+8.4.3	reference	ecma-8	yes	Open and closed types
+8.4.4	reference	ecma-8	yes	Bound and unbound types
+8.4.5	reference	ecma-8	yes	Satisfying constraints
+8.5	declaration	ecma-8	yes	Type parameters
+8.6	reference	ecma-8	yes	Expression tree types
+8.7	reference	ecma-8	yes	The dynamic type
+8.8	neither	ecma-8		Unmanaged types
+8.9	neither	ecma-8		Reference Types and nullability
+8.9.1	reference	ecma-8	yes	General
+8.9.2	reference	ecma-8		Non-nullable reference types
+8.9.3	reference	ecma-8	yes	Nullable reference types
+8.9.4	neither	ecma-8		Nullable context
+8.9.4.1	neither	ecma-8	yes	General
+8.9.4.2	neither	ecma-8	yes	Nullable disable
+8.9.4.3	neither	ecma-8		Nullable annotations
+8.9.4.4	neither	ecma-8		Nullable warnings
+8.9.4.5	neither	ecma-8		Nullable enable
+8.9.5	neither	ecma-8		Nullabilities and null states
+8.9.5.1	neither	ecma-8		General
+8.9.5.2	neither	ecma-8		Flow analysis
+8.9.5.3	neither	ecma-8	yes	Type conversions
+9	neither	ecma-9		Variables
+9.1	neither	ecma-9		General
+9.2	neither	ecma-9		Variable categories
+9.2.1	declaration	ecma-9	yes	General
+9.2.2	declaration	ecma-9	yes	Static variables
+9.2.3	neither	ecma-9		Instance variables
+9.2.3.1	declaration	ecma-9		General
+9.2.3.2	declaration	ecma-9		Instance variables in classes
+9.2.3.3	declaration	ecma-9		Instance variables in structs
+9.2.4	neither	ecma-9	yes	Array elements
+9.2.5	declaration	ecma-9	yes	Value parameters
+9.2.6	declaration	ecma-9	yes	Reference parameters
+9.2.7	declaration	ecma-9	yes	Output parameters
+9.2.8	declaration	ecma-9	yes	Input parameters
+9.2.9	neither	ecma-9		Local variables
+9.2.9.1	declaration	ecma-9	yes	General
+9.2.9.2	declaration	ecma-9	yes	Discards
+9.3	neither	ecma-9		Default values
+9.4	neither	ecma-9		Definite assignment
+9.4.1	neither	ecma-9	yes	General
+9.4.2	neither	ecma-9		Initially assigned variables
+9.4.3	neither	ecma-9		Initially unassigned variables
+9.4.4	neither	ecma-9		Precise rules for determining definite assignment
+9.4.4.1	neither	ecma-9		General
+9.4.4.2	neither	ecma-9		General rules for statements
+9.4.4.3	neither	ecma-9		Block statements, checked, and unchecked statements
+9.4.4.4	neither	ecma-9		Expression statements
+9.4.4.5	declaration	ecma-9	yes	Declaration statements
+9.4.4.6	neither	ecma-9		If statements
+9.4.4.7	declaration	ecma-9	yes	Switch statements
+9.4.4.8	neither	ecma-9		While statements
+9.4.4.9	neither	ecma-9		Do statements
+9.4.4.10	neither	ecma-9	yes	For statements
+9.4.4.11	neither	ecma-9	yes	Break, continue, and goto statements
+9.4.4.12	neither	ecma-9		Throw statements
+9.4.4.13	neither	ecma-9		Return statements
+9.4.4.14	neither	ecma-9	yes	Try-catch statements
+9.4.4.15	neither	ecma-9		Try-finally statements
+9.4.4.16	neither	ecma-9		Try-catch-finally statements
+9.4.4.17	declaration	ecma-9	yes	Foreach statements
+9.4.4.18	declaration	ecma-9	yes	Using statements
+9.4.4.19	neither	ecma-9	yes	Lock statements
+9.4.4.20	neither	ecma-9		Yield statements
+9.4.4.21	neither	ecma-9		General rules for constant expressions
+9.4.4.22	neither	ecma-9		General rules for simple expressions
+9.4.4.23	neither	ecma-9		General rules for expressions with embedded expressions
+9.4.4.24	reference	ecma-9	yes	Invocation expressions and object creation expressions
+9.4.4.25	both	ecma-9	yes	Simple and deconstructing assignment expressions
+9.4.4.26	neither	ecma-9		&& expressions
+9.4.4.27	neither	ecma-9		|| expressions
+9.4.4.28	neither	ecma-9		! expressions
+9.4.4.29	neither	ecma-9		?? expressions
+9.4.4.30	neither	ecma-9		?: expressions
+9.4.4.31	declaration	ecma-9	yes	Anonymous functions
+9.4.4.32	neither	ecma-9		Throw expressions
+9.4.4.33	declaration	ecma-9	yes	Rules for variables in local functions
+9.4.4.34	declaration	ecma-9	yes	is-pattern expressions
+9.5	reference	ecma-9	yes	Variable references
+9.6	neither	ecma-9		Atomicity of variable references
+9.7	neither	ecma-9		Reference variables and returns
+9.7.1	declaration	ecma-9	yes	General
+9.7.2	neither	ecma-9		Ref safe contexts
+9.7.2.1	neither	ecma-9		General
+9.7.2.2	neither	ecma-9		Local variable ref safe context
+9.7.2.3	neither	ecma-9	yes	Parameter ref safe context
+9.7.2.4	neither	ecma-9		Field ref safe context
+9.7.2.5	neither	ecma-9		Operators
+9.7.2.6	reference	ecma-9	yes	Function invocation
+9.7.2.7	neither	ecma-9	yes	Values
+9.7.2.8	reference	ecma-9	yes	Constructor invocations
+9.7.2.9	neither	ecma-9		Limitations on reference variables
+10	neither	ecma-10		Conversions
+10.1	neither	ecma-10		General
+10.2	neither	ecma-10		Implicit conversions
+10.2.1	neither	ecma-10		General
+10.2.2	reference	ecma-10	yes	Identity conversion
+10.2.3	neither	ecma-10		Implicit numeric conversions
+10.2.4	neither	ecma-10		Implicit enumeration conversions
+10.2.5	reference	ecma-10		Implicit interpolated string conversions
+10.2.6	neither	ecma-10		Implicit nullable conversions
+10.2.7	neither	ecma-10		Null literal conversions
+10.2.8	neither	ecma-10	yes	Implicit reference conversions
+10.2.9	neither	ecma-10	yes	Boxing conversions
+10.2.10	neither	ecma-10	yes	Implicit dynamic conversions
+10.2.11	neither	ecma-10		Implicit constant expression conversions
+10.2.12	reference	ecma-10	yes	Implicit conversions involving type parameters
+10.2.13	reference	ecma-10	yes	Implicit tuple conversions
+10.2.14	reference	ecma-10	yes	User-defined implicit conversions
+10.2.15	reference	ecma-10	yes	Anonymous function conversions and method group conversions
+10.2.16	neither	ecma-10		Default literal conversions
+10.2.17	neither	ecma-10		Implicit throw conversions
+10.2.18	neither	ecma-10		Switch expression conversion
+10.3	neither	ecma-10		Explicit conversions
+10.3.1	neither	ecma-10	yes	General
+10.3.2	neither	ecma-10		Explicit numeric conversions
+10.3.3	neither	ecma-10		Explicit enumeration conversions
+10.3.4	neither	ecma-10		Explicit nullable conversions
+10.3.5	reference	ecma-10	yes	Explicit reference conversions
+10.3.6	reference	ecma-10	yes	Explicit tuple conversions
+10.3.7	neither	ecma-10	yes	Unboxing conversions
+10.3.8	reference	ecma-10	yes	Explicit conversions involving type parameters
+10.3.9	reference	ecma-10	yes	User-defined explicit conversions
+10.4	neither	ecma-10		Standard conversions
+10.4.1	neither	ecma-10		General
+10.4.2	neither	ecma-10		Standard implicit conversions
+10.4.3	neither	ecma-10		Standard explicit conversions
+10.5	neither	ecma-10		User-defined conversions
+10.5.1	declaration	ecma-10	yes	General
+10.5.2	declaration	ecma-10	yes	Permitted user-defined conversions
+10.5.3	reference	ecma-10	yes	Evaluation of user-defined conversions
+10.5.4	both	ecma-10	yes	User-defined implicit conversions
+10.5.5	both	ecma-10	yes	User-defined explicit conversions
+10.6	neither	ecma-10		Conversions involving nullable types
+10.6.1	neither	ecma-10	yes	Nullable Conversions
+10.6.2	neither	ecma-10	yes	Lifted conversions
+10.7	neither	ecma-10		Anonymous function conversions
+10.7.1	declaration	ecma-10	yes	General
+10.7.2	neither	ecma-10	yes	Evaluation of anonymous function conversions to delegate types
+10.7.3	neither	ecma-10	yes	Evaluation of lambda expression conversions to expression tree types
+10.8	reference	ecma-10	yes	Method group conversions
+11	neither	ecma-11		Patterns and pattern matching (clause container)
+11.1	neither	ecma-11		General (pattern input value, subsumption, exhaustiveness)
+11.2	declaration	ecma-11	yes	Pattern forms (container)
+11.2.1	reference	ecma-11	yes	General (pattern grammar, applicable-to, evaluation order)
+11.2.2	both	ecma-11	yes	Declaration pattern
+11.2.3	reference	ecma-11	yes	Constant pattern
+11.2.4	declaration	ecma-11	yes	Var pattern
+11.2.5	both	ecma-11	yes	Positional pattern
+11.2.6	both	ecma-11	yes	Property pattern
+11.2.7	reference	ecma-11	yes	Discard pattern
+12	neither	ecma-12		Expressions (clause container)
+12.1	neither	ecma-12		General
+12.2	neither	ecma-12		Expression classifications (container)
+12.2.1	reference	ecma-12	yes	General (value, variable, method group, property/indexer/event access, ...)
+12.2.2	reference	ecma-12	yes	Values of expressions
+12.3	neither	ecma-12		Static and Dynamic Binding (container)
+12.3.1	reference	ecma-12	yes	General (list of bound operations)
+12.3.2	reference	ecma-12	yes	Binding-time
+12.3.3	neither	ecma-12		Dynamic binding (informative)
+12.3.4	neither	ecma-12		Types of subexpressions
+12.4	neither	ecma-12		Operators (container)
+12.4.1	neither	ecma-12		General (unary, binary, ternary; left-to-right operand order)
+12.4.2	neither	ecma-12		Operator precedence and associativity
+12.4.3	reference	ecma-12	yes	Operator overloading
+12.4.4	reference	ecma-12	yes	Unary operator overload resolution
+12.4.5	reference	ecma-12	yes	Binary operator overload resolution
+12.4.6	reference	ecma-12	yes	Candidate user-defined operators
+12.4.7	neither	ecma-12		Numeric promotions (container, informative)
+12.4.7.1	neither	ecma-12		General (informative)
+12.4.7.2	neither	ecma-12		Unary numeric promotions (informative)
+12.4.7.3	neither	ecma-12		Binary numeric promotions (informative)
+12.4.8	reference	ecma-12	yes	Lifted operators
+12.5	neither	ecma-12		Member lookup (container)
+12.5.1	reference	ecma-12	yes	General (lookup by name, arity and accessibility; hiding)
+12.5.2	neither	ecma-12		Base types
+12.6	neither	ecma-12		Function members (container)
+12.6.1	reference	ecma-12	yes	General (categories of function member; invocation table)
+12.6.2	neither	ecma-12		Argument lists (container)
+12.6.2.1	both	ecma-12	yes	General (argument_list grammar; named arguments; in/ref/out)
+12.6.2.2	reference	ecma-12	yes	Corresponding parameters
+12.6.2.3	reference	ecma-12	yes	Run-time evaluation of argument lists
+12.6.3	neither	ecma-12		Type inference (container)
+12.6.3.1	reference	ecma-12	yes	General (inference for a generic method call)
+12.6.3.2	neither	ecma-12		The first phase
+12.6.3.3	neither	ecma-12		The second phase
+12.6.3.4	neither	ecma-12		Input types
+12.6.3.5	neither	ecma-12		Output types
+12.6.3.6	neither	ecma-12		Dependence
+12.6.3.7	neither	ecma-12		Input type inferences
+12.6.3.8	reference	ecma-12	yes	Output type inferences
+12.6.3.9	neither	ecma-12		Explicit parameter type inferences
+12.6.3.10	neither	ecma-12		Exact inferences
+12.6.3.11	neither	ecma-12		Lower-bound inferences
+12.6.3.12	neither	ecma-12		Upper-bound inferences
+12.6.3.13	neither	ecma-12		Fixing
+12.6.3.14	declaration	ecma-12	yes	Inferred return type
+12.6.3.15	reference	ecma-12	yes	Type inference for conversion of method groups
+12.6.3.16	neither	ecma-12		Finding the best common type of a set of expressions
+12.6.4	neither	ecma-12		Overload resolution (container)
+12.6.4.1	reference	ecma-12	yes	General (the four contexts of overload resolution)
+12.6.4.2	reference	ecma-12	yes	Applicable function member
+12.6.4.3	reference	ecma-12	yes	Better function member
+12.6.4.4	reference	ecma-12	yes	Better parameter-passing mode
+12.6.4.5	neither	ecma-12		Better conversion from expression
+12.6.4.6	neither	ecma-12		Exactly matching expression
+12.6.4.7	neither	ecma-12		Better conversion target
+12.6.4.8	declaration	ecma-12	yes	Overloading in generic classes
+12.6.5	reference	ecma-12	yes	Compile-time checking of dynamic member invocation
+12.6.6	neither	ecma-12		Function member invocation (container)
+12.6.6.1	reference	ecma-12	yes	General (run-time invocation, virtual dispatch, interface mapping)
+12.6.6.2	reference	ecma-12	yes	Invocations on boxed instances
+12.7	reference	ecma-12	yes	Deconstruction
+12.8	neither	ecma-12		Primary expressions (container)
+12.8.1	neither	ecma-12		General (primary_expression grammar)
+12.8.2	neither	ecma-12		Literals
+12.8.3	reference	ecma-12	yes	Interpolated string expressions
+12.8.4	both	ecma-12	yes	Simple names
+12.8.5	neither	ecma-12		Parenthesized expressions
+12.8.6	reference	ecma-12	yes	Tuple literals
+12.8.7	neither	ecma-12		Member access (container)
+12.8.7.1	reference	ecma-12	yes	General (E.I resolution)
+12.8.7.2	reference	ecma-12	yes	Identical simple names and type names
+12.8.8	reference	ecma-12	yes	Null Conditional Member Access
+12.8.9	neither	ecma-12		Null-forgiving expressions (container)
+12.8.9.1	neither	ecma-12		General (postfix !)
+12.8.9.2	neither	ecma-12		"Overriding a ""maybe null"" determination (conditionally normative)"
+12.8.9.3	neither	ecma-12		Overriding other null analysis warnings (conditionally normative)
+12.8.10	neither	ecma-12		Invocation expressions (container)
+12.8.10.1	reference	ecma-12	yes	General (method group or delegate value)
+12.8.10.2	reference	ecma-12	yes	Method invocations
+12.8.10.3	reference	ecma-12	yes	Extension method invocations
+12.8.10.4	reference	ecma-12	yes	Delegate invocations
+12.8.11	reference	ecma-12	yes	Null Conditional Invocation Expression
+12.8.12	neither	ecma-12		Element access (container)
+12.8.12.1	reference	ecma-12	yes	General (element_access grammar and dispatch)
+12.8.12.2	neither	ecma-12		Array access
+12.8.12.3	neither	ecma-12		String access
+12.8.12.4	reference	ecma-12	yes	Indexer access
+12.8.13	reference	ecma-12	yes	Null Conditional Element Access
+12.8.14	reference	ecma-12	yes	This access
+12.8.15	reference	ecma-12	yes	Base access
+12.8.16	reference	ecma-12	yes	Postfix increment and decrement operators
+12.8.17	neither	ecma-12		The new operator (container)
+12.8.17.1	neither	ecma-12		General (three forms of new)
+12.8.17.2	neither	ecma-12		Object creation expressions (container)
+12.8.17.2.1	reference	ecma-12	yes	General (new T(A))
+12.8.17.2.2	reference	ecma-12	yes	Object initializers
+12.8.17.2.3	reference	ecma-12	yes	Collection initializers
+12.8.17.3	both	ecma-12	yes	Anonymous object creation expressions
+12.8.17.4	neither	ecma-12		Array creation expressions
+12.8.17.5	reference	ecma-12	yes	Delegate creation expressions
+12.8.18	reference	ecma-12	yes	The typeof operator
+12.8.19	reference	ecma-12		The sizeof operator
+12.8.20	neither	ecma-12		The checked and unchecked operators
+12.8.21	reference	ecma-12	yes	Default value expressions
+12.8.22	reference	ecma-12	yes	Stack allocation
+12.8.23	reference	ecma-12	yes	The nameof operator
+12.8.24	declaration	ecma-12	yes	Anonymous method expressions
+12.9	neither	ecma-12		Unary operators (container)
+12.9.1	neither	ecma-12		General (unary_expression grammar; dynamic operand)
+12.9.2	reference	ecma-12	yes	Unary plus operator
+12.9.3	reference	ecma-12	yes	Unary minus operator
+12.9.4	reference	ecma-12	yes	Logical negation operator
+12.9.5	reference	ecma-12	yes	Bitwise complement operator
+12.9.6	reference	ecma-12	yes	Index from-end operator
+12.9.7	reference	ecma-12	yes	Prefix increment and decrement operators
+12.9.8	reference	ecma-12	yes	Cast expressions
+12.9.9	neither	ecma-12		Await expressions (container)
+12.9.9.1	neither	ecma-12		General (await grammar and restrictions)
+12.9.9.2	reference	ecma-12	yes	Awaitable expressions
+12.9.9.3	neither	ecma-12		Classification of await expressions
+12.9.9.4	reference	ecma-12	yes	Run-time evaluation of await expressions
+12.10	reference	ecma-12	yes	Range operator
+12.11	both	ecma-12	yes	Switch expression
+12.12	neither	ecma-12		Arithmetic operators (container)
+12.12.1	neither	ecma-12		General (multiplicative/additive grammar; dynamic)
+12.12.2	reference	ecma-12	yes	Multiplication operator
+12.12.3	reference	ecma-12		Division operator
+12.12.4	reference	ecma-12		Remainder operator
+12.12.5	reference	ecma-12	yes	Addition operator
+12.12.6	reference	ecma-12	yes	Subtraction operator
+12.13	reference	ecma-12	yes	Shift operators
+12.14	neither	ecma-12		Relational and type-testing operators (container)
+12.14.1	reference	ecma-12	yes	General (relational/equality grammar; is/as; default literal)
+12.14.2	neither	ecma-12		Integer comparison operators
+12.14.3	neither	ecma-12		Floating-point comparison operators
+12.14.4	reference	ecma-12		Decimal comparison operators
+12.14.5	neither	ecma-12		Boolean equality operators
+12.14.6	neither	ecma-12		Enumeration comparison operators
+12.14.7	neither	ecma-12	yes	Reference type equality operators
+12.14.8	neither	ecma-12		String equality operators
+12.14.9	neither	ecma-12		Delegate equality operators
+12.14.10	reference	ecma-12	yes	Equality operators between nullable value types and the null literal
+12.14.11	reference	ecma-12	yes	Tuple equality operators
+12.14.12	neither	ecma-12		The is operator (container)
+12.14.12.1	reference	ecma-12	yes	The is-type operator
+12.14.12.2	both	ecma-12	yes	The is-pattern operator
+12.14.13	reference	ecma-12	yes	The as operator
+12.15	neither	ecma-12		Logical operators (container)
+12.15.1	neither	ecma-12		General (and/xor/or grammar)
+12.15.2	neither	ecma-12		Integer logical operators
+12.15.3	neither	ecma-12		Enumeration logical operators
+12.15.4	neither	ecma-12		Boolean logical operators
+12.15.5	neither	ecma-12		Nullable Boolean & and | operators
+12.16	neither	ecma-12		Conditional logical operators (container)
+12.16.1	reference	ecma-12	yes	General (&& and ||)
+12.16.2	neither	ecma-12		Boolean conditional logical operators
+12.16.3	reference	ecma-12	yes	User-defined conditional logical operators
+12.17	neither	ecma-12		The null coalescing operator
+12.18	reference	ecma-12	yes	The throw expression operator
+12.19	declaration	ecma-12	yes	Declaration expressions
+12.20	reference	ecma-12	yes	Conditional operator
+12.21	neither	ecma-12		Anonymous function expressions (container)
+12.21.1	declaration	ecma-12	yes	General (lambda_expression and anonymous_method_expression)
+12.21.2	declaration	ecma-12	yes	Anonymous function signatures
+12.21.3	neither	ecma-12		Anonymous function bodies
+12.21.4	reference	ecma-12	yes	Overload resolution
+12.21.5	neither	ecma-12		Anonymous functions and dynamic binding
+12.21.6	neither	ecma-12		Outer variables (container)
+12.21.6.1	reference	ecma-12	yes	General (what an outer variable is)
+12.21.6.2	reference	ecma-12	yes	Captured outer variables
+12.21.6.3	declaration	ecma-12	yes	Instantiation of local variables
+12.21.7	neither	ecma-12		Evaluation of anonymous function expressions
+12.21.8	neither	ecma-12		Implementation Example (informative)
+12.22	neither	ecma-12		Query expressions (container)
+12.22.1	declaration	ecma-12	yes	General (query grammar; range variables)
+12.22.2	neither	ecma-12	yes	Ambiguities in query expressions
+12.22.3	neither	ecma-12		Query expression translation (container)
+12.22.3.1	reference	ecma-12	yes	General (translation to Where/Select/SelectMany/...)
+12.22.3.2	declaration	ecma-12	yes	Query expressions with continuations
+12.22.3.3	reference	ecma-12	yes	Explicit range variable types
+12.22.3.4	reference	ecma-12	yes	Degenerate query expressions
+12.22.3.5	both	ecma-12	yes	From, let, where, join and orderby clauses
+12.22.3.6	reference	ecma-12	yes	Select clauses
+12.22.3.7	reference	ecma-12	yes	Group clauses
+12.22.3.8	declaration	ecma-12	yes	Transparent identifiers
+12.22.4	declaration	ecma-12	yes	The query-expression pattern
+12.23	neither	ecma-12		Assignment operators (container)
+12.23.1	neither	ecma-12	yes	General (four assignment forms; discards)
+12.23.2	both	ecma-12	yes	Simple assignment
+12.23.3	neither	ecma-12		Deconstructing assignment (container)
+12.23.3.1	both	ecma-12	yes	General (deconstructor grammar and processing)
+12.23.3.2	declaration	ecma-12	yes	Abridged deconstructors
+12.23.4	neither	ecma-12	yes	Ref assignment
+12.23.5	reference	ecma-12	yes	Compound assignment
+12.23.6	reference	ecma-12	yes	Event assignment
+12.24	neither	ecma-12		Expression
+12.25	reference	ecma-12	yes	Constant expressions
+12.26	reference	ecma-12	yes	Boolean expressions
+13	neither	ecma-13		Statements (clause container)
+13.1	neither	ecma-13		General (statement grammar)
+13.2	neither	ecma-13		End points and reachability
+13.3	neither	ecma-13		Blocks (container)
+13.3.1	declaration	ecma-13	yes	General (block; scope of locals; iterator blocks)
+13.3.2	neither	ecma-13		Statement lists
+13.4	neither	ecma-13		The empty statement
+13.5	declaration	ecma-13	yes	Labeled statements
+13.6	neither	ecma-13		Declaration statements (container)
+13.6.1	declaration	ecma-13	yes	General (four declaration statement forms)
+13.6.2	neither	ecma-13		Local variable declarations (container)
+13.6.2.1	declaration	ecma-13	yes	General (declarators; var ambiguity; scope)
+13.6.2.2	declaration	ecma-13	yes	Implicitly typed local variable declarations
+13.6.2.3	declaration	ecma-13	yes	Explicitly typed local variable declarations
+13.6.2.4	declaration	ecma-13	yes	Explicitly typed ref local variable declarations
+13.6.3	declaration	ecma-13	yes	Local constant declarations
+13.6.4	declaration	ecma-13	yes	Local function declarations
+13.7	reference	ecma-13	yes	Expression statements
+13.8	neither	ecma-13		Selection statements (container)
+13.8.1	neither	ecma-13		General
+13.8.2	neither	ecma-13		The if statement
+13.8.3	both	ecma-13	yes	The switch statement
+13.9	neither	ecma-13		Iteration statements (container)
+13.9.1	neither	ecma-13		General
+13.9.2	neither	ecma-13		The while statement
+13.9.3	neither	ecma-13		The do statement
+13.9.4	declaration	ecma-13	yes	The for statement
+13.9.5	neither	ecma-13		The foreach statement (container)
+13.9.5.1	both	ecma-13	yes	General (three foreach forms; collection/enumerator/iteration type)
+13.9.5.2	both	ecma-13	yes	Synchronous foreach
+13.9.5.3	both	ecma-13	yes	Asynchronous foreach
+13.9.5.4	both	ecma-13	yes	Deconstructing foreach
+13.10	neither	ecma-13		Jump statements (container)
+13.10.1	neither	ecma-13		General (targets; exiting blocks; finally interleaving)
+13.10.2	neither	ecma-13		The break statement
+13.10.3	neither	ecma-13		The continue statement
+13.10.4	reference	ecma-13	yes	The goto statement
+13.10.5	neither	ecma-13		The return statement
+13.10.6	reference	ecma-13	yes	The throw statement
+13.11	both	ecma-13	yes	The try statement
+13.12	neither	ecma-13		The checked and unchecked statements
+13.13	reference	ecma-13	yes	The lock statement
+13.14	neither	ecma-13		The using statement (container)
+13.14.1	both	ecma-13	yes	General (using statement; resource_acquisition)
+13.14.2	declaration	ecma-13	yes	Using declaration
+13.15	neither	ecma-13		The yield statement
+14	declaration	ecma-14	yes	Namespaces (clause)
+14.1	neither	ecma-14		General
+14.2	declaration	ecma-14	yes	Compilation units
+14.3	declaration	ecma-14	yes	Namespace declarations
+14.4	both	ecma-14	yes	Extern alias directives
+14.5	reference	ecma-14		Using directives
+14.5.1	reference	ecma-14	yes	General
+14.5.2	both	ecma-14	yes	Using alias directives
+14.5.3	reference	ecma-14	yes	Using namespace directives
+14.5.4	reference	ecma-14	yes	Using static directives
+14.6	declaration	ecma-14	yes	Namespace member declarations
+14.7	declaration	ecma-14	yes	Type declarations
+14.8	reference	ecma-14		Qualified alias member
+14.8.1	reference	ecma-14	yes	General
+14.8.2	declaration	ecma-14	yes	Uniqueness of aliases
+15	declaration	ecma-15	yes	Classes (clause)
+15.1	neither	ecma-15		General
+15.2	declaration	ecma-15		Class declarations
+15.2.1	declaration	ecma-15	yes	General
+15.2.2	declaration	ecma-15		Class modifiers
+15.2.2.1	declaration	ecma-15	yes	General
+15.2.2.2	declaration	ecma-15	yes	Abstract classes
+15.2.2.3	declaration	ecma-15	yes	Sealed classes
+15.2.2.4	declaration	ecma-15		Static classes
+15.2.2.4.1	declaration	ecma-15	yes	General
+15.2.2.4.2	reference	ecma-15	yes	Referencing static class types
+15.2.3	declaration	ecma-15	yes	Type parameters
+15.2.4	reference	ecma-15		Class base specification
+15.2.4.1	reference	ecma-15		General
+15.2.4.2	reference	ecma-15	yes	Base classes
+15.2.4.3	both	ecma-15	yes	Interface implementations
+15.2.5	both	ecma-15	yes	Type parameter constraints
+15.2.6	neither	ecma-15		Class body
+15.2.7	declaration	ecma-15	yes	Partial type declarations
+15.3	declaration	ecma-15		Class members
+15.3.1	declaration	ecma-15	yes	General
+15.3.2	reference	ecma-15	yes	The instance type
+15.3.3	both	ecma-15	yes	Members of constructed types
+15.3.4	reference	ecma-15	yes	Inheritance
+15.3.5	declaration	ecma-15	yes	The new modifier
+15.3.6	declaration	ecma-15	yes	Access modifiers
+15.3.7	reference	ecma-15	yes	Constituent types
+15.3.8	declaration	ecma-15	yes	Static and instance members
+15.3.9	declaration	ecma-15		Nested types
+15.3.9.1	declaration	ecma-15	yes	General
+15.3.9.2	declaration	ecma-15	yes	Fully qualified name
+15.3.9.3	declaration	ecma-15	yes	Declared accessibility
+15.3.9.4	declaration	ecma-15	yes	Hiding
+15.3.9.5	reference	ecma-15	yes	this access
+15.3.9.6	reference	ecma-15	yes	Access to private and protected members of the containing type
+15.3.9.7	both	ecma-15	yes	Nested types in generic classes
+15.3.10	declaration	ecma-15	yes	Reserved member names
+15.3.10.1	declaration	ecma-15	yes	General
+15.3.10.2	declaration	ecma-15	yes	Member names reserved for properties
+15.3.10.3	declaration	ecma-15	yes	Member names reserved for events
+15.3.10.4	declaration	ecma-15	yes	Member names reserved for indexers
+15.3.10.5	declaration	ecma-15	yes	Member names reserved for finalizers
+15.3.10.6	declaration	ecma-15	yes	Method names reserved for operators
+15.4	both	ecma-15	yes	Constants
+15.5	declaration	ecma-15		Fields
+15.5.1	both	ecma-15	yes	General
+15.5.2	declaration	ecma-15	yes	Static and instance fields
+15.5.3	declaration	ecma-15		Readonly fields
+15.5.3.1	declaration	ecma-15	yes	General
+15.5.3.2	declaration	ecma-15	yes	Using static readonly fields for constants
+15.5.3.3	reference	ecma-15	yes	Versioning of constants and static readonly fields
+15.5.4	declaration	ecma-15	yes	Volatile fields
+15.5.5	neither	ecma-15		Field initialization
+15.5.6	reference	ecma-15		Variable initializers
+15.5.6.1	reference	ecma-15	yes	General
+15.5.6.2	reference	ecma-15	yes	Static field initialization
+15.5.6.3	reference	ecma-15	yes	Instance field initialization
+15.6	declaration	ecma-15		Methods
+15.6.1	declaration	ecma-15	yes	General
+15.6.2	declaration	ecma-15		Method parameters
+15.6.2.1	both	ecma-15	yes	General
+15.6.2.2	declaration	ecma-15	yes	Value parameters
+15.6.2.3	declaration	ecma-15		By-reference parameters
+15.6.2.3.1	declaration	ecma-15	yes	General
+15.6.2.3.2	declaration	ecma-15	yes	Input parameters
+15.6.2.3.3	declaration	ecma-15	yes	Reference parameters
+15.6.2.3.4	declaration	ecma-15	yes	Output parameters
+15.6.2.4	declaration	ecma-15	yes	Parameter arrays
+15.6.3	declaration	ecma-15	yes	Static and instance methods
+15.6.4	declaration	ecma-15	yes	Virtual methods
+15.6.5	declaration	ecma-15	yes	Override methods
+15.6.6	declaration	ecma-15	yes	Sealed methods
+15.6.7	declaration	ecma-15	yes	Abstract methods
+15.6.8	declaration	ecma-15	yes	External methods
+15.6.9	declaration	ecma-15	yes	Partial methods
+15.6.10	both	ecma-15	yes	Extension methods
+15.6.11	neither	ecma-15	yes	Method body
+15.7	declaration	ecma-15		Properties
+15.7.1	declaration	ecma-15	yes	General
+15.7.2	declaration	ecma-15	yes	Static and instance properties
+15.7.3	declaration	ecma-15	yes	Accessors
+15.7.4	declaration	ecma-15	yes	Automatically implemented properties
+15.7.5	reference	ecma-15	yes	Accessibility
+15.7.6	declaration	ecma-15	yes	Virtual, sealed, override, and abstract accessors
+15.8	declaration	ecma-15		Events
+15.8.1	declaration	ecma-15	yes	General
+15.8.2	declaration	ecma-15	yes	Field-like events
+15.8.3	declaration	ecma-15	yes	Event accessors
+15.8.4	declaration	ecma-15	yes	Static and instance events
+15.8.5	declaration	ecma-15	yes	Virtual, sealed, override, and abstract accessors
+15.9	declaration	ecma-15		Indexers
+15.9.1	declaration	ecma-15	yes	General
+15.9.2	declaration	ecma-15	yes	Indexer and Property Differences
+15.10	declaration	ecma-15		Operators
+15.10.1	declaration	ecma-15	yes	General
+15.10.2	declaration	ecma-15	yes	Unary operators
+15.10.3	declaration	ecma-15	yes	Binary operators
+15.10.4	declaration	ecma-15	yes	Conversion operators
+15.11	declaration	ecma-15		Instance constructors
+15.11.1	declaration	ecma-15	yes	General
+15.11.2	reference	ecma-15	yes	Constructor initializers
+15.11.3	neither	ecma-15		Instance variable initializers
+15.11.4	neither	ecma-15		Constructor execution
+15.11.5	declaration	ecma-15	yes	Default constructors
+15.12	declaration	ecma-15	yes	Static constructors
+15.13	declaration	ecma-15	yes	Finalizers
+15.14	declaration	ecma-15		Async Functions
+15.14.1	both	ecma-15	yes	General
+15.14.2	both	ecma-15	yes	Task-type builder pattern
+15.14.3	neither	ecma-15		Evaluation of a task-returning async function
+15.14.4	neither	ecma-15		Evaluation of a void-returning async function
+15.15	declaration	ecma-15		Synchronous and asynchronous iterators
+15.15.1	declaration	ecma-15	yes	General
+15.15.2	reference	ecma-15	yes	Enumerator interfaces
+15.15.3	reference	ecma-15	yes	Enumerable interfaces
+15.15.4	neither	ecma-15	yes	Yield type
+15.15.5	declaration	ecma-15		Enumerator objects
+15.15.5.1	declaration	ecma-15	yes	General
+15.15.5.2	reference	ecma-15	yes	Advance the enumerator
+15.15.5.3	reference	ecma-15	yes	Retrieve the current value
+15.15.5.4	reference	ecma-15	yes	Dispose of resources
+15.15.6	declaration	ecma-15		Enumerable objects
+15.15.6.1	declaration	ecma-15	yes	General
+15.15.6.2	both	ecma-15	yes	The GetEnumerator or GetAsyncEnumerator method
+16	declaration	ecma-16	yes	Structs
+16.1	reference	ecma-16	yes	General
+16.2	declaration	ecma-16		Struct declarations
+16.2.1	declaration	ecma-16	yes	General
+16.2.2	declaration	ecma-16	yes	Struct modifiers
+16.2.3	declaration	ecma-16	yes	Ref modifier
+16.2.4	declaration	ecma-16	yes	Partial modifier
+16.2.5	both	ecma-16	yes	Struct interfaces
+16.2.6	declaration	ecma-16		Struct body
+16.3	declaration	ecma-16		Struct members
+16.3.1	declaration	ecma-16	yes	General
+16.3.2	declaration	ecma-16	yes	Readonly members
+16.4	neither	ecma-16		Class and struct differences
+16.4.1	neither	ecma-16		General
+16.4.2	declaration	ecma-16	yes	Value semantics
+16.4.3	both	ecma-16	yes	Inheritance
+16.4.4	reference	ecma-16	yes	Assignment
+16.4.5	reference	ecma-16	yes	Default values
+16.4.6	reference	ecma-16		Boxing and unboxing
+16.4.7	both	ecma-16	yes	Meaning of this
+16.4.8	declaration	ecma-16	yes	Field initializers
+16.4.9	declaration	ecma-16	yes	Constructors
+16.4.10	declaration	ecma-16	yes	Static constructors
+16.4.11	declaration	ecma-16	yes	Properties
+16.4.12	declaration	ecma-16	yes	Methods
+16.4.13	declaration	ecma-16	yes	Indexers
+16.4.14	declaration	ecma-16	yes	Events
+16.4.15	neither	ecma-16		Safe context constraint
+16.4.15.1	neither	ecma-16		General
+16.4.15.2	declaration	ecma-16	yes	Parameter safe context
+16.4.15.3	declaration	ecma-16	yes	Local variable safe context
+16.4.15.4	reference	ecma-16		Field safe context
+16.4.15.5	reference	ecma-16	yes	Operators
+16.4.15.6	reference	ecma-16	yes	Method and property invocation
+16.4.15.7	reference	ecma-16		stackalloc
+16.4.15.8	reference	ecma-16	yes	Constructor invocations
+17	reference	ecma-17	yes	Arrays
+17.1	reference	ecma-17	yes	General
+17.2	reference	ecma-17		Array types
+17.2.1	reference	ecma-17	yes	General
+17.2.2	reference	ecma-17	yes	The System.Array type
+17.2.3	reference	ecma-17	yes	Arrays and the generic collection interfaces
+17.3	reference	ecma-17	yes	Array creation
+17.4	reference	ecma-17	yes	Array element access
+17.5	reference	ecma-17	yes	Array members
+17.6	reference	ecma-17		Array covariance
+17.7	both	ecma-17	yes	Array initializers
+18	both	ecma-18	yes	Extended indexing and slicing
+18.1	both	ecma-18	yes	General
+18.2	both	ecma-18	yes	The Index type
+18.3	both	ecma-18	yes	The Range type
+18.4	both	ecma-18	yes	Pattern-based implicit support for Index and Range
+18.4.1	reference	ecma-18	yes	General
+18.4.2	both	ecma-18	yes	Implicit Index support
+18.4.3	both	ecma-18	yes	Implicit Range support
+19	declaration	ecma-19	yes	Interfaces
+19.1	declaration	ecma-19	yes	General
+19.2	declaration	ecma-19		Interface declarations
+19.2.1	declaration	ecma-19	yes	General
+19.2.2	declaration	ecma-19	yes	Interface modifiers
+19.2.3	declaration	ecma-19		Variant type parameter lists
+19.2.3.1	declaration	ecma-19	yes	General
+19.2.3.2	neither	ecma-19		Variance safety
+19.2.3.3	reference	ecma-19	yes	Variance conversion
+19.2.4	both	ecma-19	yes	Base interfaces
+19.3	declaration	ecma-19		Interface body
+19.4	declaration	ecma-19		Interface members
+19.4.1	both	ecma-19	yes	General
+19.4.2	declaration	ecma-19	yes	Interface fields
+19.4.3	declaration	ecma-19	yes	Interface methods
+19.4.4	declaration	ecma-19	yes	Interface properties
+19.4.5	declaration	ecma-19	yes	Interface events
+19.4.6	declaration	ecma-19	yes	Interface indexers
+19.4.7	declaration	ecma-19	yes	Interface operators
+19.4.8	declaration	ecma-19	yes	Interface static constructors
+19.4.9	declaration	ecma-19	yes	Interface nested types
+19.4.10	both	ecma-19	yes	Most specific implementation
+19.4.11	reference	ecma-19	yes	Interface member access
+19.5	reference	ecma-19	yes	Qualified interface member names
+19.6	declaration	ecma-19		Interface implementations
+19.6.1	both	ecma-19	yes	General
+19.6.2	declaration	ecma-19	yes	Explicit interface member implementations
+19.6.3	declaration	ecma-19	yes	Uniqueness of implemented interfaces
+19.6.4	both	ecma-19	yes	Implementation of generic methods
+19.6.5	both	ecma-19	yes	Interface mapping
+19.6.6	both	ecma-19	yes	Interface implementation inheritance
+19.6.7	declaration	ecma-19	yes	Interface re-implementation
+19.6.8	declaration	ecma-19	yes	Abstract classes and interfaces
+20	declaration	ecma-20	yes	Enums
+20.1	declaration	ecma-20	yes	General
+20.2	declaration	ecma-20	yes	Enum declarations
+20.3	declaration	ecma-20	yes	Enum modifiers
+20.4	both	ecma-20	yes	Enum members
+20.5	reference	ecma-20	yes	The System.Enum type
+20.6	reference	ecma-20	yes	Enum values and operations
+21	declaration	ecma-21	yes	Delegates
+21.1	declaration	ecma-21	yes	General
+21.2	declaration	ecma-21	yes	Delegate declarations
+21.3	declaration	ecma-21	yes	Delegate members
+21.4	reference	ecma-21	yes	Delegate compatibility
+21.5	reference	ecma-21	yes	Delegate instantiation
+21.6	reference	ecma-21	yes	Delegate invocation
+22	neither	ecma-22		Exceptions
+22.1	neither	ecma-22		General
+22.2	reference	ecma-22	yes	Causes of exceptions
+22.3	both	ecma-22	yes	The System.Exception class
+22.4	both	ecma-22	yes	How exceptions are handled
+22.5	reference	ecma-22	yes	Common exception classes
+23	neither	ecma-23		Attributes
+23.1	neither	ecma-23		General
+23.2	neither	ecma-23		Attribute classes
+23.2.1	declaration	ecma-23	yes	General
+23.2.2	reference	ecma-23	yes	Attribute usage
+23.2.3	both	ecma-23	yes	Positional and named parameters
+23.2.4	reference	ecma-23	yes	Attribute parameter types
+23.3	both	ecma-23	yes	Attribute specification
+23.4	neither	ecma-23		Attribute instances
+23.4.1	neither	ecma-23		General
+23.4.2	reference	ecma-23	yes	Compilation of an attribute
+23.4.3	neither	ecma-23		Run-time retrieval of an attribute instance
+23.5	neither	ecma-23		Reserved attributes
+23.5.1	neither	ecma-23		General
+23.5.2	reference	ecma-23	yes	The AttributeUsage attribute
+23.5.3	neither	ecma-23		The Conditional attribute
+23.5.3.1	neither	ecma-23		General
+23.5.3.2	both	ecma-23	yes	Conditional methods
+23.5.3.3	declaration	ecma-23	yes	Conditional local functions
+23.5.3.4	both	ecma-23	yes	Conditional attribute classes
+23.5.4	reference	ecma-23	yes	The Obsolete attribute
+23.5.5	reference	ecma-23	yes	The AsyncMethodBuilder attribute
+23.5.6	neither	ecma-23		Caller-info attributes
+23.5.6.1	both	ecma-23	yes	General
+23.5.6.2	reference	ecma-23	yes	The CallerLineNumber attribute
+23.5.6.3	reference	ecma-23	yes	The CallerFilePath attribute
+23.5.6.4	reference	ecma-23	yes	The CallerMemberName attribute
+23.5.7	neither	ecma-23		Code analysis attributes
+23.5.7.1	reference	ecma-23	yes	General
+23.5.7.2	reference	ecma-23	yes	The AllowNull attribute
+23.5.7.3	reference	ecma-23	yes	The DisallowNull attribute
+23.5.7.4	reference	ecma-23	yes	The DoesNotReturn attribute
+23.5.7.5	reference	ecma-23	yes	The DoesNotReturnIf attribute
+23.5.7.6	reference	ecma-23	yes	The MaybeNull attribute
+23.5.7.7	reference	ecma-23	yes	The MaybeNullWhen attribute
+23.5.7.8	reference	ecma-23	yes	The MemberNotNull attribute
+23.5.7.9	reference	ecma-23	yes	The MemberNotNullWhen attribute
+23.5.7.10	reference	ecma-23	yes	The NotNull attribute
+23.5.7.11	reference	ecma-23	yes	The NotNullIfNotNull attribute
+23.5.7.12	reference	ecma-23	yes	The NotNullWhen attribute
+23.5.8	reference	ecma-23	yes	The EnumeratorCancellation attribute
+23.6	reference	ecma-23	yes	Attributes for interoperation
+24	neither	ecma-24		Unsafe code
+24.1	neither	ecma-24		General
+24.2	declaration	ecma-24	yes	Unsafe contexts
+24.3	both	ecma-24	yes	Pointer types
+24.4	neither	ecma-24		Fixed and moveable variables
+24.5	neither	ecma-24		Pointer conversions
+24.5.1	reference	ecma-24	yes	General
+24.5.2	reference	ecma-24	yes	Pointer arrays
+24.6	neither	ecma-24		Pointers in expressions
+24.6.1	neither	ecma-24		General
+24.6.2	reference	ecma-24	yes	Pointer indirection
+24.6.3	reference	ecma-24	yes	Pointer member access
+24.6.4	reference	ecma-24	yes	Pointer element access
+24.6.5	reference	ecma-24	yes	The address-of operator
+24.6.6	reference	ecma-24	yes	Pointer increment and decrement
+24.6.7	reference	ecma-24	yes	Pointer arithmetic
+24.6.8	reference	ecma-24	yes	Pointer comparison
+24.6.9	reference	ecma-24	yes	The sizeof operator
+24.7	both	ecma-24	yes	The fixed statement
+24.8	neither	ecma-24		Fixed-size buffers
+24.8.1	neither	ecma-24		General
+24.8.2	declaration	ecma-24	yes	Fixed-size buffer declarations
+24.8.3	reference	ecma-24	yes	Fixed-size buffers in expressions
+24.8.4	neither	ecma-24		Definite assignment checking
+24.9	both	ecma-24	yes	Stack allocation
+A.1	neither	annex-a	yes	General
+A.2	neither	annex-a	yes	Lexical grammar
+A.3	neither	annex-a	yes	Syntactic grammar
+A.4	neither	annex-a	yes	Grammar extensions for unsafe code
+AccessorDeclaration / GetAccessorDeclaration	declaration	roslyn	yes	get accessor
+AddAccessorDeclaration	declaration	roslyn	yes	event add accessor
+AddExpression / the 22 binary kinds	reference	roslyn	yes	AddExpression, SubtractExpression, MultiplyExpression, DivideExpression, ModuloExpression, LeftShiftExpression
+AliasQualifiedName	reference	roslyn	yes	core::System.Object
+Annex A	neither	annex-a	yes	Grammar
+Annex B	neither	annex-b	yes	Portability issues
+Annex C	reference	annex-c	yes	Standard library
+Annex E	neither	annex-e	yes	Bibliography
+AnonymousMethodExpression	reference	roslyn	yes	delegate (int x) { … }
+AnonymousObjectCreationExpression	both	roslyn	yes	new { … }
+AnonymousObjectMemberDeclarator	declaration	roslyn	yes	Name = value inside new { … }
+Argument	both	roslyn	yes	a named element in a tuple LITERAL, which declares a field
+ArrayType	reference	roslyn	yes	T[]
+ArrowExpressionClause	declaration	roslyn	yes	expression body, as the declaring syntax of a synthesised accessor
+AscendingOrdering	reference	roslyn	yes	an ascending ordering inside orderby
+Attribute	reference	roslyn	yes	[Mark(1)]
+AwaitExpression	reference	roslyn	yes	await e
+B.1	neither	annex-b	yes	General
+B.2	neither	annex-b	yes	Undefined behavior
+B.3	reference	annex-b	yes	Implementation-defined behavior
+B.4	reference	annex-b	yes	Unspecified behavior
+B.5	declaration	annex-b	yes	Other issues
+BaseConstructorInitializer	reference	roslyn	yes	: base(…)
+BaseExpression	reference	roslyn	yes	base
+C# 10 — Allow AsyncMethodBuilder attribute on methods	reference	post-standard	yes	[AsyncMethodBuilder] on an individual async method
+C# 10 — Assignment and declaration in the same deconstruction (mixed deconstructions)	both	post-standard	yes	(x, int y) = point;
+C# 10 — Attributes on lambda expressions	both	post-standard	yes	Attributes applied to a lambda and to its parameters
+C# 10 — CallerArgumentExpression attribute	reference	post-standard	yes	"[CallerArgumentExpression(""paramName"")]"
+C# 10 — Constant interpolated strings	both	post-standard	yes	const string initialized by interpolation of constant strings
+C# 10 — Enhanced #line pragma	neither	post-standard	yes	"#line (startLine, startChar) - (endLine, endChar) charOffset ""fileName"""
+C# 10 — Extended property patterns	both	post-standard	yes	Nested member access inside a property pattern: { Prop1.Prop2: pattern }
+C# 10 — File-scoped namespace declaration	declaration	post-standard	yes	namespace X.Y.Z;
+C# 10 — Improved definite assignment	neither	post-standard		More accurate definite-assignment and null-state analysis
+C# 10 — Improvements of structure types (parameterless struct constructors)	declaration	post-standard	yes	Explicit parameterless instance constructor and field initializers in a struct
+C# 10 — Incremental source generators	neither	post-standard	yes	Incremental generator pipeline
+C# 10 — Interpolated string handlers	both	post-standard	yes	Interpolated string handler pattern ([InterpolatedStringHandler], AppendLiteral/AppendFormatted)
+C# 10 — Lambda explicit return type	both	post-standard	yes	Lambda declares its return type when inference fails
+C# 10 — Lambda natural type	both	post-standard	yes	Compiler infers a delegate type for a lambda or method group
+C# 10 — Record structs	declaration	post-standard	yes	record struct, readonly record struct, record class
+C# 10 — Record types can seal ToString	declaration	post-standard	yes	sealed override string ToString() in a record
+C# 10 — Warning wave 6	neither	post-standard		CS8826 partial method declarations have signature differences
+C# 10 — global using directives	reference	post-standard	yes	global using, including global using alias
+C# 10 — with expression on structs and anonymous types	reference	post-standard	yes	with expression extended beyond record classes
+C# 11 — Auto-default structs	neither	post-standard		Struct constructors auto-default unassigned fields
+C# 11 — Extended nameof scope	reference	post-standard	yes	nameof(parameter) and nameof(T) inside an attribute on the method or parameter
+C# 11 — File-local types	declaration	post-standard	yes	file class C — visibility scoped to the declaring file
+C# 11 — Generic attributes	both	post-standard	yes	A generic class deriving from Attribute; [GenericAttribute<string>]
+C# 11 — Generic math support (static abstract and virtual interface members)	declaration	post-standard	yes	static abstract / static virtual members in interfaces, incl. operators
+C# 11 — Improved method group conversion to delegate	neither	post-standard		Compiler may cache and reuse the delegate object for a method group conversion
+C# 11 — List patterns	both	post-standard	yes	list patterns [1, 2, ..], slice/range pattern ..
+C# 11 — Newlines in string interpolation expressions	reference	post-standard	yes	Interpolation holes may span multiple lines
+C# 11 — Numeric IntPtr (nint / nuint alias IntPtr / UIntPtr)	reference	post-standard	yes	nint and nuint become simple types aliasing System.IntPtr/System.UIntPtr
+C# 11 — Pattern match Span<char> or ReadOnlySpan<char> on a constant string	reference	post-standard	yes	"span is ""123"""
+C# 11 — Raw string literals	neither	post-standard	yes	""""""" … """""" and $$"""""" … """""""
+C# 11 — Relaxing shift operator requirements	declaration	post-standard	yes	Right-hand operand of a user-defined shift operator need not be int
+C# 11 — Required members	declaration	post-standard	yes	required modifier on properties and fields; [SetsRequiredMembers]
+C# 11 — UTF-8 string literals	neither	post-standard		"""…""u8 suffix, typed ReadOnlySpan<byte>"
+C# 11 — Unsigned right-shift operator	declaration	post-standard	yes	>>> and >>>=
+C# 11 — Warning wave 7	neither	post-standard		CS8981 type name contains only lower-cased ASCII characters
+C# 11 — checked user-defined operators	declaration	post-standard	yes	operator checked +, checked -, checked *, checked /, checked ++, checked --, checked explicit conversions
+C# 11 — ref fields and scoped ref	declaration	post-standard	yes	ref fields in a ref struct; scoped modifier; [UnscopedRef]
+C# 12 — Alias any type	both	post-standard	yes	using alias for tuple, array, pointer and other unnamed types
+C# 12 — Collection expressions	reference	post-standard	yes	[1, 2, 3] and the spread element ..e
+C# 12 — Experimental attribute	reference	post-standard	yes	[Experimental] on types, methods, assemblies
+C# 12 — Inline arrays	both	post-standard	yes	[InlineArray(N)] struct with a single field
+C# 12 — Interceptors (preview)	both	post-standard	yes	[InterceptsLocation(path, line, character)] substituting a call at compile time
+C# 12 — Nameof accessing instance members	reference	post-standard	yes	nameof(field.ToString) without an instance
+C# 12 — Optional parameters in lambda expressions (default lambda parameters)	declaration	post-standard	yes	Default values on lambda parameters
+C# 12 — Primary constructors	declaration	post-standard	yes	Primary constructors on any class or struct
+C# 12 — ref readonly parameters	declaration	post-standard	yes	ref readonly parameter modifier
+C# 13 — Better conversion from collection expression element	reference	post-standard	yes	Overload resolution accounts for a collection expression's element type
+C# 13 — Implicit indexer access in object initializers	reference	post-standard	yes	^ from-the-end index inside an object initializer
+C# 13 — Method group natural type improvements	reference	post-standard	yes	Scope-by-scope pruning of method group candidates
+C# 13 — New escape sequence \e	neither	post-standard		\e for ESCAPE, U+001B
+C# 13 — New lock type and semantics	reference	post-standard	yes	lock on System.Threading.Lock uses EnterScope()
+C# 13 — Overload resolution priority	reference	post-standard	yes	[OverloadResolutionPriority(n)]
+C# 13 — Partial properties and partial indexers	declaration	post-standard	yes	partial modifier on properties and indexers
+C# 13 — The field keyword (preview in 13)	both	post-standard	yes	field contextual keyword, preview
+C# 13 — allows ref struct	declaration	post-standard	yes	The allows ref struct anti-constraint
+C# 13 — params collections	declaration	post-standard	yes	params on Span<T>, ReadOnlySpan<T>, IEnumerable<T> and other collection types
+C# 13 — ref and unsafe in iterators and async methods	declaration	post-standard	yes	ref locals, ref struct locals and unsafe contexts in iterators/async
+C# 13 — ref struct interfaces	declaration	post-standard	yes	ref struct types may implement interfaces
+C# 14 — Extension members (extension blocks)	both	post-standard	yes	extension(Receiver) blocks declaring extension methods, properties, and static members
+C# 14 — Extension operators	declaration	post-standard	yes	User-defined operators declared inside an extension block
+C# 14 — Ignored directives	neither	post-standard	yes	#: directive prefix for file-based apps (dotnet run app.cs)
+C# 14 — Modifiers on simple lambda parameters	declaration	post-standard	yes	Lambda parameter modifiers without parameter types: (text, out result) => …
+C# 14 — More implicit conversions for Span<T> and ReadOnlySpan<T> (first-class span types)	reference	post-standard	yes	Implicit span conversions; spans as extension method receivers
+C# 14 — Null-conditional assignment	reference	post-standard	yes	?. and ?[] on the left-hand side of assignment and compound assignment
+C# 14 — Optional and named arguments in Expression trees	reference	post-standard	yes	Named and omitted arguments permitted inside an Expression<T> lambda
+C# 14 — The field keyword (field-backed properties)	both	post-standard	yes	field token accessing the compiler-synthesized backing field
+C# 14 — User-defined compound assignment operators	declaration	post-standard	yes	Instance void operator += etc., and instance increment operators void operator ++
+C# 14 — nameof supports unbound generic types	reference	post-standard	yes	nameof(List<>)
+C# 14 — partial constructors	declaration	post-standard	yes	partial modifier on instance constructors
+C# 14 — partial events	declaration	post-standard	yes	partial modifier on events
+C.1	neither	annex-c	yes	General
+C.2	reference	annex-c	yes	Standard Library Types defined in ISO/IEC 23271
+C.3	reference	annex-c	yes	Standard Library Types not defined in ISO/IEC 23271
+C.4	reference	annex-c	yes	Format Specifications
+C.5	reference	annex-c	yes	Library Type Abbreviations
+CasePatternSwitchLabel	declaration	roslyn	yes	case <pattern> when …:
+CaseSwitchLabel	declaration	roslyn	yes	case <constant>:
+CatchDeclaration	declaration	roslyn	yes	catch (E e)
+CheckedExpression / the 8 primary-function kinds	reference	roslyn	yes	CheckedExpression, UncheckedExpression, TypeOfExpression, SizeOfExpression, DefaultExpression, MakeRefExpressi
+ClassDeclaration	declaration	roslyn	yes	class declaration
+CollectionInitializerExpression	reference	roslyn	yes	{ 1, 2 } in new C { 1, 2 }
+CompilationUnit	declaration	roslyn	yes	the file, as the declaring syntax of a top-level-statements entry point
+ConstructorDeclaration	declaration	roslyn	yes	instance and static constructor
+ConversionOperatorDeclaration	declaration	roslyn	yes	implicit/explicit conversion operator
+ConversionOperatorMemberCref	reference	roslyn	yes	"<see cref=""C.implicit operator int(C)""/>"
+D	neither	annex-d		Documentation comments
+D.1	neither	annex-d		General
+D.2	reference	annex-d	yes	Introduction
+D.3	neither	annex-d		Recommended tags
+D.3.1	neither	annex-d		General
+D.3.10	reference	annex-d	yes	<paramref>
+D.3.11	reference	annex-d	yes	<permission>
+D.3.12	neither	annex-d		<remarks>
+D.3.13	neither	annex-d		<returns>
+D.3.14	reference	annex-d	yes	<see>
+D.3.15	reference	annex-d	yes	<seealso>
+D.3.16	neither	annex-d		<summary>
+D.3.17	reference	annex-d	yes	<typeparam>
+D.3.18	reference	annex-d	yes	<typeparamref>
+D.3.19	neither	annex-d		<value>
+D.3.2	neither	annex-d		<c>
+D.3.3	neither	annex-d		<code>
+D.3.4	neither	annex-d		<example>
+D.3.5	reference	annex-d	yes	<exception>
+D.3.6	neither	annex-d		<include>
+D.3.7	neither	annex-d		<list>
+D.3.8	neither	annex-d		<para>
+D.3.9	reference	annex-d	yes	<param>
+D.4	neither	annex-d		Processing the documentation file
+D.4.1	neither	annex-d	yes	General
+D.4.2	both	annex-d	yes	ID string format
+D.4.3	both	annex-d	yes	ID string examples
+D.5	neither	annex-d		An example
+D.5.1	both	annex-d	yes	C# source code
+D.5.2	reference	annex-d	yes	Resulting XML
+DeclarationExpression	reference	roslyn	yes	out var x / (var a, var b) = …
+DefaultSwitchLabel	declaration	roslyn	yes	default:
+DelegateDeclaration	declaration	roslyn	yes	delegate type declaration
+DescendingOrdering	reference	roslyn	yes	a descending ordering inside orderby
+DestructorDeclaration	declaration	roslyn	yes	finalizer
+DiscardDesignation	reference	roslyn	yes	the _ in a pattern or deconstruction
+ElementAccessExpression	reference	roslyn	yes	a[i] — an indexer use
+EnumDeclaration	declaration	roslyn	yes	enum declaration
+EnumMemberDeclaration	declaration	roslyn	yes	enum member
+EventDeclaration	declaration	roslyn	yes	property-like event with add/remove accessors
+EventFieldDeclaration	declaration	roslyn	yes	field-like event declaration
+ExtensionDeclaration	declaration	roslyn	yes	extension block (C# 14 preview under this pin)
+ExternAliasDirective	declaration	roslyn	yes	extern alias
+FieldDeclaration	declaration	roslyn	yes	field declaration
+FileScopedNamespaceDeclaration	declaration	roslyn	yes	file-scoped namespace
+ForEachStatement	declaration	roslyn	yes	foreach loop variable
+FromClause	declaration	roslyn	yes	query from clause
+FunctionPointerType	reference	roslyn	yes	delegate*<int,int>
+GenericName	reference	roslyn	yes	C<T> at a use site
+GlobalStatement	neither	roslyn		a top-level statement
+GroupClause	reference	roslyn	yes	query group…by clause
+IdentifierName	reference	roslyn	yes	a bare identifier reference
+ImplicitElementAccess	reference	roslyn	yes	[0] = x inside an object initializer
+ImplicitObjectCreationExpression	reference	roslyn	yes	new()
+IncompleteMember	neither	roslyn	yes	a member the parser could not finish
+IndexExpression	reference	roslyn	yes	^1
+IndexerDeclaration	declaration	roslyn	yes	indexer declaration
+IndexerMemberCref	reference	roslyn	yes	"<see cref=""C.this[int]""/>"
+InitAccessorDeclaration	declaration	roslyn	yes	init accessor
+InterfaceDeclaration	declaration	roslyn	yes	interface declaration
+InvocationExpression	reference	roslyn	yes	a call
+JoinClause	both	roslyn	yes	query join clause
+JoinIntoClause	declaration	roslyn	yes	join … into g
+LabeledStatement	declaration	roslyn	yes	goto label
+LanguageVersion (whole enum)	neither	roslyn	yes	20 members in pinned Roslyn 4.14.0; 21 in the SDK's csc
+LanguageVersion.CSharp1	neither	roslyn		"value 1, display ""1"""
+LanguageVersion.CSharp10	neither	roslyn		"value 1000, display ""10.0"""
+LanguageVersion.CSharp11	neither	roslyn		"value 1100, display ""11.0"""
+LanguageVersion.CSharp12	neither	roslyn		"value 1200, display ""12.0"""
+LanguageVersion.CSharp13	neither	roslyn	yes	"value 1300, display ""13.0"" — the pinned compiler's ceiling"
+LanguageVersion.CSharp14	neither	roslyn	yes	value 1400 — present in the SDK's csc, ABSENT from the pinned Roslyn
+LanguageVersion.CSharp2	neither	roslyn		"value 2, display ""2"""
+LanguageVersion.CSharp3	neither	roslyn		"value 3, display ""3"""
+LanguageVersion.CSharp4	neither	roslyn		"value 4, display ""4"""
+LanguageVersion.CSharp5	neither	roslyn		"value 5, display ""5"""
+LanguageVersion.CSharp6	neither	roslyn		"value 6, display ""6"""
+LanguageVersion.CSharp7	neither	roslyn		"value 7, display ""7.0"""
+LanguageVersion.CSharp7_1	neither	roslyn		"value 701, display ""7.1"""
+LanguageVersion.CSharp7_2	neither	roslyn		"value 702, display ""7.2"""
+LanguageVersion.CSharp7_3	neither	roslyn		"value 703, display ""7.3"""
+LanguageVersion.CSharp8	neither	roslyn		"value 800, display ""8.0"""
+LanguageVersion.CSharp9	neither	roslyn		"value 900, display ""9.0"""
+LanguageVersion.Default	neither	roslyn	yes	"value 0, display ""default"""
+LanguageVersion.Latest	neither	roslyn	yes	"value 2147483647, display ""latest"""
+LanguageVersion.LatestMajor	neither	roslyn	yes	"value 2147483645, display ""latestmajor"""
+LanguageVersion.Preview	neither	roslyn	yes	"value 2147483646, display ""preview"" — the only way to reach extension blocks under the pin"
+LetClause	both	roslyn	yes	query let clause
+LocalDeclarationStatement	neither	roslyn		local variable statement
+LocalFunctionStatement	declaration	roslyn	yes	local function
+MemberBindingExpression	reference	roslyn	yes	the .b of a?.b
+MethodDeclaration	declaration	roslyn	yes	method declaration (ordinary and explicit-interface)
+MethodKind.AnonymousFunction	declaration	roslyn	yes	a lambda or anonymous method
+MethodKind.BuiltinOperator	reference	roslyn	yes	a predefined operator, e.g. int + int
+MethodKind.Constructor	declaration	roslyn	yes	an instance constructor
+MethodKind.Conversion	declaration	roslyn	yes	a user-defined conversion operator
+MethodKind.DeclareMethod	declaration	roslyn	yes	a VB Declare Sub/Function
+MethodKind.DelegateInvoke	declaration	roslyn	yes	a delegate's Invoke method
+MethodKind.Destructor	declaration	roslyn	yes	a finalizer
+MethodKind.EventAdd	declaration	roslyn	yes	an event's add accessor
+MethodKind.EventRaise	declaration	roslyn	yes	an event's raise accessor
+MethodKind.EventRemove	declaration	roslyn	yes	an event's remove accessor
+MethodKind.ExplicitInterfaceImplementation	declaration	roslyn	yes	an explicitly implemented interface member
+MethodKind.FunctionPointerSignature	declaration	roslyn	yes	the synthesised signature of a function pointer type
+MethodKind.LambdaMethod	declaration	roslyn	yes	an ALIAS of AnonymousFunction — same value 0
+MethodKind.LocalFunction	declaration	roslyn	yes	a local function
+MethodKind.Ordinary	declaration	roslyn	yes	an ordinary method
+MethodKind.PropertyGet	declaration	roslyn	yes	a property or indexer getter
+MethodKind.PropertySet	declaration	roslyn	yes	a property setter OR an init accessor
+MethodKind.ReducedExtension	reference	roslyn	yes	an extension method seen in its reduced (instance-call) form
+MethodKind.SharedConstructor	declaration	roslyn	yes	an ALIAS of StaticConstructor — same value 14
+MethodKind.StaticConstructor	declaration	roslyn	yes	a static constructor
+MethodKind.UserDefinedOperator	declaration	roslyn	yes	a user-defined operator
+NameMemberCref	reference	roslyn	yes	"<see cref=""M""/> naming a member or type"
+NamespaceDeclaration	declaration	roslyn	yes	block-bodied namespace
+NullableType	reference	roslyn	yes	T?
+NumericLiteralExpression / the 8 literal kinds	reference	roslyn	yes	NumericLiteralExpression, StringLiteralExpression, CharacterLiteralExpression, TrueLiteralExpression, FalseLit
+ObjectCreationExpression	reference	roslyn	yes	new T(…)
+OperatorDeclaration	declaration	roslyn	yes	user-defined operator
+OperatorMemberCref	reference	roslyn	yes	"<see cref=""C.operator +(C, C)""/>"
+OrderByClause	reference	roslyn	yes	query orderby clause
+Parameter	declaration	roslyn	yes	parameter declaration (method, ctor, indexer, delegate, lambda, primary ctor)
+ParenthesizedExpression	reference	roslyn	yes	( e )
+ParenthesizedLambdaExpression	reference	roslyn	yes	(x, y) => … , including a static or typed lambda
+ParenthesizedVariableDesignation	neither	roslyn		tuple deconstruction designation group
+PointerType	reference	roslyn	yes	T*
+PositionalPatternClause	reference	roslyn	yes	the (…) of a recursive pattern, which references Deconstruct
+PostIncrementExpression / the 3 postfix-unary kinds	reference	roslyn	yes	PostIncrementExpression, PostDecrementExpression, SuppressNullableWarningExpression
+PredefinedType	reference	roslyn	yes	int, string, void …
+PrimaryConstructorBaseType	reference	roslyn	yes	the : Base(args) of a record or primary-constructor type
+PropertyDeclaration	declaration	roslyn	yes	property declaration
+PropertyPatternClause / Subpattern	reference	roslyn	yes	{ Prop: pattern } and its members
+QualifiedCref	reference	roslyn	yes	"<see cref=""T.M""/>"
+QualifiedName	reference	roslyn	yes	A.B
+QueryContinuation	declaration	roslyn	yes	into <identifier> after select/group
+RangeExpression	reference	roslyn	yes	a..b
+RecordDeclaration	declaration	roslyn	yes	record class declaration
+RecordStructDeclaration	declaration	roslyn	yes	record struct declaration
+RemoveAccessorDeclaration	declaration	roslyn	yes	event remove accessor
+SelectClause	reference	roslyn	yes	query select clause
+SetAccessorDeclaration	declaration	roslyn	yes	set accessor
+SimpleAssignmentExpression / the 13 assignment kinds	reference	roslyn	yes	SimpleAssignmentExpression, AddAssignmentExpression, SubtractAssignmentExpression, MultiplyAssignmentExpressio
+SimpleLambdaExpression	reference	roslyn	yes	x => …
+SimpleMemberAccessExpression	reference	roslyn	yes	a.b
+SingleVariableDesignation	declaration	roslyn	yes	out var / is-pattern / deconstruction designation
+StructDeclaration	declaration	roslyn	yes	struct declaration
+SymbolKind.Alias	declaration	roslyn	yes	using alias and extern alias
+SymbolKind.ArrayType	reference	roslyn	yes	an array type symbol
+SymbolKind.Assembly	neither	roslyn	yes	an assembly symbol
+SymbolKind.Discard	reference	roslyn	yes	the _ discard symbol
+SymbolKind.DynamicType	reference	roslyn	yes	the dynamic type
+SymbolKind.ErrorType	reference	roslyn	yes	an unresolved type
+SymbolKind.Event	declaration	roslyn	yes	an event symbol
+SymbolKind.Field	declaration	roslyn	yes	a field symbol
+SymbolKind.FunctionPointerType	reference	roslyn	yes	a function pointer type symbol
+SymbolKind.Label	declaration	roslyn	yes	a goto or switch label
+SymbolKind.Local	declaration	roslyn	yes	a local variable
+SymbolKind.Method	declaration	roslyn	yes	a method symbol
+SymbolKind.NamedType	declaration	roslyn	yes	a named type symbol
+SymbolKind.Namespace	declaration	roslyn	yes	a namespace symbol
+SymbolKind.NetModule	neither	roslyn	yes	a module symbol
+SymbolKind.Parameter	declaration	roslyn	yes	a parameter symbol
+SymbolKind.PointerType	reference	roslyn	yes	a pointer type symbol
+SymbolKind.Preprocessing	reference	roslyn	yes	a preprocessing symbol
+SymbolKind.Property	declaration	roslyn	yes	a property symbol
+SymbolKind.RangeVariable	declaration	roslyn	yes	a query range variable
+SymbolKind.TypeParameter	declaration	roslyn	yes	a type parameter symbol
+SyntaxFacts.IsAnyToken (241 kinds)	neither	roslyn		every token kind
+SyntaxFacts.IsPreprocessorDirective (20 kinds)	reference	roslyn	yes	#if, #define, #region, #pragma, #line, #nullable, #load, #r, #!shebang, bad directive
+SyntaxFacts.IsTrivia (29 kinds)	neither	roslyn		whitespace, comments, disabled text, directives
+SyntaxKind (whole enum)	neither	roslyn	yes	569 members, 569 distinct values, in pinned Roslyn 4.14.0
+ThisConstructorInitializer	reference	roslyn	yes	: this(…)
+ThisExpression	reference	roslyn	yes	this
+TupleElement	declaration	roslyn	yes	a named element in a tuple TYPE
+TupleExpression	both	roslyn	yes	a tuple literal, which declares a ValueTuple type
+TupleType	reference	roslyn	yes	(int, int) as a type
+TypeCref	reference	roslyn	yes	"<see cref=""int*""/> and other type-only crefs"
+TypeKind.Array	reference	roslyn	yes	an array type
+TypeKind.Class	declaration	roslyn	yes	a class
+TypeKind.Delegate	declaration	roslyn	yes	a delegate type
+TypeKind.Dynamic	reference	roslyn	yes	dynamic
+TypeKind.Enum	declaration	roslyn	yes	an enum
+TypeKind.Error	reference	roslyn	yes	an unresolved type
+TypeKind.Extension	declaration	roslyn	yes	an extension block's type
+TypeKind.FunctionPointer	reference	roslyn	yes	a function pointer type
+TypeKind.Interface	declaration	roslyn	yes	an interface
+TypeKind.Module	neither	roslyn	yes	a VB Module
+TypeKind.Pointer	reference	roslyn	yes	a pointer type
+TypeKind.Struct	declaration	roslyn	yes	a struct
+TypeKind.Structure	declaration	roslyn	yes	the VB spelling of Struct — an ALIAS, same value 10
+TypeKind.Submission	declaration	roslyn	yes	a script submission type
+TypeKind.TypeParameter	reference	roslyn	yes	a type parameter used as a type
+TypeKind.Unknown	neither	roslyn	yes	the enum's zero value
+TypeParameter	declaration	roslyn	yes	type parameter declaration
+TypeParameterConstraintClause	reference	roslyn	yes	where clause
+UnaryMinusExpression / the 9 prefix-unary kinds	reference	roslyn	yes	UnaryPlusExpression, UnaryMinusExpression, BitwiseNotExpression, LogicalNotExpression, PreIncrementExpression,
+UnknownAccessorDeclaration	declaration	roslyn	yes	accessor with no recognised keyword (error recovery)
+UsingDirective	declaration	roslyn	yes	using directive (plain, static, alias, global)
+VariableDeclaration	neither	roslyn		the type + declarator list inside a field or local statement
+VariableDeclarator	declaration	roslyn	yes	the declarator that actually carries a field, event or local symbol
+WhereClause	reference	roslyn	yes	query where clause

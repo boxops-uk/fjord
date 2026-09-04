@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Names</RootNamespace>
+
+    <!-- No `LangVersion`. Everything here is C# 2 or older except `nameof` (C# 6), and the
+         point of two of the files is what the *default* language version does with a
+         contextual keyword. A pin would make a compiler change look like a fixture edit. -->
+
+    <!-- CS8981 ("the type name 'var' only contains lower-cased ascii characters") is the
+         warning `Keywords/NamesVarTaken.cs` exists to provoke: a user type named `var` is
+         legal, and the warning is the compiler saying so. Left on, not suppressed, because
+         a build log carrying it is the evidence that the file compiled as written. -->
+  </PropertyGroup>
+</Project>

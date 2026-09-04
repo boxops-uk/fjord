@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Statements</RootNamespace>
+
+    <!-- Clause 13.6.2 makes a local's *declared type* the fact a query asks for, and half the
+         declaration forms in this project declare a reference type. With no nullable context
+         a `string?` local is CS8632 and an annotated one is indistinguishable from a plain
+         one, so the context is on here and every annotation below is deliberate. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

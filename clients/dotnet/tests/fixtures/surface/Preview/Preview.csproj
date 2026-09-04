@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Preview</RootNamespace>
+
+    <!-- This is the whole reason the project exists. The pinned compiler parses an `extension`
+         block only at `preview`, and an extension block is the C# 14 construct this indexer
+         was found to drop *with every member inside it* — so the rows for it cannot live
+         beside the C# 10-13 rows in `Modern`, which is deliberately on the default language
+         version to prove they need no opt-in. -->
+    <LangVersion>preview</LangVersion>
+
+    <!-- The `field` keyword's whole subject is a property whose backing field the compiler
+         writes, and half of what a reader wants to know about one is its nullability. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

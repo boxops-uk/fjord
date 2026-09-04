@@ -34,6 +34,23 @@ namespace Boxops.Fjord.Tests;
 public sealed class PredicateCensusTests
 {
     /// <summary>How a predicate is expected to behave over the <c>census</c> fixture.</summary>
+    /// <summary>
+    /// The predicates this audit says the producer fills, for a gate over a larger corpus.
+    /// </summary>
+    /// <remarks>
+    /// <b>Exposed because the classification belongs here and the wider check does not.</b> This
+    /// class asserts the classification against the <c>census</c> fixture, which is three files
+    /// chosen to reach each predicate once. <c>SurfaceCorpusTests</c> asserts the same
+    /// classification against the reference corpus — 29 projects over the whole language — where
+    /// a <see cref="Fill.Written"/> predicate coming back empty means something different: not
+    /// that the producer cannot fill it, but that nothing in the language surface reaches it.
+    /// Duplicating the table to ask that would let the two copies disagree, which is the defect
+    /// this table exists to prevent.
+    /// </remarks>
+    internal static IEnumerable<uint> Filled =>
+        Audit.Where(entry => entry.Fill is Fill.Written or Fill.Conditional)
+            .Select(entry => entry.Predicate);
+
     private enum Fill
     {
         /// <summary>The fixture fills it, so the gate asserts rows.</summary>

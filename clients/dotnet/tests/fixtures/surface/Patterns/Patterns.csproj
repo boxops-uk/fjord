@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Patterns</RootNamespace>
+
+    <!-- Clause 11 is where the compiler's null-state analysis is most visible — `is not
+         null`, `{ }`, and the flow the guards depend on — so the project is annotated. It
+         needs nothing else: every type a pattern here matches is declared here or in the
+         framework reference. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

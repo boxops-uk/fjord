@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Expressions.Operators</RootNamespace>
+    <!-- The operator clauses are about nullable value types and the null literal
+         (12.14.10) and about `??` (12.17), so the annotation context has to be on for
+         the reference-type half of those expressions to mean anything. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

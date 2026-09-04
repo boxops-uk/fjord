@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Synthesised.Events</RootNamespace>
+
+    <!-- A field-like event is null until something subscribes, so every event here is
+         declared `Handler?` the way real code declares it. With annotations off, each `?`
+         is a CS8632 and the declarations read as mistakes instead of as the shapes they
+         are; on, the whole file is warning-free and the events are the only thing odd
+         about it. -->
+    <Nullable>enable</Nullable>
+
+    <!-- `EventUses.cs` references an event from a documentation comment (`<see
+         cref="EvGauge.Read"/>`), which is the only reference form that names an event
+         without `+=`, `-=` or an invocation. A cref only binds when the parse has
+         DocumentationMode.Diagnose, which is what generating the documentation file turns
+         on — so without this property the cref is trivia and the reference does not exist.
+         CS1591 is suppressed because it fires on the deliberately undocumented handler
+         parameters and says nothing about binding. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- No PackageReference and no ProjectReference: every delegate type here is the
+       project's own, and `System.EventHandler` comes from the framework reference. -->
+</Project>

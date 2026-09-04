@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Locals</RootNamespace>
+
+    <!-- Nothing else, and the query file is why that is worth a comment. A query
+         expression normally means `using System.Linq`, and a fixture that leaned on it
+         would be asserting things about `Enumerable.Select` — a declaration in an assembly
+         this corpus does not index, so every claim about "the method the query calls" would
+         have no definition row to join to and the anti-join would be vacuous.
+         `Query/LocalsQuerySource.cs` declares the query pattern itself, in this project, so
+         the reference set closes over corelib and the target of every lowered call is a
+         declaration the corpus owns. -->
+  </PropertyGroup>
+</Project>

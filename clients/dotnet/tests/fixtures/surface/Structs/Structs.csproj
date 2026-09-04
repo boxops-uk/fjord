@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Structs</RootNamespace>
+
+    <!-- Clause 16.2.2 lists `unsafe` among the struct modifiers (the unsafe-code grammar
+         extends struct_modifier), so `StructModifiers.cs` declares an `unsafe struct`.
+         The modifier is a compiler error without this property, and the property is the
+         only way to reach that one row of the census. Pointer types themselves are
+         clause 23 and belong to another project; nothing here does pointer arithmetic. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Clause 16.4.5 is about default values, and a `ref struct` field left at its
+         default is the case the nullable analysis has an opinion about. Enabling the
+         context makes `MeaningOfThis.cs` and `ValueSemantics.cs` say what they mean. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

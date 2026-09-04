@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Annex D.3.6 — the external documentation this project's `<include>` tags pull in. This
+     file is *source*, not build output: the compiler reads it while it compiles
+     `DocIncluded.cs`, which points four `<include>` tags at it, so deleting it turns all
+     four into CS1589 warnings and empties three members' documentation. -->
+<docs>
+  <member name="DocIncludedText.Compose">
+    <summary>
+      D.3.6 — a summary that exists only in this file. The declaration it documents has no
+      <c>&lt;summary&gt;</c> of its own: its documentation comment is a single
+      <c>&lt;include&gt;</c> tag, and the compiler replaces that tag with these children when
+      it writes <c>Docs.xml</c>. An index reading the syntax tree sees the tag; an index
+      reading the documentation file sees this. The two disagree, and which one answers is
+      the fact.
+    </summary>
+    <returns>D.3.6 — the composed text, described from outside the source file.</returns>
+  </member>
+  <member name="DocIncludedText.Lines">
+    <summary>D.3.6 — a second member, selected by a different XPath predicate.</summary>
+    <remarks>
+      D.3.6 — <c>path</c> selects the <c>member</c> element's children, so this
+      <c>&lt;remarks&gt;</c> and the summary above both land on the declaration.
+    </remarks>
+    <returns>D.3.6 — how many lines were composed.</returns>
+  </member>
+</docs>

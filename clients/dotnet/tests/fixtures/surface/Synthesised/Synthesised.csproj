@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Synthesised</RootNamespace>
+
+    <!-- LanguageVersion.Preview (2147483646). This is the only build property in the
+         corpus that is itself a population row: the pinned Roslyn 4.14 has no
+         `LanguageVersion.CSharp14`, so `<LangVersion>14.0</LangVersion>` is CS1617 there
+         and would fail the project outright, while `preview` maps to `Preview` and parses
+         the C# 14 constructs in ExtensionBlock.cs. `default`, `latest` and `latestmajor`
+         are the other three spellings that reach the pinned ceiling, and none of them
+         survives into a parse tree — Roslyn maps a specified version to an effective one
+         before parsing, so an index can only ever hold the effective value. -->
+    <LangVersion>preview</LangVersion>
+
+    <!-- TypeKind.Pointer, TypeKind.FunctionPointer, SymbolKind.PointerType,
+         SymbolKind.FunctionPointerType and MethodKind.FunctionPointerSignature all need
+         an unsafe context (clause 23), and `[module: SkipLocalsInit]` — the project's only
+         evidence for SymbolKind.NetModule — needs it too. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- The synthesised event and property surface is declared the way real code declares
+         it (`EventHandler?`, `string?`), and `required` and the annotated type-parameter
+         constraint `where TMaybe : class?` mean nothing at all without nullable analysis
+         on. Off, every one of those annotations is a CS8632 and the constructs read as
+         mistakes rather than as the shapes they are. -->
+    <Nullable>enable</Nullable>
+
+    <!-- SymbolKind.ErrorType / TypeKind.Error. ErrorTypes.cs reaches an unresolved type
+         from a program that compiles, by way of a documentation-comment `cref` — which
+         binds, produces an IErrorTypeSymbol, and reports only a warning. Generating the
+         documentation file is what turns those into CS1574/CS1584/CS1572 warnings in the
+         build log, so the claim "these names bind to nothing" is checkable rather than
+         asserted. CS1591 (missing XML comment) is suppressed: it fires on the members
+         this corpus deliberately leaves undocumented and says nothing about binding. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- SymbolKind.Alias, the extern half. `extern alias SynRuntime;` in Aliases.cs binds to
+       an assembly named by a /reference option, so the alias cannot be declared in source
+       alone: this target is the option. Aliasing System.Runtime rather than adding a
+       reference keeps the "no PackageReference, no ProjectReference" rule intact — the
+       assembly is already there, and only its alias list changes. -->
+  <Target Name="SynAddExternAlias" AfterTargets="ResolveReferences">
+    <ItemGroup>
+      <ReferencePath Condition="'%(FileName)' == 'System.Runtime'" Aliases="global,SynRuntime" />
+    </ItemGroup>
+  </Target>
+</Project>

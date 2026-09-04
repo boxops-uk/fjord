@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Quarantine.Terms</RootNamespace>
+
+    <!-- No `LangVersion`. Indexers are C# 1 and explicit interface implementation of an
+         indexer is C# 1 as well; nothing here needs a newer compiler. -->
+  </PropertyGroup>
+</Project>

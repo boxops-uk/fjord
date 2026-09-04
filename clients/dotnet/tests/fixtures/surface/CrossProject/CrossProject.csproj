@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.CrossProject</RootNamespace>
+  </PropertyGroup>
+
+  <!-- **The corpus's only `ProjectReference`, and it is here on purpose.** Every other
+       project stands alone, and `Assemblies.Left`/`Assemblies.Right` must: they declare one
+       type name twice and a reference between them would not compile. But a reference whose
+       declaration lives in another project's *source* is an everyday shape and a different
+       code path — the producer resolves it through the compilation reference rather than
+       through this project's own syntax trees — so exactly one project has one, and this is
+       it. Without it `msbuild.ProjectReference` and `msbuild.ProjectReferencedBy` are empty
+       over the whole corpus. -->
+  <ItemGroup>
+    <ProjectReference Include="../Types/Types.csproj" />
+  </ItemGroup>
+</Project>

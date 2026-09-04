@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Entry</RootNamespace>
+
+    <!-- The reason this is a third project. Top-level statements need an entry point, and an
+         entry point needs an application: a class library compiles `Program.cs` below with
+         CS8805 ("program using top-level statements must be an executable"). The pair this
+         project exists to produce — a synthesized type and a synthesized method, neither of
+         which appears in any source file — cannot be produced any other way. -->
+    <OutputType>Exe</OutputType>
+
+    <!-- C# 14's ignored directives (`#:`) are rejected outside a file-based program with
+         CS9298, and `dotnet run app.cs` is not a thing a checked-in fixture can be. This is
+         the compiler flag that route sets, stated by hand so the construct is reachable from
+         a project. Nothing else in the project depends on it. -->
+    <Features>FileBasedProgram</Features>
+  </PropertyGroup>
+</Project>
