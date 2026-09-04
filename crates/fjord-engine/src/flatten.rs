@@ -11588,6 +11588,11 @@ mod union_laws {
     /// order is only tested where two residuals stand in that relation — and the
     /// spellings that do are the ones where the two checks come from different
     /// passes, which is the case a table of pure selects cannot reach.
+    ///
+    /// The last three are the ones **emission order gets wrong**, and the reason the
+    /// pass is not a tidy-up over a list that was already right: every other spelling
+    /// here happens to emit its checks ahead of the reads that need them, so a
+    /// flattener that merely appended would answer them all.
     #[test]
     fn a_tag_is_checked_before_its_payload_is_read() {
         let schema = fixture::schema();
@@ -11616,6 +11621,21 @@ mod union_laws {
             ),
             // ...and both checks from the select pass, which owes the order to itself.
             ("X.u.a?.r.p? where test.Pad X", true),
+            // **A comparison through a selected payload.** `apply_comparisons` runs
+            // before `apply_selects`, so the deep read is emitted first and the check
+            // that guards it is appended *behind* it. Nothing about the plan records
+            // which pass emitted what, so this is equally the shape a future pass
+            // placing a check late would produce.
+            ("X where test.Label {id = X, what = W}; W.num? > 1", true),
+            // The same with a union under a union, where the read is emitted ahead of
+            // **both** checks, which have then to nest outside-in behind it.
+            ("X where test.Pad {pad = X, u = U}; U.a?.r.p? > 5", true),
+            // ...and mixed: the outer tag from the key walk, the comparison, then the
+            // inner tag from a select — three passes, one list, one right order.
+            (
+                "X where test.Pad {pad = X, u = {a = {r = R}}}; R.p? > 5",
+                true,
+            ),
         ] {
             let found = tag_checks_precede_payload_reads(&plan_of(&schema, source))
                 .unwrap_or_else(|why| panic!("{source:?}: {why}"));
@@ -11626,5 +11646,123 @@ mod union_laws {
                 "{source:?}: {found} residuals read through a checked payload",
             );
         }
+    }
+
+    /// **The ordering pass is load-bearing for an answer, not for a plan's tidiness.**
+    ///
+    /// A comparison written through a selected payload is emitted ahead of the tag
+    /// check that guards it, and [`field_span`](crate::iter) *refuses* rather than
+    /// answering false — so a plan left in emission order does not answer a row too
+    /// many, it fails the whole query with a `DiscriminantMismatch`. These are the
+    /// rows that says it, over source a user can write.
+    ///
+    /// Beside [`a_tag_is_checked_before_its_payload_is_read`], which states the order
+    /// over the plan: this states what the order buys, so the pass cannot be
+    /// neutralised behind a green suite.
+    #[test]
+    fn a_comparison_through_a_selected_payload_answers_its_rows() {
+        let (_dir, db, schema) = seeded();
+
+        for (source, expected) in [
+            (
+                "X where test.Label {id = X, what = W}; W.num? > 1",
+                ["Int(30)"],
+            ),
+            (
+                "X where test.Pad {pad = X, u = U}; U.a?.r.p? > 5",
+                ["Int(1)"],
+            ),
+            // The tag behind a select on the *outer* union's other alternative, so
+            // the payload read is one step deep rather than three.
+            ("X where test.Pad {pad = X, u = U}; U.b? > 3", ["Int(2)"]),
+            (
+                "X where test.Pad {pad = X, u = {a = {r = R}}}; R.p? > 5",
+                ["Int(1)"],
+            ),
+        ] {
+            assert_eq!(bag(&db, &schema, source), expected, "{source:?}");
+        }
+    }
+
+    /// **Checks nest outside-in whatever order they were emitted in** — the half of
+    /// the sort key no query reaches.
+    ///
+    /// Every spelling in the corpus emits its tag checks shallowest-first, so the
+    /// depth ordering among *checks* is satisfied by accident today and a pass that
+    /// only sorted checks ahead of reads would pass the table above. What would break
+    /// it is a pass emitting a check late — a second select pass, a rewrite hoisting
+    /// an inner union — and the plan it would hand over is this one.
+    ///
+    /// Stated over a real plan with its residual lists reversed rather than over a
+    /// hand-built `Body`, so the shape under test is one flatten actually emits, and
+    /// asserting the reversal broke the order first: a precondition that stopped
+    /// holding would otherwise leave the law green over an already-sorted list.
+    #[test]
+    fn tag_checks_nest_outside_in_whatever_order_they_were_emitted() {
+        use crate::plan::{ResidualOp, Step};
+
+        /// The depth of each tag check, in list order, per source.
+        fn check_depths(body: &super::Body) -> Vec<Vec<usize>> {
+            body.steps
+                .iter()
+                .filter_map(|step| match step {
+                    Step::Level(level) => Some(level),
+                    Step::Derive(_) | Step::Test(_) => None,
+                })
+                .flat_map(|level| level.sources.iter())
+                .map(|source| {
+                    source
+                        .residuals()
+                        .iter()
+                        .filter(|residual| matches!(residual.op, ResidualOp::DiscriminantEq(_)))
+                        .map(|residual| residual.path.steps().len())
+                        .collect()
+                })
+                .collect()
+        }
+
+        let schema = fixture::schema();
+        let plan = plan_of(&schema, "X.u.a?.r.p? where test.Pad X");
+
+        let mut body = super::Body {
+            steps: plan.body.to_vec(),
+            levels: plan.levels(),
+            registers: plan.nvars,
+        };
+
+        for step in &mut body.steps {
+            let Step::Level(level) = step else { continue };
+
+            for source in level.sources.iter_mut() {
+                let mut residuals = source.residuals().to_vec();
+                residuals.reverse();
+                *source.residuals_mut() = residuals.into();
+            }
+        }
+
+        let reversed = check_depths(&body);
+
+        assert!(
+            reversed.iter().any(|depths| depths.len() > 1),
+            "the query stopped carrying a source with two tag checks: {reversed:?}"
+        );
+        assert!(
+            reversed
+                .iter()
+                .any(|depths| depths.windows(2).any(|pair| pair[0] > pair[1])),
+            "reversing left the checks already outside-in, so the law below would \
+             hold over a list nothing had broken: {reversed:?}"
+        );
+
+        super::Flattener::order_tag_checks(&mut body);
+
+        let ordered = check_depths(&body);
+
+        assert!(
+            ordered
+                .iter()
+                .all(|depths| depths.windows(2).all(|pair| pair[0] <= pair[1])),
+            "a check sorts behind one nested inside it: {ordered:?}"
+        );
     }
 }
