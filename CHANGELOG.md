@@ -479,8 +479,11 @@ header carries the name — with one exception, now written down: a `FactId` pac
 id in its high bits, so a consumer decoding a returned reference's tag against a hardcoded table
 reads the wrong predicate the day the numbering moves.
 
-`predicate_ids_are_assigned_by_sorted_qualified_name` is the test that rule never had, and
-every schema file added from here on relies on it.
+`predicate_ids_are_assigned_by_sorted_qualified_name` gates that rule across a schema that
+**spans files**, which is what is new here; `ids_are_assigned_by_sorted_qualified_name` has
+gated it within one block since before this release. The reserved half — that `fjord.*`
+numbers last — is gated by the same test's `fjord.db` block, and dropping the reserved key
+from `lower`'s sort makes it fail. Every schema file added from here on relies on both.
 
 ### A schema that spans files, resolved without a filesystem
 
@@ -549,9 +552,11 @@ that loses is a reader of detached JSON text with no schema, for whom `"00ff"` i
 indistinguishable from a string whose content happens to be hex. Stated, rather than paid for
 by every consumer on every row.
 
-Nothing existing moved: `schemas/code.sigla` is still `0xb08eea634e866a75`, the format stamp
-is still codec 1 / storage 1, and the corpus's positional plan-fingerprint list took pure
-insertions.
+Nothing existing moved **for `bytes` itself**: `schemas/code.sigla` was still
+`0xb08eea634e866a75` when this landed, the format stamp is still codec 1 / storage 1, and the
+corpus's positional plan-fingerprint list took pure insertions. (That fingerprint moves later
+in this same release and the file is then **deleted** — see the source layer above. The number
+here is what `bytes` cost, not where the release left it.)
 
 ### A union-typed variable can be shared by two generators
 

@@ -117,19 +117,37 @@ plain where an unrecognised *letter* used to.
 ## Two consumer recipes that must be written down, because the shapes are sharp
 
 **`FileLineAt` — offset → line.** Keyed `{file, start, line}`, all key. There is no descending seek
-and no `LIMIT` in sigla, so the shape is a range upward bounded by the client:
-`{file = F, start = X..}` with a client-side limit of 1.
+and no `LIMIT` in sigla, so the shape is a range upward bounded by the client — and the bound is a
+**comparison statement, not `..`**. `..` is the string-prefix operator; an integer range is `S >= n`,
+which the level that captures `S` folds into the seek:
 
-- Exact hit: the returned row **is** the answer.
+```
+L where src.FileLineAt {file = F, start = S, line = L}; S >= 12345
+```
+
+with a client-side limit of 1.
+
+- Exact hit: the returned row **is** the answer — and **the last line's start is an exact hit like
+  any other**, because the range upward from it finds it.
 - Mid-line `X`: the returned row is the line *after* the one containing `X`, so the answer is
   `line - 1` — arithmetic on a row already in hand, no second seek.
-- **`X` at or past the last line's start: the range is empty.** The consumer must fall back to
+- **`X` strictly past the last line's start: the range is empty.** The consumer must fall back to
   `FileInfo.lines`, and that fallback is not optional — it is the common case for a reference in the
   last line of a file. Issue #39 does not state it.
 
-**A window.** `FileLine {file = F, line = a..b}` is a range on the last key field: 0.4–1.4 ms for a
-100 line window at any offset in a 500,000 line file, which rests on the `SeekKeyPart::Range`
-planner fix already in the tree.
+Both the issue and this document's first draft said "at *or* past", and the "at" half of that is
+wrong. All three cases are pinned by `offset_to_line_has_three_cases_and_the_third_is_empty`
+(`crates/fjord-cli/tests/source_layer.rs`), which is where to read the boundary rather than here.
+
+**A window.** A range on the last key field, written the same way:
+
+```
+X.value where X = src.FileLine {file = F, line = L}; L >= 400; L < 450
+```
+
+It rests on the range-part planner fix already in the tree (`SeekKeyPart`). The lesson from the run
+that motivated it is that a bounded window costs a seek and the page it draws rather than the file
+— the figures themselves are in the measurement register, which is closed until a 1.0 pass.
 
 ## Acceptance criteria
 

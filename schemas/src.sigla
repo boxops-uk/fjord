@@ -153,9 +153,19 @@ schema src {
 
   # The reverse of `FileLine.start`: which line a byte offset begins.
   #
-  # Keyed on `start` so that resolving a `ByteSpan` to a line is a seek to the greatest
-  # `start` at or below the offset, rather than a scan. An offset *at* a line's start hits
-  # exactly; one past the file's last line start finds nothing.
+  # Keyed on `start` so that resolving a `ByteSpan` to a line is one seek rather than a scan.
+  # There is no descending seek and no `LIMIT` in sigla, so the shape is a **range upward**
+  # with a client-side limit of 1 — and the bound is a comparison statement, not `..`, which
+  # is the string-prefix operator. An integer range is `S >= n`, which the level that
+  # captures `S` folds into the seek:
+  #
+  #   L where src.FileLineAt {file = F, start = S, line = L}; S >= 12345
+  #
+  # Three cases, and a consumer that handles only the first two is wrong on the last line of
+  # every file. An offset **at** a line's start answers that line — including the last line's
+  # start, which is an exact hit like any other. An offset **mid-line** answers the line
+  # *after* it, so the answer is `line - 1`. An offset **strictly past** the last line's
+  # start answers nothing, and the consumer falls back to `FileInfo.lines`.
   predicate FileLineAt : { file : File, start : int, line : int }
 
   # Syntax highlighting for one line, as an opaque payload. Held per line so a viewer
@@ -177,6 +187,14 @@ schema src {
   # about it is fjord's: a consumer that speaks LSP reads it already, and Monaco takes the
   # decoded array unchanged. A producer for another language names its own encoding and its
   # own legend, and this predicate does not change.
+  #
+  # **The columns inside the payload count in the encoding's unit, not this database's.**
+  # `config.Setting {dimension = "position-encoding"}` declares the unit for the offsets and
+  # columns *this schema declares*; what an opaque payload counts in is named by
+  # `style-encoding`, together with the format and the legend. `roslyn-lsp-1` is LSP's own
+  # unit — UTF-16 code units, which is `FileLine.cstart`'s unit and **not** `start`'s, the
+  # unit a `ByteSpan` counts in. A consumer drawing a style run over a span therefore
+  # converts through that line's `start`/`cstart` pair rather than assuming the two agree.
   #
   # Absent means "not tokenised", so an index with no highlighter is a complete index and
   # needs no sentinel.

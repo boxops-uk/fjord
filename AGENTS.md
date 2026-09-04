@@ -15,6 +15,7 @@ book, not here.
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | What a code-intelligence product could ship on this — read **before claiming a question is or is not answerable** | [`docs/gitnexus.md`](docs/gitnexus.md) |
 | What was measured, and the method — the register is **closed until a 1.0 pass**; cite it for a lesson, never for a current figure | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](website/content/performance.md) |
+| A plan too long to live in `PLAN.md` — one file per issue, tracked so that a plan under review is reviewable | [`scratchpad/`](scratchpad/) — **the current revision only**; a superseded one is deleted, not kept beside it |
 
 ## Module map — a workspace, bottom to top
 

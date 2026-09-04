@@ -986,8 +986,10 @@ not already conceded.
 
 - A row bind that claims its variable (`flatten::Claims`, `flatten.rs:351`, decided at
   `:1195-1240`) prevents another occurrence from being a capture; ordering cannot invent a missing
-  access path. `D = src.Decl _; src.SearchByName {to = D, name = N}` is the 30s-to-2ms case at
-  `fjord-viewer/src/query.rs:236-238`. Note the interaction with chasing: the chasable flag is
+  access path. The 30s-to-2ms case has the shape `D = P _; Q {to = D, name = N}`, where the
+  second predicate can only seek on what the first claimed. It was measured in the code-search
+  viewer this release retires, so there is no live site to cite; the shape is what carries
+  over. Note the interaction with chasing: the chasable flag is
   what *releases* the claim and makes the good order legal, so removing chasing to simplify the DP
   would move cases into this section rather than out of it.
 - A join whose inner side cannot seek on the schema's declared leading fields is a key-order

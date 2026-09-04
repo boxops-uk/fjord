@@ -89,6 +89,10 @@ and is the reason to prefer it over a separate job.
 1. **The inventory is executable.** `scripts/flag-day.sh` (or a numbered checklist in
    `clients/dotnet/README.md`) walks steps 1–9 and **fails loudly** at any step whose artifact is
    stale — in particular, it must fail if `golden/blocks.txt` was not regenerated.
+   *Met by the second branch, and the first is retired:* the script was written and has since been
+   deleted, because a step that is a correctness claim belongs in the required suite rather than in
+   something somebody remembers to run. `clients/dotnet/README.md` carries the ordered checklist
+   and a table naming the test that now checks each step.
 2. **A stale constant is a red suite, not a runtime refusal.** A test asserts that
    `fjord schema fingerprint schemas/code.sigla` equals the constant in `CodeIndex.cs` (parsed out
    of the C# source, which is a grep, not a build). Today nothing does, and the first sign of a

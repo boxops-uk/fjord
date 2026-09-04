@@ -529,8 +529,11 @@ public sealed class SourceLayerTests
 
                 for (var offset = at; offset < at + Encoding.UTF8.GetByteCount(file.AsSpan(position, width)); offset++)
                 {
-                    // The seek `FileLineAt {file = F, start = X..}` with a client-side
-                    // limit of one, read backwards: the last row at or below the offset.
+                    // The recipe is a range upward with a client-side limit of one —
+                    // `FileLineAt {file = F, start = S, line = L}; S >= X`, a comparison
+                    // statement and not `X..`, which is the string-prefix operator. This
+                    // asserts the same answer over a page already in hand, which is why it
+                    // reads the last row at or below the offset instead of seeking per byte.
                     var found = rows.Last(row => row.Start <= offset);
 
                     Assert.Equal(holds, found.Number);

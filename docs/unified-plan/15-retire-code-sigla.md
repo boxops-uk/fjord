@@ -342,8 +342,9 @@ Delete it. What moves with it:
 | the 71 files matching `src.Decl` | migrate or go |
 | `bench/FINDINGS.md` | **every published read number is keyed to predicates that no longer exist** |
 
-**Gate.** `git grep -l 'code\.sigla'` returns only history; `scripts/flag-day.sh` walks clean; the
-suite green.
+**Gate.** `git grep -l 'code\.sigla'` returns only history; the flag-day guards named in
+`clients/dotnet/README.md` are green — the script this line named has since been deleted, and each
+of its steps that was a correctness claim is now a test in the required job; the suite green.
 
 ## The one thing that gets worse
 
@@ -377,3 +378,61 @@ R9  SCIP converter  (needs R8a)
 **R0.5 still comes first in practice**, because every gate above needs somewhere to live and the
 .NET side has no test project at all. It is not on the schema clock, but nothing can be *verified*
 without it.
+
+## Acceptance criteria
+
+Every sibling item carries this section and this one did not, which left the five runs above with
+no list to check the tree against. It is written after the fact and its statuses are as of this
+commit; a criterion is a test or a command, never prose.
+
+1. **The source layer is written by a producer and read back over a socket.** All nine `src.*`
+   predicates are written by the indexer, and the gate is a round trip rather than a row count:
+   `SourceLayerDatabaseTests` walks a fixture, starts a real server and asserts *answers*, with
+   the style layer covered in the same pass. The line-table arithmetic is separately pinned over
+   hand-built facts in `crates/fjord-cli/tests/source_layer.rs`, because a schema holding a shape
+   and a producer filling it are two claims. **Met.**
+2. **The offset→line recipe's three cases are pinned, including the empty one.**
+   `offset_to_line_has_three_cases_and_the_third_is_empty` asserts an offset at a line's start
+   (including the last line's), an offset mid-line, and one strictly past the last line's start.
+   **Met** — and it is what corrected the boundary this document and issue #39 both stated
+   wrongly as "at *or* past".
+3. **What is in a style payload is declared by the database, not by the schema.**
+   `config.Setting {dimension = "style-encoding"}` names the format, the legend and the unit its
+   columns count in; `SemanticTokensTests` asserts the payload and
+   `crates/fjord-cli/tests/config_layer.rs` asserts the setting is readable as a fact. **Met.**
+4. **`msbuild.*` answers what `code.sigla` could not.** An edge between two projects, asserted in
+   both directions, and two evaluations of one `.csproj` reaching one project —
+   `crates/fjord-cli/tests/msbuild_layer.rs` and W9's own gate. **Met.**
+5. **The entity key has no conflict on the three cases that broke the old one.**
+   `EntityKeyCensusTests` runs the census over the predicates that carry an identity — the four
+   named types, `Method`, `Field`, `Property`, `Namespace`, `FullName` — and reports zero
+   conflicts over a fixture holding two overloads on one line, a conversion-operator pair and a
+   type with a same-line constructor; reformatting the fixture yields an identical key set. The
+   structural identities `Parameter` and `TypeParameter` are excluded deliberately and their
+   sharing is asserted as its own claim. Two of the three cases are their own tests —
+   `Two_overloads_on_one_line_are_two_keys` and
+   `Two_conversion_operators_differing_only_in_return_type_are_two_keys`, the second because a
+   return-type overload is the case that needs `docId` at all. **Met** (the acceptance audit
+   recorded the conversion-operator test as not its own; it is, and it goes red when the
+   disambiguator is dropped).
+6. **`codemarkup.*` is gated as a UI's surface, end to end.**
+   `crates/fjord-cli/tests/codemarkup.rs` asks a real server the questions a UI asks, and
+   `CsharpLayerTests`/`crates/fjord-cli/tests/csharp_bridge.rs` hold the layer below it. The two
+   layers are written independently, which is asserted rather than assumed: a local has no
+   `csharp.Definition`. **Met.**
+7. **The four `csharp` location predicates S4 promised are declared and written.** **Not met** —
+   they did not land. Adding a predicate moves `csharp.sigla`'s fingerprint, so this is a flag day
+   (I13): every client's constant re-pasted in the same commit, every existing database refused at
+   the handshake until its client is rebuilt. It is tracked as one rather than smuggled in.
+8. **`schemas/code.sigla` is deleted and nothing describes it as live.** The file is gone;
+   `git grep -l 'code\.sigla'` returns release notes and plan history — text that names the
+   retirement in order to record it — and nothing that instructs a reader to use it.
+   `python3 scripts/check-docs.py` is the mechanical half: it sweeps retired *names* as well as
+   retired files, so a page that starts describing the deleted schema again fails the required
+   job rather than waiting for the next hand sweep. **Met.**
+9. **The flag day is walked by guards rather than by a script.** `clients/dotnet/README.md`
+   carries the ordered checklist and names the test that checks each step —
+   `every_shipped_schema_has_a_recorded_fingerprint`,
+   `the_dotnet_clients_carry_the_fingerprint_the_schema_has` per schema and by name, and
+   `byte_identical_with_the_dotnet_client` for the goldens — and each is in the required `test`
+   job. **Met.**

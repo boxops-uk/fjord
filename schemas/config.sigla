@@ -21,7 +21,7 @@ schema config {
   # |---|---|
   # | `repo`, `revision` | which checkout this database was built from. `src.FileOrigin` overrides it per file where an index spans several |
   # | `index-root` | what every `src.File` path is relative to |
-  # | `position-encoding` | `utf8` or `utf16` — the unit every offset and column in this database counts in |
+  # | `position-encoding` | `utf8` or `utf16` — the unit every offset and column *this schema declares* counts in. What an opaque payload counts in is its own encoding's business: see `style-encoding` |
   # | `style-encoding` | how to read `src.FileLineStyles`, e.g. `roslyn-lsp-1`. Names the byte format and the token legend together, because they version as a unit. An unrecognised value means a consumer renders those lines plain |
   # | `symbol-scheme` | the scheme token(s) this database's `src.Symbol` strings use |
   # | `language` | multi-valued; what this database holds facts about |
