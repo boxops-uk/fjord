@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Census.Core</RootNamespace>
+    <!-- A pointer type exists only in unsafe code, so the fixture that has to fill
+         `csharp.PointerType` has to be allowed to compile one. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

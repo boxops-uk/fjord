@@ -74,9 +74,9 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     /// </summary>
     /// <remarks>
     /// Kept apart from <see cref="InexpressibleTypes"/> because the two are acted on
-    /// differently: a type this layer cannot express is a <c>dynamic</c> or a broken
-    /// reference somewhere in a signature, and this is a gap in the schema that no
-    /// checkout can fix.
+    /// differently: a type this layer cannot express is a <c>dynamic</c>, a function
+    /// pointer or a broken reference somewhere in a signature, and this is a gap in the
+    /// schema that no checkout can fix.
     /// </remarks>
     public int InexpressibleKinds => Volatile.Read(ref _inexpressibleKinds);
 
@@ -243,7 +243,8 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     /// </summary>
     /// <remarks>
     /// <b>Null where it cannot.</b> `dynamic`, an error type and a type parameter's
-    /// unresolved bound have no alternative, and the union is in the key of `Method`,
+    /// unresolved bound have no alternative, a function pointer has one it cannot fill (see
+    /// the arm below), and the union is in the key of `Method`,
     /// `Field`, `Parameter` and `Local` — so a signature mentioning one cannot be keyed at
     /// all and the declaration is dropped rather than recorded under a fabricated type.
     /// <see cref="Inexpressible"/> counts them, because a layer that silently loses
@@ -275,17 +276,16 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
                 emit(DotnetIndex.PointerType, pointerFact);
                 return FjordValue.Alt(3u, FjordValue.Of(FjordRef.To(pointerFact)));
 
-            case IFunctionPointerTypeSymbol functionPointer:
-                if (Entity(functionPointer.Signature) is not { } signature)
-                {
-                    return null;
-                }
-
-                var functionFact = new FjordFact(DotnetIndex.FunctionPointerType, FjordValue.Rec(
-                    FjordValue.Of(FjordRef.To(FullName(functionPointer.Signature))),
-                    FjordValue.Of(FjordRef.To(signature))));
-                emit(DotnetIndex.FunctionPointerType, functionFact);
-                return FjordValue.Alt(2u, FjordValue.Of(FjordRef.To(functionFact)));
+            // **A function pointer cannot be keyed here, and the drop is counted rather
+            // than silent.** `FunctionPointerType.signature` is a `csharp.Method`, whose
+            // key leads with a containing type — and Roslyn gives a signature symbol no
+            // containing type, no containing namespace and no containing symbol at all, so
+            // there is neither a `Method` to point at nor a `FullName` to ask for. A member
+            // typed as one is therefore dropped like a `dynamic` one, and
+            // `A_function_pointer_in_a_signature_is_dropped_and_counted` is what says so.
+            case IFunctionPointerTypeSymbol:
+                Interlocked.Increment(ref _inexpressibleTypes);
+                return null;
 
             case ITypeParameterSymbol parameter:
                 return Entity(parameter) is { } parameterFact
@@ -333,6 +333,32 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
         };
 
         return disc == uint.MaxValue ? null : FjordValue.Alt(disc, FjordValue.Of(FjordRef.To(fact)));
+    }
+
+    /// <summary>
+    /// `csharp.MemberAccessExpression` — what an accessed member resolves to.
+    /// </summary>
+    /// <remarks>
+    /// <b>`local` and `parameter` have no arm here, and cannot have one.</b> A member
+    /// access reaches a field, a property or a method; nothing in C# reaches a local or a
+    /// parameter *through* a `.`, so those two alternatives are Glean's, carried in with
+    /// the transcription. What would fill them is the receiver — the other end of the same
+    /// expression — and writing that under a field the schema says is the accessed member
+    /// would answer "what is at `b` in `a.b`" with `a`.
+    /// </remarks>
+    public FjordValue? Accessed(ISymbol symbol)
+    {
+        var disc = symbol switch
+        {
+            IFieldSymbol => 2u,
+            IPropertySymbol => 3u,
+            IMethodSymbol => 4u,
+            _ => uint.MaxValue,
+        };
+
+        return disc == uint.MaxValue || Entity(symbol) is not { } fact
+            ? null
+            : FjordValue.Alt(disc, FjordValue.Of(FjordRef.To(fact)));
     }
 
     // ---- the entities ----------------------------------------------------------------

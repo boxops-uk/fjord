@@ -944,6 +944,47 @@ internal static class DotnetIndex
         FjordValue definition, FjordFact file, long start, long length) =>
         new(DefinitionLocation, FjordValue.Rec(definition, Location(file, start, length)));
 
+    /// <summary>
+    /// `csharp.ObjectCreationLocation` — where an object is constructed, and which
+    /// constructor it calls.
+    /// </summary>
+    public static FjordFact ObjectCreationLocationFact(
+        FjordValue type, FjordFact constructor, FjordFact file, long start, long length) =>
+        new(ObjectCreationLocation, FjordValue.Rec(
+            type, FjordValue.Of(FjordRef.To(constructor)), Location(file, start, length)));
+
+    /// <summary>
+    /// `csharp.MethodInvocationLocation` — where a method is invoked, and the member
+    /// access it was invoked through where there was one.
+    /// </summary>
+    /// <remarks>
+    /// The optional is a `maybe` over a <b>record</b> of one field, not a one-alternative
+    /// union: `just` carries `{memberAccess = …}`, so the payload is a record whose single
+    /// field is the reference — the schema writes no `|` and no discriminant inside it.
+    /// </remarks>
+    public static FjordFact MethodInvocationLocationFact(
+        FjordFact method, FjordFact file, long start, long length, FjordFact? through) =>
+        new(MethodInvocationLocation, FjordValue.Rec(
+            FjordValue.Of(FjordRef.To(method)),
+            Location(file, start, length),
+            through is null
+                ? FjordValue.Alt(0u, FjordValue.Rec())
+                : FjordValue.Alt(1u, FjordValue.Rec(FjordValue.Of(FjordRef.To(through))))));
+
+    /// <summary>
+    /// `csharp.MemberAccessLocation` — where a member is accessed, and what the accessed
+    /// member resolves to.
+    /// </summary>
+    public static FjordFact MemberAccessLocationFact(
+        FjordValue expression, FjordFact file, long start, long length) =>
+        new(MemberAccessLocation, FjordValue.Rec(
+            expression, Location(file, start, length)));
+
+    /// <summary>`csharp.TypeLocation` — where a type is written.</summary>
+    public static FjordFact TypeLocationFact(
+        FjordValue type, FjordFact file, long start, long length) =>
+        new(TypeLocation, FjordValue.Rec(type, Location(file, start, length)));
+
     /// <summary>`csharp.EntityXRef` — a use span and what it targets.</summary>
     public static FjordFact EntityXRefFact(
         FjordFact file, long start, long length, FjordValue target) =>

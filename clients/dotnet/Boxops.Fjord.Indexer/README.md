@@ -102,11 +102,12 @@ be matched to a checkout by inference.
 |---|---|
 | `csharp.Name` · `csharp.NameLowerCase` · `csharp.Namespace` | interned identifiers, and the search row that folds their case |
 | `csharp.Class` · `Interface` · `Record` · `Struct` | the named types, each keyed on its full name and carrying its modifiers |
-| `csharp.Method` · `Property` · `Field` · `Parameter` · `Local` · `TypeParameter` | the members, keyed on what the compiler knows rather than on where they are written |
+| `csharp.Method` · `Property` · `Field` · `Parameter` · `TypeParameter` | the members, keyed on what the compiler knows rather than on where they are written. `csharp.Local` is declared and deliberately not written — see below |
 | `csharp.MethodParameter` · `MethodTypeParameter` · `TypeTypeParameter` · `PropertyParameter` | the ordered lists, one fact per position, because the type model has no arrays |
-| `csharp.ArrayType` · `PointerType` · `FunctionPointerType` | the type shapes a name alone cannot spell |
+| `csharp.ArrayType` · `PointerType` | the type shapes a name alone cannot spell. `csharp.FunctionPointerType` cannot be written at all: its `signature` is a `csharp.Method`, whose key leads with a containing type, and a function pointer's signature symbol has none |
 | `csharp.Implements` | **the closure**, not the list the declaration writes: a type that says `: List<T>` *is* an `IEnumerable`, and sigla has no recursion to close it at query time |
 | `csharp.DefinitionLocation` · `EntityXRef` · `EntityRef` | where an entity is written, and every reference to it in both directions |
+| `csharp.ObjectCreationLocation` · `MethodInvocationLocation` · `MemberAccessLocation` · `TypeLocation` | the same positions per *kind* — a construction and the constructor it calls, a call and the member access it went through, the field or property a `.` reaches, and every type written in source |
 | `csharp.SymbolOf` · `DefinitionBySymbol` | the crossing between an entity and its SCIP symbol |
 
 **The `codemarkup` layer** — the same facts re-keyed for the questions a UI asks, with the
@@ -135,6 +136,32 @@ knows — its name, its containing type, its signature — and `csharp.Definitio
 says where it is written. Reformatting a file moves every location and no identity, which
 is the property the old `{module, name, line}` key did not have: a blank line inserted at
 the top of a file re-keyed every declaration below it.
+
+**The location predicates are per *kind*, and each says what is at a position.**
+`EntityXRef` answers "what does this file reference" over one union; the four beside it
+answer the same positions by kind, which is the shape Glean's `csharp` schema has and this
+one transcribes. `ObjectCreationLocation` carries the constructed type *and* the
+constructor the compiler chose, which no other predicate here holds;
+`MethodInvocationLocation` carries the invoked method and, where the call went through a
+`.`, the member access it went through; `MemberAccessLocation` carries the field, property
+or method a `.` reaches — the accessed member, not the expression it was reached through,
+which is the reading the schema's own comment states and the only one that answers a field
+or property read at all; `TypeLocation` carries every type written in source. Every span is
+the identifier's extent, converted to the UTF-8 bytes `config.Setting
+{dimension = "position-encoding"}` declares — Roslyn counts UTF-16 code units, and the line
+table is what converts.
+
+**A predicate that is declared and not written is classified, with the reason.** Two are:
+`csharp.Local`, deliberately — SCIP models a local as an occurrence ordinal that moves
+whenever the file is edited, so a local gets no global name and `codemarkup.FileLocalXRef`
+answers a file-local jump span to span instead — and `csharp.FunctionPointerType`, which
+cannot be keyed, so a member typed as one is dropped and counted like a `dynamic` one.
+Three `msbuild` predicates (`Solution` and its two edges) and two more
+(`AssemblyReference`, `AssemblyDependent`) are owed rather than impossible. The list is not
+prose: `PredicateCensusTests` holds it as a table and asserts every entry over a run of the
+`census` fixture, so a predicate that stops being written fails, and one that starts being
+written where the table excuses it fails too. That gate is what four declared-and-empty
+location predicates got past.
 
 **`codemarkup` is redundant with `csharp` by construction, and deliberately.** Every fact
 in it could be derived from the layer beside it — while `nyi/derivation` stands, a producer

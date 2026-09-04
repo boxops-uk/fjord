@@ -204,8 +204,8 @@ public sealed class LedgerTests
     /// </para>
     /// <para>
     /// <b>The exact figures, so a change to what this producer emits has to say so.</b>
-    /// A ratio of seven repeats to every new fact is what a code index looks like — a
-    /// million references naming ten thousand declarations — and it is the measurement
+    /// A ratio of nearly eight repeats to every new fact is what a code index looks like —
+    /// a million references naming ten thousand declarations — and it is the measurement
     /// this producer exists to make. A silent move in either direction is either a
     /// duplicate nobody meant to write or a fact nobody is writing any more.
     /// </para>
@@ -259,7 +259,7 @@ public sealed class LedgerTests
             deduped = sink.Deduped;
         }
 
-        Assert.Equal(1202ul, created);
-        Assert.Equal(8668ul, deduped);
+        Assert.Equal(1260ul, created);
+        Assert.Equal(9878ul, deduped);
     }
 }

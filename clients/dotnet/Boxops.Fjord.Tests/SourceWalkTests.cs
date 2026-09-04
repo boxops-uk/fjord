@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using Boxops.Fjord.Client;
 using Boxops.Fjord.Indexer;
@@ -66,6 +67,10 @@ public sealed class SourceWalkTests
 
     private static IReadOnlyList<FjordValue> Fields(FjordValue? value) =>
         Assert.IsType<FjordValue.Record>(value).Fields;
+
+    /// <summary>The fact a reference carries inline — this producer holds no ids.</summary>
+    private static FjordFact Nested(FjordValue value) =>
+        Assert.IsType<FjordRef.Nested>(Assert.IsType<FjordValue.Ref>(value).Value).Fact;
 
     /// <summary>Walk one file's source through the real indexer and keep what it wrote.</summary>
     internal static Recorder Walk(
@@ -256,7 +261,10 @@ public sealed class SourceWalkTests
     /// **A name that really does not bind is still counted.**
     /// The census for the exclusion above, which a counter that excluded everything would
     /// satisfy. Both keywords are here beside one identifier nothing declares, so the
-    /// one is the miss and not the constraints.
+    /// one is the miss and not the constraints — and one of the two misses is a type in
+    /// constraint position, which is what holds the *spelling* half of the exclusion: a
+    /// walk that excluded every name under a `where` would report one instead of two, and
+    /// `where T : IMissing` would leave a broken workspace looking healthy.
     /// </summary>
     [Fact]
     public void A_name_the_compiler_cannot_bind_is_counted()
@@ -272,12 +280,184 @@ public sealed class SourceWalkTests
                     public static string Unmanaged<T>(T value)
                         where T : unmanaged => value.ToString() ?? string.Empty;
 
+                    public static string Missing<T>(T value)
+                        where T : IMissing => value.ToString() ?? string.Empty;
+
                     public static object Loose() => nope;
                 }
             }
             """);
 
-        Assert.Equal(1, indexer.Unresolved);
+        Assert.Equal(2, indexer.Unresolved);
+    }
+
+    /// <summary>
+    /// <b>The four location predicates, with the sites and the targets they claim.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The census gate says every predicate has rows; this says what a row means. Each of
+    /// the four is a span plus one entity, and the entity is where a wrong site would be
+    /// invisible — a creation that named the variable's type rather than the constructed
+    /// one, an invocation that named its receiver, a member access that named the
+    /// expression it was reached through. Every one of those writes the same *number* of
+    /// rows as the right one, so a completeness gate cannot see any of them.
+    /// </para>
+    /// <para>
+    /// <b>The spans are asserted in bytes, over a file that tells the two units apart.</b>
+    /// `Provenance` declares `position-encoding` as `utf8` and Roslyn counts UTF-16 code
+    /// units, so an emoji before the sites makes every offset below differ between the
+    /// two — and the expected number is counted here with `Encoding.UTF8`, not with the
+    /// line table the producer used.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_creation_an_invocation_a_member_access_and_a_type_are_located_where_written()
+    {
+        // The codepoint is spliced in rather than written: a raw string literal processes
+        // no escapes, so `\U0001F600` inside one is twelve ASCII characters and the two
+        // units would agree everywhere below.
+        var source = $$"""
+            namespace Fixture
+            {
+                public sealed class Thing
+                {
+                    public string Face => "{{"\U0001F600"}}";
+
+                    public Thing Copy() => new Thing();
+
+                    public string Trimmed() => Face.Trim();
+
+                    public string Again() => Trimmed();
+                }
+            }
+            """;
+
+        var written = Walk(source);
+
+        long Utf8Of(string needle, int within)
+        {
+            var at = source.IndexOf(needle, StringComparison.Ordinal) + within;
+            var bytes = Encoding.UTF8.GetByteCount(source[..at]);
+
+            // The census for the claim: a file whose offsets agreed in both units could
+            // not tell a producer counting UTF-16 from one counting bytes.
+            Assert.NotEqual(at, bytes);
+
+            return bytes;
+        }
+
+        static (long Start, long Length) Span(FjordValue location)
+        {
+            var span = Fields(Fields(location)[1]);
+
+            return (Int(span[0]), Int(span[1]));
+        }
+
+        // ---- the creation: `new Thing()` ---------------------------------------------
+
+        var creation = Assert.Single(written.Of(DotnetIndex.ObjectCreationLocation));
+        var created = Fields(creation.Key);
+
+        // `namedType = 1` of `AType`, then `class_ = 0` of `NamedType`.
+        var namedType = Assert.IsType<FjordValue.Union>(created[0]);
+        Assert.Equal(1u, namedType.Disc);
+        Assert.Equal(0u, Assert.IsType<FjordValue.Union>(namedType.Value).Disc);
+
+        // The constructor is the implicit one, which has an entity and no location of its
+        // own — the whole reason identity and location are separate predicates.
+        Assert.Equal(DotnetIndex.Method, Nested(created[1]).Predicate);
+        Assert.Equal((Utf8Of("new Thing()", 4), 5), Span(created[2]));
+
+        // ---- the member access: `Face.Trim` ------------------------------------------
+
+        var access = Assert.Single(written.Of(DotnetIndex.MemberAccessLocation));
+        var accessed = Fields(access.Key);
+
+        // `method = 4` of `MemberAccessExpression` — `Trim`, the member reached, and not
+        // `Face`, the property it was reached through.
+        var member = Assert.IsType<FjordValue.Union>(accessed[0]);
+        Assert.Equal(4u, member.Disc);
+        Assert.Equal(DotnetIndex.Method, Nested(member.Value).Predicate);
+        Assert.Equal((Utf8Of("Face.Trim()", 5), 4), Span(accessed[1]));
+
+        // ---- the invocations: one through that access, one through nothing ------------
+
+        var invocations = written.Of(DotnetIndex.MethodInvocationLocation)
+            .Select(fact => Fields(fact.Key))
+            .OrderBy(fields => Span(fields[1]).Start)
+            .ToList();
+
+        Assert.Equal(2, invocations.Count);
+
+        // `Face.Trim()` — the name invoked, not the whole expression, and the member
+        // access it went through is the same fact the walk wrote for that node.
+        Assert.Equal((Utf8Of("Face.Trim()", 5), 4), Span(invocations[0][1]));
+
+        var through = Assert.IsType<FjordValue.Union>(invocations[0][2]);
+        Assert.Equal(1u, through.Disc);
+
+        // `just` carries a record of one field, and that field is the member access
+        // nested whole — a reference here is the target fact, never an id — so it is the
+        // row the walk wrote for that node: same accessed member, same span.
+        var nested = Nested(Fields(through.Value)[0]);
+
+        Assert.Equal(DotnetIndex.MemberAccessLocation, nested.Predicate);
+        Assert.Equal(accessed[0], Fields(nested.Key)[0]);
+        Assert.Equal(Span(accessed[1]), Span(Fields(nested.Key)[1]));
+
+        // `Trimmed()` — no member access, so `nothing = 0`.
+        Assert.Equal((Utf8Of("Trimmed();", 0), 7), Span(invocations[1][1]));
+        Assert.Equal(0u, Assert.IsType<FjordValue.Union>(invocations[1][2]).Disc);
+
+        // ---- the types: every type written in source ----------------------------------
+
+        // `Thing` twice — the return type of `Copy` and the type constructed in its body.
+        // `string` is a keyword rather than a name and never reaches the walk as one.
+        var types = written.Of(DotnetIndex.TypeLocation)
+            .Select(fact => Span(Fields(fact.Key)[1]).Start)
+            .Order()
+            .ToList();
+
+        Assert.Equal(
+            [Utf8Of("Thing Copy()", 0), Utf8Of("new Thing()", 4)],
+            types);
+    }
+
+    /// <summary>
+    /// <b>A function pointer in a signature is dropped, and the run counts it.</b>
+    /// </summary>
+    /// <remarks>
+    /// `csharp.FunctionPointerType` names a `signature : Method` and a `csharp.Method`'s
+    /// key leads with a containing type, which Roslyn gives a signature symbol none of —
+    /// so the type cannot be keyed and the member typed as one cannot be written. A zero
+    /// here is that member disappearing in silence, which is the failure the tally exists
+    /// to make impossible; the predicate's own emptiness is classified in
+    /// <see cref="PredicateCensusTests"/> with this test as the reason.
+    /// </remarks>
+    [Fact]
+    public void A_function_pointer_in_a_signature_is_dropped_and_counted()
+    {
+        var (written, indexer) = Walked("""
+            namespace Fixture
+            {
+                public unsafe class Jump
+                {
+                    public delegate*<int, int> Doubler() => null;
+                }
+            }
+            """);
+
+        Assert.Equal(1, indexer.InexpressibleTypes);
+        Assert.Empty(written.Of(DotnetIndex.FunctionPointerType));
+
+        // The class is still indexed: one member is dropped, not the file.
+        var named = written.Of(DotnetIndex.SymbolByName)
+            .Select(fact => Str(Fields(fact.Key)[0]))
+            .ToList();
+
+        Assert.Contains("Jump", named);
+        Assert.DoesNotContain("Doubler", named);
     }
 
     /// <summary>

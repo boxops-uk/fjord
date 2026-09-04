@@ -73,9 +73,11 @@ piece of work it explicitly declines to price (extracting an `IFactWriter` from 
 implementation and no second caller, and `IBlockTarget` is already the swappable thing). Its
 acceptance criteria are the runs' own gates, which is why it contributes none of the count below.
 
-**All fifteen items have landed**, with two criteria outstanding: W11's WebSocket listener was
-never built (criterion 4, and the battery that would cover it is ready for it), and W15's four
-`csharp` location predicates are a fingerprint move tracked as a flag day. W13's runs are done
+**All fifteen items have landed**, with one criterion outstanding: W11's WebSocket listener was
+never built (criterion 4, and the battery that would cover it is ready for it). W15's four
+`csharp` location predicates were declared and empty rather than absent, so writing them moved no
+fingerprint and needed no flag day; they are written, and the completeness gate that would have
+caught them exists. W13's runs are done
 except R4, cancelled by D12, and R7,
 deferred to a 1.0 profiling pass by D15. What each run found — including six defects no issue had
 named — is recorded in [W13](13-indexer-runs-amended.md).

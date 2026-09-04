@@ -82,12 +82,15 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// <summary>Names the compiler could not bind at all: missing references, broken code.</summary>
     public int Unresolved => Volatile.Read(ref _unresolved);
 
-    /// <summary>Types the layer cannot express — `dynamic`, an unresolved name.</summary>
+    /// <summary>
+    /// Types the layer cannot express — `dynamic`, a function pointer, an unresolved name.
+    /// </summary>
     /// <remarks>
-    /// `csharp.AType` has no alternative for either and it sits in the key of `Method`,
-    /// `Field` and `Parameter`, so the declaration is dropped rather than recorded under a
-    /// fabricated type. Counted because a layer that silently loses declarations is worse
-    /// than one that says how many.
+    /// `csharp.AType` has no alternative for a `dynamic` or an error type, and a function
+    /// pointer's signature cannot be keyed as a `csharp.Method` — and the union sits in the
+    /// key of `Method`, `Field` and `Parameter`, so the declaration is dropped rather than
+    /// recorded under a fabricated type. Counted because a layer that silently loses
+    /// declarations is worse than one that says how many.
     /// </remarks>
     public int InexpressibleTypes => _entities.InexpressibleTypes;
 
@@ -236,6 +239,26 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
                 case SimpleNameSyntax name when options.References:
                     Reference(model, name, file, offsets);
+                    break;
+
+                // **The per-kind location facts, from the node whose kind decides them.**
+                // In this visit rather than a second `DescendantNodes()` pass: asking a
+                // symbol what it means is most of the cost of indexing, and a walk that
+                // reached these nodes again would ask everything twice.
+                case BaseObjectCreationExpressionSyntax creation when options.References:
+                    Created(model, creation, file, offsets);
+                    break;
+
+                case InvocationExpressionSyntax invocation when options.References:
+                    Invoked(model, invocation, file, offsets);
+                    break;
+
+                case MemberAccessExpressionSyntax access when options.References:
+                    if (MemberAccess(model, access, file, offsets) is { } accessed)
+                    {
+                        sink.Add(DotnetIndex.MemberAccessLocation, accessed);
+                    }
+
                     break;
             }
         }
@@ -461,16 +484,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         FjordFact file,
         SourceLayer.Offsets offsets)
     {
-        var info = model.GetSymbolInfo(name);
-
-        // A single candidate is an ambiguity the compiler declined to resolve but a
-        // reader would read straight through — an inaccessible member, a failed
-        // overload. Several candidates is a genuine ambiguity, and guessing would put a
-        // wrong edge in the graph.
-        var symbol = info.Symbol
-            ?? (info.CandidateSymbols.Length == 1 ? info.CandidateSymbols[0] : null);
-
-        if (symbol is null)
+        if (Bound(model.GetSymbolInfo(name)) is not { } symbol)
         {
             if (!IsConstraintKeyword(name))
             {
@@ -514,6 +528,17 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             sink.Add(
                 DotnetIndex.EntityXRef,
                 DotnetIndex.EntityXRefFact(file, start, length, definition));
+
+            // **A type written in source, taken from the value already built.**
+            // `type = 0` of `Definition` carries the `AType` this predicate keys on, and
+            // asking `CsharpEntities.Type` for it a second time would count a type the
+            // layer cannot express twice — the tally a run reports as `Inexpressible`.
+            if (definition is FjordValue.Union { Disc: 0u, Value: var written })
+            {
+                sink.Add(
+                    DotnetIndex.TypeLocation,
+                    DotnetIndex.TypeLocationFact(written, file, start, length));
+            }
 
             // The same reference keyed by what it points at. Written twice because a
             // predicate leads with one field: find-references needs the target to
@@ -567,6 +592,148 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             Volatile.Write(ref _sampleUses, uses);
             SampleName = canonical.Name;
         }
+    }
+
+    /// <summary>
+    /// The symbol a name resolved to, or the one candidate the compiler declined to pick.
+    /// </summary>
+    /// <remarks>
+    /// A single candidate is an ambiguity the compiler declined to resolve but a reader
+    /// would read straight through — an inaccessible member, a failed overload. Several
+    /// candidates is a genuine ambiguity, and guessing would put a wrong edge in the graph.
+    /// </remarks>
+    private static ISymbol? Bound(SymbolInfo info) =>
+        info.Symbol ?? (info.CandidateSymbols.Length == 1 ? info.CandidateSymbols[0] : null);
+
+    /// <summary>
+    /// <c>csharp.ObjectCreationLocation</c> — where an object is constructed, and the
+    /// constructor the compiler chose for it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The type as written, or the <c>new</c> keyword where the type is not written at
+    /// all.</b> A target-typed <c>new()</c> has no type syntax to point at, and the whole
+    /// expression's span would cover the argument list and the initialiser — which for
+    /// <c>new T(a, b) { X = 1 }</c> is most of a line and nothing a viewer can draw a link
+    /// over. The span is converted through the line table like every other span here, so
+    /// it counts in the UTF-8 bytes <c>position-encoding</c> declares rather than in
+    /// Roslyn's UTF-16 positions.
+    /// </remarks>
+    private void Created(
+        SemanticModel model,
+        BaseObjectCreationExpressionSyntax creation,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
+    {
+        if (Bound(model.GetSymbolInfo(creation)) is not IMethodSymbol constructor
+            || constructor.ContainingType is not { } created
+            || _entities.Type(created) is not { } type
+            || _entities.Entity(constructor) is not { } method)
+        {
+            return;
+        }
+
+        var span = creation is ObjectCreationExpressionSyntax { Type: { } written }
+            ? written.Span
+            : creation.NewKeyword.Span;
+
+        var (start, length) = offsets.Span(span);
+
+        sink.Add(
+            DotnetIndex.ObjectCreationLocation,
+            DotnetIndex.ObjectCreationLocationFact(type, method, file, start, length));
+    }
+
+    /// <summary>
+    /// <c>csharp.MethodInvocationLocation</c> — where a method is invoked, and the member
+    /// access it was invoked through if there was one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The invoked name's own extent</b>, the way every other span this producer writes
+    /// is an identifier's: <c>_store.Add(x)</c> points at <c>Add</c>, not at the statement
+    /// around it. The optional carries the member access itself rather than a flag, so a
+    /// consumer holding an invocation can reach that row and read its span; <c>nothing</c>
+    /// is what tells <c>Add(x)</c> from <c>_store.Add(x)</c>.
+    /// </para>
+    /// <para>
+    /// <b><c>nothing</c> means "through no member access this producer wrote".</b> A
+    /// conditional call — <c>x?.M()</c> — is invoked through a member <i>binding</i>, a
+    /// different syntax node with no <c>a.b</c> shape to write a row for, so the invocation
+    /// is recorded and the optional is empty. Reading it as "the call had no receiver"
+    /// would be wrong for exactly those calls.
+    /// </para>
+    /// </remarks>
+    private void Invoked(
+        SemanticModel model,
+        InvocationExpressionSyntax invocation,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
+    {
+        if (Bound(model.GetSymbolInfo(invocation)) is not IMethodSymbol invoked
+            || _entities.Entity(invoked) is not { } method)
+        {
+            return;
+        }
+
+        var named = InvokedName(invocation.Expression);
+        var (start, length) = offsets.Span(
+            named is null ? invocation.Expression.Span : named.Identifier.Span);
+
+        // Built and nested, not emitted here: the node is reached by the walk in its own
+        // right, which is where its row is written. A nested reference carries the whole
+        // fact, so the two agree because they are the same fact.
+        var through = invocation.Expression is MemberAccessExpressionSyntax access
+            ? MemberAccess(model, access, file, offsets)
+            : null;
+
+        sink.Add(
+            DotnetIndex.MethodInvocationLocation,
+            DotnetIndex.MethodInvocationLocationFact(method, file, start, length, through));
+    }
+
+    /// <summary>The name an invocation invokes, where the expression has one.</summary>
+    private static SimpleNameSyntax? InvokedName(ExpressionSyntax expression) => expression switch
+    {
+        SimpleNameSyntax name => name,
+        MemberAccessExpressionSyntax access => access.Name,
+        MemberBindingExpressionSyntax binding => binding.Name,
+        _ => null,
+    };
+
+    /// <summary>
+    /// <c>csharp.MemberAccessLocation</c> — where a member is accessed, and what the
+    /// accessed member resolves to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The accessed member, not the expression it was reached through.</b> The schema's
+    /// field is named after Roslyn's own <c>Expression</c> property, which is the
+    /// <i>receiver</i> — so the reading is worth stating rather than leaving to the field
+    /// name. The comment declaring the predicate says "what the accessed member resolves
+    /// to", and the location predicates around it are per kind: a type, a construction, a
+    /// call, and this one — the field, property or method a <c>.</c> reaches. A row
+    /// carrying the receiver instead would answer the position of <c>b</c> in <c>a.b</c>
+    /// with <c>a</c>, and leave every field and property read answered by nothing.
+    /// </para>
+    /// <para>
+    /// Returned rather than written, so <see cref="Invoked"/> can nest the same fact.
+    /// </para>
+    /// </remarks>
+    private FjordFact? MemberAccess(
+        SemanticModel model,
+        MemberAccessExpressionSyntax access,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
+    {
+        if (Bound(model.GetSymbolInfo(access.Name)) is not { } member
+            || _entities.Accessed(member) is not { } expression)
+        {
+            return null;
+        }
+
+        var (start, length) = offsets.Span(access.Name.Identifier.Span);
+
+        return DotnetIndex.MemberAccessLocationFact(expression, file, start, length);
     }
 
     /// <summary>

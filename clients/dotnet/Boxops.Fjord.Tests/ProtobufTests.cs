@@ -45,6 +45,28 @@ public sealed class ProtobufTests
         Assert.Throws<FormatException>(() => Read(message));
 
     /// <summary>
+    /// <b>A field that exactly fills the message is read, not refused.</b>
+    /// </summary>
+    /// <remarks>
+    /// Every other case here is a refusal, so the bound they hold is one-sided: a reader
+    /// that refused a length equal to the bytes remaining would pass all of them and
+    /// reject the commonest message there is, since the last field of a message ends where
+    /// the message does. Read back as text, because a length accepted and then sliced
+    /// wrongly is the same defect one byte along.
+    /// </remarks>
+    [Fact]
+    public void A_length_delimited_field_that_exactly_fills_the_message_is_read()
+    {
+        var reader = new Protobuf([Tag(1, 2), 0x03, (byte)'a', (byte)'b', (byte)'c']);
+
+        Assert.True(reader.Next());
+        Assert.Equal(1, reader.Field);
+        Assert.Equal("abc", reader.Text());
+        Assert.False(reader.More);
+        Assert.False(reader.Next());
+    }
+
+    /// <summary>
     /// <b>A varint with no last byte is refused rather than read as what arrived.</b>
     /// </summary>
     [Fact]

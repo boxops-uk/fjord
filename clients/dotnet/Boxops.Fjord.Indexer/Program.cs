@@ -428,7 +428,8 @@ internal static class Program
         if (indexer.InexpressibleTypes > 0)
         {
             yield return $"{Count(indexer.InexpressibleTypes)} declaration(s) dropped: "
-                + "a type this layer cannot express (`dynamic`, or a name that did not resolve)";
+                + "a type this layer cannot express (`dynamic`, a function pointer, or a "
+                + "name that did not resolve)";
         }
 
         if (indexer.InexpressibleKinds > 0)

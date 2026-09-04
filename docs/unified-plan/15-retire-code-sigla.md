@@ -259,7 +259,8 @@ comparison it exists for is invalidated by the schema move regardless (risk 8).
 | Predicate | Why not yet |
 |---|---|
 | `Local` | deliberate. SCIP models a local as an occurrence ordinal that moves when the file is edited, and `codemarkup.FileLocalXRef` answers a file-local jump span to span — so a local needs no global identity. W15 asked whether one is worth emitting at all; this is the answer until a consumer wants otherwise |
-| `MethodInvocationLocation`, `MemberAccessLocation`, `ObjectCreationLocation`, `TypeLocation` | Glean's per-kind xref facts. `EntityXRef`/`EntityRef` already answer "what is at this position" over the `Definition` union, which is the unified pair those three predate. They are additive and land with S4, where `codemarkup` needs the same spans |
+| `FunctionPointerType` | **cannot be written**, and the reason is a key rather than a decision: `signature : Method` needs a `csharp.Method`, whose key leads with a containing type, and Roslyn gives a function pointer's signature symbol no containing type, namespace or symbol at all. A member typed as one is dropped and counted like a `dynamic` one; a producer could only fill this predicate if `Method`'s key stopped requiring a container, which is a schema change and so a flag day |
+| `MethodInvocationLocation`, `MemberAccessLocation`, `ObjectCreationLocation`, `TypeLocation` | **no longer owed.** Glean's per-kind xref facts, beside the unified `EntityXRef`/`EntityRef` pair that predates them. They did not arrive with S4 as this said they would — they were declared and empty until criterion 7 below closed them, from the same visit and with no fingerprint moved |
 | `Implements`, `TypeTypeParameter`, `MethodTypeParameter`, `PropertyParameter` | written by `CsharpEntities.Edges`, which the walk calls per declaration — so they have facts wherever the fixture has the shape |
 
 `bench.sh` and `loadgen` are untouched: they generate synthetic `code.sigla` facts and never run the
@@ -419,11 +420,26 @@ commit; a criterion is a test or a command, never prose.
    `crates/fjord-cli/tests/codemarkup.rs` asks a real server the questions a UI asks, and
    `CsharpLayerTests`/`crates/fjord-cli/tests/csharp_bridge.rs` hold the layer below it. The two
    layers are written independently, which is asserted rather than assumed: a local has no
-   `csharp.Definition`. **Met.**
-7. **The four `csharp` location predicates S4 promised are declared and written.** **Not met** —
-   they did not land. Adding a predicate moves `csharp.sigla`'s fingerprint, so this is a flag day
-   (I13): every client's constant re-pasted in the same commit, every existing database refused at
-   the handshake until its client is rebuilt. It is tracked as one rather than smuggled in.
+   `csharp.Definition`. **Met** — except the completeness half of this gate, which was named
+   here and never written, and is what let criterion 7 sit empty through a release. It exists
+   now: `PredicateCensusTests` classifies every predicate `DotnetIndex` declares as written,
+   excused or owed, and asserts each behaves as classified over a run of the `census` fixture.
+7. **The four `csharp` location predicates S4 promised are declared and written.** **Met.**
+   They were declared and empty: `ObjectCreationLocation`, `MethodInvocationLocation`,
+   `MemberAccessLocation` and `TypeLocation` had an id, a batch entry and a declared type in
+   `DotnetIndex.cs`, and no emit site anywhere. `Indexer` writes all four from the visit that
+   already writes `EntityXRef` — a creation from its `new`, an invocation from its call, a member
+   access from its `.`, and a type from every name that binds to one — and
+   `A_creation_an_invocation_a_member_access_and_a_type_are_located_where_written` asserts the
+   targets and the spans, in the UTF-8 bytes `config.Setting {dimension = "position-encoding"}`
+   declares. **This was not a flag day**, which is worth stating because this list said it would
+   be: the schema declares those four already, so their types are in `csharp.sigla`'s fingerprint
+   whether or not a producer writes a row. `every_shipped_schema_has_a_recorded_fingerprint`,
+   `the_dotnet_clients_carry_the_fingerprint_the_schema_has` and
+   `byte_identical_with_the_dotnet_client` are green with no constant re-pasted and no golden
+   regenerated. What did move is `Interning_over_the_frozen_corpus_costs_what_it_says_it_costs`,
+   by construction — 58 more facts created over the frozen corpus, which is what writing four
+   predicates that were empty looks like.
 8. **`schemas/code.sigla` is deleted and nothing describes it as live.** The file is gone;
    `git grep -l 'code\.sigla'` returns release notes and plan history — text that names the
    retirement in order to record it — and nothing that instructs a reader to use it.

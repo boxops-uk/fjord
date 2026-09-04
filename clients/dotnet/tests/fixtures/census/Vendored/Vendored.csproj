@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Never restored, because the solution does not name this project: nothing builds
+         it and the build layer reads its XML instead. That is the path a checkout which
+         will not build takes anyway, and it is what fills the three package predicates
+         without a restore that would have to reach the network. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>
