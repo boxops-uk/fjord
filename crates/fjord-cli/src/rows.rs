@@ -410,7 +410,6 @@ fn key_desc(schema: &Schema, predicate: PredicateId) -> Option<Desc> {
     Desc::of(schema, key).ok()
 }
 
-/// jq's `JQ_COLORS` defaults, and one addition of our own.
 /// Lowercase hex, two digits a byte.
 ///
 /// Restated rather than imported: `fjord-inspect` is a dev-dependency here, not a real
@@ -426,6 +425,7 @@ fn fjord_inspect_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// jq's `JQ_COLORS` defaults, and one addition of our own.
 const STRING: &str = "0;32";
 const NUMBER: &str = "0;39";
 const KEY: &str = "34;1";

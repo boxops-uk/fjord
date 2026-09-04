@@ -220,10 +220,6 @@ mod tests {
     /// on the rest, so the first name in each row is the question that predicate is fast
     /// at, and everything after it is a tie-break.
     ///
-    /// The build layer's four are alphabetical because they were written that way and
-    /// nothing has measured a reason to disagree — they are thousands of rows, not
-    /// millions. That is a different statement from the two that were changed, and it is
-    /// here so the next reader can tell a decision from an inheritance.
     const KEY_ORDER: &[(&str, &[&str])] = &[
         ("code.Decl", &["file", "name", "line"]),
         ("code.Ref", &["from", "to"]),

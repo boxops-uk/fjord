@@ -36,7 +36,10 @@ pub struct Pivots {
     pub directory: String,
     /// A declaration name, for a denial that denies almost nothing.
     pub decl: String,
-    /// A name `src.SearchByName` actually holds.
+    /// A name to look up by name. It was sampled from a search index; the shipped
+    /// fixture declares none, so it is the declaration's own name and the two pivots
+    /// coincide — which costs the workloads that use it nothing, because what they
+    /// measure is the lookup and not the term.
     pub search: String,
 }
 
@@ -303,19 +306,36 @@ pub fn sample(
         }))
     }
 
-    let file = first_string(connection, "F where src.File F", 16_000)?;
-    let decl = first_string(connection, "N where src.Decl {name = N}", 400_000)?;
-    let search = first_string(connection, "N where src.SearchByName {name = N}", 400_000)?;
+    let file = first_string(connection, SAMPLE_FILE, 16_000)?;
+    let decl = first_string(connection, SAMPLE_DECL, 400_000)?;
 
     Ok(match (file, decl) {
+        // A corpus with neither a file nor a declaration is not one to measure, and
+        // pivots invented here would make every seek workload answer zero rows and look
+        // fast. `unsampled` makes that loud instead.
         (None, None) => Pivots::unsampled(),
         (file, decl) => {
             let decl = decl.unwrap_or_else(|| "\u{0}none".to_owned());
-            let search = search.unwrap_or_else(|| decl.clone());
+
+            // **The third pivot is the declaration's name**, as it is in the store-side
+            // twin: the term it used to sample came from a search index the shipped
+            // schema does not have, so there is nothing separate to sample.
+            let search = decl.clone();
+
             Pivots::new(file.unwrap_or_else(|| "\u{0}none".to_owned()), decl, search)
         }
     })
 }
+
+/// The two queries [`sample`] asks over the wire.
+///
+/// Consts rather than literals at the call site so `the_sampler_queries_compile` can
+/// reach them. They named `src.*` for three weeks after the catalogue moved to `code.*`,
+/// because the guard beside them compiles the *catalogue* and builds `Pivots` directly —
+/// so the only query strings in this file it did not cover were these, and a run got as
+/// far as seeding a corpus before it refused.
+const SAMPLE_FILE: &str = "F where code.File F";
+const SAMPLE_DECL: &str = "N where code.Decl {name = N}";
 
 /// One workload by name, for an instrument that draws a mix rather than a ladder.
 ///
@@ -432,6 +452,27 @@ mod tests {
         }
     }
 
+    /// **The sampler's own queries compile too**, which `every_workload_compiles` does
+    /// not cover: it builds `Pivots` directly, so nothing above reached the two strings
+    /// `sample` sends. They are the first thing an instrument runs and the last thing
+    /// anything checked.
+    #[test]
+    fn the_sampler_queries_compile() {
+        let schema = crate::sample_schema::schema();
+
+        for sigla in [super::SAMPLE_FILE, super::SAMPLE_DECL] {
+            let mut compilation = fjord_engine::compile::Compilation::new(sigla, &schema);
+            let plan = compilation.plan();
+
+            assert!(
+                !compilation.diagnostics().has_errors(),
+                "the sampler asks `{sigla}`, which does not compile:\n{}",
+                compilation.render_to_string()
+            );
+            assert!(plan.is_some(), "the sampler's `{sigla}` has no plan");
+        }
+    }
+
     /// A sampled path's directory is a **prefix of it**, so a prefix seek built from one
     /// covers keys that exist.
     #[test]
@@ -524,12 +565,12 @@ mod tests {
 /// ([findings §12](../../../bench/FINDINGS.md)) — so a corpus that does not reproduce that
 /// ratio measures a write path nobody has.
 ///
-/// The four fanouts below are what set it. They are the source layer of the built-in
+/// The three fanouts below are what set it. They are the source layer of the fixture
 /// schema, nested exactly as [`fjord_cli::sample_schema`](crate::sample_schema) declares
-/// it: a reference names a declaration, which names a module, which names a file. So one
-/// `src.Ref` carries a four-deep subgraph, and the thousandth reference to a declaration
-/// re-sends the whole chain — which is the redundancy, and is *not* a flaw in the
-/// producer. It is what a syntax walk has in hand.
+/// it: a reference names two declarations, and a declaration names a file. So one
+/// `code.Ref` carries a three-deep subgraph and costs five interns, and the thousandth
+/// reference to a declaration re-sends the whole chain — which is the redundancy, and is
+/// *not* a flaw in the producer. It is what a syntax walk has in hand.
 ///
 /// # Why the counts are predicted rather than probed
 ///

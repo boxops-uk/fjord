@@ -1900,10 +1900,6 @@ pub mod proptest {
         ]
     }
 
-    /// A pair of values sharing one schema, drawn together so ordering/round-trip
-    /// properties can compare `a` against `b`. Injects the known integer/string
-    /// edges explicitly rather than trusting random draws to hit them, and
-    /// recurses into records with an explicit depth/size bound.
     /// Byte runs a `String` could not hold, plus the edges the escape scheme is about.
     fn arb_bytes() -> impl Strategy<Value = Vec<u8>> + Clone {
         prop_oneof![
@@ -1919,6 +1915,10 @@ pub mod proptest {
         ]
     }
 
+    /// A pair of values sharing one schema, drawn together so ordering/round-trip
+    /// properties can compare `a` against `b`. Injects the known integer/string
+    /// edges explicitly rather than trusting random draws to hit them, and
+    /// recurses into records with an explicit depth/size bound.
     pub fn arb_typed_pair() -> impl Strategy<Value = TypedPairSpec> {
         let arb_i64 = prop_oneof![
             Just(i64::MIN),

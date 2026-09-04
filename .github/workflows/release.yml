@@ -115,8 +115,15 @@ jobs:
       # `dotnet-test` job would not be required until a ruleset was edited — an admin
       # action, audit-logged, and easy to forget. Folding it in here costs this job a
       # toolchain install and buys six of the indexer runs a gate that is already
-      # required. `global-json-file` pins it, because a 10.0.2xx SDK brings different
-      # reference assemblies and `src.TypeOf` stores a *value* a sealed identity hashes.
+      # required.
+      #
+      # **`global-json-file` pins the feature band, and `rollForward` is what makes that
+      # true.** A 10.0.2xx SDK brings different reference assemblies, and three sites
+      # store a `ToDisplayString()` as a *value* a sealed identity hashes —
+      # `codemarkup.Definition`'s hover signature (`CodeMarkup.cs:132`) and the two
+      # `csharp` predicates that fall back to it when a symbol has no documentation
+      # comment id (`CsharpEntities.cs:422`, `:461`). `latestFeature` would have selected
+      # the *highest* installed band, which is the exposure rather than the pin.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: clients/dotnet/global.json

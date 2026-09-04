@@ -44,7 +44,7 @@ cleanup() {
     else
         echo
         echo "server left running (pid $server) over $dir"
-        echo "  $fjord --data-dir $dir query code 'F where src.File F' --format count --timing"
+        echo "  $fjord --data-dir $dir query code 'F where code.File F' --format count --timing"
     fi
 }
 trap cleanup EXIT

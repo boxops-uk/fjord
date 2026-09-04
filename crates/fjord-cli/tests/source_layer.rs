@@ -30,7 +30,7 @@ const PATH: &str = "src/main.rs";
 const LINES: &[&str] = &[
     "fn main() {",            // start 0,  cstart 0
     "    let x = 1;",         // start 12, cstart 12
-    "    // \u{1f600} smile", // start 28, cstart 28  (the emoji: 4 bytes, 2 units)
+    "    // \u{1f600} smile", // start 27, cstart 27  (the emoji: 4 bytes, 2 units)
     "}",                      // start 45, cstart 43
 ];
 
