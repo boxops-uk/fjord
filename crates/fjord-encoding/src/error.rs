@@ -43,17 +43,17 @@ pub enum StoreCodecError {
     /// is declared to reference, caught at the typed codec boundary — the only one
     /// holding both the declared type and the id whose tag answers it.
     ///
-    /// The read-path counterpart is
-    /// [`FjordError::ReferenceCrossesPredicate`], raised when a query *follows*
-    /// such a reference. Both exist because they catch it at different moments: this
-    /// one before the bytes are written, that one for bytes some other writer
-    /// produced.
+    /// The read-path counterpart is `FjordError::ReferenceCrossesPredicate`, raised
+    /// when a query *follows* such a reference — named rather than linked, as any name
+    /// from a crate above this one must be. Both exist because they catch it at
+    /// different moments: this one before the bytes are written, that one for bytes
+    /// some other writer produced.
     #[error("a reference declared to name predicate {expected} names predicate {found}")]
     FactRefPredicate { expected: u32, found: u32 },
 
     /// A fact reference whose sequence is 0, which is reserved so that zeroed or
     /// truncated bytes are detectably not a fact ([I11]). The stored-row decoder
-    /// enforces the same rule as [`StoreError::FactIdSequence`]; this is it at the
+    /// enforces the same rule as `StoreError::FactIdSequence`; this is it at the
     /// tuple codec, which is what reads a reference embedded in a key.
     ///
     /// [I11]: ../../website/content/invariants.md#i11

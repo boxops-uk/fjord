@@ -240,7 +240,7 @@ impl Checker<'_> {
         let left = self.infer(ast, lhs);
         let right = self.infer(ast, rhs);
 
-        if let Err(err) = self.unify(&left, &right) {
+        if let Err(err) = self.unify(&right, &left) {
             self.report(ast, rhs, err);
             return;
         }
@@ -348,7 +348,7 @@ impl Checker<'_> {
                 self.annotate(lhs, Ty::Var(var));
 
                 let ty = self.infer(ast, rhs);
-                if let Err(err) = self.unify(&Ty::Var(var), &ty) {
+                if let Err(err) = self.unify(&ty, &Ty::Var(var)) {
                     self.report(ast, rhs, err);
                 }
             }
@@ -371,7 +371,7 @@ impl Checker<'_> {
                 // right side is inferred — the discipline the variable arm explains.
                 let pattern = self.infer(ast, lhs);
                 let value = self.infer(ast, rhs);
-                if let Err(err) = self.unify(&pattern, &value) {
+                if let Err(err) = self.unify(&value, &pattern) {
                     self.report(ast, rhs, err);
                 }
             }
@@ -443,7 +443,7 @@ impl Checker<'_> {
                 self.annotate(lhs, Ty::Var(var));
 
                 let ty = self.infer(ast, rhs);
-                if let Err(err) = self.unify(&Ty::Var(var), &ty) {
+                if let Err(err) = self.unify(&ty, &Ty::Var(var)) {
                     self.report(ast, rhs, err);
                 }
             }
@@ -544,7 +544,7 @@ impl Checker<'_> {
                 let operands = operands.clone();
                 for operand in operands.iter() {
                     let ty = self.infer(ast, *operand);
-                    if let Err(err) = self.unify(&Ty::Int, &ty) {
+                    if let Err(err) = self.unify(&ty, &Ty::Int) {
                         self.report(ast, *operand, err);
                     }
                 }
@@ -637,7 +637,7 @@ impl Checker<'_> {
                 for branch in branches.iter() {
                     let branch_ty = self.infer(ast, *branch);
 
-                    if let Err(err) = self.unify(&result, &branch_ty) {
+                    if let Err(err) = self.unify(&branch_ty, &result) {
                         self.report(ast, *branch, err);
                     }
                 }
@@ -871,9 +871,16 @@ impl Checker<'_> {
 
     // ---- unification ----------------------------------------------------------
 
-    fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), TyError> {
-        let a = self.repr(a);
-        let b = self.repr(b);
+    /// **`got` is the type of the node the caller reports at.** Unification itself is
+    /// symmetric, so the two are interchangeable for the *answer* and not for the
+    /// message: handed over the other way round, `expected` and `found` come out
+    /// swapped — blaming a variable for the literal that would not fit it, or naming
+    /// the field the position has where the reader wrote another. The fault is still
+    /// reported, under the right code and at the right span, so only a test that reads
+    /// the sentence can see it.
+    fn unify(&mut self, got: &Ty, expected: &Ty) -> Result<(), TyError> {
+        let a = self.repr(got);
+        let b = self.repr(expected);
 
         // Poison unifies with anything, so one mistake reports once — and it has to
         // *propagate* into an unbound variable, not just stop here. `X = nosuch.Pred _`
@@ -1448,6 +1455,16 @@ mod tests {
         diagnostics.codes().map(str::to_owned).collect()
     }
 
+    /// Every diagnostic `source` draws from typecheck, as `(code, message)`.
+    fn messages(source: &str) -> Vec<(String, String)> {
+        let checked = compile(source);
+        checked
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.clone().unwrap_or_default(), d.message.clone()))
+            .collect()
+    }
+
     /// The head's type, rendered.
     fn head_ty(source: &str) -> String {
         let checked = compile(source);
@@ -1774,7 +1791,17 @@ mod tests {
     /// `test.Base` joined to `predicate` on the union field, and every diagnostic
     /// the front end drew for it.
     fn joined_to(schema: &Schema, predicate: &str) -> Vec<(String, String)> {
-        let source = format!("X where test.Base {{u = W, id = X}}; {predicate} {{u = W, id = _}}");
+        joined(schema, "test.Base", predicate)
+    }
+
+    /// Two predicates joined on the union field, **in the order given**, and every
+    /// diagnostic the front end drew.
+    ///
+    /// The order is a parameter because it decides which side of `unify` each union
+    /// arrives on: the first statement binds `W`, the second compares against what it
+    /// bound.
+    fn joined(schema: &Schema, first: &str, second: &str) -> Vec<(String, String)> {
+        let source = format!("X where {first} {{u = W, id = X}}; {second} {{u = W, id = _}}");
 
         let mut interner = LocalInterner::new(schema.interner().clone());
         let mut diagnostics = Diagnostics::new();
@@ -1817,6 +1844,97 @@ mod tests {
         // allocated `Arc`s rather than one the test shared.
         let drawn = joined_to(&schema, "test.Permuted");
         assert!(drawn.is_empty(), "{drawn:?}");
+    }
+
+    /// **A union and a strict superset of it disagree whichever side is named
+    /// first.** Unification is symmetric, and a subset relation is the one shape
+    /// where reading only one of the two alternative lists still answers *yes* in one
+    /// direction: every alternative the subset declares is in the superset, so
+    /// walking the subset's finds nothing wrong, while walking the superset's finds
+    /// the missing one and rejects. The reading a query reaches is decided by which
+    /// of the two predicates it mentions first, so a one-sided walk makes typing
+    /// depend on **statement order** — the one thing it must never depend on
+    /// ([`bind`](Checker::bind) says why for a variable; this is the same claim about
+    /// a type).
+    ///
+    /// Every non-empty strict subset of a three-alternative union, both ways round,
+    /// and the same alternative named both ways. The count is asserted because the
+    /// family is the test: over a base of one alternative there is no non-empty
+    /// strict subset at all, and the law would hold of nothing.
+    #[test]
+    fn a_union_and_a_strict_superset_disagree_whichever_side_is_named_first() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+
+        // Discriminants neither contiguous, nor ascending, nor starting at zero, as
+        // the fixture's are: the alternative reported is the lowest *missing*
+        // discriminant, which a tidy list could not tell from the first declared.
+        let alternatives = [
+            ("num", 3, Ty::Int),
+            ("text", 0, Ty::String),
+            ("flag", 7, Ty::Int),
+        ];
+        let whole = union(&mut interner, &alternatives);
+
+        let subsets: Vec<Vec<(&str, u32, Ty)>> = (1..(1u32 << alternatives.len()) - 1)
+            .map(|mask| {
+                alternatives
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask & (1 << i) != 0)
+                    .map(|(_, alt)| alt.clone())
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            subsets.len(),
+            6,
+            "every non-empty strict subset of three alternatives, and no fewer"
+        );
+
+        let absent_at = |err: TyError, order: &str| match err {
+            TyError::UnionMismatch {
+                alternative: UnionDiff::Absent { name, disc },
+                ..
+            } => (name, disc),
+            TyError::UnionMismatch { alternative, .. } => {
+                panic!("{order}: {} rather than an absence", alternative.kind())
+            }
+            _ => panic!("{order}: not a UnionMismatch"),
+        };
+
+        for subset in subsets {
+            let part = union(&mut interner, &subset);
+            let mut diagnostics = Diagnostics::new();
+            let mut checker = checker(&schema, &interner, &mut diagnostics);
+
+            let mut refused =
+                |got: &Ty, expected: &Ty, order: &'static str| match checker.unify(got, expected) {
+                    Ok(()) => panic!(
+                        "{order}: a union unified with a strict superset of itself, so \
+                         the same two predicates joined the other way round answer \
+                         rows this one rejects"
+                    ),
+                    Err(err) => absent_at(err, order),
+                };
+
+            let subset_first = refused(&part, &whole, "the subset first");
+            let superset_first = refused(&whole, &part, "the superset first");
+
+            assert_eq!(
+                subset_first, superset_first,
+                "the two orders name different alternatives"
+            );
+        }
+
+        // And through the front end, where the order is the order the two statements
+        // are written in and each union is the one its predicate declares.
+        for (first, second) in [("test.Base", "test.Fewer"), ("test.Fewer", "test.Base")] {
+            let drawn = joined(&schema, first, second);
+            let codes: Vec<&str> = drawn.iter().map(|(code, _)| code.as_str()).collect();
+            assert_eq!(codes, ["reject/type-mismatch"], "{first} then {second}");
+        }
     }
 
     /// Equal iff the alternative sets are equal as sets of
@@ -2322,6 +2440,88 @@ mod tests {
 
         let checked = compile("X where X = test.Name 42");
         assert_eq!(codes(&checked), ["reject/type-mismatch"]);
+    }
+
+    /// **A mismatch names what the position requires, then what was written.**
+    ///
+    /// A diagnostic lands on one node, and [`unify`](Checker::unify) reads its
+    /// **first** argument as that node's type — so a site reporting at its second
+    /// argument renders the pair backwards and blames the variable for the literal
+    /// that would not fit it. Nothing else can catch that: the fault is reported,
+    /// with the right code, at the right span, and only the sentence is wrong —
+    /// which is why the corpus cannot see it either (it pins the code, never the
+    /// wording).
+    ///
+    /// One case per site, because the orientation is a property of each call rather
+    /// than of the pass. The last case is the **control**: a fact pattern's field is
+    /// the site that already read the right way round, so flipping the convention
+    /// instead of the callers fails here.
+    #[test]
+    fn a_mismatch_names_what_the_position_requires_before_what_was_written() {
+        for (source, code, message) in [
+            // A bind. `X` is a string, `1` is what cannot fit it.
+            (
+                "X where test.Name X; X = 1",
+                "reject/type-mismatch",
+                "expected a string, found an integer",
+            ),
+            // ...and the same through a record, where the pair reported is the one
+            // the recursion reached rather than the one the caller passed.
+            (
+                "X where test.Nested {outer = X}; X = {inner = \"s\"}",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // An unknown field is the same question about a name: the field named is
+            // the one *written*, not the one the position has.
+            (
+                "X where test.Nested {outer = X}; X = {nosuch = 1}",
+                "reject/unknown-field",
+                "`nosuch` is not a field here",
+            ),
+            // A destructuring, whose left side is the shape required.
+            (
+                "X where test.Count X; {a = Y} = X",
+                "reject/type-mismatch",
+                "expected {a = an unknown type}, found an integer",
+            ),
+            // A denial.
+            (
+                "X where test.Count X; X != \"a\"",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // Arithmetic, which requires integers of every operand.
+            (
+                "Y where test.Name N; Y = N + 1",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // An order comparison, reported at the right side.
+            (
+                "N where test.Name N; N < 3",
+                "reject/type-mismatch",
+                "expected a string, found an integer",
+            ),
+            // A disjunction, reported at the branch that disagrees with the rest.
+            (
+                "X where test.Foo {id = X, name = _}; X = (1 | \"a\")",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // The control.
+            (
+                "X where test.Foo {name = 42}",
+                "reject/type-mismatch",
+                "expected a string, found an integer",
+            ),
+        ] {
+            assert_eq!(
+                messages(source),
+                [(code.to_owned(), message.to_owned())],
+                "{source:?}"
+            );
+        }
     }
 
     /// A record *pattern* may name a subset of the key's fields — an omitted field

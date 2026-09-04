@@ -123,8 +123,9 @@ impl ToValue for String {
     }
 }
 
-/// **`bytes` is a scalar too**, and this is the impl that was missing: the trait covers
-/// every scalar the language has, and `bytes` arrived after it was written.
+/// **`bytes` is a scalar too**, and a slice is not a string: `checked` refuses a
+/// `Str` against a `bytes` field, and the two encode under different markers — so a
+/// payload that happens to be UTF-8 must still arrive as this family.
 impl ToValue for [u8] {
     fn to_value(&self) -> Value {
         Value::Bytes(self.to_vec())
@@ -370,7 +371,7 @@ fn shape(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::fixture;
-    use fjord_encoding::tuple::decode_key;
+    use fjord_encoding::tuple::{MARK_BYTES, decode_key};
 
     /// `test.Foo : { id : int, name : string } -> string` — a record key whose
     /// fields sort `id`, `name`, and a value side.
@@ -398,6 +399,19 @@ mod tests {
             id: 1,
             name: "ann",
             value: "one",
+        }
+    }
+
+    /// `test.Blob : { digest : bytes }` — a one-field key, and no value side.
+    struct Blob {
+        digest: &'static [u8],
+    }
+
+    impl Fact for Blob {
+        const PREDICATE: &'static str = "test.Blob";
+
+        fn key(&self) -> Value {
+            record([("digest", self.digest.to_value())])
         }
     }
 
@@ -445,6 +459,45 @@ mod tests {
             decode_key(&interner, &key, &ty).expect("decodes"),
             record([("id", 1.to_value()), ("name", "ann".to_value())]),
         );
+    }
+
+    /// **What `ToValue` for a byte slice produces, and what it encodes to.**
+    ///
+    /// A hand-written fact is the seam every backend test writes through, so which
+    /// `Value` family a `&[u8]` becomes is load-bearing rather than a matter of taste:
+    /// `checked` refuses a `Str` against a `bytes` field, and the two families carry
+    /// different markers, so a slice arriving as a string either fails to write or
+    /// writes under a marker no `bytes` reader walks.
+    ///
+    /// The payload carries a NUL **and** the escape byte, which is what the escape
+    /// scheme turns on: `0x00` becomes `0x00 0xFF` and a bare `0x00` terminates, so a
+    /// payload holding neither could not tell an escaped run from a raw one. It is
+    /// also not UTF-8, which is the whole reason the family exists.
+    #[test]
+    fn a_byte_slice_is_a_bytes_value_and_encodes_under_the_bytes_marker() {
+        let digest: &[u8] = &[0x00, 0xFF];
+
+        assert_eq!(digest.to_value(), Value::Bytes(vec![0x00, 0xFF]));
+
+        let (predicate, key, value) = encoded(&Blob { digest }).expect("a well-formed fact");
+
+        assert_eq!(predicate, PredicateId(16), "test.Blob's position");
+        assert_eq!(key, [MARK_BYTES, 0x00, 0xFF, 0xFF, 0x00]);
+        assert!(value.is_empty(), "test.Blob declares no value side");
+
+        // ...and byte for byte the fixture's own third `test.Blob`, which is the row
+        // the corpus answers as `0x00ff` — so the hand-written fact and the fixture
+        // cannot drift apart while both keep passing.
+        let expected = fixture::facts()
+            .into_iter()
+            .find(|fact| fact.predicate == PredicateId(16) && fact.sequence == 3)
+            .expect("the fixture's third test.Blob");
+        assert_eq!(key, expected.key);
+
+        // The empty run is a payload, not an absent field: the marker and the
+        // terminator, and nothing between them.
+        let (_, empty, _) = encoded(&Blob { digest: b"" }).expect("a well-formed fact");
+        assert_eq!(empty, [MARK_BYTES, 0x00]);
     }
 
     /// A predicate no schema declares. The name is resolved at write time precisely

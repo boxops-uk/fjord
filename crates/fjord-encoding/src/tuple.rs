@@ -981,7 +981,7 @@ impl<'a> TupleEncoder<'a> {
 
     /// Writing a scalar cannot fail — the sink is a `Vec` and every encoding is
     /// total — so these return nothing. [`record`](Self::record) is the one
-    /// fallible operation, because nesting past [`MAX_RECORD_DEPTH`] is a fault
+    /// fallible operation, because nesting past `MAX_RECORD_DEPTH` is a fault
     /// the encoding itself cannot express. A `Result` on the rest only put a `?`
     /// at every call site and left a reader wondering which of them could fail.
     pub fn put_null(&mut self) {
@@ -1601,11 +1601,12 @@ pub enum Value {
     ///
     /// The discriminant is the identity — it is what the bytes hold and what the
     /// order is taken over — and `alt` is the name that discriminant is declared
-    /// with, carried for the same reason a record's field names are: a `Value` is
-    /// serialised without its type ([`Serialize`]), so a union with no name in it
-    /// renders as a number. It is filled from the schema on decode and **not**
-    /// checked on encode, exactly as a record's names are not: the discriminant
-    /// locates the alternative, the name is what a reader sees.
+    /// with, carried for the same reason a record's field names are: a decoded `Value`
+    /// travels **without** its type, so a reader holding one has nothing else to name
+    /// an alternative with, and both a rendered row and a mismatch message fall back
+    /// to a number. It is filled from the schema on decode and **not** checked on
+    /// encode, exactly as a record's names are not: the discriminant locates the
+    /// alternative, the name is what a reader sees.
     Union {
         disc: u32,
         alt: String,
@@ -2661,13 +2662,17 @@ pub(crate) mod tests {
         assert_eq!(MARK_INT_POS_MAX, 0x50);
         assert_eq!(MARK_FACT_REF, 0x51);
         assert_eq!(MARK_UNION, 0x52);
+        assert_eq!(MARK_BYTES, 0x53);
         assert_eq!(MARK_TERM, 0x00);
         assert_eq!(MARK_ESCAPE, 0xFF);
         assert_eq!(NULL, 0x00);
 
         // The ordering is semantic (memcmp of markers == sort order of the
         // families): null < string < record < negatives < zero < positives <
-        // fact-refs, with the negative/positive width bands contiguous.
+        // fact-refs < unions < bytes, with the negative/positive width bands
+        // contiguous. The last two sit at the end because appending is all I3
+        // permits: a family put where it would read best renumbers every marker
+        // above it, and every store already written with them.
         let ordered = [
             MARK_NULL,
             MARK_STRING,
@@ -2679,6 +2684,7 @@ pub(crate) mod tests {
             MARK_INT_POS_MAX,
             MARK_FACT_REF,
             MARK_UNION,
+            MARK_BYTES,
         ];
         assert!(
             ordered.windows(2).all(|w| w[0] < w[1]),
@@ -2714,6 +2720,19 @@ pub(crate) mod tests {
         assert_eq!(str_enc("A"), [0x21, 0x41, 0x00]);
         assert_eq!(str_enc("\0"), [0x21, 0x00, 0xFF, 0x00]);
         assert_eq!(str_enc("a\0b"), [0x21, 0x61, 0x00, 0xFF, 0x62, 0x00]);
+
+        // The same escaped run behind a marker of its own, and one payload that is
+        // not UTF-8 at all — the reason the family exists, and a run `put_str` could
+        // never have written.
+        let bytes_enc = |b: &[u8]| {
+            let mut out = Vec::new();
+            put_bytes(&mut out, b);
+            out
+        };
+        assert_eq!(bytes_enc(b""), [0x53, 0x00]);
+        assert_eq!(bytes_enc(b"A"), [0x53, 0x41, 0x00]);
+        assert_eq!(bytes_enc(b"\0"), [0x53, 0x00, 0xFF, 0x00]);
+        assert_eq!(bytes_enc(&[0x80, 0xC0]), [0x53, 0x80, 0xC0, 0x00]);
 
         // Records and fact-refs go through the encoder.
         let mut empty_rec = Vec::new();
