@@ -456,9 +456,10 @@ not, because the canonical form the fingerprint hashes writes all three, so they
 types on disk too; the diagnostic names the alternative the two sides first differ on.
 
 A select against the wrong alternative is an **error**, never another type's bytes: the
-expected discriminant is checked before any read through the payload. And rows whose
-alternative the query never mentions pass untouched — an unmentioned union field is a
-wildcard.
+expected discriminant is checked before any read through the payload — at every layer, so a
+select on a union *inside* another union's payload is checked after the tag that says the outer
+payload is there at all, and never before it. And rows whose alternative the query never
+mentions pass untouched — an unmentioned union field is a wildcard.
 
 ### Literals
 

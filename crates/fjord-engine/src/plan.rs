@@ -83,9 +83,11 @@ impl FieldPath {
     /// one is [`FjordError::DiscriminantMismatch`] rather than another type's bytes
     /// read as this type's.
     ///
-    /// Flatten emits the tag's own check *before* any residual reading through the
-    /// payload, so from a compiled plan that error is unreachable; it is here for a
-    /// plan built by hand or arriving over the wire. See [phase 8.6 D-d].
+    /// Flatten hands the executor a source's residuals **ordered outside-in**: every
+    /// tag check sits ahead of the residuals reading through the payload it names,
+    /// whichever pass emitted either of them. So from a compiled plan that error is
+    /// unreachable; it is here for a plan built by hand or arriving over the wire,
+    /// where nothing has ordered anything. See [phase 8.6 D-d].
     ///
     /// [`FjordError::DiscriminantMismatch`]: crate::error::FjordError::DiscriminantMismatch
     /// [phase 8.6 D-d]: ../../../website/content/storage.md

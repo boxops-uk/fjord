@@ -27,10 +27,12 @@
 //! predicate test.Tagged : { what : union, id : int }    // a union in the *leading* field
 //! predicate test.Label  : { id : int, what : union }    // ...and not in the leading field
 //! predicate test.Blob   : { digest : bytes }            // a `bytes` key field
+//! predicate test.Pad    : { pad : int, u : layered }    // a union *under* a union
 //!
 //! where `union` is `{ num : int = 3 | text : string = 0 }` in both — tags neither
 //! contiguous, nor starting at zero, nor in declaration order, so nothing that read a
-//! discriminant as a position could pass.
+//! discriminant as a position could pass — and `layered` is
+//! `{ a : { r : { p : int = 9 | q : string = 4 } } = 6 | b : int = 2 }`.
 //! ```
 //!
 //! Four of those are deliberate awkward cases rather than data: `test.Shadow` has a
@@ -40,7 +42,10 @@
 //! a fact-id compare narrows the scan or filters it. `test.Tagged`/`test.Label` are
 //! the same pair for a union: leading, matching an alternative is a **seek**; behind
 //! an `int`, it is a **residual**, and only one of those exercises
-//! `check_residuals`.
+//! `check_residuals`. `test.Pad` is the two at once: a union behind an `int` whose
+//! payload holds a second union, so one row can carry a tag the key walk checks and a
+//! tag a select checks — the only shape here where the *order* of two tag checks
+//! decides whether a payload is read against the alternative it was written as.
 //!
 //! # The facts
 //!
@@ -89,6 +94,7 @@ const LABEL: PredicateId = PredicateId(15);
 /// family to the fixture free rather than a re-fingerprint of every plan in the
 /// corpus.
 const BLOB: PredicateId = PredicateId(16);
+const PAD: PredicateId = PredicateId(17);
 
 /// The two alternatives every union in this fixture declares.
 ///
@@ -97,6 +103,15 @@ const BLOB: PredicateId = PredicateId(16);
 /// `num` for a `text` row, and nothing else in the fixture would notice.
 const NUM: u32 = 3;
 const TEXT: u32 = 0;
+
+/// The two layers of `test.Pad`'s union, on the same principle: `a`/`b` outside,
+/// `p`/`q` within `a`'s payload, and no tag shared with a field position or with the
+/// layer above it — so a check applied at the wrong depth names an alternative that is
+/// not there rather than one that happens to line up.
+const A: u32 = 6;
+const B: u32 = 2;
+const P: u32 = 9;
+const Q: u32 = 4;
 
 /// The schema, hand-built.
 ///
@@ -261,6 +276,18 @@ pub fn schema() -> Schema {
             key: PredicateTy::Record(Arc::from([(sym("digest"), PredicateTy::Bytes)])),
             value: None,
         },
+        // **A union under a union, behind an `int`.** `pad` closes the seek prefix, so
+        // `u`'s tag is a residual the key walk emits and `u.a.r`'s is one a select
+        // emits. Nothing else in this fixture can put both on one row, and both on one
+        // row is the whole question of which order they are checked in.
+        Predicate {
+            name: sym("test.Pad"),
+            key: PredicateTy::Record(Arc::from([
+                (sym("pad"), PredicateTy::Int),
+                (sym("u"), layered(&mut sym)),
+            ])),
+            value: None,
+        },
     ];
 
     // Field and predicate names queries use but that no declaration interns, so
@@ -285,6 +312,37 @@ fn tagged(sym: &mut impl FnMut(&str) -> lasso::Spur) -> PredicateTy {
             name: sym("text"),
             disc: TEXT,
             ty: PredicateTy::Str,
+        },
+    ]))
+}
+
+/// `{ a : { r : { p : int = 9 | q : string = 4 } } = 6 | b : int = 2 }` —
+/// `test.Pad`'s union, whose `a` payload is a record holding a union of its own.
+fn layered(sym: &mut impl FnMut(&str) -> lasso::Spur) -> PredicateTy {
+    PredicateTy::Union(Arc::from([
+        Alternative {
+            name: sym("a"),
+            disc: A,
+            ty: PredicateTy::Record(Arc::from([(
+                sym("r"),
+                PredicateTy::Union(Arc::from([
+                    Alternative {
+                        name: sym("p"),
+                        disc: P,
+                        ty: PredicateTy::Int,
+                    },
+                    Alternative {
+                        name: sym("q"),
+                        disc: Q,
+                        ty: PredicateTy::Str,
+                    },
+                ])),
+            )])),
+        },
+        Alternative {
+            name: sym("b"),
+            disc: B,
+            ty: PredicateTy::Int,
         },
     ]))
 }
@@ -433,6 +491,20 @@ pub fn facts() -> Vec<Fact> {
         ],
     );
 
+    // **One row per alternative, at both depths.** The `b` row is what a payload read
+    // through `a` fails on and the `q` row is what a payload read through `p` fails on,
+    // so a plan that checks a tag too late errors on this predicate rather than quietly
+    // answering the rows whose tags happen to agree.
+    push(
+        &mut out,
+        PAD,
+        [
+            [int(1), union(A, &record(&[union(P, &int(7))]))].concat(),
+            [int(2), union(B, &int(9))].concat(),
+            [int(3), union(A, &record(&[union(Q, &string("z"))]))].concat(),
+        ],
+    );
+
     out
 }
 
@@ -524,6 +596,7 @@ mod tests {
             ("test.Tagged", TAGGED),
             ("test.Label", LABEL),
             ("test.Blob", BLOB),
+            ("test.Pad", PAD),
         ] {
             assert_eq!(
                 schema.find_position(name).map(|(id, _)| id),

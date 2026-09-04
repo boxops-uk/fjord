@@ -2804,14 +2804,17 @@ impl Flattener<'_> {
 
         let head = self.project(*self.query.head());
 
-        // **Last, and prepended.** A select in the head is not resolved until
-        // `project` above has run, so this cannot come earlier; and because a tag
-        // check has to precede every read through the payload it guards, the checks
-        // go to the *front* of each source's residuals rather than the back. Front
-        // rather than "before whatever else this pass added" makes the ordering a
-        // property of the residual list instead of a property of which pass ran when
-        // — which is the difference between an invariant and a coincidence.
+        // **Last.** A select in the head is not resolved until `project` above has
+        // run, so this cannot come earlier.
         self.apply_selects(&mut body);
+
+        // ...and the order the executor is owed is settled here, after the last pass
+        // that can add a residual. A pass placing its own checks can only place them
+        // against the residuals it can see: a select's check at the front of the list
+        // is still ahead of the check that guards *it* when the key walk emitted that
+        // one, which is a plan asking for a payload read against an alternative it
+        // has not established.
+        Self::order_tag_checks(&mut body);
 
         if self.diagnostics.len() != mark {
             return None;
@@ -2833,9 +2836,12 @@ impl Flattener<'_> {
     /// reads; the level holding the row is the only place a filter over that row
     /// belongs.
     ///
-    /// Prepended, in discovery order, and to **every** source: a level's branches all
-    /// bind a variable at the same path (`reconcile` is what makes that true), so one
-    /// path is right for all of them.
+    /// Added to **every** source of that level: its branches all bind a variable at
+    /// the same path (`reconcile` is what makes that true), so one path is right for
+    /// all of them. Where in the list they land is
+    /// [`order_tag_checks`](Self::order_tag_checks)'s, not this pass's — a select on
+    /// an inner union has to sit behind the check for the payload it is read through,
+    /// and that check may be one this pass never sees.
     ///
     /// Deduplicated, because two reads of one alternative — `X.what.num?` twice, or
     /// once in a bind and once in the head — are one check, and a repeat would filter
@@ -2858,11 +2864,50 @@ impl Flattener<'_> {
             };
 
             for source in level.sources.iter_mut() {
-                let mut residuals = vec![Residual {
+                let mut residuals = source.residuals().to_vec();
+                residuals.push(Residual {
                     path: path.clone(),
                     op: ResidualOp::DiscriminantEq(disc),
-                }];
-                residuals.extend(source.residuals().iter().cloned());
+                });
+                *source.residuals_mut() = residuals.into();
+            }
+        }
+    }
+
+    /// Order every source's residuals **outside-in**: a tag check sorts ahead of
+    /// every residual reading through the payload it names, whichever pass emitted
+    /// either of them.
+    ///
+    /// The trap is that a payload read is not a filter that merely answers `false` on
+    /// the wrong alternative. `field_span` walks the tag and *refuses* — a
+    /// `DiscriminantMismatch` — so a check the executor reaches after the read it
+    /// guards does not answer a row too many, it fails the query. Two passes emit
+    /// these checks: the key walk, where the seek prefix has already closed
+    /// ([`narrow_by_tag`](Self::narrow_by_tag)), and
+    /// [`apply_selects`](Self::apply_selects). Neither can see the other's, and a
+    /// union under a union puts both on one row.
+    ///
+    /// A tag check's path is a **prefix** of every path that reads through it, so
+    /// ordering the checks by depth nests them correctly however many layers deep
+    /// they go. Everything else keeps the order it was emitted in — a residual that
+    /// is not a tag check guards nothing — which is what the sort being a stable one
+    /// says.
+    fn order_tag_checks(body: &mut Body) {
+        for step in body.steps.iter_mut() {
+            let sources = match step {
+                Step::Level(level) => level.sources.iter_mut(),
+                Step::Test(Test::Absent(sources)) => sources.iter_mut(),
+                Step::Derive(_) | Step::Test(_) => continue,
+            };
+
+            for source in sources {
+                let mut residuals = source.residuals().to_vec();
+
+                residuals.sort_by_key(|residual| match residual.op {
+                    ResidualOp::DiscriminantEq(_) => (0, residual.path.steps().len()),
+                    _ => (1, 0),
+                });
+
                 *source.residuals_mut() = residuals.into();
             }
         }
@@ -3553,6 +3598,11 @@ impl Flattener<'_> {
     /// string prefix it does not have to end the seek — what follows it in the key is
     /// the payload, and the payload's own walk decides whether the prefix can carry
     /// on.
+    ///
+    /// Where a residual lands in the list is not this walk's to decide: a select adds
+    /// checks after every level is built, so the order is
+    /// [`order_tag_checks`](Self::order_tag_checks)'s and emission order settles
+    /// nothing.
     fn narrow_by_tag(disc: u32, path: &FieldPath, level: &mut SeekBuilder) {
         if level.building {
             level
@@ -11036,7 +11086,10 @@ mod battery {
 /// The fixture is what makes them non-vacuous: `test.Tagged` and `test.Label` hold the
 /// same union in the leading key field and behind an `int`, so each law is checked
 /// once where matching an alternative is a **seek** and once where it is a
-/// **residual** — two different pieces of machinery for one meaning.
+/// **residual** — two different pieces of machinery for one meaning. `test.Pad` adds
+/// the third: a union under a union, where one row carries a tag the key walk checks
+/// and a tag a select checks, and the two spellings differ in the *order* of two
+/// checks rather than in which machinery runs.
 #[cfg(test)]
 mod union_laws {
     use crate::{compile::Compilation, iter::Profile, plan::Plan};
@@ -11215,9 +11268,30 @@ mod union_laws {
                 "X where test.Label {id = _, what = {text = X}}",
                 "X.what.text? where test.Label X",
             ),
+            // **A union under a union**, where the two spellings put the outer tag's
+            // check in different passes: the key walk's, against the select's. A
+            // payload read against the wrong alternative is a refusal rather than a
+            // miss, so this pair fails as an error and not as a row.
+            (
+                "X where test.Pad {pad = _, u = {a = {r = {p = X}}}}",
+                "Y where test.Pad {pad = _, u = {a = {r = X}}}; Y = X.p?",
+            ),
+            // ...and with both checks from the select pass, which owes the order to
+            // itself as much as to the walk.
+            (
+                "X where test.Pad {pad = _, u = {a = {r = {p = X}}}}",
+                "X.u.a?.r.p? where test.Pad X",
+            ),
         ] {
+            let injected = bag(&db, &schema, injection);
+
+            // An equality between two empty answers is an equality about nothing, and
+            // a fixture that stopped holding the alternative would leave every pair
+            // here green.
+            assert!(!injected.is_empty(), "{injection:?} answers nothing");
+
             assert_eq!(
-                bag(&db, &schema, injection),
+                injected,
                 bag(&db, &schema, select),
                 "{injection:?} and {select:?} disagree"
             );
@@ -11384,6 +11458,64 @@ mod union_laws {
         );
     }
 
+    /// Every residual that reads through a payload, against the tag check guarding
+    /// it: `Err` naming the first read that runs before its check, `Ok` with how many
+    /// guarded pairs the plan held.
+    ///
+    /// Stated over **prefixes** of a path rather than over its last step. A
+    /// `DiscriminantEq`'s path names a union field, so every path extending it reads
+    /// that union's payload however many layers further in it goes — which is what a
+    /// rule written against the last step alone misses, and a union under a union is
+    /// where it misses it.
+    ///
+    /// The count is what keeps a row of the table from passing vacuously: a plan with
+    /// no guarded pair in it satisfies the order by having nothing to order.
+    fn tag_checks_precede_payload_reads(plan: &Plan) -> Result<usize, String> {
+        use crate::plan::{FieldPath, ResidualOp, Source, Step, Test};
+
+        fn reads_through(read: &FieldPath, guard: &FieldPath) -> bool {
+            read.field_idx() == guard.field_idx()
+                && read.steps().len() > guard.steps().len()
+                && read.steps().starts_with(guard.steps())
+        }
+
+        let mut guarded = 0;
+
+        for step in plan.body.iter() {
+            let sources: &[Source] = match step {
+                Step::Level(level) => &level.sources,
+                Step::Test(Test::Absent(sources)) => sources,
+                Step::Derive(_) | Step::Test(_) => continue,
+            };
+
+            for source in sources {
+                let residuals = source.residuals();
+
+                for (at, read) in residuals.iter().enumerate() {
+                    for (checked_at, check) in residuals.iter().enumerate() {
+                        if !matches!(check.op, ResidualOp::DiscriminantEq(_))
+                            || !reads_through(&read.path, &check.path)
+                        {
+                            continue;
+                        }
+
+                        if checked_at > at {
+                            return Err(format!(
+                                "{} is read at residual {at}, before the tag at {} is \
+                                 checked at {checked_at}",
+                                read.path, check.path,
+                            ));
+                        }
+
+                        guarded += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(guarded)
+    }
+
     /// **The tag check comes first.** A payload path is only meaningful once the
     /// alternative is known, so flatten owes the executor a residual list whose tag
     /// check precedes every residual reading through that payload — an obligation the
@@ -11392,63 +11524,48 @@ mod union_laws {
     /// Checked over the plans, not the rows: a violation would answer correctly
     /// whenever the alternatives happen to line up and fail as a decode error when
     /// they do not.
+    ///
+    /// The flag is which spellings are expected to *have* a guarded pair, because the
+    /// order is only tested where two residuals stand in that relation — and the
+    /// spellings that do are the ones where the two checks come from different
+    /// passes, which is the case a table of pure selects cannot reach.
     #[test]
     fn a_tag_is_checked_before_its_payload_is_read() {
-        use crate::plan::{ResidualOp, Step};
-
         let schema = fixture::schema();
 
-        // Whether any of these plans actually put a payload read behind a tag check —
-        // the law is about an order, so it says nothing until one exists.
-        let mut ordered_pair = false;
-
-        for source in [
+        for (source, guarded) in [
             // The payload compared against a bound register, behind the tag.
-            "X where test.Foo {id = X, name = _}; test.Label {id = _, what = {num = X}}",
+            (
+                "X where test.Foo {id = X, name = _}; test.Label {id = _, what = {num = X}}",
+                true,
+            ),
             // The same where the union leads, so the tag is in the seek and the
             // payload compare is the level's only residual.
-            "X where test.Foo {id = X, name = _}; test.Tagged {what = {num = X}, id = _}",
+            (
+                "X where test.Foo {id = X, name = _}; test.Tagged {what = {num = X}, id = _}",
+                false,
+            ),
             // And a select, whose check is applied by a pass of its own.
-            "X.what.num? where test.Label X",
+            ("X.what.num? where test.Label X", false),
+            // **The mixed spelling**: the outer tag checked by the key walk, the
+            // inner by a select. The select's check reads through the payload the
+            // walk's check guards, so either the two passes produce one ordered list
+            // or the plan asks the executor to read a payload it has not identified.
+            (
+                "Y where test.Pad {pad = _, u = {a = {r = X}}}; Y = X.p?",
+                true,
+            ),
+            // ...and both checks from the select pass, which owes the order to itself.
+            ("X.u.a?.r.p? where test.Pad X", true),
         ] {
-            let plan = plan_of(&schema, source);
+            let found = tag_checks_precede_payload_reads(&plan_of(&schema, source))
+                .unwrap_or_else(|why| panic!("{source:?}: {why}"));
 
-            for step in plan.body.iter() {
-                let Step::Level(level) = step else { continue };
-
-                for source_of in level.sources.iter() {
-                    let mut tagged: Vec<u32> = vec![];
-
-                    for residual in source_of.residuals().iter() {
-                        if let ResidualOp::DiscriminantEq(disc) = residual.op {
-                            tagged.push(disc);
-                            continue;
-                        }
-
-                        // Any other residual whose path steps *into* a union payload
-                        // must come after the check for that alternative.
-                        if let Some(&step) = residual.path.steps().last() {
-                            if tagged.contains(&(step as u32)) {
-                                ordered_pair = true;
-                                continue;
-                            }
-
-                            assert!(
-                                tagged.is_empty(),
-                                "{source:?}: a residual reads a payload at {} before its \
-                                 tag was checked (checked: {tagged:?})",
-                                residual.path,
-                            );
-                        }
-                    }
-                }
-            }
+            assert_eq!(
+                found > 0,
+                guarded,
+                "{source:?}: {found} residuals read through a checked payload",
+            );
         }
-
-        assert!(
-            ordered_pair,
-            "no plan here put a payload read behind a tag check, so the order was \
-             never actually tested"
-        );
     }
 }

@@ -338,9 +338,11 @@ fn nested_field_span(
     //
     // Checked, not assumed: a payload read against the wrong alternative would
     // otherwise decode another type's bytes at this offset and answer with whatever
-    // was there. Flatten emits the tag's residual first, so a compiled plan never
-    // reaches the error — it is the backstop for a plan built by hand or arriving
-    // over the wire, and it is a refusal rather than a mis-read.
+    // was there. Flatten orders each source's residuals outside-in — a tag check
+    // ahead of everything reading through the payload it names — so a compiled plan
+    // has dropped such a row before this walk runs; the error is the backstop for a
+    // plan built by hand or arriving over the wire, and it is a refusal rather than a
+    // mis-read.
     //
     // [`FieldPath::payload`]: crate::plan::FieldPath::payload
     if key.get(outer.start) == Some(&MARK_UNION) {
@@ -1493,11 +1495,13 @@ impl<S: FactStore> StackFrame<S> {
                 // a stack buffer over a borrowed span — the same shape as the
                 // reference compare above it, and for the same reason.
                 //
-                // Where this sits in the list matters: flatten puts it **before**
-                // any residual reading through the payload, so by the time a payload
-                // path is walked on this row the alternative is known. The residual
-                // walk short-circuits on the first failure, which is what makes that
-                // ordering enough.
+                // Where this sits in the list matters: flatten sorts the checks
+                // **outside-in**, each ahead of every residual reading through the
+                // payload it names — a check is itself behind the one guarding it
+                // where a union sits under a union — so by the time a payload path is
+                // walked on this row, every alternative on the way to it is known.
+                // The residual walk short-circuits on the first failure, which is
+                // what makes that ordering enough.
                 ResidualOp::DiscriminantEq(disc) => {
                     field.starts_with(UnionTag::new(*disc).as_bytes())
                 }

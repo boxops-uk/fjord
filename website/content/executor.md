@@ -69,7 +69,11 @@ residual arm (`DiscriminantEq`, a byte-prefix compare against the tag), one bran
 nested-field walk, and a projection arm — no new `Source`, `Step`, frame kind or cursor entry.
 A field path stepping *into* a union payload carries the expected discriminant, checked before
 any read through it, so a payload read against the wrong alternative is an error rather than
-another type's bytes.
+another type's bytes. That order is flatten's to establish and the machine's to rely on: a
+source's residuals are sorted **outside-in**, every tag check ahead of the residuals reading
+through the payload it names, so a check is never behind the read it guards — including where a
+union sits under a union and the checks come from two different passes, one walking the key and
+one applying a select.
 
 ### Access, seek, splice
 
