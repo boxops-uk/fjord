@@ -220,8 +220,8 @@ struct Alias {
     span: NodeSpan,
 }
 
-/// A **pattern the value at a place has to match** — `X = "a".."` — or, for a
-/// denial, one it has to *not* match: `X != "a".."`.
+/// A **pattern the value at a place has to match** — `X = "a"..` — or, for a
+/// denial, one it has to *not* match: `X != "a"..`.
 ///
 /// One statement for both polarities, because everything this type carries is the
 /// same for either: a denial reads exactly one variable and claims nothing, which
@@ -890,7 +890,7 @@ struct Flattener<'a> {
     /// The variables whose constraints a **capture** has already applied, so the
     /// pass over what is left does not apply them twice.
     constrained: Vec<Symbol>,
-    /// Variable → a **pattern its value must not match**, from `X != "a".."`.
+    /// Variable → a **pattern its value must not match**, from `X != "a"..`.
     ///
     /// Collected from the whole body like [`constraints`](Self::constraints), and
     /// for the same reason — where the statement is written says nothing about
@@ -1236,7 +1236,7 @@ impl Flattener<'_> {
 
                 // A constraint claims nothing — it does not say what a variable
                 // *is*, so the key that mentions it still captures it. That is the
-                // whole difference between `X = "a".."` and `X = "a"`.
+                // whole difference between `X = "a"..` and `X = "a"`.
                 //
                 // Nor does a negation, and for a stronger reason: it binds nothing
                 // at all, so every variable it names belongs to whatever else in
@@ -1754,7 +1754,7 @@ impl Flattener<'_> {
 
     /// Whether a pattern fixes **every byte** of its field.
     ///
-    /// A literal does; a prefix does not, and that is the case worth stating — `"a".."`
+    /// A literal does; a prefix does not, and that is the case worth stating — `"a"..`
     /// narrows a seek but does not close the field, so nothing after it can extend the
     /// prefix. It is why `src.SearchByLowerName {name = "x".., to = D}` is chasable and
     /// `test.Ref {of = P}` is not.
@@ -3277,7 +3277,7 @@ impl Flattener<'_> {
             }
 
             // A **range**, and so the one narrowing that is not a slot: there is no
-            // single value for `"a".."` to be, which is also why a variable cannot be
+            // single value for `"a"..` to be, which is also why a variable cannot be
             // bound to one.
             ExprKind::Prefix(_) | ExprKind::Fuzzy(..) => match self.constant(node, ty) {
                 Some(constant) => Self::narrow_by(constant, path, level),
@@ -3748,7 +3748,7 @@ impl Flattener<'_> {
         // Only one constraint can end the seek prefix, so which one gets to is
         // decided here — an exact constant first (it extends the prefix and costs
         // nothing), then a byte prefix, then a guide. Without this,
-        // `N = "parse"~2; N = "pa".."` and `N = "pa"..; N = "parse"~2` would
+        // `N = "parse"~2; N = "pa"..` and `N = "pa"..; N = "parse"~2` would
         // compile to different plans, and two spellings of one query must not:
         // the same rule that makes `Z = 1; test.Bar {id = Z}` narrow exactly as
         // `test.Bar {id = 1}` does.
@@ -3834,7 +3834,7 @@ impl Flattener<'_> {
                 continue;
             };
 
-            // **A constant, and nothing else.** `X < "a".."` compares against a set
+            // **A constant, and nothing else.** `X < "a"..` compares against a set
             // rather than a value and `X < "ann"~1` against a neighbourhood; neither
             // has an edge, and both are refused by name — by the residual pass,
             // which owns that diagnostic. Declining quietly here is what leaves it
@@ -3931,7 +3931,7 @@ impl Flattener<'_> {
                 }
 
                 // **A constant against a pattern**, both known now: `X = "abc"; X =
-                // "a".."`. Nothing to check per row, so the answer is the whole
+                // "a"..`. Nothing to check per row, so the answer is the whole
                 // query — either the constraint holds and the statement is a
                 // tautology, or it does not and the query is the empty relation,
                 // which is a level with no source to open. That is `never`'s level,
@@ -4025,18 +4025,18 @@ impl Flattener<'_> {
     }
 
     /// Turn each recorded **denial** into a residual on the level that binds the
-    /// variable — `X != "a".."`.
+    /// variable — `X != "a"..`.
     ///
     /// The mirror of [`apply_constraints`](Self::apply_constraints), and it has no
     /// counterpart to that one's `constrained` skip because there is nothing for it
     /// to skip: a capture narrows itself by the constraints on the variable it
     /// binds, and a denial is never one of them. "Does not start with `a`" is the
-    /// key order either side of the range `"a".."` denotes — two ranges, and a seek
+    /// key order either side of the range `"a"..` denotes — two ranges, and a seek
     /// walks one — so a denial reads the rows and drops them however it is written,
     /// and applying it here is not a fallback but the only place it goes.
     ///
     /// That is the asymmetry worth keeping in view when reading a `:plan`:
-    /// `test.Name X; X = "a".."` seeks, and `test.Name X; X != "a".."` scans the
+    /// `test.Name X; X = "a"..` seeks, and `test.Name X; X != "a"..` scans the
     /// predicate. The cost is negation's, not this design's.
     /// Turn each **order comparison** into a residual on whichever side runs later.
     ///
@@ -4081,7 +4081,7 @@ impl Flattener<'_> {
         } = comparison;
 
         // `resolve` answers `None` without reporting — the caller says what it
-        // wanted. A **prefix** is the one worth naming: `N < "a".."` reads as if a
+        // wanted. A **prefix** is the one worth naming: `N < "a"..` reads as if a
         // range had an order, and silently dropping the comparison would answer the
         // unfiltered rows, which is the worst of the three outcomes available.
         let (Some(lhs), Some(rhs)) = (self.resolve(*left), self.resolve(*right)) else {
@@ -4316,7 +4316,7 @@ impl Flattener<'_> {
     /// The constant bytes for one side of a comparison, or the fault of it not
     /// being a value at all.
     ///
-    /// A **prefix** is turned away by name: `X < "a".."` reads as if a range had an
+    /// A **prefix** is turned away by name: `X < "a"..` reads as if a range had an
     /// order, and the answer is that a range is a set of values rather than one.
     fn compare_constant(
         &mut self,
@@ -4424,7 +4424,7 @@ impl Flattener<'_> {
                 }
 
                 // **A constant against a pattern**, both known now: `X = "abc"; X !=
-                // "a".."`. Decided here rather than per row, and the two outcomes are
+                // "a"..`. Decided here rather than per row, and the two outcomes are
                 // the constraint arm's swapped — a denial the constant *meets* is the
                 // empty relation, and one it escapes is a tautology that emits
                 // nothing.
@@ -5666,9 +5666,9 @@ mod tests {
     /// where every other property would pass either way.
     ///
     /// Written in exactly the position the constraint above narrows from — the
-    /// capture of a scalar-keyed predicate, where `X = "a".."` produces
+    /// capture of a scalar-keyed predicate, where `X = "a"..` produces
     /// `seek[k]` — so the two shapes differ in nothing but the polarity of the
-    /// statement. `X != "a".."` is `scan` plus a residual, because "does not start
+    /// statement. `X != "a"..` is `scan` plus a residual, because "does not start
     /// with `a`" is the key order either side of one range and a seek walks one.
     ///
     /// The failure this guards against is the plausible optimisation: noticing that
@@ -8289,9 +8289,9 @@ pub mod proptest {
     /// [`holds`]: Match::holds
     #[derive(Debug, Clone, Copy)]
     enum Match {
-        /// `V{v} = "p".."` — sargeable: the level capturing `v` narrows to a range.
+        /// `V{v} = "p"..` — sargeable: the level capturing `v` narrows to a range.
         Prefix(&'static str),
-        /// `V{v} != "p".."` — a filter, and never anything else.
+        /// `V{v} != "p"..` — a filter, and never anything else.
         NotPrefix(&'static str),
         /// `V{v} != "p"` — a filter comparing whole values.
         NotEqual(&'static str),
@@ -8391,10 +8391,10 @@ pub mod proptest {
     /// each filters, because these run on a quarter of the population and the rows
     /// they leave are what every other property here measures:
     ///
-    /// - `= "".."` and `= "a".."` keep all three and two of three. `= "b".."` is
+    /// - `= ""..` and `= "a"..` keep all three and two of three. `= "b"..` is
     ///   left to the key-field prefix table: it keeps one of three, and a filter
     ///   that severe applied this often thins the whole battery.
-    /// - `!= "a".."` keeps one of three, and is the *only* denied prefix drawn:
+    /// - `!= "a"..` keeps one of three, and is the *only* denied prefix drawn:
     ///   `""` prefixes every string, so denying it would keep no row at all.
     /// - `!= "a"` and `!= "b"` each remove exactly one string, which is the mildest
     ///   filter the domain allows.
@@ -8402,7 +8402,7 @@ pub mod proptest {
     ///   `"a"`) and `= "ac"~1` keeps `"a"` and `"ab"` but not `"b"` — the same
     ///   all-three/two-of-three pair the prefixes above are chosen for. A term
     ///   severe enough to keep one of three is deliberately absent for the reason
-    ///   `= "b".."` is: applied this often it thins the whole battery.
+    ///   `= "b"..` is: applied this often it thins the whole battery.
     /// - `= "a"~<1` and `= "ac"~<1` keep the same three and the same two. The
     ///   anchored question is more permissive in general, but not over a domain
     ///   whose longest string is two characters — so the pair carries the budget
@@ -8647,7 +8647,7 @@ pub mod proptest {
         /// `facts[p]` — predicate `p`'s facts, deduplicated and sorted by key.
         facts: Vec<Vec<Fact>>,
         stmts: Vec<StmtSpec>,
-        /// `V{var} = "prefix".."`, or its denials — a **constraint** on a variable
+        /// `V{var} = "prefix"..`, or its denials — a **constraint** on a variable
         /// some statement captures. At most one, because it is a statement like any
         /// other and the order properties run every permutation of the body.
         ///

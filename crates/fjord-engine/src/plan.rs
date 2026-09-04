@@ -154,6 +154,8 @@ impl fmt::Display for FieldPath {
 pub enum SeekKey {
     /// A run of **complete field encodings**, every one of them constant — the
     /// common case, merged into one byte string because it needs no per-row work.
+    /// A run may also end at a **union tag**, which `narrow_by_tag` pins where the
+    /// prefix has closed on a union: self-delimiting, with the payload following.
     Prefix(Box<[u8]>),
     /// The same run where a register's bytes have to be spliced in each time the
     /// level is opened. Every part is a whole field: a constant, a field of a bound
@@ -287,11 +289,11 @@ pub struct Guide {
 pub enum ResidualOp {
     EqConst(Box<[u8]>),
     Prefix(Box<[u8]>),
-    /// The negatives of the two above — `X != "abc"`, `X != "a".."`.
+    /// The negatives of the two above — `X != "abc"`, `X != "a"..`.
     ///
     /// Residuals and nothing else, where their positive twins are the residual
     /// *form* of something a seek could also do. A prefix denotes one contiguous
-    /// range of the key order, so `X = "a".."` narrows a seek; its negation is the
+    /// range of the key order, so `X = "a"..` narrows a seek; its negation is the
     /// two ranges either side of that one, which no single seek expresses. So a
     /// denial always reads the rows and drops them, and there is no sargeable
     /// variant of these to look for later.

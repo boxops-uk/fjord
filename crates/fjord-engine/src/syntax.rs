@@ -247,7 +247,7 @@ pub enum QueryStmt<T> {
     ///
     /// The negative of the constraint [`Bind`](Self::Bind) can mean, and a separate
     /// statement rather than a flag on it because the two are not symmetric where
-    /// it matters. A constraint is *sargeable* — `X = "a".."` narrows the level
+    /// it matters. A constraint is *sargeable* — `X = "a"..` narrows the level
     /// capturing `X` to a range — and a denial can never be: "does not start with
     /// `a`" is two ranges, so it filters rows a scan has already produced. Keeping
     /// them apart in the tree is what keeps that difference from having to be

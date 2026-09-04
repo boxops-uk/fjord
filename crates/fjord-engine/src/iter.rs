@@ -1002,6 +1002,11 @@ fn scan_bounds(prefix: &[u8], seek_key: &SeekKey) -> (Vec<u8>, Option<Vec<u8>>) 
 /// of one field names every key sharing those bytes, which is what the pattern is
 /// asking for, so the end is their successor.
 ///
+/// A run can also end at a **union tag** rather than at a whole value, where
+/// `narrow_by_tag` pinned one, and the separator is still the right end: a payload
+/// continues with its own marker, no marker is [`MARK_ESCAPE`], so `prefix ++ 0xFF`
+/// sits above every payload of that tag and below the next tag's.
+///
 /// A seek pinning no field is the predicate: `prefix` is its id, there is no field
 /// value for a separator to sit above, and the successor is the next predicate.
 fn parts_end(prefix: &[u8], seek_key: &SeekKey) -> Option<Vec<u8>> {
@@ -3324,7 +3329,7 @@ mod tests {
     /// other reading of the same bytes and the reason the plan has to say which it
     /// holds.
     ///
-    /// `X = "a".."` over the same store answers all three: the encoded prefix of a
+    /// `X = "a"..` over the same store answers all three: the encoded prefix of a
     /// string is what every string beginning with it begins with, so the range of
     /// the byte prefix *is* the match.
     #[test]

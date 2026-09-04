@@ -507,7 +507,7 @@ mod tests {
     /// longest match is the whole of what picks between them, so this is where that
     /// gets checked rather than left to the parse happening to work.
     ///
-    /// `!X = "a".."` is the reading that must *not* be taken: it would be a negation
+    /// `!X = "a"..` is the reading that must *not* be taken: it would be a negation
     /// of `X` followed by a bind, which the grammar has no statement for at all.
     #[test]
     fn a_denial_is_one_infix_operator() {

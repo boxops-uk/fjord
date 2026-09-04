@@ -415,8 +415,8 @@ impl Checker<'_> {
     /// whole values rather than pieces and is the unification the bind side defers
     /// too.
     ///
-    /// An access chain — `X.name != "a".."` — is deferred for the same reason and
-    /// with the same workaround the positive side has: `Y = X.name; Y != "a".."`
+    /// An access chain — `X.name != "a"..` — is deferred for the same reason and
+    /// with the same workaround the positive side has: `Y = X.name; Y != "a"..`
     /// is an alias plus a denial, and lands the residual on exactly the level
     /// `X.name` lives in.
     ///
