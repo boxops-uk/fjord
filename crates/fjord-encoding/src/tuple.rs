@@ -711,6 +711,37 @@ pub fn strinc(prefix: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The byte string that **separates one field value from the next**: strictly above
+/// every key whose bounded field is the value `key_through_field` ends with, and at
+/// or below every key whose is greater.
+///
+/// It is the bound both exclusive-at-the-value edges of a range want — the
+/// inclusive floor of `> v` and the exclusive ceiling of `<= v`.
+///
+/// **Not [`strinc`], which is wrong here.** A terminated field is
+/// `MARK ++ escaped(payload) ++ 0x00` with a payload NUL escaped to `0x00 0xFF`, so
+/// `enc(v)` is a byte prefix of `enc(w)` exactly when `w` is `v` with a NUL and more
+/// after it — the shorter value's terminator is the first byte of the longer one's
+/// escape pair — and every such `w` is strictly greater than `v`. `strinc` is the
+/// successor of *everything* sharing that byte prefix, so it sits above both runs
+/// and cuts those rows off: `> v` loses them, `<= v` keeps them, and a folded
+/// comparison is no longer in the residual list to catch either.
+///
+/// [`MARK_ESCAPE`] is the byte that lies between the two runs, and it is the only
+/// byte that can: a key at `v` continues past the field with a *mark* or a group
+/// terminator and every one of those is below it, while a key of a NUL-extension of
+/// `v` continues with `MARK_ESCAPE` itself. A **new marker** is what could break the
+/// first half, and `no_field_encoding_begins_at_the_separator_byte` is the guard.
+///
+/// Total, unlike `strinc` — there is no all-`0xFF` key this has no answer for.
+#[must_use]
+pub fn above_field(key_through_field: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(key_through_field.len() + 1);
+    out.extend_from_slice(key_through_field);
+    out.push(MARK_ESCAPE);
+    out
+}
+
 /// Encode `value` against its declared type, positionally: a record's fields are
 /// written in **declared order** — the schema's, which is what the read path walks —
 /// and the value's are taken in the order they are in.
@@ -3268,6 +3299,89 @@ pub(crate) mod tests {
             );
         }
 
+        /// **[`above_field`] lands between one field value's keys and the next
+        /// value's** — the claim a bounded seek's excluding edges rest on.
+        ///
+        /// A key is its fields back to back, so a key *at* `v` is `enc(v)` and
+        /// then whatever the key runs on with — another field, or nothing at all
+        /// when `v` ends it. Both are drawn, because the bound sitting above the
+        /// longer one and below the shorter is not the same assertion.
+        ///
+        /// The pair is ordered by [`cmp_typed`], the independent oracle, rather
+        /// than by the bytes: ordering it by the encoding would make the law say
+        /// only that `above_field` agrees with itself.
+        #[test]
+        fn a_separator_lies_between_one_field_value_and_the_next(
+            spec in arb_typed_pair(),
+            trailing in arb_typed_value(),
+        ) {
+            let fixture = materialize_pair_fixture(spec);
+            let order = cmp_typed(&fixture.ty, &fixture.a, &fixture.b);
+
+            let a = encode_typed_for_test(&fixture.ty, &fixture.a).unwrap();
+            let b = encode_typed_for_test(&fixture.ty, &fixture.b).unwrap();
+            let (lower, higher) = if order == Ordering::Greater { (b, a) } else { (a, b) };
+
+            let trailing = materialize_value_fixture(trailing);
+            let after = encode_typed_for_test(&trailing.ty, &trailing.value).unwrap();
+
+            let separator = above_field(&lower);
+
+            for tail in [[].as_slice(), after.as_slice()] {
+                let at = [lower.as_slice(), tail].concat();
+                prop_assert!(
+                    at < separator,
+                    "a key at the value is not below the separator\n\
+                     at:        {:02x?}\n\
+                     separator: {:02x?}",
+                    at,
+                    separator,
+                );
+
+                if order != Ordering::Equal {
+                    let above = [higher.as_slice(), tail].concat();
+                    prop_assert!(
+                        separator <= above,
+                        "the separator is not at or below a key of a greater value\n\
+                         separator: {:02x?}\n\
+                         above:     {:02x?}",
+                        separator,
+                        above,
+                    );
+                }
+            }
+        }
+
+        /// **The premise the separator rests on**: no field encoding begins at or
+        /// above [`MARK_ESCAPE`], so nothing a key runs on with after a complete
+        /// field can reach it.
+        ///
+        /// The half of the reasoning a *new marker* would break, and [I3] permits
+        /// exactly one change to the table — appending. Asserted over the whole
+        /// drawn population rather than over a list of constants, because a list is
+        /// something an appended marker can be left out of;
+        /// [`the_generator_draws_every_predicate_ty_family`] is what says the
+        /// population is every family.
+        ///
+        /// [I3]: ../../../website/content/invariants.md#i3
+        #[test]
+        fn no_field_encoding_begins_at_the_separator_byte(spec in arb_typed_value()) {
+            let fixture = materialize_value_fixture(spec);
+            let encoded = encode_typed_for_test(&fixture.ty, &fixture.value).unwrap();
+
+            // A group's terminator is the other byte that can follow a field, and
+            // it is `MARK_TERM`; asserted here so both live in one place.
+            prop_assert!(MARK_TERM < MARK_ESCAPE);
+
+            prop_assert!(
+                encoded[0] < MARK_ESCAPE,
+                "a field beginning {:#04x} would sort at or above the separator, \
+                 and a bounded seek would drop the rows behind it: {:#?}",
+                encoded[0],
+                fixture.ty,
+            );
+        }
+
         #[test]
         fn test_value_ord_matches_typed_order_for_same_schema(spec in arb_typed_pair()) {
             let fixture = materialize_pair_fixture(spec);
@@ -3678,6 +3792,46 @@ pub(crate) mod tests {
             seen.2,
             "{RUNS} draws produced no `bytes` value holding a NUL — the byte the \
              escape scheme is about"
+        );
+    }
+
+    /// **The census for the pair
+    /// [`a_separator_lies_between_one_field_value_and_the_next`] is sharpest
+    /// about.** A pair whose encodings stand in a byte-prefix relationship is the
+    /// only draw where the separator and the successor part company; over a
+    /// prefix-free one the law holds of both and distinguishes nothing.
+    #[test]
+    fn the_generator_draws_a_pair_one_encoding_prefixing_the_other() {
+        use self::proptest::{arb_typed_pair, materialize_pair_fixture};
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 400;
+
+        let mut runner = TestRunner::deterministic();
+
+        let drawn = (0..RUNS).any(|_| {
+            let spec = arb_typed_pair().new_tree(&mut runner).unwrap().current();
+            let fixture = materialize_pair_fixture(spec);
+
+            let (Ok(a), Ok(b)) = (
+                encode_typed(&fixture.ty, &fixture.a),
+                encode_typed(&fixture.ty, &fixture.b),
+            ) else {
+                return false;
+            };
+
+            let (shorter, longer) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+
+            longer.len() > shorter.len() && longer.starts_with(&shorter)
+        });
+
+        assert!(
+            drawn,
+            "{RUNS} draws never produced a pair whose encodings stand in a \
+             byte-prefix relationship"
         );
     }
 

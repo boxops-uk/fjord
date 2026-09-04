@@ -16,7 +16,7 @@ use fjord_encoding::{
     error::StoreCodecError,
     tuple::{
         MARK_ESCAPE, MARK_RECORD, MARK_TERM, MARK_UNION, TupleDecoder, UnionTag, Value,
-        decode_typed, fact_ref_bytes, get_u64, put_str, skip, str_chars, strinc,
+        above_field, decode_typed, fact_ref_bytes, get_u64, put_str, skip, str_chars, strinc,
     },
 };
 use fjord_schema::{
@@ -931,9 +931,18 @@ impl GuideWalk {
 /// is the same range this always opened. A bounded one moves one or both edges
 /// inwards, and the whole of the arithmetic is in one place because the two
 /// halves are not symmetric: **a stored key runs on past the bounded field**, so
-/// every row *at* the bound sorts after `prefix ++ value`. Excluding the bound
-/// below therefore needs the successor and excluding it above does not — the
-/// asymmetry an off-by-one here would look exactly like.
+/// every row *at* the bound sorts after `prefix ++ value`. Including the bound
+/// therefore takes the bare concatenation and excluding it takes the byte that
+/// separates one value's keys from the next's — the asymmetry an off-by-one here
+/// would look exactly like.
+///
+/// **The separator is [`above_field`], not [`strinc`].** A `string` or `bytes`
+/// value's encoding is a byte prefix of a *greater* value's whenever the greater
+/// one extends it through a NUL, so a successor of `prefix ++ value` sits above
+/// both runs rather than between them; `above_field` carries the reasoning and the
+/// mark table it rests on. Reaching for `strinc` here answered `> v` without the
+/// NUL-extensions of `v` and `<= v` with them, silently — the fold has already
+/// taken the comparison out of the residual list.
 ///
 /// `hi` is `None` only where `strinc` has no answer, which is a range running to
 /// the end of the key space; a scan is bounded to its own predicate by the store
@@ -950,30 +959,23 @@ fn scan_bounds(prefix: &[u8], seek_key: &SeekKey) -> (Vec<u8>, Option<Vec<u8>>) 
     };
 
     let low = match lo {
-        None => Some(prefix.to_vec()),
+        None => prefix.to_vec(),
         // `> v`: the first key that can be greater than every row at `v`, since
-        // those keys are `prefix ++ v ++ …` and all begin with it. `None` is a
-        // bound above every key there is, which is the empty range below.
-        Some(edge) if !edge.inclusive => strinc(&at(edge)),
-        Some(edge) => Some(at(edge)),
+        // those keys are `prefix ++ v ++ …` and all begin with it.
+        Some(edge) if !edge.inclusive => above_field(&at(edge)),
+        Some(edge) => at(edge),
     };
 
     let high = match hi {
         None => strinc(prefix),
         // `<= v` has to include the rows *at* `v`, which extend `prefix ++ v`.
-        Some(edge) if edge.inclusive => strinc(&at(edge)),
+        Some(edge) if edge.inclusive => Some(above_field(&at(edge))),
         Some(edge) => Some(at(edge)),
     };
 
-    // A lower bound with no successor is a range no key is in; so is one that
-    // has overtaken the upper bound (`X >= 10; X < 5` is a query, not a fault).
-    // Handed to the store as `lo..lo` rather than as a reversed range, which is
-    // a panic inside the map rather than an empty answer.
-    let Some(low) = low else {
-        let end = high.clone().unwrap_or_else(|| prefix.to_vec());
-        return (end.clone(), Some(end));
-    };
-
+    // A lower bound that has overtaken the upper one (`X >= 10; X < 5` is a query,
+    // not a fault) is handed to the store as `lo..lo` rather than as a reversed
+    // range, which is a panic inside the map rather than an empty answer.
     match &high {
         Some(high) if *high < low => (low.clone(), Some(low)),
         _ => (low, high),
@@ -2610,13 +2612,15 @@ mod tests {
     use super::*;
     use crate::{
         fixtures::{
-            FrozenStore, PointSpy, collect_rows, compose, count_rows, fact_ref_field, i64_field,
-            interner_with, run_with_suspends, str_field,
+            FrozenStore, PointSpy, bytes_field, collect_rows, compose, count_rows, fact_ref_field,
+            i64_field, interner_with, run_with_suspends, str_field,
         },
         plan::{
             Access, Compare, DerivedBind, FieldPath, Level, Plan, Project, RangeEdge, Residual,
             ResidualOp, SeekKey, SeekKeyPart,
-            proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
+            proptest::{
+                FieldTy, PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points,
+            },
         },
     };
     use ::proptest::prelude::*;
@@ -3042,6 +3046,108 @@ mod tests {
         assert_eq!(profile.total(), 100);
     }
 
+    /// **A value whose encoding is a byte prefix of a greater value's.**
+    ///
+    /// A terminated field is `MARK ++ escaped(payload) ++ 0x00`, and a payload NUL
+    /// escapes to `0x00 0xFF` — so `enc(v)` is a byte prefix of `enc(w)` exactly
+    /// when `w` is `v` with a NUL and something after it, and every such `w` is
+    /// strictly greater than `v`. The two edges that exclude the value (`> v`
+    /// below, `<= v` above) have to place a bound *between* those two runs of the
+    /// key order, and the successor of everything sharing that byte prefix is not
+    /// between them: it is above both, so `> v` loses the NUL-extensions and
+    /// `<= v` keeps them.
+    ///
+    /// Silently, which is why this is a test rather than a reading of the code:
+    /// the fold takes the comparison out of the residual list, so nothing behind
+    /// the seek re-checks the rows.
+    ///
+    /// The oracle is the same bound left as a residual — a byte compare per row,
+    /// which shares the encoding with the seek and nothing else.
+    #[test]
+    fn a_bound_holds_the_rows_whose_encoding_extends_it_through_a_nul() {
+        let p = PredicateId(0);
+
+        // In encoded order, which for these five is payload order. `a\0` and
+        // `a\0b` are the two whose keys continue *past* `enc("a")`; `ab` and `b`
+        // diverge at its terminator with a byte above it.
+        let payloads: [&[u8]; 5] = [b"a", b"a\x00", b"a\x00b", b"ab", b"b"];
+
+        /// The two terminated families, each with the key-field encoder for it.
+        type Family = (PredicateTy, fn(&[u8]) -> Vec<u8>);
+
+        // Every payload here is ASCII, so both families can hold all five.
+        let families: [Family; 2] = [
+            (PredicateTy::Str, |payload| {
+                str_field(std::str::from_utf8(payload).expect("the payloads are ASCII"))
+            }),
+            (PredicateTy::Bytes, bytes_field),
+        ];
+
+        for (ty, encode) in families {
+            let store = || {
+                let mut store = MemStore::new();
+                for (n, payload) in payloads.iter().enumerate() {
+                    store.insert(p, compose(&[&encode(payload)]), n as u64 + 1);
+                }
+                store
+            };
+
+            let head = Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: ty.clone(),
+            };
+
+            // The two edges that exclude the value: `> "a"` and `<= "a"`.
+            for (lower, inclusive, op) in [(true, false, Compare::Gt), (false, true, Compare::Le)] {
+                let value: Box<[u8]> = encode(b"a").into();
+                let edge = RangeEdge {
+                    value: value.clone(),
+                    inclusive,
+                };
+
+                let folded = Plan {
+                    nvars: 1,
+                    body: Step::levels([Level::seek(
+                        Access {
+                            predicate_id: p,
+                            seek_key: SeekKey::Bounded {
+                                parts: Box::new([]),
+                                lo: lower.then(|| edge.clone()),
+                                hi: (!lower).then_some(edge),
+                            },
+                        },
+                        Box::new([Address::new(0)]),
+                        Box::new([]),
+                    )]),
+                    head: head.clone(),
+                };
+
+                let filtered = Plan {
+                    nvars: 1,
+                    body: Step::levels([Level::seek(
+                        Access {
+                            predicate_id: p,
+                            seek_key: SeekKey::Prefix(Box::new([])),
+                        },
+                        Box::new([Address::new(0)]),
+                        Box::new([Residual {
+                            path: FieldPath::field(0),
+                            op: ResidualOp::CmpConst { op, value },
+                        }]),
+                    )]),
+                    head: head.clone(),
+                };
+
+                let interner = interner_with(&[]);
+                let want = collect_rows(store(), filtered, &interner).expect("the filter runs");
+                let got = collect_rows(store(), folded, &interner).expect("the range runs");
+
+                assert_eq!(got, want, "{ty:?}: {op:?} \"a\" folded into the seek");
+            }
+        }
+    }
+
     /// **The boundary arithmetic, at the unit it lives in.**
     ///
     /// The metamorphic property above compares whole runs and would catch every one
@@ -3049,20 +3155,27 @@ mod tests {
     /// reader needs to check the reasoning rather than only the outcome. The pair is
     /// the same one the field-offset cache has: a contract asserted directly, and
     /// the same contract asserted through the executor.
+    ///
+    /// Over a real encoded value rather than a stand-in byte, because which byte
+    /// string is right depends on the encoding: `string` is where the separator and
+    /// the successor part company, and the last two assertions are that separation
+    /// stated as the two keys it has to fall between.
     #[test]
-    fn a_bounds_inclusivity_is_a_successor_and_its_sense_decides_which_end() {
+    fn an_excluded_bound_takes_the_separator_and_its_sense_decides_which_end() {
         let prefix = [0u8, 0, 0, 1, 7];
-        let edge = |value: u8, inclusive: bool| {
-            Some(RangeEdge {
-                value: Box::new([value]),
-                inclusive,
-            })
-        };
         let bounded = |lo, hi| SeekKey::Bounded {
             parts: Box::new([]),
             lo,
             hi,
         };
+        let edge = |value: Vec<u8>, inclusive: bool| {
+            Some(RangeEdge {
+                value: value.into_boxed_slice(),
+                inclusive,
+            })
+        };
+        let at = |value: &[u8]| [prefix.as_slice(), value].concat();
+        let separated = |value: &[u8]| [prefix.as_slice(), value, &[MARK_ESCAPE]].concat();
 
         // An unbounded seek is the bucket, which is what it always was.
         assert_eq!(
@@ -3070,48 +3183,81 @@ mod tests {
             (prefix.to_vec(), Some(vec![0, 0, 0, 1, 8]))
         );
 
-        // `>= 5` starts at the bound; `> 5` starts past every key extending it.
-        assert_eq!(
-            scan_bounds(&prefix, &bounded(edge(5, true), None)),
-            (vec![0, 0, 0, 1, 7, 5], Some(vec![0, 0, 0, 1, 8]))
-        );
-        assert_eq!(
-            scan_bounds(&prefix, &bounded(edge(5, false), None)),
-            (vec![0, 0, 0, 1, 7, 6], Some(vec![0, 0, 0, 1, 8]))
-        );
+        for value in [i64_field(5), str_field("a")] {
+            let bucket = Some(vec![0u8, 0, 0, 1, 8]);
 
-        // And the upper edge the other way round: `< 5` stops at the bound, `<= 5`
-        // stops past the keys extending it.
-        assert_eq!(
-            scan_bounds(&prefix, &bounded(None, edge(5, false))),
-            (prefix.to_vec(), Some(vec![0, 0, 0, 1, 7, 5]))
-        );
-        assert_eq!(
-            scan_bounds(&prefix, &bounded(None, edge(5, true))),
-            (prefix.to_vec(), Some(vec![0, 0, 0, 1, 7, 6]))
-        );
+            // `>= v` starts at the bound; `> v` starts past every key at `v`.
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(edge(value.clone(), true), None)),
+                (at(&value), bucket.clone())
+            );
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(edge(value.clone(), false), None)),
+                (separated(&value), bucket)
+            );
 
-        // A range that crosses is empty, and is handed over as `lo..lo` — a
-        // reversed range is a panic inside the map, not an empty answer.
-        let (lo, hi) = scan_bounds(&prefix, &bounded(edge(9, true), edge(2, false)));
-        assert_eq!(Some(lo), hi, "a crossed range is empty, not reversed");
+            // And the upper edge the other way round: `< v` stops at the bound,
+            // `<= v` stops past the keys at `v`.
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(None, edge(value.clone(), false))),
+                (prefix.to_vec(), Some(at(&value)))
+            );
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(None, edge(value.clone(), true))),
+                (prefix.to_vec(), Some(separated(&value)))
+            );
 
-        // A strict lower edge with no successor — every byte `0xff` — is a bound
-        // above every key there is. Unreachable while predicate ids are positions
-        // in a schema, and answered rather than panicked on because a `Plan` is
-        // public and hand-built.
+            // A range that crosses is empty, and is handed over as `lo..lo` — a
+            // reversed range is a panic inside the map, not an empty answer.
+            let (lo, hi) = scan_bounds(
+                &prefix,
+                &bounded(edge(value.clone(), false), edge(value, false)),
+            );
+            assert_eq!(Some(lo), hi, "a crossed range is empty, not reversed");
+        }
+
+        // The separator falls **between** the two runs of the key order, which the
+        // successor of `prefix ++ enc("a")` does not: `"a\0"` is a greater value
+        // whose key extends that byte prefix, so `strinc` sits above it.
+        let bound = separated(&str_field("a"));
+        assert!(
+            at(&compose(&[&str_field("a"), &i64_field(0)])) < bound,
+            "a key at the bound is below the separator"
+        );
+        assert!(
+            bound <= at(&str_field("a\u{0}")),
+            "and every key of a greater value is at or above it"
+        );
+        assert!(
+            strinc(&at(&str_field("a"))).expect("the prefix is not all 0xff")
+                > at(&str_field("a\u{0}")),
+            "which is what the successor could not do"
+        );
+    }
+
+    /// **`above_field` is total where `strinc` is not**, so the strict lower edge
+    /// no longer has a "no answer" case to fold into the empty range.
+    ///
+    /// Unreachable while predicate ids are positions in a schema, and answered
+    /// rather than panicked on because a `Plan` is public and hand-built.
+    #[test]
+    fn a_bound_over_an_all_ones_prefix_still_has_a_floor() {
         let all_ones = [0xffu8; 4];
+
         let (lo, hi) = scan_bounds(
             &all_ones,
-            &bounded(
-                Some(RangeEdge {
+            &SeekKey::Bounded {
+                parts: Box::new([]),
+                lo: Some(RangeEdge {
                     value: Box::new([0xff]),
                     inclusive: false,
                 }),
-                None,
-            ),
+                hi: None,
+            },
         );
-        assert_eq!(Some(lo), hi, "no successor is the empty range");
+
+        assert_eq!(lo, vec![0xff, 0xff, 0xff, 0xff, 0xff, MARK_ESCAPE]);
+        assert_eq!(hi, None, "the bucket itself has no successor to stop at");
     }
 
     /// **A bounded seek reads the window, not the offset** — the whole claim the
@@ -6573,12 +6719,20 @@ mod tests {
     }
 
     /// **The census for the bound.** The property above says nothing unless the
-    /// generator draws a range, and says nothing about the successor arithmetic
+    /// generator draws a range, and says nothing about the boundary arithmetic
     /// unless it draws each edge at each inclusivity. The empty range is counted
     /// separately because it is the one draw that reaches the clamp — a lower bound
     /// above the upper one, or equal edges where either side excludes the value. The
     /// former would otherwise be a reversed range and a panic inside the map rather
     /// than an empty answer.
+    ///
+    /// The last two entries are the **input class the edges that exclude the value
+    /// turn on**, and the reason the rest of the list is not enough: over a domain
+    /// where no value's encoding is a byte prefix of another's, every one of the
+    /// seven shapes is answered correctly by the successor *and* by the separator,
+    /// so the property passes either way. A `bytes` key field is counted beside it
+    /// because a family the generator never draws is a family every law over it
+    /// passes vacuously for.
     ///
     /// Counted over the generator rather than asserted per case, as the battery's
     /// other census is: it is a claim about what is *drawn*.
@@ -6606,6 +6760,14 @@ mod tests {
                 .current();
             let interner = spec.interner();
             let (_, plan) = spec.build(&interner);
+
+            if spec.key_field_tys().any(|ty| ty == FieldTy::Bytes) {
+                note("a `bytes` key field");
+            }
+
+            if spec.bounds_a_value_a_stored_one_extends() {
+                note("a bound a stored value extends through a NUL");
+            }
 
             for step in plan.body.iter() {
                 let Step::Level(level) = step else { continue };
@@ -6652,6 +6814,8 @@ mod tests {
             "an open upper edge",
             "both edges at once",
             "an empty range",
+            "a `bytes` key field",
+            "a bound a stored value extends through a NUL",
         ]
         .into_iter()
         .filter(|what| !seen.contains(what))

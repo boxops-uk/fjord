@@ -9076,8 +9076,8 @@ pub mod proptest {
                 {
                     FieldVal::Str(text) => matcher.holds(text),
                     // Only `Str` positions are drawn a constraint — and this generator
-                    // draws no unions at all (`FieldTy::of`).
-                    FieldVal::Int(_) | FieldVal::Union(..) => {
+                    // draws neither `bytes` nor unions at all (`FieldTy::of`).
+                    FieldVal::Int(_) | FieldVal::Bytes(_) | FieldVal::Union(..) => {
                         unreachable!("a string pattern constrains a string")
                     }
                 }
@@ -9379,7 +9379,10 @@ pub mod proptest {
             // otherwise become a second constant draw.
             3 => match ty {
                 FieldTy::Str => Leaf::Prefix(PREFIXES[draw.prefix as usize % PREFIXES.len()]),
-                FieldTy::Int | FieldTy::Union => Leaf::Wildcard,
+                // `Bytes` and `Union` are not drawn here at all (`FieldTy::of`);
+                // spelled with the integer so a new family is a compile error
+                // rather than a silent wildcard.
+                FieldTy::Int | FieldTy::Bytes | FieldTy::Union => Leaf::Wildcard,
             },
 
             // A variable, if one of this type is free in this statement. Variables

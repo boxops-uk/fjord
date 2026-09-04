@@ -87,7 +87,17 @@ folded form of an [order comparison](query-efficiency.html#an-order-comparison-s
 The edges are fields of that variant rather than one more kind of piece, and that is the point:
 a bounded field's bytes are not a single value, so nothing may follow one, and there is no way
 to write a key that does. An edge is a value and a bit saying whether the bound is in; the
-executor turns each into a scan bound, using the same successor a prefix's upper bound uses.
+executor turns each into a scan bound — the bare concatenation where the bound is in, and where
+it is out the byte that **separates** one value's keys from the next value's.
+
+That separator is not a prefix's upper bound, and the difference is the whole of the arithmetic.
+A `string` or `bytes` value is stored as `MARK ++ escaped(payload) ++ 0x00` with a payload NUL
+escaped to `0x00 0xFF`, so `enc(v)` is a byte prefix of `enc(w)` exactly when `w` is `v` with a
+NUL and more after it — and every such `w` is *greater* than `v`. The successor of everything
+sharing that byte prefix therefore sits above both runs rather than between them: it would
+answer `> v` without those rows and `<= v` with them. `0xFF` is what lies between, because a key
+at `v` runs on with a marker and every marker is below it, while a key of one of those greater
+values runs on with the escape byte itself.
 
 A **guided** source is the third shape, and it is deliberately not a fourth kind of thing: it
 carries an ordinary `Access`, so `lo` and `hi` come from the same prefix machinery, and the

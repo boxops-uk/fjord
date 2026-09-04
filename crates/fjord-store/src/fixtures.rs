@@ -20,7 +20,7 @@ use std::sync::{
 };
 
 use byteview::ByteView;
-use fjord_encoding::tuple::{TupleEncoder, put_i64, put_str, strinc};
+use fjord_encoding::tuple::{TupleEncoder, put_bytes, put_i64, put_str, strinc};
 use fjord_schema::{
     id::FactId,
     schema::{LocalInterner, PREDICATE_ID_SIZE, PredicateId, SchemaInterner},
@@ -44,6 +44,17 @@ pub fn i64_field(v: i64) -> Vec<u8> {
 pub fn str_field(s: &str) -> Vec<u8> {
     let mut b = Vec::new();
     put_str(&mut b, s);
+    b
+}
+
+/// Encode a single `bytes` key field.
+///
+/// The same shape [`str_field`] writes and a different marker, which is the whole
+/// of the difference: a payload NUL is escaped either way, so both families reach
+/// the terminated-field arithmetic a bounded seek does.
+pub fn bytes_field(payload: &[u8]) -> Vec<u8> {
+    let mut b = Vec::new();
+    put_bytes(&mut b, payload);
     b
 }
 

@@ -195,6 +195,11 @@ range) rather than being filtered afterwards. Sargeability is **order-dependent*
 **seek / SeekKey** — the range a level's scan opens on, built from constant bytes and register
 splices, and optionally bounded at the field they stop at by a folded order comparison.
 
+**separator** — the byte string between one field value's keys and the next value's: the value's
+encoding then `0xFF`. What a bounded seek uses at an edge that **excludes** the value, and not the
+same thing as **strinc** — a terminated field's encoding is a byte prefix of a greater value's
+whenever that value extends it through a NUL. [Executor](executor.html)
+
 **sigla** — Fjord's query and schema *language*.
 
 **slot** — what a register holds: a stored row, or a derived bind's computed value. Kept apart at the

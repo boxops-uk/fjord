@@ -170,13 +170,16 @@ pub enum SeekKey {
 /// One end of a [`SeekKey::Bounded`] range: the encoded field value, and whether
 /// the bound itself is in.
 ///
-/// **The inclusivity is a successor, not a comparison.** A stored key runs on past
+/// **The inclusivity is a separator, not a comparison.** A stored key runs on past
 /// the bounded field, so every row *at* the bound sorts after `prefix ++ value` —
 /// which makes `>= v` and `< v` the bare concatenation, and `> v` and `<= v` the
-/// same bytes put through [`strinc`](fjord_encoding::tuple::strinc), the successor a
-/// prefix's own upper bound already uses. Conflating the two is an off-by-one at
-/// the boundary and nowhere else, which is exactly the shape of bug that survives
-/// a hand-checked example.
+/// same bytes put through
+/// [`above_field`](fjord_encoding::tuple::above_field), which lands between the
+/// keys at `v` and the keys above it. Conflating the two is an off-by-one at the
+/// boundary and nowhere else, which is exactly the shape of bug that survives a
+/// hand-checked example — and reaching for a prefix's own upper bound instead is
+/// the shape that survives every value but one whose encoding another extends
+/// through a NUL.
 #[derive(Debug, Clone)]
 pub struct RangeEdge {
     pub value: Box<[u8]>,
@@ -1972,7 +1975,7 @@ pub mod proptest {
         Access, Address, Compare, FieldPath, FuzzyAnchor, Guide, Level, Plan, Project, RangeEdge,
         Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step,
     };
-    use crate::fixtures::{compose, i64_field, interner_with, str_field};
+    use crate::fixtures::{bytes_field, compose, i64_field, interner_with, str_field};
     use fjord_encoding::tuple::{MARK_TERM, UnionTag, Value};
     use fjord_schema::schema::{Alternative, LocalInterner, PredicateId, PredicateTy};
     use fjord_store_mem::MemStore;
@@ -1996,6 +1999,38 @@ pub mod proptest {
     /// either exactly one value or all of them — never the interesting middle.
     const INTS: [i64; 4] = [0, 1, 2, 3];
     const STRS: [&str; 3] = ["a", "ab", "b"];
+
+    /// The `bytes` domain — payload for payload the same as [`STRS`], so the two
+    /// families differ in the family and not in the values.
+    const BLOBS: [&[u8]; 3] = [b"a", b"ab", b"b"];
+
+    /// The values a **stored key** holds that the two domains above leave out:
+    /// the same values with an embedded NUL.
+    ///
+    /// Separate domains rather than more entries above, because the two generators
+    /// want different things. The query generator writes sigla, and its oracle is a
+    /// model reasoning over the source it wrote; the plan generator writes bytes,
+    /// and a NUL is the byte the *encoding* turns on — a terminated field is
+    /// `MARK ++ escaped(payload) ++ 0x00` with a payload NUL escaped to `0x00 0xFF`,
+    /// so `enc("a")` is a byte prefix of `enc("a\0")` and of nothing else.
+    ///
+    /// **[`STRS`] and [`BLOBS`] are prefix-free and these are what breaks that**,
+    /// which is the whole reason they are drawn: over a prefix-free domain the
+    /// separator and the successor answer a bounded seek identically, and every law
+    /// about the excluding edges holds of both.
+    const NUL_STRS: [&str; 2] = ["a\u{0}", "a\u{0}b"];
+    const NUL_BLOBS: [&[u8]; 2] = [b"a\x00", b"a\x00b"];
+
+    /// One value of a stored domain: `base`, then the values only a stored key can
+    /// hold.
+    fn stored<T: Copy>(base: &[T], only_stored: &[T], pick: u8) -> T {
+        let n = pick as usize % (base.len() + only_stored.len());
+
+        match n.checked_sub(base.len()) {
+            None => base[n],
+            Some(n) => only_stored[n],
+        }
+    }
 
     /// Terms to draw a fuzzy match for, at one edit against [`STRS`]: `"a"` reaches
     /// all three, `"ac"` reaches `"a"` and `"ab"`, `"b"` reaches `"a"` and `"b"`.
@@ -2024,7 +2059,11 @@ pub mod proptest {
 
     /// Upper bound (exclusive) on every "pick" draw; resolution takes it modulo
     /// however many options are legal in context.
-    const PICKS: u8 = 4;
+    ///
+    /// It has to reach the *widest* domain any draw resolves against, or the tail
+    /// of that domain is unreachable and the census that would have said so is the
+    /// only thing standing between a five-value domain and a three-value one.
+    const PICKS: u8 = 5;
 
     /// One head record field per level, so the projected row shows every binding.
     /// Listed in level order, which for these names is also sorted order — a head
@@ -2039,6 +2078,12 @@ pub mod proptest {
     pub enum FieldTy {
         Int,
         Str,
+        /// The other terminated family, and the one whose payloads are NUL-bearing
+        /// **by design** — a digest is not text and nothing filters a zero out of
+        /// it. It shares `string`'s escaping, so a bound over it is the same
+        /// arithmetic; drawn separately because a family reached only through the
+        /// family beside it is a family the census cannot count.
+        Bytes,
         /// `{ num : int = 3 | text : string = 0 }` — the same shape everywhere, with
         /// the same tags the fixture uses and for the same reason: neither of them is a
         /// position, and they are not in declaration order.
@@ -2068,11 +2113,12 @@ pub mod proptest {
             }
         }
 
-        /// Every field type, unions included.
+        /// Every field type, unions and `bytes` included.
         pub fn any(pick: u8) -> Self {
-            match pick % 4 {
+            match pick % 5 {
                 0 | 1 => FieldTy::Int,
                 2 => FieldTy::Str,
+                3 => FieldTy::Bytes,
                 _ => FieldTy::Union,
             }
         }
@@ -2081,6 +2127,7 @@ pub mod proptest {
             match self {
                 FieldTy::Int => PredicateTy::Int,
                 FieldTy::Str => PredicateTy::Str,
+                FieldTy::Bytes => PredicateTy::Bytes,
                 FieldTy::Union => PredicateTy::Union(Arc::from([
                     Alternative {
                         name: Spur::default(),
@@ -2107,6 +2154,7 @@ pub mod proptest {
     pub enum FieldVal {
         Int(i64),
         Str(&'static str),
+        Bytes(&'static [u8]),
         /// One alternative of [`FieldTy::Union`], with its payload.
         ///
         /// Ordered by **discriminant first**, which is what the encoding does — so a
@@ -2116,10 +2164,13 @@ pub mod proptest {
     }
 
     impl FieldVal {
+        /// **What a query can spell** — the domain [`FieldTy::of`]'s types are drawn
+        /// over, and the one the front end's generator writes source from.
         pub fn of(ty: FieldTy, pick: u8) -> Self {
             match ty {
                 FieldTy::Int => FieldVal::Int(INTS[pick as usize % INTS.len()]),
                 FieldTy::Str => FieldVal::Str(STRS[pick as usize % STRS.len()]),
+                FieldTy::Bytes => FieldVal::Bytes(BLOBS[pick as usize % BLOBS.len()]),
                 // **Both alternatives get drawn**, so a battery covers the tag as well
                 // as the payload: one pick chooses the alternative and the same pick
                 // chooses the value inside it.
@@ -2130,6 +2181,28 @@ pub mod proptest {
                         FieldVal::Union(TEXT, Box::new(FieldVal::of(FieldTy::Str, pick)))
                     }
                 }
+            }
+        }
+
+        /// **What a stored key can hold** — [`FieldVal::of`]'s domain, plus
+        /// [`NUL_STRS`] and [`NUL_BLOBS`].
+        ///
+        /// The pair to [`FieldTy::any`], and split from [`FieldVal::of`] for the
+        /// same reason: this is the plan generator's vocabulary, and the plan
+        /// generator is checked against another *reading of the bytes* rather than
+        /// against a model that reasons over source.
+        pub fn any(ty: FieldTy, pick: u8) -> Self {
+            match ty {
+                FieldTy::Str => FieldVal::Str(stored(&STRS, &NUL_STRS, pick)),
+                FieldTy::Bytes => FieldVal::Bytes(stored(&BLOBS, &NUL_BLOBS, pick)),
+                FieldTy::Union => {
+                    if pick % 2 == 0 {
+                        FieldVal::Union(NUM, Box::new(FieldVal::any(FieldTy::Int, pick)))
+                    } else {
+                        FieldVal::Union(TEXT, Box::new(FieldVal::any(FieldTy::Str, pick)))
+                    }
+                }
+                FieldTy::Int => FieldVal::of(ty, pick),
             }
         }
 
@@ -2145,6 +2218,7 @@ pub mod proptest {
             match self {
                 FieldVal::Int(i) => i64_field(*i),
                 FieldVal::Str(s) => str_field(s),
+                FieldVal::Bytes(payload) => bytes_field(payload),
                 // A group: the tag, the payload, the terminator.
                 FieldVal::Union(disc, payload) => {
                     let mut out = UnionTag::new(*disc).as_bytes().to_vec();
@@ -2162,6 +2236,7 @@ pub mod proptest {
             match self {
                 FieldVal::Int(i) => Value::Int(*i),
                 FieldVal::Str(s) => Value::Str((*s).to_owned()),
+                FieldVal::Bytes(payload) => Value::Bytes((*payload).to_owned()),
                 // The name is what the *schema* calls the alternative, and this
                 // generator's schema interns none — so the empty one, which the
                 // comparison ignores (see `Value`'s `Ord`).
@@ -2174,16 +2249,20 @@ pub mod proptest {
         }
 
         /// This value as a **sigla literal**, for writing the query that matches
-        /// it. The string domain holds no character needing an escape, so
-        /// quoting is all this has to do.
+        /// it. [`STRS`] holds no character needing an escape, so quoting is all
+        /// this has to do.
         #[must_use]
         pub fn source(&self) -> String {
             match self {
                 FieldVal::Int(i) => i.to_string(),
                 FieldVal::Str(s) => format!("{s:?}"),
-                // Unreachable from the query generator, which draws no unions — see
-                // [`FieldTy::of`] — and spelled anyway so the two vocabularies stay one
-                // vocabulary.
+                // Unreachable from the query generator, which draws neither `bytes`
+                // nor unions — see [`FieldTy::of`] — and spelled anyway so the two
+                // vocabularies stay one vocabulary.
+                FieldVal::Bytes(payload) => {
+                    let hex: String = payload.iter().map(|byte| format!("{byte:02x}")).collect();
+                    format!("0x{hex}")
+                }
                 FieldVal::Union(disc, payload) => {
                     let alt = if *disc == NUM { "num" } else { "text" };
                     format!("{{{alt} = {}}}", payload.source())
@@ -2350,6 +2429,38 @@ pub mod proptest {
         /// The plan's loop-nest depth (one register, one generator per level).
         pub fn levels(&self) -> usize {
             self.levels.len()
+        }
+
+        /// Every key field type this spec's schema declares — the population a
+        /// census counts families over.
+        pub fn key_field_tys(&self) -> impl Iterator<Item = FieldTy> + '_ {
+            self.schema
+                .iter()
+                .flat_map(|predicate| predicate.fields.iter().copied())
+        }
+
+        /// Whether some drawn bound sits at a value that a **stored value of the
+        /// same field extends through a NUL** — the one input class the bounded
+        /// seek's arithmetic turns on, and the one a prefix-free value domain
+        /// cannot produce.
+        ///
+        /// Asked of the spec rather than of the plan because it is a question about
+        /// the *store beside* the bound: the plan alone says which byte string the
+        /// edge is, never whether a row exists on the far side of it.
+        pub fn bounds_a_value_a_stored_one_extends(&self) -> bool {
+            self.levels.iter().any(|level| {
+                let Some(bound) = &level.bound else {
+                    return false;
+                };
+
+                bound.lo.iter().chain(bound.hi.iter()).any(|edge| {
+                    let at = edge.val.encode();
+
+                    self.facts[level.predicate]
+                        .iter()
+                        .any(|key| extends(&at, &key[bound.field].encode()))
+                })
+            })
         }
 
         /// An interner holding the head's record field names, so projection can
@@ -2647,6 +2758,27 @@ pub mod proptest {
         field: u8,
     }
 
+    /// One key field's value, from the domain that field's **position** allows.
+    ///
+    /// **Field 0 takes the prefix-free half**, and that is a fence around a
+    /// different defect rather than a simplification. A seek splices at field 0 and
+    /// a seek prefix is a *byte* prefix, so where a stored field-0 value extends the
+    /// spliced one through a NUL, `pred ++ enc(v)` opens that longer value's keys as
+    /// well and nothing behind the seek re-checks them. Drawn here, that would land
+    /// on
+    /// [`a_bounded_seek_answers_what_the_same_bound_filtered_answers`](crate::iter)
+    /// as a failure of the bound — which is the one thing the property is not about.
+    ///
+    /// Every later field takes the full domain, which is where the bound behind a
+    /// seek sits; `the_battery_reaches_every_shape_of_a_bounded_seek` counts that it
+    /// gets there.
+    fn field_val(field: usize, ty: FieldTy, pick: u8) -> FieldVal {
+        match field {
+            0 => FieldVal::of(ty, pick),
+            _ => FieldVal::any(ty, pick),
+        }
+    }
+
     /// Choose the constant for an `EqConst` residual from a value that actually
     /// occurs in this predicate's facts at that field.
     ///
@@ -2655,9 +2787,14 @@ pub mod proptest {
     /// exercises no rows. Falls back to the domain for an empty predicate.
     fn constant_for(facts: &[Vec<FieldVal>], field: usize, ty: FieldTy, pick: u8) -> FieldVal {
         match facts.len() {
-            0 => FieldVal::of(ty, pick),
+            0 => field_val(field, ty, pick),
             len => facts[pick as usize % len][field].clone(),
         }
+    }
+
+    /// Whether `longer` is `shorter` plus at least one byte.
+    fn extends(shorter: &[u8], longer: &[u8]) -> bool {
+        longer.len() > shorter.len() && longer.starts_with(shorter)
     }
 
     /// Pick an already-bound `(level, field)` whose type is `want`.
@@ -2724,7 +2861,7 @@ pub mod proptest {
                             .fields
                             .iter()
                             .enumerate()
-                            .map(|(field, &ty)| FieldVal::of(ty, picks[field]))
+                            .map(|(field, &ty)| field_val(field, ty, picks[field]))
                             .collect()
                     })
                     .collect();
