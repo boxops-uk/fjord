@@ -20,10 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- **The gates have to be able to see what they gate.** `CodeIndex`, `FactSink` and
-         `IBlockTarget` are internal, and six of the indexer runs state a mechanical gate
-         over them. Run 8a publishes the write half properly in `Boxops.Fjord.Client`; until
-         then this is the narrower of the two ways in, and it grants nothing to a consumer. -->
+    <!-- **The gates have to be able to see what they gate.** The walk's internals are
+         internal, and six of the indexer runs state a mechanical gate over them. The write
+         half is published in `Boxops.Fjord.Client` now, so what is left behind this is the
+         indexer's own machinery; it grants nothing to a consumer. -->
     <InternalsVisibleTo Include="Boxops.Fjord.Tests" />
   </ItemGroup>
 

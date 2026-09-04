@@ -157,7 +157,7 @@ surface a UI reads. A producer writes what it has, and a predicate nobody fills 
 a file rather than a hole in the database.
 
 `contended` is what the walk paid for sharing: several threads producing facts into
-sixty-nine per-predicate batches, and 1,005 of 121,678 facts found one already held.
+sixty-seven per-predicate batches, and 1,005 of 121,678 facts found one already held.
 
 Read the two server counts together: **a million facts touched, a hundred thousand rows
 exist** — because every reference the walk wrote was the target fact **nested inline**
