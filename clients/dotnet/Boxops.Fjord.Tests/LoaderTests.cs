@@ -1,9 +1,11 @@
 using System.Linq;
 using System.Threading;
 
+using Boxops.Fjord.Client;
 using Boxops.Fjord.Indexer;
 
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using Xunit;
 
@@ -66,17 +68,16 @@ public sealed class LoaderTests
     }
 
     /// <summary>
-    /// <b>Inside the set resolves to source; outside it resolves to an assembly.</b>
+    /// <b>A reference to a project outside the set resolves to that project's assembly.</b>
     /// </summary>
     /// <remarks>
-    /// The trade the loader makes. A reference from A to B lands on a symbol with a
-    /// location in <c>B.cs</c>, because both are in the workspace and the graph is wired
-    /// by project id. A reference to C — which the solution does not list — lands on a
-    /// symbol from <c>Fixture.C.dll</c>, with no source location: the reference still
-    /// resolves, and the index says truthfully that it points outside itself.
+    /// Half the trade the loader makes; the other half is the test below. A reference
+    /// from B to C — which the solution does not list — lands on a symbol from
+    /// <c>Fixture.C.dll</c>, with no source location: the reference still resolves, and
+    /// the index says truthfully that it points outside itself.
     /// </remarks>
     [Fact]
-    public void A_reference_inside_the_set_is_source_and_one_outside_it_is_metadata()
+    public void A_reference_to_a_project_outside_the_set_is_metadata()
     {
         using var fixture = Fixture.Copy("graph");
 
@@ -89,14 +90,98 @@ public sealed class LoaderTests
         var b = Assert.Single(Only(solution).Projects, project => project.Name == "B");
         var compilation = b.Compile()!;
 
-        var thing = Assert.IsAssignableFrom<INamedTypeSymbol>(
-            compilation.GetTypeByMetadataName("Fixture.B.Thing"));
-        Assert.All(thing.Locations, location => Assert.True(location.IsInSource));
-
         var deep = Assert.IsAssignableFrom<INamedTypeSymbol>(
             compilation.GetTypeByMetadataName("Fixture.C.Deep"));
         Assert.Equal("Fixture.C", deep.ContainingAssembly.Name);
         Assert.DoesNotContain(deep.Locations, location => location.IsInSource);
+    }
+
+    /// <summary>
+    /// <b>A symbol declared in B and used in A has a source location, over a built checkout.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The other half, and the one worth stating carefully: it has to be <i>A's</i> model
+    /// answering about <i>B's</i> type. B's own compilation knows B's types however the
+    /// graph is wired, so a gate phrased over B is green with no wiring at all — and one
+    /// over an unbuilt checkout is green because there is no assembly to be ambiguous
+    /// with.
+    /// </para>
+    /// <para>
+    /// <b>The reference on A's command line is the reference assembly, not the output.</b>
+    /// <c>ProduceReferenceAssembly</c> is the SDK default, so a built B arrives as
+    /// <c>obj/…/ref/Fixture.B.dll</c> while <c>TargetPath</c> names
+    /// <c>bin/…/Fixture.B.dll</c>. Remove only what <c>TargetPath</c> spells and nothing
+    /// is removed: A holds B from source <i>and</i> from a dll, every type in B is
+    /// ambiguous, and Roslyn answers nothing rather than choosing.
+    /// </para>
+    /// <para>
+    /// <b>Then the same claim in the numbers a run reports.</b> Nothing else asserts
+    /// <c>Unresolved</c>, and it is the counter this failure lands in: a name the walk
+    /// cannot bind writes no reference at all, so the index comes out smaller and says
+    /// nothing about it. Two references and none unresolved is the whole of what this
+    /// fixture has to say.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_type_declared_in_B_and_used_in_A_resolves_to_source_in_a_built_checkout()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        // A alone, which drags B in behind it — the normal state of any checkout
+        // somebody has worked in, and the state this is about.
+        fixture.Build("src/A/A.csproj");
+
+        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+
+        var a = Assert.Single(Only(solution).Projects, project => project.Name == "A");
+        var compilation = a.Compile()!;
+
+        var tree = Assert.Single(
+            compilation.SyntaxTrees,
+            candidate => System.IO.Path.GetFileName(candidate.FilePath) == "A.cs");
+
+        var use = Assert.Single(
+            tree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
+
+        var constructed = Assert.IsAssignableFrom<IMethodSymbol>(
+            compilation.GetSemanticModel(tree).GetSymbolInfo(use).Symbol);
+
+        Assert.Equal("Fixture.B.Thing", constructed.ContainingType.ToDisplayString());
+        Assert.All(
+            constructed.ContainingType.Locations,
+            location => Assert.True(location.IsInSource));
+
+        // The compiler's own name for the same defect, so a failure says which one it is.
+        Assert.DoesNotContain(
+            compilation.GetDiagnostics(),
+            diagnostic => diagnostic.Id == "CS0433");
+
+        var indexer = Walk(fixture, Only(solution));
+
+        Assert.Equal(0, indexer.Unresolved);
+        Assert.Equal(2, indexer.References);
+        Assert.Equal(0, indexer.External);
+    }
+
+    /// <summary>Index a loaded target into nothing, for the counters it keeps.</summary>
+    private static Boxops.Fjord.Indexer.Indexer Walk(Fixture fixture, LoadedTarget target)
+    {
+        using var sink = new FactSink(DotnetIndex.Schema, [new SourceWalkTests.Recorder()]);
+
+        // Fully qualified: from `Boxops.Fjord.Tests`, the bare name resolves to the
+        // sibling *namespace* rather than the type in it.
+        var indexer = new Boxops.Fjord.Indexer.Indexer(
+            Over(fixture), sink, fixture.Root, target.Build);
+
+        foreach (var project in target.Projects)
+        {
+            indexer.Index(project.Compile()!, project.Roslyn);
+        }
+
+        sink.Drain();
+
+        return indexer;
     }
 
     /// <summary>

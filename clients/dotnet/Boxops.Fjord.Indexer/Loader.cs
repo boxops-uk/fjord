@@ -313,6 +313,13 @@ internal static class Loader
     /// what a name means gets nothing back.
     /// </para>
     /// <para>
+    /// <b>Which file that is depends on <c>ProduceReferenceAssembly</c>, so both are
+    /// removed.</b> It is on by default, and then the command line names
+    /// <c>obj/…/ref/X.dll</c> — <c>TargetRefPath</c>, not the <c>bin/…/X.dll</c> of
+    /// <c>TargetPath</c>. Matching one spelling leaves the other in place in exactly the
+    /// checkouts that have been built, which is every checkout anybody works in.
+    /// </para>
+    /// <para>
     /// A reference to a project the run did not build is left exactly as MSBuild resolved
     /// it: an assembly on the reference list, with no source behind it. That is the honest
     /// answer — the project is outside the indexed set — and it is what the run reports as
@@ -324,12 +331,12 @@ internal static class Loader
         IReadOnlyList<(IAnalyzerResult Result, ProjectId Id)> added,
         TextWriter log)
     {
-        var targets = new Dictionary<(string Path, string Framework), (ProjectId Id, string? Output)>();
+        var targets = new Dictionary<(string Path, string Framework), (ProjectId Id, string[] Outputs)>();
 
         foreach (var (result, id) in added)
         {
             targets[(Full(result.ProjectFilePath), result.TargetFramework ?? string.Empty)] =
-                (id, result.GetProperty("TargetPath"));
+                (id, Outputs(result));
         }
 
         foreach (var (result, id) in added)
@@ -354,17 +361,14 @@ internal static class Loader
                     solution = solution.AddProjectReference(id, new ProjectReference(target.Id));
                 }
 
-                // The metadata reference this replaces, matched on the path MSBuild said
+                // The metadata references this replaces, matched on the paths MSBuild said
                 // the referenced project writes.
-                if (target.Output is { Length: > 0 } output)
+                foreach (var metadata in solution.GetProject(id)!.MetadataReferences
+                    .OfType<PortableExecutableReference>()
+                    .Where(held => target.Outputs.Contains(Full(held.FilePath), StringComparer.Ordinal))
+                    .ToList())
                 {
-                    foreach (var metadata in solution.GetProject(id)!.MetadataReferences
-                        .OfType<PortableExecutableReference>()
-                        .Where(held => string.Equals(held.FilePath, output, StringComparison.Ordinal))
-                        .ToList())
-                    {
-                        solution = solution.RemoveMetadataReference(id, metadata);
-                    }
+                    solution = solution.RemoveMetadataReference(id, metadata);
                 }
 
                 if (!workspace.TryApplyChanges(solution))
@@ -386,8 +390,8 @@ internal static class Loader
     /// with no <c>net10.0</c> target, and MSBuild picked the compatible one long before
     /// this. Ranked rather than first-found, so two runs agree.
     /// </remarks>
-    private static (ProjectId Id, string? Output)? Target(
-        Dictionary<(string Path, string Framework), (ProjectId Id, string? Output)> targets,
+    private static (ProjectId Id, string[] Outputs)? Target(
+        Dictionary<(string Path, string Framework), (ProjectId Id, string[] Outputs)> targets,
         string path,
         string? framework)
     {
@@ -405,6 +409,22 @@ internal static class Loader
 
         return null;
     }
+
+    /// <summary>
+    /// The files a project's own output can be named by on somebody else's reference list.
+    /// </summary>
+    /// <remarks>
+    /// <b>Both spellings, because <c>ProduceReferenceAssembly</c> decides which one
+    /// appears.</b> On — the SDK default — the compiler is handed <c>TargetRefPath</c>,
+    /// <c>obj/…/ref/X.dll</c>; off, it is handed <c>TargetPath</c>, <c>bin/…/X.dll</c>.
+    /// A removal that knows only one of them removes nothing under the other setting, and
+    /// the compilation then holds the referenced project twice with no error to say so.
+    /// </remarks>
+    private static string[] Outputs(IAnalyzerResult result) =>
+        [.. new[] { result.GetProperty("TargetPath"), result.GetProperty("TargetRefPath") }
+            .Select(Full)
+            .Where(path => path.Length > 0)
+            .Distinct(StringComparer.Ordinal)];
 
     /// <summary>One spelling of a path, so two of them can be compared.</summary>
     private static string Full(string? path) =>
