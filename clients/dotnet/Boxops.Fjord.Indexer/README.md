@@ -72,7 +72,7 @@ order reads well.
 | predicate | what it holds | how it is decided |
 |---|---|---|
 | `src.File` | a path, relative to `--root` | every syntax tree with a file behind it, minus `bin/`, `obj/`, and anything outside the root — a path that climbs out is not a name two runs would agree on |
-| `src.Symbol` | a SCIP symbol | the cross-language identity: `scip-csharp nuget <assembly> <version> <descriptors>`, minted for everything with a global name and for nothing without one |
+| `src.Symbol` | a SCIP symbol | the cross-language identity: `scip-csharp-2 nuget <assembly> <version> <descriptors>`, minted for everything with a global name and for nothing without one |
 | `src.FileInfo` | `{file}` → bytes, lines, whether it ends in a newline | one per file, and what a consumer falls back to when an offset resolves past the last line |
 | `src.FileLine` | `{file, line}` → the text, and three offsets | every line, blanks included. `start` is a UTF-8 byte offset and `cstart` a UTF-16 one — not the same number — so the line table is also the conversion table |
 | `src.FileLineAt` | `{file, start, line}` | the inverse: which line an offset is on, as a seek rather than a scan |
@@ -132,6 +132,86 @@ Several of those deserve their reasoning stated.
 predicate tag plus a per-predicate sequence, so it means nothing in another database — and
 "who references this, anywhere" is a question across several. A SCIP symbol survives the
 trip. It costs an interned string per reference and buys the ability to leave the database.
+
+**A named type's descriptor carries its arity, and the scheme token says so.** C# overloads
+a type name on arity — `class Result` beside `class Result<T>` — and Roslyn's `Name` strips
+the count the metadata name spells, so a descriptor built from it minted one string for
+both. That was not a conflation: `codemarkup.SymbolInfo` is keyed `{symbol}` with the
+signature on the value side, so two facts wanted one key with two values, ingest refused
+it, and **the run died part-way through a write** — no repository containing that pair
+could be indexed. The arity goes inside the descriptor's name, `N/Result+1#`, which is the
+only place the specification has for it: it has no arity provision and its one
+disambiguator slot is a method's. `+` is a simple-identifier character there, so nothing is
+escaped, and no C# identifier can contain one.
+
+**Arity 0 keeps the bare name**, deliberately: `Result` is still `N/Result#`, so every
+non-generic symbol in every index is the string it always was. The suffix sits on the
+*containing type's* descriptor, so a member of `Result<T>`, its parameters and its type
+parameters inherit it by construction rather than by a second rule.
+
+**An overloaded indexer's descriptor carries a sibling ordinal, for the same reason in the
+same place.** Roslyn names every indexer of a type `this[]` — an `IndexerName` attribute
+moves the *metadata* name and not that one — so `this[int]` beside `this[int, int]` was one
+string for two declarations and killed the run the same way, on `codemarkup.Definition`'s
+`{symbol, file}` key. A term descriptor is `<name> '.'` and the grammar's one disambiguator
+slot is a method's, so the ordinal goes inside the name too: `` N/Box+1#`this[]+1`. ``. It
+is the ordinal methods already have, ordered by documentation id, rather than a count of
+parameters — `this[int]` beside `this[string]` differ only in parameter *type*. And it is
+**empty for the first or only sibling**, exactly as `M().` is for a method, so a type with
+one indexer keeps the string it has: the same asymmetry that made arity 0 free.
+
+C# permits two same-named members of one type only for methods and indexers, so nothing
+else here can collide. That bound is a table rather than an assumption —
+`ScipSymbolsTests.Only_a_method_or_an_indexer_can_be_two_same_named_members` compiles every
+other property-shaped pair and asserts the compiler rejects it, including the two that look
+like exceptions: an `IndexerName`'d indexer beside a property of that name, and two halves
+of a partial class.
+
+**Both halves of a partial member are one member, so they take one string and fill one
+key.** `partial void Ping();` and `partial void Ping() { }` are two declarations of one
+thing — one signature, one documentation comment, one `csharp.Method` — and a containing
+type's `GetMembers()` lists only the declaring one. So the walk reduces every declaration
+to that half before it spells or keys anything, and two things follow. The implementing
+half spells the declaring half's symbol, rather than being looked for in a list it is not
+in. And what a per-member fact carries is read from the declaring half, which matters
+beyond tidiness: `GetDocumentationCommentXml` is **empty** on the implementing part, so a
+walk that read it from whichever declaration it was standing on filled
+`codemarkup.SymbolInfo`'s `{symbol}` key with a comment and without one, and the run died.
+
+**`codemarkup.Definition`'s value is a function of its `{symbol, file}` key**, which is
+the other half of the same rule and reaches further than partial members. It carries a
+span, so two declarations of one thing in one file — both halves of a partial member, two
+`partial class` parts — otherwise filled one key twice with two spans, and ingest refuses
+one key with two values. The span is therefore the member's **first declaration in that
+file**, asked of the member and the file rather than of whichever declaration the walk is
+standing on. First in the file rather than the declaring half, because a partial *type* has
+no declaring half and needs the same rule, and because the predicate is per file: the
+declaring half's span is not in the implementing half's file. Position within a file is
+fixed, so nothing here depends on the order the compiler was handed the files. Nothing is
+lost either — `csharp.DefinitionLocation` and `codemarkup.FileDefinition` are keyed per
+span and carry every declaration, which is how a partial type has answered "where is this
+written" all along.
+
+**An ordinal is counted on the canonical definition, which is what makes a reference's
+equal its declaration's.** A reference arrives holding something `GetMembers()` may not
+list — `M<int>` is not `Equals` to `M<T>`, nor is a reduced extension method — and, reached
+through a *constructed* type, `GetMembers()` answers constructed members whose signatures
+are the substituted ones. **Substitution can make two of those identical**:
+`Box<T>.M(T)` and `Box<T>.M(int)` are one documentation id *and* one display string on
+`Box<int>`, so sorting the constructed members left both sort keys tied, the stable sort
+fell back to `GetMembers()` order — file order, for a partial class — and one of the two
+file orders named the wrong overload. Reducing every sibling to its unreduced,
+unconstructed definition before sorting removes the tie: the reference is then counted over
+the same list its declaration is.
+
+**The token moved with the format, because that check is all a fan-out has.**
+`config.Setting {dimension = "symbol-scheme"}` is what a cross-repository join looks at
+before it trusts a string match between two databases, so a format that moved under an
+unchanged token would make it join identities that are no longer comparable and answer
+wrongly, with nothing anywhere reporting an error. `scip-csharp` was revision 1 and this is
+`scip-csharp-2`; the next move is `-3`. What ties the two is `golden/symbol-scheme.txt` —
+representative symbols pinned *against* the token, regenerated with `FJORD_GOLDEN=update`,
+and the regeneration refuses to write symbols that moved while the token did not.
 
 **Identity and location are separate.** A `csharp.Method` is keyed on what the compiler
 knows — its name, its containing type, its signature — and `csharp.DefinitionLocation`
@@ -254,7 +334,10 @@ What it still does not do, each for a reason:
   a NuGet package or the framework has no source location to point at, and inventing a
   declaration for it would put file facts in the database naming paths that do not exist.
   The run reports how many: on a typical repository it is a third of all names.
-- **A partial type is filed at its first declaration.** One symbol, one declaration fact.
+- **A partial type or member is one entity, and its `codemarkup.Definition` is at its
+  first declaration in each file.** One symbol, one hover card, one search-index name —
+  with a `csharp.DefinitionLocation` and a `codemarkup.FileDefinition` for every
+  declaration, so no half is unreachable.
 - **A multi-targeted project is indexed once**, at the newest .NET it builds for. The
   other target frameworks are the same files and would dedup on the way in; the work
   would not.
@@ -267,6 +350,93 @@ What it still does not do, each for a reason:
   under a fabricated one, and `Inexpressible` counts it. An unresolved type displays as
   whatever the source wrote, so recording it would mean the same declaration reached from
   a run that resolved it and one that did not were two different facts.
+- **A symbol this producer cannot spell has no `src.Symbol`, and the run says how
+  many.** Two things reach that: a member whose position among its type's same-named
+  siblings could not be found, and a kind the descriptor switch has no arm for. Neither
+  should happen, and neither is an exception any more — the declaration keeps its entity
+  and its span and loses only the cross-database name, because a producer that dies on a
+  shape nobody anticipated is the wrong failure mode for a tool pointed at code it did not
+  write. Two rounds of the symbol work argued that branch unreachable and both were wrong
+  about the same everyday shape, which is the argument for counting rather than throwing:
+  a run prints `N symbol(s) not spelled` and somebody can go and look.
+- **An indexer's *use* writes no reference.** A reference is collected from a
+  `SimpleNameSyntax`, and `shelf[0]` is an element access with no name node of its own — so
+  the declaration is in the database and the use is not, whatever the symbol says. That is
+  a gap in the walk rather than in the format, and it is why the `indexer` fixture asserts
+  only the declaration half: that a reference to an overloaded indexer is byte-identical to
+  its declaration is asserted where the strings are minted, by `ScipSymbolsTests` and by
+  `golden/symbol-scheme.txt`, both of which resolve an element access themselves.
+- **An overload ordinal renumbers when an overload that sorts earlier is inserted.** That
+  is inherent to the format — SCIP has an ordinal and no signature — and it is why nothing
+  keys on a symbol across revisions: `csharp.Method` carries `docId` itself and is reached
+  through `csharp.SymbolOf`. What *was* removed is the half that was not inherent: the
+  ordinal no longer depends on the order the compiler was handed the files.
+- **Two arities of one type name are one `csharp` entity**, and this is the one item on
+  this list that is an open maintainer decision rather than a decided trade. It has its
+  own section below, because a consumer reading "arities are distinguished now" of
+  `src.Symbol` must not believe it of the entity layer.
+
+**One collision shape is left, and it is `file`-scoped types.** Two classes of it are
+closed. *Two members of one type* are separated — a type name by its arity, a method and an
+indexer by an ordinal, every other same-named pair a compile error. And *two declarations
+of one thing in one file* now fill one key rather than two: both halves of a partial member
+and two `partial class` parts, which is the paragraph above and was a dead run for the
+partial type as well as the partial member. What is not closed is **two things in two files
+whose one symbol is the same string**: C# 11's `file class Hidden` may be declared once per
+file in one namespace, and the compiler mangles only the metadata name, so two of them mint
+one `P/Hidden#` and so do their members. **That still kills a run** whenever the two differ in any member —
+`codemarkup.SymbolInfo` is keyed `{symbol}` with the signature on the value side:
+
+```
+Unhandled exception. System.InvalidOperationException: the fact writer failed while
+writing codemarkup.SymbolInfo
+ ---> Boxops.Fjord.Client.FjordServerException: Conflict: predicate PredicateId(8)
+      already holds a different fact under this key, as FactId(8796093022210)
+EXIT=134
+```
+
+It is not folded in here because it is not a spelling. A `file` type is file-local by the
+language's own word, so the question is whether it has a global name at all — the walk
+already answers no for a local, a label, a range variable and anything a method body
+introduces, and `codemarkup.FileLocalXRef` is where a span-to-span answer lives. Whether a
+consumer may join on such a name across databases is a decision, and
+`ScipSymbolsTests.A_file_local_type_still_takes_one_symbol_for_two_declarations` asserts
+the collision as it stands so that closing it is deliberate.
+
+Two further residues sit beside it and neither is a collision — the ordinal is not stable
+across an edit (above), and the entity layer still merges two arities of a name (below).
+The `partial` fixture and `PartialMemberTests` are the gates on the two shapes that *are*
+closed, so a regression there is a failing run rather than a silently different index.
+
+## The entity layer merges two arities of a name, and that is not decided yet
+
+`src.Symbol` distinguishes `Result` from `Result<T>`. **`csharp.Class` does not.** Its key
+leads with a `csharp.FullName` of `{name, containingNamespace}`, where the name is
+Roslyn's arity-stripped one, and the predicate is key-only — so the two declarations are
+one fact rather than a conflict. What a database holds for the pair is:
+
+| | what it holds |
+|---|---|
+| `csharp.Class` · `Interface` · `Record` · `Struct` · `csharp.FullName` | **one** fact for the two declarations |
+| `csharp.DefinitionLocation` | **two** rows against that one entity — the shape a partial class has, and indistinguishable from one |
+| `csharp.SymbolOf` · `DefinitionBySymbol` | two rows, so the crossing is many-to-one: both symbols reach the merged entity |
+| `codemarkup.Definition` · `SymbolInfo` · `FileDefinition` · `SearchEntry` · `SymbolByName` · `Relation` · `RelationOf` | **two** of each, one per arity — the symbol is in every key there, so this half is correct |
+
+So the language-independent surface answers per arity and the C# entity model does not: a
+`Result` a UI navigates through `codemarkup` is the right one, and a `Result` reached
+through `csharp.SymbolOf` is a merge of both.
+
+**It became observable with the arity suffix and was not created by it.** Until the symbol
+string told the two apart, the run died on the `codemarkup.SymbolInfo` conflict before
+anything could merge — so this is a defect the fix *revealed*.
+
+**What it waits on is a decision, not a patch.** Either `csharp.Name` stops holding the
+arity-stripped name, or the four named-type keys gain a field — and a key that gains a
+field is a schema change, so a fingerprint move and a flag day.
+`docs/unified-plan/15-retire-code-sigla.md` §S3 carries it as the open item. Until it is
+taken, `EntityKeyCensusTests.Two_arities_of_one_type_name_reach_one_entity_key` and
+`ArityPairTests.The_entity_layer_still_merges_the_two_arities_into_one_class` are the gates
+that make removing the limitation deliberate rather than incidental.
 
 ## Two things that had to be got right
 

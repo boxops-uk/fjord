@@ -308,7 +308,7 @@ both. It is now two.
 declaring none of its own, importing `src`, `config`, `msbuild`, `csharp` and `codemarkup`.
 One declaration predicate keyed `{module, name, line}` becomes a per-kind entity layer with
 a symbol identity that does not move when a file is reformatted: **`src.Symbol` is a
-spec-conformant SCIP symbol** under this producer's own scheme token, `scip-csharp`, with
+spec-conformant SCIP symbol** under this producer's own scheme token, `scip-csharp-2`, with
 the database naming the scheme it holds in `config.Setting {dimension = "symbol-scheme"}`.
 A symbol with no global name — a local, a label, a member inside a method body — gets no
 string rather than a synthesised one that would have to be invalidated;

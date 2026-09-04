@@ -191,7 +191,7 @@ public sealed class FanOutTests
         Assert.Equal("Release", Value(Assert.Single(settings, s => Dimension(s) == "configuration")));
         Assert.Equal("/checkout", Value(Assert.Single(settings, s => Dimension(s) == "index-root")));
         Assert.Equal("utf8", Value(Assert.Single(settings, s => Dimension(s) == "position-encoding")));
-        Assert.Equal("scip-csharp", Value(Assert.Single(settings, s => Dimension(s) == "symbol-scheme")));
+        Assert.Equal("scip-csharp-2", Value(Assert.Single(settings, s => Dimension(s) == "symbol-scheme")));
         Assert.Equal(
             "boxops-fjord-indexer/0.2.0",
             Value(Assert.Single(settings, s => Dimension(s) == "producer")));

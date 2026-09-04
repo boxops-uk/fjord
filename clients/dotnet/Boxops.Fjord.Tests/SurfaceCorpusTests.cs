@@ -261,10 +261,6 @@ public sealed class SurfaceCorpusTests(SurfaceIndex indexed) : IClassFixture<Sur
     /// </para>
     /// </remarks>
     [Theory]
-    [InlineData("Arity", "codemarkup.Definition")]
-    [InlineData("Terms", "codemarkup.Definition")]
-    [InlineData("Partial", "codemarkup.Definition")]
-    [InlineData("Ordinal", "codemarkup.SymbolInfo")]
     [InlineData("FileLocal", "codemarkup.SymbolInfo")]
     public void A_quarantined_shape_still_refuses_its_write(string project, string predicate)
     {
@@ -280,6 +276,51 @@ public sealed class SurfaceCorpusTests(SurfaceIndex indexed) : IClassFixture<Sur
 
         Assert.Contains(predicate, said, StringComparison.Ordinal);
         Assert.Contains("Conflict", said, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>A shape that was quarantined and is now repaired indexes to completion, and still mints
+    /// a symbol for each declaration that used to collide.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Four rows moved here from <see cref="A_quarantined_shape_still_refuses_its_write"/> in the
+    /// commit that repaired them, which is the diff that states the repair. Before it, each of
+    /// these four died mid-write with a <c>Conflict</c> on the predicate named there; after it,
+    /// each indexes to completion.
+    /// </para>
+    /// <para>
+    /// <b>Exit zero alone would not be the claim.</b> A conflict can also be made to disappear by
+    /// writing *fewer* facts — drop one of the two declarations that wanted one key and the run
+    /// completes, having lost exactly what the fix was supposed to separate. So each row carries
+    /// the number of distinct <c>src.Symbol</c> strings its project mints, as a floor: two
+    /// declarations that were one string are now two, and a later change that quietly drops one
+    /// falls under the floor and fails. The floor rises if somebody adds to a quarantine project,
+    /// which is why it is a floor and not an equality.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("Arity", 30)]
+    [InlineData("Terms", 20)]
+    [InlineData("Partial", 22)]
+    [InlineData("Ordinal", 17)]
+    public void A_repaired_shape_indexes_to_completion(string project, int symbols)
+    {
+        using var fixture = Fixture.Copy("surface");
+        using var server = FjordServer.Serving("repaired", "dotnet.sigla");
+
+        Assert.Equal(
+            0, Run(fixture, server, "repaired", $"quarantine/{project}/{project}.csproj"));
+
+        using var connection = FjordConnection.Connect(
+            server.Socket, "repaired", DotnetIndex.Schema);
+
+        Assert.True(
+            connection.Query("S where src.Symbol S").Rows.Count >= symbols,
+            $"quarantine/{project} minted "
+            + $"{connection.Query("S where src.Symbol S").Rows.Count} symbols, fewer than the "
+            + $"{symbols} it separated when the repair landed — a declaration has been dropped "
+            + "rather than given an identity of its own");
     }
 
     /// <summary>Every message in an exception chain, including an aggregate's branches.</summary>

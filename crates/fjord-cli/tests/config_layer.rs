@@ -34,7 +34,7 @@ const SETTINGS: &[(&str, &str)] = &[
     ("index-root", "/home/ci/checkout"),
     ("position-encoding", "utf16"),
     ("style-encoding", "roslyn-lsp-1"),
-    ("symbol-scheme", "scip-csharp"),
+    ("symbol-scheme", "scip-csharp-2"),
     ("language", "csharp"),
     ("language", "msbuild"),
     ("producer", "Boxops.Fjord.Indexer 0.1.0"),

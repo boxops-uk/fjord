@@ -47,7 +47,7 @@ public sealed class CsharpLayerTests
         using var connection = FjordConnection.Connect(server.Socket, "dotnet", DotnetIndex.Schema);
 
         var file = DotnetIndex.FileFact("Fixture/Thing.cs");
-        var symbol = DotnetIndex.SymbolFact("scip-csharp nuget Fixture 1.0.0.0 Fixture/Thing#Do().");
+        var symbol = DotnetIndex.SymbolFact("scip-csharp-2 nuget Fixture 1.0.0.0 Fixture/Thing#Do().");
 
         // ---- names and namespaces ----------------------------------------------------
 

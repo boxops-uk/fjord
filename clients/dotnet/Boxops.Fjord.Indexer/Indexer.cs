@@ -68,6 +68,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     // the classic lost update, and a fact count that is quietly low is a measurement
     // nobody can tell from a smaller repository.
     private int _files_, _declarations, _references, _external, _unresolved, _unattributed;
+    private int _unspellable;
     private long _lines, _styled;
 
     public int Files => Volatile.Read(ref _files_);
@@ -81,6 +82,43 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
     /// <summary>Names the compiler could not bind at all: missing references, broken code.</summary>
     public int Unresolved => Volatile.Read(ref _unresolved);
+
+    /// <summary>
+    /// Symbols this producer could not spell a <c>src.Symbol</c> for, counted rather than
+    /// thrown on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Not the same thing as a symbol with no global name.</b> A local, a lambda and a
+    /// range variable have none by decision and there are as many of them as the checkout
+    /// has; this counts a shape <see cref="ScipSymbols"/> anticipated and could not place —
+    /// a member whose position among its type's same-named siblings it could not find, or
+    /// a kind it has no descriptor arm for.
+    /// </para>
+    /// <para>
+    /// <b>All three sites that ask for a spelling count, and they lose different
+    /// things.</b> A <i>declaration</i> keeps its <c>csharp</c> entity and its span and
+    /// loses the cross-database name. A <i>reference</i> keeps <c>EntityXRef</c> on the
+    /// <c>csharp</c> layer and loses the <c>codemarkup</c> occurrence find-references
+    /// reads — unless its target is declared in this same file, where <c>FileLocalXRef</c>
+    /// answers it span to span regardless. A <i>relation edge</i> is lost whole, because a
+    /// <c>Relation</c> row is a pair of symbols and half of one is no edge. So this is a
+    /// count of spellings attempted and not of distinct symbols: one unspellable
+    /// declaration referred to ten times reports eleven. None of the three throws, which
+    /// is what makes a run printing a number here one somebody can fix rather than one
+    /// that died.
+    /// </para>
+    /// <para>
+    /// <b>Nothing this walk reaches provokes it today, and that is the claim rather than
+    /// the excuse.</b> <c>LedgerTests</c> asserts the zero, and
+    /// <c>ScipSymbolsTests.A_symbol_this_producer_cannot_spell_is_no_symbol_rather_than_an_exception</c>
+    /// provokes the state itself with a built-in operator — a symbol a semantic model
+    /// hands out that no walk here collects. Two rounds of this change asserted the same
+    /// emptiness as an exception and were wrong about an everyday partial member, so the
+    /// zero is a counter and not a throw.
+    /// </para>
+    /// </remarks>
+    public int Unspellable => Volatile.Read(ref _unspellable);
 
     /// <summary>
     /// Types the layer cannot express — `dynamic`, a function pointer, an unresolved name.
@@ -405,11 +443,20 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// the global name it answers to.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <b>Identity and location are separate now</b>, which is the shape of the whole
     /// rewrite: the entity is keyed on what the compiler knows, and this adds one
     /// `DefinitionLocation` beside it. A declaration whose type the layer cannot express
     /// has no entity and so no location either — counted by
     /// <see cref="Inexpressible"/> rather than written under a fabricated type.
+    /// </para>
+    /// <para>
+    /// <b>One member, however many declarations it is written across.</b>
+    /// <see cref="ScipSymbols.Defining"/> is what the two halves of a partial member are
+    /// read as, so every fact keyed on the symbol carries one value; the per-declaration
+    /// facts beside them keep every span, which is how a partial type has answered "where
+    /// is this written" all along.
+    /// </para>
     /// </remarks>
     private void Declare(
         SemanticModel model,
@@ -417,14 +464,21 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         FjordFact file,
         SourceLayer.Offsets offsets)
     {
-        if (model.GetDeclaredSymbol(node) is not { } symbol)
+        if (model.GetDeclaredSymbol(node) is not { } declared)
         {
             return;
         }
 
+        // **The member, not the declaration.** `GetDeclaredSymbol` on the implementing
+        // half of a partial member answers a symbol its own containing type does not
+        // list, whose signature is the other half's and whose documentation comment is
+        // empty — so reading a per-symbol fact from it writes a second value under a key
+        // the other half already filled.
+        var symbol = ScipSymbols.Defining(declared);
+
         // Built outside the lock: all of this walks the symbol graph or the syntax, and
         // none of it needs the sink.
-        var scip = ScipSymbols.Of(symbol);
+        var scip = ScipSymbols.Of(symbol, out var unspellable);
         var span = NameLocation(node).SourceSpan;
         var (start, length) = offsets.Span(span);
         var line = offsets.Line(span.Start);
@@ -432,6 +486,11 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         var signature = CodeMarkup.Signature(symbol);
         var modifiers = CodeMarkup.Modifiers(symbol);
         var doc = options.Docs ? DocComment(symbol) : string.Empty;
+
+        if (unspellable)
+        {
+            Interlocked.Increment(ref _unspellable);
+        }
 
         if (_entities.Definition(symbol) is not { } definition)
         {
@@ -454,10 +513,91 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 DotnetIndex.DefinitionBySymbol,
                 DotnetIndex.DefinitionBySymbolFact(named, definition));
 
-            Markup(symbol, named, file, start, length, line, kind, signature, modifiers, doc);
+            var (definedStart, definedLength) =
+                offsets.Span(NameLocation(FirstDeclaration(symbol, node)).SourceSpan);
+
+            Markup(
+                symbol, named, file, start, length, definedStart, definedLength, line,
+                kind, signature, modifiers, doc);
         }
 
         Interlocked.Increment(ref _declarations);
+    }
+
+    /// <summary>
+    /// The declaration <c>codemarkup.Definition</c> answers with for one file: the
+    /// member's first in that file, whichever of its declarations the walk is at.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The value has to be a function of the key, and the key is
+    /// <c>{symbol, file}</c>.</b> Two declarations of one member in one file — both halves
+    /// of a partial member, two <c>partial class</c> parts — otherwise fill that one key
+    /// twice with two spans, ingest refuses one key with two values (<c>ops-I4</c>),
+    /// <c>FactSink</c> latches the refusal and the write stream dies part-way through. So
+    /// the span is asked of the member and the file rather than of the node.
+    /// </para>
+    /// <para>
+    /// <b>First in the file rather than the defining half</b>, because a partial *type* has
+    /// no defining half and needs the same rule — and because <c>codemarkup.Definition</c>
+    /// is per file: taking the defining half's span would answer the implementing part's
+    /// file with a span that is not in it. Position within one file is fixed, so this
+    /// cannot depend on the order the compiler was handed the files, which
+    /// <c>src.sigla</c>'s charter forbids. Nothing is lost either way:
+    /// <c>csharp.DefinitionLocation</c> and <c>codemarkup.FileDefinition</c> are keyed per
+    /// span and carry every declaration.
+    /// </para>
+    /// </remarks>
+    private static SyntaxNode FirstDeclaration(ISymbol symbol, SyntaxNode node)
+    {
+        var first = node;
+
+        foreach (var reference in Written(symbol))
+        {
+            if (reference.SyntaxTree == node.SyntaxTree && reference.Span.Start < first.Span.Start)
+            {
+                first = reference.GetSyntax();
+            }
+        }
+
+        return first;
+    }
+
+    /// <summary>
+    /// Every declaration a member is written across: every part of a partial type, and
+    /// both halves of a partial member.
+    /// </summary>
+    /// <remarks>
+    /// <b>A partial member's two halves are two symbols, and each knows only its own
+    /// declaration.</b> A partial type's one symbol carries all of its parts in
+    /// <c>DeclaringSyntaxReferences</c>; a partial member's defining half carries one
+    /// reference and names the other half separately, so the union has to be taken by
+    /// hand. The argument is already <see cref="ScipSymbols.Defining"/>'s answer, so the
+    /// implementing part is the only half left to add.
+    /// </remarks>
+    private static IEnumerable<SyntaxReference> Written(ISymbol symbol)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            yield return reference;
+        }
+
+        var implementing = symbol switch
+        {
+            IMethodSymbol method => (ISymbol?)method.PartialImplementationPart,
+            IPropertySymbol property => property.PartialImplementationPart,
+            _ => null,
+        };
+
+        if (implementing is null)
+        {
+            yield break;
+        }
+
+        foreach (var reference in implementing.DeclaringSyntaxReferences)
+        {
+            yield return reference;
+        }
     }
 
     /// <summary>
@@ -510,7 +650,18 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         // ordinal that moves when the file is edited, so `FileLocalXRef` answers it span
         // to span instead — which needs the declaration's span, and only when it is in
         // *this* file.
-        var scip = symbol.Kind is SymbolKind.Local ? null : ScipSymbols.Of(symbol);
+        string? scip = null;
+
+        if (symbol.Kind is not SymbolKind.Local)
+        {
+            scip = ScipSymbols.Of(symbol, out var unspellable);
+
+            if (unspellable)
+            {
+                Interlocked.Increment(ref _unspellable);
+            }
+        }
+
         var local = scip is null ? Declared(symbol, name, offsets) : null;
 
         if (scip is null && local is null && symbol.Kind is SymbolKind.Local)
@@ -759,9 +910,23 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// the questions a UI asks.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Every one of these is redundant with the <c>csharp</c> facts beside it by
     /// construction — while <c>nyi/derivation</c> stands, a producer is what states the
     /// second keying, and the query that *would* derive each is a comment in the schema.
+    /// </para>
+    /// <para>
+    /// <b>Two spans, because two of these are keyed per member and the rest per
+    /// declaration.</b> <c>codemarkup.Definition</c> is <c>{symbol, file}</c> and
+    /// <c>codemarkup.SymbolInfo</c> is <c>{symbol}</c>, so both take
+    /// <paramref name="definedStart"/> — the member's first declaration in this file —
+    /// and are the same fact whichever of its declarations the walk is at.
+    /// <c>FileDefinition</c> leads with a span and <c>SearchEntry</c>'s key carries a
+    /// <c>line</c> — neither is <c>{symbol, file}</c>, so both take the declaration the
+    /// walk is standing on and both get a row per declaration. A partial member declared
+    /// twice in one file therefore appears twice in the search index, differing in
+    /// <c>line</c>, and it is that field rather than a span that keeps the two apart.
+    /// </para>
     /// </remarks>
     private void Markup(
         ISymbol symbol,
@@ -769,6 +934,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         FjordFact file,
         long start,
         long length,
+        long definedStart,
+        long definedLength,
         long line,
         FjordValue kind,
         string signature,
@@ -780,7 +947,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         sink.Add(
             DotnetIndex.MarkupDefinition,
             DotnetIndex.MarkupDefinitionFact(
-                named, file, start, length, kind, name, symbol.ToDisplayString()));
+                named, file, definedStart, definedLength, kind, name, symbol.ToDisplayString()));
 
         sink.Add(
             DotnetIndex.FileDefinition,
@@ -815,8 +982,24 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         // queries with every symbol resolving, and says "Base extends Derived".
         void Edge(ISymbol? other, uint kind, bool fromOther)
         {
-            if (other is null || ScipSymbols.Of(other) is not { } text)
+            if (other is null)
             {
+                return;
+            }
+
+            // **The flagged overload here too, because a dropped edge is invisible.** A
+            // `Relation` row is a pair of symbols and half of one is no edge, so an
+            // unspellable target loses the whole edge — a larger loss than a declaration's
+            // and the one with nothing else in the database pointing at it. The `as` casts
+            // below mean every `other` reaching this line is a named type, which always
+            // spells; the flag says so rather than assuming it.
+            if (ScipSymbols.Of(other, out var unspellable) is not { } text)
+            {
+                if (unspellable)
+                {
+                    Interlocked.Increment(ref _unspellable);
+                }
+
                 return;
             }
 

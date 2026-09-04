@@ -90,7 +90,7 @@ public sealed class DotnetIndexTests
 
         Write(connection, DotnetIndex.File, file);
         Write(connection, DotnetIndex.Symbol, DotnetIndex.SymbolFact(
-            "scip-csharp nuget Fixture 1.0.0.0 Fixture/Thing#"));
+            "scip-csharp-2 nuget Fixture 1.0.0.0 Fixture/Thing#"));
         Write(connection, DotnetIndex.Setting,
             DotnetIndex.SettingFact("position-encoding", "utf16"));
         Write(connection, DotnetIndex.FileLanguage, new FjordFact(

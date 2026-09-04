@@ -162,6 +162,12 @@ public sealed class LedgerTests
         Assert.Equal(0, indexer.Unattributed);
         Assert.Equal(0, indexer.Inexpressible);
         Assert.Equal(0, indexer.Unresolved);
+
+        // **The claim that used to be an exception, as a number.** Every shape this walk
+        // reaches has a `src.Symbol`, which is what two rounds of the symbol work asserted
+        // and were wrong about — so it is a counter that goes non-zero rather than a throw
+        // that ends the run, and this is the assertion that it is still zero.
+        Assert.Equal(0, indexer.Unspellable);
         Assert.True(indexer.Declarations > 30, $"{indexer.Declarations} declarations");
 
         // The census for the zero above: a walk that bound nothing, or one run with

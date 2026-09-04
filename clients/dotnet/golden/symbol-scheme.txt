@@ -1,0 +1,87 @@
+# The `src.Symbol` format, pinned against the scheme token that declares it.
+#
+# `config.Setting {dimension = "symbol-scheme"}` is the only check a fan-out has
+# before it trusts a string match between two databases, so a format that moved
+# under an unchanged token would make it join identities that are not comparable
+# and answer wrongly, silently. The first line is the token; the rest are the
+# symbols `ScipSchemeGoldenTests` mints over its own fixture — `def` where a
+# declaration minted it, `ref` where a reference did.
+#
+# The fixture's shapes are chosen by the hazard each one catches, and that list is
+# `Sources`' own doc comment: a shape missing from it is a format move that lands
+# green.
+#
+# Regenerate with FJORD_GOLDEN=update, and move the token in the same commit.
+
+scheme scip-csharp-2
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#Inner#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#Item.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#[T]
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#`.ctor`().
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#`.ctor`().(item)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#get_Item().
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Explicit#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Explicit#`Pinned.IShelf.this[]+1`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Explicit#`Pinned.IShelf.this[]+1`.(name)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Explicit#`Pinned.IShelf.this[]`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Explicit#`Pinned.IShelf.this[]`.(index)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#`this[]+1`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#`this[]+1`.(name)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#`this[]`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#`this[]`.(index)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#get_Item().
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#get_Item(+1).
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Count.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Do().
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Do(+1).
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Do(+1).(times)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Do(+2).
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Do(+2).[T]
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#`this[]`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#`this[]`.(slot)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Fill().
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Fill().(item)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Put().
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Put().(index)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Put(+1).
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Put(+1).(item)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#[T]
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#`this[]+1`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#`this[]+1`.(name)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#`this[]+2`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#`this[]+2`.(key)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#`this[]`.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#`this[]`.(index)
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#get_Item(+1).
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Bare.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Call().
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Odd.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Stack.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Wrapped.
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/`Ünïcode+1`#
+def scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/`Ünïcode+1`#[T]
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#Item.
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#[T]
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Box+1#`.ctor`().(item)
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/IShelf#
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Count.
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Do().
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#Do(+2).
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Plain#`this[]`.
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Fill().
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#Put().
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#[T]
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Shelf+1#`this[]+1`.
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Bare.
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Stack.
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/Uses#Wrapped.
+ref scip-csharp-2 nuget Pinned 0.0.0.0 Pinned/`Ünïcode+1`#

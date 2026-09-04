@@ -433,16 +433,29 @@ internal static class Program
     /// What this run could not express, one line per cause.
     /// </summary>
     /// <remarks>
-    /// <b>Two causes, so one line cannot carry them.</b> A signature naming a type with no
-    /// <c>csharp.AType</c> alternative is one, and a declaration kind this layer has no
-    /// entity for at all is the other. Attributing the whole count to the first sends
+    /// <b>Three causes, so one line cannot carry them.</b> A signature naming a type with
+    /// no <c>csharp.AType</c> alternative is one, a declaration kind this layer has no
+    /// entity for at all is another, and a symbol this producer cannot spell a
+    /// <c>src.Symbol</c> for is the third. Attributing the whole count to the first sends
     /// somebody looking for a <c>dynamic</c> that is not there, which is exactly the
     /// silence the counter exists to break — and so does naming one form of the second
     /// cause when it has two: an event, and an <c>extension</c> block, whose members go
-    /// with it.
+    /// with it. The third is the one whose loss depends on where it happened — a
+    /// declaration keeps its entity and its span, a reference keeps only its
+    /// <c>csharp</c>-layer occurrence, and a relation edge is gone entirely — so the line
+    /// points at <see cref="Indexer.Unspellable"/>, which sets that out, rather than
+    /// stating the mildest of the three as though it were all of them.
     /// </remarks>
     internal static IEnumerable<string> Dropped(Indexer indexer)
     {
+        if (indexer.Unspellable > 0)
+        {
+            yield return $"{Count(indexer.Unspellable)} spelling(s) not made: a shape this "
+                + "producer has no `src.Symbol` for (a declaration keeps its entity and "
+                + "span, a reference its `csharp`-layer occurrence, a relation edge "
+                + "nothing)";
+        }
+
         if (indexer.InexpressibleTypes > 0)
         {
             yield return $"{Count(indexer.InexpressibleTypes)} declaration(s) dropped: "

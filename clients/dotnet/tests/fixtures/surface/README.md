@@ -99,24 +99,34 @@ for `src.FileOrigin`, because a fixture copied out of the tree is not a checkout
 them leaves two predicates empty that the audit classifies as written, so the corpus would measure
 less than it appears to.
 
-The five quarantined shapes, each indexed alone, and the predicate whose key each collapses:
+The five quarantined shapes, each indexed alone. **Four are repaired and one is not**, and the
+table is the record of which — a commit that fixes one moves its row here, in the same commit, by
+deleting it from `A_quarantined_shape_still_refuses_its_write` and asserting completion in its
+place.
 
-| Project | Refuses on | The shape |
-| --- | --- | --- |
-| `quarantine/Arity` | `codemarkup.Definition` | one type name at two arities |
-| `quarantine/Terms` | `codemarkup.Definition` | two indexers in one type |
-| `quarantine/Partial` | `codemarkup.Definition` | a partial member's two halves |
-| `quarantine/Ordinal` | `codemarkup.SymbolInfo` | a partial method beside a same-named overload |
-| `quarantine/FileLocal` | `codemarkup.SymbolInfo` | `file class C` in two files |
+| Project | The shape | Was refused on | Now |
+| --- | --- | --- | --- |
+| `quarantine/Arity` | one type name at two arities | `codemarkup.Definition` | indexes, 30 symbols |
+| `quarantine/Terms` | two indexers in one type | `codemarkup.Definition` | indexes, 20 symbols |
+| `quarantine/Partial` | a partial member's two halves | `codemarkup.Definition` | indexes, 22 symbols |
+| `quarantine/Ordinal` | a partial method beside a same-named overload | `codemarkup.SymbolInfo` | indexes, 17 symbols |
+| `quarantine/FileLocal` | `file class C` in two files | `codemarkup.SymbolInfo` | **still refuses** |
 
-**Which predicate is the content of the claim.** `Definition` is keyed `{symbol, file}`, so those
-three need two declarations of one symbol in *one* file. `SymbolInfo` is keyed on the symbol alone,
-which is why the other two fire *across* files — and why a fix that deduplicates `Definition` per
-file would leave them live while looking like a repair.
+**Which predicate refused it is the content of the claim.** `Definition` is keyed
+`{symbol, file}`, so those three needed two declarations of one symbol in *one* file. `SymbolInfo`
+is keyed on the symbol alone, which is why the other two fired *across* files — and why a fix that
+deduplicated `Definition` per file would have left them live while looking like a repair.
 
-A commit that fixes one of these deletes its row from
-`A_quarantined_shape_still_refuses_its_write` and asserts completion in its place, in the same
-commit. That is what makes a repair a diff a reviewer reads as a claim.
+**The symbol counts are a floor, and they are the other half of the claim.** A conflict can be
+made to disappear by writing fewer facts: drop one of the two declarations that wanted one key and
+the run completes, having lost exactly what the fix was for. So each repaired row records how many
+distinct `src.Symbol` strings its project mints, and the gate asserts no fewer.
+
+`FileLocal` remains because a file-scoped type's identity has no file segment: Roslyn keeps the
+restriction only in `MetadataName` (`<F0>…__C`), while `Name`, `ToDisplayString()` and
+`GetDocumentationCommentId()` are all plain `C`. The descriptor path has no segment for the file,
+so two `file class C` in two files and any ordinary `C` beside them mint one string. The fix
+borrows `MetadataName`'s per-file prefix, and it is not in this commit.
 
 ## What it deliberately does not reach
 

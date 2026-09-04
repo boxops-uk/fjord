@@ -677,9 +677,9 @@ public sealed class SourceWalkTests
             .Select(fact => Assert.IsType<FjordValue.Str>(fact.Key).Value)
             .ToList();
 
-        Assert.Contains("scip-csharp nuget Walked 0.0.0.0 N/Deep/T#", symbols);
-        Assert.Contains("scip-csharp nuget Walked 0.0.0.0 N/Deep/T#M().", symbols);
-        Assert.Contains("scip-csharp nuget Walked 0.0.0.0 N/Deep/T#M(+1).", symbols);
+        Assert.Contains("scip-csharp-2 nuget Walked 0.0.0.0 N/Deep/T#", symbols);
+        Assert.Contains("scip-csharp-2 nuget Walked 0.0.0.0 N/Deep/T#M().", symbols);
+        Assert.Contains("scip-csharp-2 nuget Walked 0.0.0.0 N/Deep/T#M(+1).", symbols);
     }
 
     /// <summary>

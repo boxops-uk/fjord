@@ -171,7 +171,7 @@ thirty thousand rows exist** — because every reference the walk wrote was the 
 ```text
 codemarkup.SymbolXRef {
   target = src.Symbol                                     ← a whole fact, not an id
-    "scip-csharp nuget Boxops.Fjord.Client 0.3.0.0
+    "scip-csharp-2 nuget Boxops.Fjord.Client 0.3.0.0
      Boxops/Fjord/Client/Crc32#",
   file = src.File "Boxops.Fjord.Client/Blocks.cs",        ← nested again
   span = { start = 4808, length = 5 }
@@ -254,8 +254,8 @@ $AP --data-dir ./db query code 'R where R = codemarkup.SymbolXRef _' \
 ```
 
 ```json
-{"target": "scip-csharp nuget Boxops.Fjord.Client 0.3.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4808, "length": 5}}
-{"target": "scip-csharp nuget Boxops.Fjord.Client 0.3.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4834, "length": 5}}
+{"target": "scip-csharp-2 nuget Boxops.Fjord.Client 0.3.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4808, "length": 5}}
+{"target": "scip-csharp-2 nuget Boxops.Fjord.Client 0.3.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4834, "length": 5}}
 ```
 
 That is the **logical form**: the same shape a producer sends, and the same shape the

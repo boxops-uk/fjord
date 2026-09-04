@@ -27,7 +27,7 @@ schema src {
   # method, `(…)` a parameter, `[…]` a type parameter), each name ASCII-simple or
   # backtick-escaped.
   #
-  #     scip-csharp nuget Newtonsoft.Json 13.0.3 Newtonsoft/Json/JsonConvert#SerializeObject().
+  #     scip-csharp-2 nuget Newtonsoft.Json 13.0.3 Newtonsoft/Json/JsonConvert#SerializeObject().
   #     scip-typescript npm @angular/core 17.0.0 `src/lib`/Component#
   #
   # The scheme token comes first so the string space is partitioned by producer, and
