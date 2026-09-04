@@ -113,15 +113,22 @@ fn moving_a_declaration_into_an_imported_file_moves_no_fingerprint() {
 fn the_dotnet_clients_carry_the_fingerprint_the_schema_has() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
-    // **Which schema each client is written against.** They are no longer the same one:
-    // the indexer writes `dotnet.sigla` and the demo writes `demo.sigla`, the fixture the
-    // instruments measure over. Named rather
-    // than globbed: a new file carrying a third copy should be a decision, and adding it
-    // here is how that decision gets made.
+    // **Which schema each client is written against.** They are not the same one: the
+    // indexer writes `dotnet.sigla`, the SCIP converter fills the `index.sigla` composite,
+    // and the demo writes `demo.sigla`, the fixture the instruments measure over. Named
+    // rather than globbed: a new file carrying a further copy should be a decision, and
+    // adding it here is how that decision gets made. The converter's copy sat inline as a
+    // positional argument and so was named nowhere — it went stale through a flag day and
+    // its own handshake was what noticed.
     let carried = [
         (
             "schemas/dotnet.sigla",
             "clients/dotnet/Boxops.Fjord.Indexer/DotnetIndex.cs",
+            "public const ulong SchemaFingerprint = ",
+        ),
+        (
+            "schemas/index.sigla",
+            "clients/dotnet/Boxops.Fjord.Scip/ScipFacts.cs",
             "public const ulong SchemaFingerprint = ",
         ),
         (
@@ -202,9 +209,9 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
         ("config.sigla", "0xac3c414ab7ff574f"),
         ("csharp.sigla", "0xcd1ded4ad8d8b187"),
         ("demo.sigla", "0x03678fcd1e7924e3"),
-        ("dotnet.sigla", "0xc20dfe719b04e025"),
-        ("index.sigla", "0xea69e11d083ae95f"),
-        ("msbuild.sigla", "0xd97f69e6c42cf593"),
+        ("dotnet.sigla", "0x32c681adade8a5f7"),
+        ("index.sigla", "0x49cbd96832c1ae21"),
+        ("msbuild.sigla", "0xfad0dcb5ca7f6cd9"),
         ("npm.sigla", "0x89e3bbe02c94cb17"),
         ("src.sigla", "0x76a9b57d832f5ad9"),
         ("typescript.sigla", "0x4f2ebd3d451fc631"),

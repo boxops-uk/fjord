@@ -246,7 +246,7 @@ public sealed class FactSink : IDisposable
     /// almost never want the same predicate at the same instant — a declaration is
     /// touching <c>csharp.Method</c> while a reference is touching
     /// <c>codemarkup.FileXRef</c> — so striping by predicate turns what was one gate
-    /// around the whole of fact production into sixty-seven that are each held for a
+    /// around the whole of fact production into sixty-five that are each held for a
     /// list append.
     /// </para>
     /// <para>

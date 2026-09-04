@@ -7,7 +7,7 @@ namespace Boxops.Fjord.Scip;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Fourteen predicates against a database of a hundred and thirty-eight.</b> A client
+/// <b>Fourteen predicates against a database of a hundred and thirty-six.</b> A client
 /// declares the shapes it uses, not the database's whole schema: predicate ids are its
 /// own, a block header carries the predicate's name, and a nested reference takes its
 /// predicate from the field's declared target. What is checked is that this database holds
@@ -109,15 +109,20 @@ internal static class ScipFacts
         ("jsx", 11u, FjordType.Rec()));
 
     /// <summary>
-    /// The schema this converter claims, and the fingerprint of the database it fills.
+    /// <c>schemas/index.sigla</c>'s fingerprint, as <c>fjord schema check</c> prints it.
     /// </summary>
     /// <remarks>
-    /// The fingerprint is <c>schemas/index.sigla</c>'s — the composite that declares every
-    /// language layer, which is the database a cross-language converter belongs in. It is
-    /// carried rather than computed, so it asserts provenance and says nothing about the
-    /// shapes; what proves those is the server decoding a fact of each against its own
-    /// statement.
+    /// The composite that declares every language layer, which is the database a
+    /// cross-language converter belongs in. Carried rather than computed, so it asserts
+    /// provenance and says nothing about the shapes; what proves those is the server
+    /// decoding a fact of each against its own statement. Declared here as a named
+    /// constant so `the_dotnet_clients_carry_the_fingerprint_the_schema_has` can read it:
+    /// it sat inline as a positional argument through one flag day, where nothing checked
+    /// it and the converter's own tests were the first to notice at the handshake.
     /// </remarks>
+    public const ulong SchemaFingerprint = 0x49cbd96832c1ae21;
+
+    /// <summary>The schema this converter claims, and the database it fills.</summary>
     public static readonly FjordSchema Schema = new(
         [
             new FjordPredicate("src.File", FjordType.String, null),
@@ -209,8 +214,8 @@ internal static class ScipFacts
                     ("symbol", FjordType.Reference(Symbol))),
                 null),
         ],
-        // `schemas/index.sigla`. A moved fingerprint is a rebuild of this converter.
-        0xea69e11d083ae95f);
+        // A moved fingerprint is a rebuild of this converter.
+        SchemaFingerprint);
 
     public static string NameOf(uint predicate) => Schema.NameOf(predicate);
 

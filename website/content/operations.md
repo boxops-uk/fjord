@@ -210,16 +210,20 @@ the one that costs an artifact:
 - **After it lands and before the last of the store's internal manifests does**, the bind *opens*
   the directory, and the open is a recovery: the storage engine treats a part-delivered internal
   keyspace as one it never finished creating and **deletes it**, files the copy had already sent
-  included. The bind is then refused — the sealed sidecar records a fact count, the recovered store
-  holds fewer, and they are compared — but the refusal comes after the delete. The copy then
-  finishes, having sent every path it owed, and the published artifact is **permanently
-  unopenable**: a fresh reader of it fails on a file that is no longer there. Republishing is the
-  only repair.
+  included. The bind is then refused **where the recovered store holds fewer facts than the sidecar
+  records** — the two are compared — but the refusal comes after the delete. Where what was still
+  in flight was one of the store's own identity trees, the count still agrees and the bind is
+  *served*: the first row a client reads then fails, loudly, on a reference to a fact that is no
+  longer there. Either way the copy finishes, having sent every path it owed, and the published
+  artifact is **permanently unopenable**: a fresh reader of it fails on a file that is no longer
+  there. Republishing is the only repair.
 
-The fact-count check is why a *wrong answer* is no longer among the outcomes — before it, that bind
-was served `READY` on a `Complete` database answering zero rows, for the life of the process, while
-`fjord.db.List` went on reporting the count the sidecar records. It is a refusal and not a fix: the
-comparison can only be made once the store is open, and opening it is what deleted the files.
+The fact-count check is why a *silent* wrong answer is no longer among the outcomes — before it,
+that bind was served `READY` on a `Complete` database answering zero rows, for the life of the
+process, while `fjord.db.List` went on reporting the count the sidecar records. Now a client is
+either refused by name or told, on its first row, that the artifact is broken. It is a refusal and
+not a fix: the comparison can only be made once the store is open, and opening it is what deleted
+the files.
 
 Two details make the staging path work. It must be **under the store root** so the `mv` is a rename
 and not a copy; and it must start with a dot, which is what keeps the scan from reading a

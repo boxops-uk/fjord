@@ -399,7 +399,7 @@ purpose**: eleven predicates, at least one for every construct the type model ca
 
 Read it if you are designing a schema: every predicate carries a comment saying which
 question its key order answers, and the file states which construct it is there to show.
-The set a real producer writes is `schemas/dotnet.sigla` — sixty-seven predicates across
+The set a real producer writes is `schemas/dotnet.sigla` — sixty-five predicates across
 five layers — and it is the wrong thing to read first.
 
 ### `schemas/src.sigla` — the shared source layer
@@ -553,7 +553,7 @@ Three structural moves come with them, and each is the same seam drawn twice:
   `getStats().toJson()` — webpack's as much as Rspack's, hence the namespace.
 
 `index.sigla` declares **no predicates of its own**: it imports the other eight and exists to
-prove the set composes. It resolves to **138 predicates in 9 files**, and the two queries in
+prove the set composes. It resolves to **136 predicates in 9 files**, and the two queries in
 its header are integration tests rather than illustrations — every reference in one file
 resolved to where its target is defined *for any language*, and a symbol joined to the
 project that compiled the file it sits in, across three namespaces filled by three different

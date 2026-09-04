@@ -16,7 +16,7 @@
 //! which is what `tests` below asks.
 //!
 //! **Why this file and not the shipped set.** `schemas/dotnet.sigla` is what a real
-//! producer writes: sixty-seven predicates across five layers, keyed for questions a code
+//! producer writes: sixty-five predicates across five layers, keyed for questions a code
 //! browser asks. It is the wrong fixture for an instrument. A benchmark wants a corpus it
 //! can generate to any size and a shape a reader can hold in their head; the browser
 //! playground wants a schema that lowers in one file; the corpus tests want every

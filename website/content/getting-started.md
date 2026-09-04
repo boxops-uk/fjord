@@ -329,7 +329,7 @@ since both ends already have them — which is why a reader asks the database fo
 ## 9. Index real source
 
 `demo.sigla` is the language fixture, and eleven predicates is not what indexing a real
-repository needs. The set for that is `schemas/dotnet.sigla` — sixty-seven predicates
+repository needs. The set for that is `schemas/dotnet.sigla` — sixty-five predicates
 composed by import from five files: `src` for files and lines, `config` for what the index
 was built against, `msbuild` for the project graph, `csharp` for the semantic layer, and
 `codemarkup` for the language-independent surface a UI reads.
@@ -345,7 +345,7 @@ while [ ! -e ./ready2 ]; do sleep 0.1; done
 ```
 
 ```text
-created dotnet (01M1N3GJXQD2JSH5XX1E08F8BT) against schemas/dotnet.sigla
+created dotnet (01M1PCCPWV76QCE9XCS7WG2WNF) against schemas/dotnet.sigla
 fjord serve
   data dir   ./db2
   socket     ./db2/fjord.sock
@@ -373,34 +373,39 @@ dotnet run --project clients/dotnet/Boxops.Fjord.Indexer --configuration Release
 ```text
 indexing /path/to/fjord/clients/dotnet
   paths relative to /path/to/fjord/clients/dotnet
-  schema fingerprint c20dfe719b04e025
+  schema fingerprint 32c681adade8a5f7
   entry point /path/to/fjord/clients/dotnet/Boxops.Fjord.slnx
   5 C# project(s) in the solution
-  built Boxops.Fjord.Indexer.csproj (net10.0, 15 files, 3.4s)
-  built Boxops.Fjord.Scip.csproj (net10.0, 11 files, 3.5s)
-  built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 3.5s)
-  built Boxops.Fjord.Client.csproj (net10.0, net8.0, 15 files, 6.2s)
-  built Boxops.Fjord.Tests.csproj (net10.0, 23 files, 2.8s)
-  build layer: 17 project(s), 5 from a design-time build, 52 file(s) attributed exactly
-  1 target framework(s) — net10.0, loaded in 7.2s
+  built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 3.0s)
+  built Boxops.Fjord.Indexer.csproj (net10.0, 15 files, 3.0s)
+  built Boxops.Fjord.Scip.csproj (net10.0, 11 files, 3.0s)
+  built Boxops.Fjord.Client.csproj (net10.0, net8.0, 15 files, 5.7s)
+  built Boxops.Fjord.Tests.csproj (net10.0, 26 files, 2.6s)
+  build layer: 20 project(s), 5 from a design-time build, 55 file(s) attributed exactly
+  1 target framework(s) — net10.0, loaded in 6.6s
 
 connecting to ./db2/fjord.sock//dotnet, 1 writer(s)
-  connected: protocol 4, 69 predicates, schema c20dfe719b04e025
+  connected: protocol 4, 67 predicates, schema 32c681adade8a5f7
 
-       13 files        21,358 facts      8,428 facts/s  Boxops.Fjord.Demo
-       25 files        70,811 facts      8,696 facts/s  Boxops.Fjord.Indexer
+       13 files        23,577 facts      9,216 facts/s  Boxops.Fjord.Demo
+       25 files        80,659 facts      9,116 facts/s  Boxops.Fjord.Indexer
+       55 files       152,173 facts     13,941 facts/s  Boxops.Fjord.Tests
 
-indexed 52 file(s) in 11.3s
-  total                      126,408 facts in 72 blocks
-  server                     109,321 created, 947,750 deduped
-  throughput                  11,209 facts/s
+indexed 55 file(s) in 12.5s
+  …
+  total                      152,173 facts in 82 blocks
+  server                     133,860 created, 1,488,644 deduped
+  writing                        4.1s  (summed over 1 writer(s), overlapped — not wall clock)
+  queueing                       1.6s  (walk blocked on a full queue)
+  contended                      0.0s  (69 of 152,173 facts waited for a batch)
+  throughput                  12,207 facts/s
 
-references: 17,001 resolved, 5,063 to declarations outside the index, 2 unresolved
+references: 18,247 resolved, 5,483 to declarations outside the index, 2 unresolved
 ```
 
-**`947,750 deduped`** is the same trick as step 4 at scale: a million facts touched, a
-hundred thousand rows written, because every reference the walk sends is the target fact
-nested inline and a file named a few thousand times is stored once.
+**`1,488,644 deduped`** is the same trick as step 4 at scale: a million and a half facts
+touched, a hundred and thirty thousand rows written, because every reference the walk sends
+is the target fact nested inline and a file named a few thousand times is stored once.
 
 Find-references over that corpus is two seeks. `codemarkup.SearchEntry` finds the symbol by
 name, and `codemarkup.SymbolXRef` leads with the target, so its uses are a range rather than

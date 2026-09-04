@@ -37,7 +37,13 @@ schema msbuild {
        , rootNamespace   : src.MaybeString
        }
 
-  # An assembly name — a string identity, as a file is a path.
+  # An assembly a project in this graph **produces** — a string identity, as a file is a
+  # path. Only that: nothing here names an assembly referenced from *outside* the graph,
+  # so an `Assembly` fact always has a `Compilation` behind it and never stands for a
+  # framework DLL. A reference list from a design-time build is every resolved assembly,
+  # some hundreds per project, with nothing in it separating a `<Reference>` somebody
+  # wrote from the framework's own — keying those on a file name would mint identities no
+  # consumer could tell apart from these.
   predicate Assembly : { name : string }
 
   # A NuGet package. A compound identity, because a package is its name and its version and
@@ -76,11 +82,6 @@ schema msbuild {
   # The reverse — which projects use this package, keyed package-first. The question asked the
   # day a CVE lands.
   predicate PackageDependent : { package : Package, project : Project }
-
-  # A metadata reference to an assembly outside the project graph — a raw `<Reference>`, a
-  # framework assembly, a DLL from a package. `project` leads; the reverse follows.
-  predicate AssemblyReference : { project : Project, assembly : Assembly }
-  predicate AssemblyDependent : { assembly : Assembly, project : Project }
 
   # ---- what a build produces -----------------------------------------------------------
 

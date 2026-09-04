@@ -137,6 +137,8 @@ RETIRED_NAMES = [
     ('src.TypeOf', r"\bsrc\.TypeOf\b", "gone with `code.sigla`; the display strings are on `codemarkup.Definition` and two `csharp` predicates"),
     ('Declared.First', r"\bDeclared\.First\b", "deleted: conflicts are reported, not resolved"),
     ('CodeIndex', r"\bCodeIndex\b", "`DotnetIndex`"),
+    ('AssemblyReference', r"\bAssemblyReference\b", "deleted: `msbuild.Assembly` names only an assembly a project in the graph produces, and `Compilation` is the edge to it"),
+    ('AssemblyDependent', r"\bAssemblyDependent\b", "deleted with `AssemblyReference`, whose reverse it was"),
 ]
 
 # **These are book-only, and the reason is worth stating so nobody "fixes" it by widening

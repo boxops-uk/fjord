@@ -7,6 +7,61 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `msbuild.AssemblyReference` and `msbuild.AssemblyDependent` are deleted · **rebuild your clients, recreate your databases**
+
+Both were declared, given ids, listed in the .NET client's batch set — and **never written by
+anything**. A new completeness census made that visible: `PredicateCensusTests` classifies every
+predicate the client declares and asserts it behaves as classified, and this pair sat there as
+`Owed` with the reason it could not be filled. The reason is why deleting beat filling: the
+reference list a design-time build hands back is every resolved DLL, some hundreds of framework
+assemblies per project, and nothing in it tells a `<Reference>` somebody wrote from the
+framework's own. Keying an assembly on a file name would have invented an identity two producers
+would spell differently, so the schema was declaring a question no consumer could get an answer
+to.
+
+`msbuild.Assembly` **stays** and its charter narrows. It is written from each project's own
+output name and still joined by `Compilation` and `ProjectCompilation`, so the deletion orphans
+nothing — but an `Assembly` fact can now only be one a project *in the graph produces*, never
+one referenced from outside, and the schema's comment says so.
+
+**Removing a predicate is Breaking under subset containment, so three fingerprints move:**
+
+| schema | was | is | predicates, imports resolved |
+|---|---|---|---|
+| `msbuild.sigla` | `0xd97f69e6c42cf593` | `0xfad0dcb5ca7f6cd9` | 25 → 23 |
+| `dotnet.sigla` | `0xc20dfe719b04e025` | `0x32c681adade8a5f7` | 67 → 65 |
+| `index.sigla` | `0xea69e11d083ae95f` | `0x49cbd96832c1ae21` | 138 → 136 |
+
+**Every client carrying an old constant is refused at the handshake until it is rebuilt** — the
+designed failure, and the refusal names both numbers. The .NET package goes to **0.3.0** in this
+same change, because a moved fingerprint *is* a client release. Three constants were re-pasted:
+the indexer's (`dotnet.sigla`), the SCIP converter's (`index.sigla`) and — unmoved —
+the demo's. The converter's had been sitting inline as a positional argument, named nowhere, so
+`the_dotnet_clients_carry_the_fingerprint_the_schema_has` never saw it and its own handshake was
+what noticed; it is a named `SchemaFingerprint` constant now and that gate checks all three.
+
+**The predicate numbering moves, and that is what a recreated database contains.** Ids are
+assigned by sorted fully-qualified name at create and are append-only for the life of a
+database, so deleting two shifts every predicate that sorts after them down by two: in
+`dotnet.sigla`, `msbuild.*` ends at 55 rather than 57 and the whole `src.*` block moves — `src.File`
+is **56**, not 58, which is visible in a row printed as `#56:2` where it used to read `#58:3`. A
+`FactId` packs its predicate's id in its high bits, so a consumer decoding a returned reference
+against a hardcoded table would read the wrong predicate. Nothing has to detect that: every
+existing database is refused at the handshake for the moved fingerprint, so a stale table cannot
+meet new bytes. The .NET client's own hand-written ids move the same way — 43 constants after
+the deleted pair — and `PredicateCensusTests` asserts that array is exactly its declaration's
+ids.
+
+The `census` run's audit table loses two rows. Three `Owed` entries remain, all about
+solutions, and they are a separate open question. The book's transcripts are re-taken from a
+real run rather than edited: ten empty predicates out of sixty-five now, where there were
+twelve out of sixty-seven.
+
+`clients/dotnet/golden/` did **not** need regenerating, which is the right answer rather than a
+skipped step: all three goldens are over `demo.sigla` and two throwaway schemas of their own,
+none of which imports `msbuild`. `byte_identical_with_the_dotnet_client` compares fingerprints
+before bytes, and it is green untouched.
+
 ### An equality on a `string` or `bytes` key field answered rows of other values
 
 `X = "a"` answered three rows over a store holding `"a"`, `"a\0"` and `"a\0z"` — and a join
@@ -304,8 +359,8 @@ enforced.
 
 ### Five reference schemas, and `index.sigla` — the set composes
 
-`csharp` (31 predicates), `msbuild` (16), `typescript` (35), `npm` (14) and `bundle` (22), plus
-a composite that declares none of its own and imports the other eight. **138 predicates in 9
+`csharp` (31 predicates), `msbuild` (14), `typescript` (35), `npm` (14) and `bundle` (22), plus
+a composite that declares none of its own and imports the other eight. **136 predicates in 9
 files**, and `schemas/` goes from two files to eleven.
 
 These 118 predicates are **not populated by anything in this repository**. They ship as
@@ -327,7 +382,7 @@ either query says which language anything is.
 is the end-to-end payoff of the `unify` fix: a seven-alternative union in two key positions,
 which was `reject/type-mismatch` and no plan at all until that arm existed.
 
-`every_vocabulary_is_contiguous_and_unique` walks every union in all 138 predicates and asserts
+`every_vocabulary_is_contiguous_and_unique` walks every union in all 136 predicates and asserts
 the discriminants are unique and contiguous from their lowest. These sit in keys, so I10 froze
 them on landing and a transcription slip in a twenty-one-line table is permanent — which no
 reviewer reliably catches and no other test would.

@@ -1,6 +1,6 @@
 //! **The composite, and the two joins it exists to make expressible.**
 //!
-//! Nine files resolve into one schema of 138 predicates, a database is created from it,
+//! Nine files resolve into one schema of 136 predicates, a database is created from it,
 //! and the two queries in `index.sigla`'s own header run against it and return rows.
 //! Those two are the whole claim of the set:
 //!
@@ -120,19 +120,19 @@ fn the_composite_answers_both_of_its_headline_joins() {
     let served = Arc::new(probe.served_schema().expect("the served schema"));
     drop(probe);
 
-    // 138 stored, plus the two virtual `fjord.db.*` predicates the server answers out of
+    // 136 stored, plus the two virtual `fjord.db.*` predicates the server answers out of
     // what it knows — the handshake includes them, because the question it answers is
     // what may be *asked* rather than what the database holds.
     assert_eq!(
         served.len(),
-        140,
+        138,
         "nine files, one schema, plus two virtuals"
     );
     assert_eq!(
         (0..served.len())
             .filter(|index| !served.is_virtual(fjord_schema::schema::PredicateId(*index as u32)))
             .count(),
-        138
+        136
     );
 
     let id = |name: &str| {

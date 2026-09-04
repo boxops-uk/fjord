@@ -90,12 +90,6 @@ public sealed class PredicateCensusTests
         (DotnetIndex.ProjectReferencedBy, Fill.Written, ""),
         (DotnetIndex.PackageReference, Fill.Written, ""),
         (DotnetIndex.PackageDependent, Fill.Written, ""),
-        (DotnetIndex.AssemblyReference, Fill.Owed,
-            "the reference list a design-time build hands back is every resolved DLL — some "
-            + "hundreds of framework assemblies per project — and nothing in it tells a "
-            + "`<Reference>` somebody wrote from the framework's own. This producer records "
-            + "none rather than keying an assembly on a file name"),
-        (DotnetIndex.AssemblyDependent, Fill.Owed, "the reverse of an edge nothing writes"),
         (DotnetIndex.Compilation, Fill.Written, ""),
         (DotnetIndex.ProjectCompilation, Fill.Written, ""),
 

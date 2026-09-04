@@ -29,7 +29,7 @@ internal static class DotnetIndex
     /// Carried, not computed — the whole schema's, not this partial statement's. A stale
     /// one fails the handshake loudly, which is the assertion it is for.
     /// </remarks>
-    public const ulong SchemaFingerprint = 0xc20dfe719b04e025;
+    public const ulong SchemaFingerprint = 0x32c681adade8a5f7;
 
     // ---- src: the shared source layer ------------------------------------------------
 
@@ -61,59 +61,57 @@ internal static class DotnetIndex
     public const uint ProjectReferencedBy = 19;
     public const uint PackageReference = 20;
     public const uint PackageDependent = 21;
-    public const uint AssemblyReference = 22;
-    public const uint AssemblyDependent = 23;
-    public const uint Compilation = 24;
-    public const uint ProjectCompilation = 25;
+    public const uint Compilation = 22;
+    public const uint ProjectCompilation = 23;
 
     // ---- csharp: what Roslyn can see -------------------------------------------------
 
-    public const uint Name = 26;
-    public const uint NameLowerCase = 27;
-    public const uint Namespace = 28;
-    public const uint FullName = 29;
-    public const uint Class = 30;
-    public const uint Interface = 31;
-    public const uint Record = 32;
-    public const uint Struct = 33;
-    public const uint Implements = 34;
-    public const uint TypeTypeParameter = 35;
-    public const uint Method = 36;
-    public const uint MethodParameter = 37;
-    public const uint MethodTypeParameter = 38;
-    public const uint Parameter = 39;
-    public const uint Field = 40;
-    public const uint TypeParameter = 41;
-    public const uint Local = 42;
-    public const uint Property = 43;
-    public const uint PropertyParameter = 44;
-    public const uint ArrayType = 45;
-    public const uint PointerType = 46;
-    public const uint FunctionPointerType = 47;
-    public const uint DefinitionLocation = 48;
-    public const uint ObjectCreationLocation = 49;
-    public const uint MethodInvocationLocation = 50;
-    public const uint MemberAccessLocation = 51;
-    public const uint TypeLocation = 52;
-    public const uint EntityXRef = 53;
-    public const uint EntityRef = 54;
-    public const uint SymbolOf = 55;
-    public const uint DefinitionBySymbol = 56;
+    public const uint Name = 24;
+    public const uint NameLowerCase = 25;
+    public const uint Namespace = 26;
+    public const uint FullName = 27;
+    public const uint Class = 28;
+    public const uint Interface = 29;
+    public const uint Record = 30;
+    public const uint Struct = 31;
+    public const uint Implements = 32;
+    public const uint TypeTypeParameter = 33;
+    public const uint Method = 34;
+    public const uint MethodParameter = 35;
+    public const uint MethodTypeParameter = 36;
+    public const uint Parameter = 37;
+    public const uint Field = 38;
+    public const uint TypeParameter = 39;
+    public const uint Local = 40;
+    public const uint Property = 41;
+    public const uint PropertyParameter = 42;
+    public const uint ArrayType = 43;
+    public const uint PointerType = 44;
+    public const uint FunctionPointerType = 45;
+    public const uint DefinitionLocation = 46;
+    public const uint ObjectCreationLocation = 47;
+    public const uint MethodInvocationLocation = 48;
+    public const uint MemberAccessLocation = 49;
+    public const uint TypeLocation = 50;
+    public const uint EntityXRef = 51;
+    public const uint EntityRef = 52;
+    public const uint SymbolOf = 53;
+    public const uint DefinitionBySymbol = 54;
 
     // ---- codemarkup: the surface a UI reads ------------------------------------------
 
     /// <summary>`codemarkup.Definition` — named to keep it apart from `csharp.Definition`,
     /// which is a union and not a predicate.</summary>
-    public const uint MarkupDefinition = 57;
-    public const uint SymbolInfo = 58;
-    public const uint FileDefinition = 59;
-    public const uint FileXRef = 60;
-    public const uint SymbolXRef = 61;
-    public const uint FileLocalXRef = 62;
-    public const uint SearchEntry = 63;
-    public const uint SymbolByName = 64;
-    public const uint Relation = 65;
-    public const uint RelationOf = 66;
+    public const uint MarkupDefinition = 55;
+    public const uint SymbolInfo = 56;
+    public const uint FileDefinition = 57;
+    public const uint FileXRef = 58;
+    public const uint SymbolXRef = 59;
+    public const uint FileLocalXRef = 60;
+    public const uint SearchEntry = 61;
+    public const uint SymbolByName = 62;
+    public const uint Relation = 63;
+    public const uint RelationOf = 64;
 
     /// <summary>Every predicate id this client holds, in schema order.</summary>
     public static readonly uint[] Predicates =
@@ -122,8 +120,7 @@ internal static class DotnetIndex
         FileLineAt, FileLineStyles, Setting,
         Solution, Project, Assembly, Package, SolutionToProject, ProjectToSolution,
         ProjectToSourceFile, SourceFileToProject, ProjectReference, ProjectReferencedBy,
-        PackageReference, PackageDependent, AssemblyReference, AssemblyDependent,
-        Compilation, ProjectCompilation,
+        PackageReference, PackageDependent, Compilation, ProjectCompilation,
         Name, NameLowerCase, Namespace, FullName, Class, Interface, Record, Struct,
         Implements, TypeTypeParameter, Method, MethodParameter, MethodTypeParameter,
         Parameter, Field, TypeParameter, Local, Property, PropertyParameter, ArrayType,
@@ -276,14 +273,6 @@ internal static class DotnetIndex
 
         new FjordPredicate("msbuild.PackageDependent", FjordType.Rec(
             ("package", FjordType.Reference(Package)),
-            ("project", FjordType.Reference(Project))), null),
-
-        new FjordPredicate("msbuild.AssemblyReference", FjordType.Rec(
-            ("project", FjordType.Reference(Project)),
-            ("assembly", FjordType.Reference(Assembly))), null),
-
-        new FjordPredicate("msbuild.AssemblyDependent", FjordType.Rec(
-            ("assembly", FjordType.Reference(Assembly)),
             ("project", FjordType.Reference(Project))), null),
 
         new FjordPredicate("msbuild.Compilation", FjordType.Rec(
@@ -915,12 +904,6 @@ internal static class DotnetIndex
 
     public static FjordFact PackageDependentFact(FjordFact package, FjordFact project) =>
         Pair(PackageDependent, package, project);
-
-    public static FjordFact AssemblyReferenceFact(FjordFact project, FjordFact assembly) =>
-        Pair(AssemblyReference, project, assembly);
-
-    public static FjordFact AssemblyDependentFact(FjordFact assembly, FjordFact project) =>
-        Pair(AssemblyDependent, assembly, project);
 
     public static FjordFact CompilationFact(FjordFact assembly, string framework, FjordFact project) =>
         new(Compilation, FjordValue.Rec(

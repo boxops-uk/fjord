@@ -10,7 +10,7 @@
 # `index.sigla` composes all eight layers, including `typescript`, `npm` and `bundle` —
 # 71 predicates whose producer is a consumer's, not this repository's ([D1](../PLAN.md)).
 # A client handshakes on **one whole-schema fingerprint**, so a database created from the
-# everything-composite obliges every client of it to state all 138 predicates
+# everything-composite obliges every client of it to state all 136 predicates
 # independently. For the .NET client that would mean hand-maintaining 71 declarations it
 # will never write: a transcription surface with no producer behind it, which is liability
 # rather than coverage.

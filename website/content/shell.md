@@ -100,14 +100,14 @@ piping.
 ```text
 sigla> R where R = codemarkup.SymbolXRef _
   : codemarkup.SymbolXRef
-"#9:220"
+"#9:236"
 
 sigla> :expand
   references expand into the facts they name, all the way down
   each one is a point read — :timing counts them per page
 sigla> R where R = codemarkup.SymbolXRef _
   : codemarkup.SymbolXRef
-{"target": "scip-csharp nuget Boxops.Fjord.Client 0.2.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4808, "length": 5}}
+{"target": "scip-csharp nuget Boxops.Fjord.Client 0.3.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4808, "length": 5}}
 ```
 
 A row carries a reference as a fact id, because that is what one is once stored — and sigla

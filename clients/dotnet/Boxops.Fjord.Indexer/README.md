@@ -32,7 +32,7 @@ Four things, in the order they matter:
    nothing the protocol does not offer.
 3. **Something to query.** An index of code someone knows is a database whose answers
    can be checked by opening the file.
-4. **The rest of the schema.** Most of `schemas/dotnet.sigla`'s sixty-seven predicates —
+4. **The rest of the schema.** Most of `schemas/dotnet.sigla`'s sixty-five predicates —
    the project graph and the C# entity model — cannot be answered by a syntax walk at
    all. This program is where they come from, which makes it part of the schema rather
    than a consumer of it.
@@ -60,7 +60,7 @@ It is interning working, and it is the number this whole exercise exists to meas
 
 ## How C# maps onto the code index
 
-The schema is the server's — sixty-seven predicates, parsed from `schemas/dotnet.sigla`
+The schema is the server's — sixty-five predicates, parsed from `schemas/dotnet.sigla`
 rather than written in Rust — so the question is not what to declare but what to put in
 it. `DotnetIndex.cs` states it independently, because that is what the handshake
 fingerprint is for. **Declaration order is not part of that agreement**: the
@@ -91,7 +91,7 @@ be matched to a checkout by inference.
 | predicate | what it holds |
 |---|---|
 | `msbuild.Project` | a `.csproj`, with what MSBuild evaluated on the value side: SDK, output type, assembly name, root namespace, platform |
-| `msbuild.Assembly` · `msbuild.Compilation` | the assembly a project produces, and the crossing of the two per target framework |
+| `msbuild.Assembly` · `msbuild.Compilation` | the assembly a project **produces**, and the crossing of the two per target framework. Only a produced one: an assembly referenced from outside the graph is not named here at all |
 | `msbuild.SourceFileToProject` · `msbuild.ProjectToSourceFile` | both directions, because neither is a seek from the other |
 | `msbuild.ProjectReference` · `msbuild.ProjectReferencedBy` | the project graph, both ways: "what does this need" and "who needs this" |
 | `msbuild.Package` · `msbuild.PackageReference` · `msbuild.PackageDependent` | `<PackageReference>`, with the version after central package management has had its say |
@@ -157,12 +157,14 @@ table is what converts.
 whenever the file is edited, so a local gets no global name and `codemarkup.FileLocalXRef`
 answers a file-local jump span to span instead — and `csharp.FunctionPointerType`, which
 cannot be keyed, so a member typed as one is dropped and counted like a `dynamic` one.
-Three `msbuild` predicates (`Solution` and its two edges) and two more
-(`AssemblyReference`, `AssemblyDependent`) are owed rather than impossible. The list is not
-prose: `PredicateCensusTests` holds it as a table and asserts every entry over a run of the
-`census` fixture, so a predicate that stops being written fails, and one that starts being
-written where the table excuses it fails too. That gate is what four declared-and-empty
-location predicates got past.
+Three `msbuild` predicates — `Solution` and its two edges — are owed rather than
+impossible. The list is not prose: `PredicateCensusTests` holds it as a table and asserts
+every entry over a run of the `census` fixture, so a predicate that stops being written
+fails, and one that starts being written where the table excuses it fails too. That gate is
+what four declared-and-empty location predicates got past, and what made the case for
+deleting the two metadata-reference predicates rather than leaving them owed: a reference
+list from a design-time build is every resolved DLL, and nothing in it separates a
+`<Reference>` somebody wrote from the framework's own.
 
 **`codemarkup` is redundant with `csharp` by construction, and deliberately.** Every fact
 in it could be derived from the layer beside it — while `nyi/derivation` stands, a producer
@@ -352,44 +354,44 @@ This is a real one, and a small one: this repository's own solution, `--framewor
 against a release server.
 
 ```
-indexed 52 file(s) in 10.5s
-  src.File                                    52
-  src.Symbol                              15,176
-  src.FileLine                            14,481
+indexed 55 file(s) in 10.8s
+  src.File                                    55
+  src.Symbol                              16,569
+  src.FileLine                            16,801
   config.Setting                               7
-  msbuild.Project                             17
-  csharp.Name                              3,152
-  csharp.Method                            1,735
-  codemarkup.Definition                      906
-  codemarkup.FileXRef                     13,398
-  codemarkup.SearchEntry                     906
+  msbuild.Project                             20
+  csharp.Name                              3,356
+  csharp.Method                            2,005
+  codemarkup.Definition                      958
+  codemarkup.FileXRef                     14,658
+  codemarkup.SearchEntry                     958
   …
-  total                      121,678 facts in 72 blocks
-  server                     105,126 created, 910,367 deduped
-  contended                      0.0s  (1,005 of 121,678 facts waited for a batch)
-  throughput                  11,637 facts/s
+  total                      152,173 facts in 82 blocks
+  server                     133,860 created, 1,488,644 deduped
+  contended                      0.1s  (364 of 152,173 facts waited for a batch)
+  throughput                  14,057 facts/s
 
-references: 16,172 resolved, 4,738 to declarations outside the index, 12 unresolved
+references: 18,247 resolved, 5,483 to declarations outside the index, 2 unresolved
 ```
 
 Four of those numbers are worth reading twice.
 
 **`created` counts every fact written, nested targets included; `deduped` those already
-there.** A hundred and twenty-one thousand facts *sent* were a million facts *touched* — a
-factor of eight, which is what it costs to send each reference with its symbol and that
-symbol's file nested inside it. Nine hundred thousand of them were already in the database.
-That number is interning working, and producing it is the whole point of the exercise;
-`--dry-run` is the honest way to measure this side without one.
+there.** A hundred and fifty-two thousand facts *sent* were 1,622,504 facts *touched* — a
+factor of ten, which is what it costs to send each reference with its symbol and that
+symbol's file nested inside it. Of those, 1,488,644 were already in the database and
+133,860 were new. That number is interning working, and producing it is the whole point of the
+exercise; `--dry-run` is the honest way to measure this side without one.
 
 **`contended` is what the walk pays for sharing.** Several threads produce facts into
-sixty-seven per-predicate batches, and a thousand of a hundred and twenty-one thousand found
-one already held — for under a twentieth of a second in total. It replaced a single lock
-around the whole of fact production, and the number is here so the replacement can be
-compared with what it replaced rather than assumed better.
+sixty-five per-predicate batches, and three hundred and sixty-four of a hundred and
+fifty-two thousand found one already held — for a tenth of a second in total. It replaced a
+single lock around the whole of fact production, and the number is here so the replacement
+can be compared with what it replaced rather than assumed better.
 
-**`4,738 to declarations outside the index` is the honest part.** Real code points at the
+**`5,483 to declarations outside the index` is the honest part.** Real code points at the
 BCL and at packages; those references resolve to entities with no source location, and the
-run counts them rather than dropping them or inventing targets. `12 unresolved` is a name
+run counts them rather than dropping them or inventing targets. `2 unresolved` is a name
 the compiler could not bind at all, which on a healthy checkout should be nearly zero.
 
 **The line table is most of the bytes and none of the meaning.** A fact per line, blanks

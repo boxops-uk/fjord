@@ -44,6 +44,40 @@ Three structural moves come with them, and each is the same seam drawn twice:
 - **The bundler layer leaves `typescript`** into `bundle.sigla`, whose shape is
   `getStats().toJson()` — webpack's as much as Rspack's, hence the namespace.
 
+## Deviation: `msbuild.AssemblyReference` and `msbuild.AssemblyDependent` are deleted
+
+**Specified here, landed, never written, now removed** — recorded rather than dropped, because an
+undocumented deviation is a defect and a recorded one is not.
+
+They were declared with the rest of the layer above, given ids and a batch entry in the .NET
+client, and no producer ever emitted one. What made that visible is `PredicateCensusTests`, which
+classifies every declared predicate and asserts it behaves as classified; the pair sat there as
+`Owed` with the reason they could not be filled:
+
+> the reference list a design-time build hands back is every resolved DLL — some hundreds of
+> framework assemblies per project — and nothing in it tells a `<Reference>` somebody wrote from
+> the framework's own. This producer records none rather than keying an assembly on a file name.
+
+**Deleting beat filling, because the reason is not a missing feature but a missing answer.** The
+schema declared a question no consumer could get an answer to: what a design-time build hands
+back is a resolved file list, and `Assembly` is keyed on a *name*. Filling it would have meant
+inventing an identity per DLL path, which two producers would spell differently — so the honest
+move is to stop declaring it.
+
+`msbuild.Assembly` **stays**, and its charter narrows: it is written from each project's own
+output name and is still joined by `Compilation` and `ProjectCompilation`, so nothing is
+orphaned, but after this an `Assembly` fact can only be one a project *in the graph produces*.
+The schema's comment says so.
+
+It is a **flag day** and was landed as one: `msbuild.sigla` moves from `0xd97f69e6c42cf593` to
+`0xfad0dcb5ca7f6cd9`, `dotnet.sigla` from `0xc20dfe719b04e025` to `0x32c681adade8a5f7` (67
+predicates to 65) and `index.sigla` from `0xea69e11d083ae95f` to `0x49cbd96832c1ae21` (138 to
+136), which makes the table and the arithmetic above `msbuild.sigla` 14 and the composite 136:
+9+1+10+14+31+14+22+35 = 136. Every client carrying an old constant is refused at the handshake
+until rebuilt, and every existing database is refused for the same reason — which is what
+contains the id renumbering the deletion forces, since a `FactId` packs its predicate's id in
+its high bits.
+
 An MSBuild project's identity also changes from `csharp.Project`'s seven-field key to
 `{ file : src.File }` with the evaluated attributes as values, on the same argument revision 2 makes
 about `src.Decl`: **an identity must not carry an evaluation detail**, or re-evaluating under a

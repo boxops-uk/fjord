@@ -84,7 +84,7 @@ costs the fixture no fingerprint move and no flag day.
 
 The demo's argument made at scale: the same library, the same nested references and the same
 handshake, driven by a design-time build per project and a compiler that answers what every name
-means. It writes `schemas/dotnet.sigla` — sixty-seven predicates across five composed schemas —
+means. It writes `schemas/dotnet.sigla` — sixty-five predicates across five composed schemas —
 and most of them cannot be answered by a syntax walk at all: the project graph is MSBuild's, the
 entity model is Roslyn's, and the surface a UI reads is both of those re-keyed.
 

@@ -23,7 +23,7 @@ two hundred lines that can be read.
 
 `src.File`, the line table, `src.Symbol`, `config.Setting`, and the `codemarkup` surface:
 `Definition`, `FileDefinition`, `FileXRef`, `SymbolXRef`, `FileLocalXRef`, `SearchEntry`,
-`SymbolByName`. Fourteen predicates against a database of a hundred and thirty-eight — a
+`SymbolByName`. Fourteen predicates against a database of a hundred and thirty-six — a
 client declares the shapes it uses, not the database's whole schema.
 
 **A SCIP `local` is not a symbol and does not become one.** The spec is explicit — "Local

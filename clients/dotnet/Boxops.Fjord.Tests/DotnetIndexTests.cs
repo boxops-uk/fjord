@@ -12,8 +12,8 @@ namespace Boxops.Fjord.Tests;
 /// <b>The schema a .NET producer states, and the claim that it may state less.</b>
 /// </para>
 /// <para>
-/// <c>schemas/dotnet.sigla</c> resolves to 67 predicates and <see cref="DotnetIndex"/>
-/// states all 67. Declaring fewer stays legal rather than provisional: predicate ids are
+/// <c>schemas/dotnet.sigla</c> resolves to 65 predicates and <see cref="DotnetIndex"/>
+/// states all 65. Declaring fewer stays legal rather than provisional: predicate ids are
 /// the client's own, a block header carries the predicate's name, and a nested reference
 /// takes its predicate from the field's declared target. Nothing positional crosses the
 /// wire, so a client states what it writes.
@@ -23,7 +23,7 @@ namespace Boxops.Fjord.Tests;
 /// if that were wrong, and it asserts it with a one-predicate schema of its own rather
 /// than with this client's count — which would have stopped asserting anything the
 /// moment the transcription finished. The two round trips below then write a fact of
-/// every predicate a layer declares and read it back, ten and sixteen of them.
+/// every predicate a layer declares and read it back, ten and fourteen of them.
 /// </para>
 /// </summary>
 public sealed class DotnetIndexTests
@@ -33,9 +33,9 @@ public sealed class DotnetIndexTests
     {
         using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
 
-        // **One declaration against a sixty-seven predicate database.** Asserted with a
+        // **One declaration against a sixty-five predicate database.** Asserted with a
         // deliberately narrow schema rather than with `DotnetIndex`, which now states all
-        // sixty-seven: the property belongs to the protocol, not to what this client
+        // sixty-five: the property belongs to the protocol, not to what this client
         // happens to write, and a test that read the client's count would have stopped
         // asserting anything the moment the transcription finished.
         var narrow = new FjordSchema(
@@ -153,7 +153,7 @@ public sealed class DotnetIndexTests
     }
 
     /// <summary>
-    /// **The project graph, written and asked back.** Sixteen predicates whose shapes this
+    /// **The project graph, written and asked back.** Fourteen predicates whose shapes this
     /// side states independently: a wrong one is refused at the write, because the server
     /// decodes against its own statement. The two answers asserted at the end are the ones
     /// the retired build layer could not give — a project identified by its file alone,
@@ -181,15 +181,16 @@ public sealed class DotnetIndexTests
         // Every field MSBuild left unset is `nothing`, which is a different fact from the
         // empty string and the reason the value side is six `MaybeString`s.
         var lib = DotnetIndex.ProjectFact(libFile, targetFramework: "net10.0");
+        // **One assembly, and it is `App`'s own output.** `msbuild.Assembly` names only
+        // what a project in the graph produces, so a framework assembly written here
+        // would be a fact the schema no longer means — there is no edge to reach it by.
         var assembly = DotnetIndex.AssemblyFact("App");
-        var external = DotnetIndex.AssemblyFact("System.Runtime");
         var package = DotnetIndex.PackageFact("Newtonsoft.Json", "13.0.3");
 
         Write(connection, DotnetIndex.Solution, solution);
         Write(connection, DotnetIndex.Project, app);
         Write(connection, DotnetIndex.Project, lib);
         Write(connection, DotnetIndex.Assembly, assembly);
-        Write(connection, DotnetIndex.Assembly, external);
         Write(connection, DotnetIndex.Package, package);
         Write(connection, DotnetIndex.SolutionToProject, DotnetIndex.SolutionToProjectFact(solution, app));
         Write(connection, DotnetIndex.ProjectToSolution, DotnetIndex.ProjectToSolutionFact(app, solution));
@@ -199,8 +200,6 @@ public sealed class DotnetIndexTests
         Write(connection, DotnetIndex.ProjectReferencedBy, DotnetIndex.ProjectReferencedByFact(lib, app));
         Write(connection, DotnetIndex.PackageReference, DotnetIndex.PackageReferenceFact(app, package, "13.0.*"));
         Write(connection, DotnetIndex.PackageDependent, DotnetIndex.PackageDependentFact(package, app));
-        Write(connection, DotnetIndex.AssemblyReference, DotnetIndex.AssemblyReferenceFact(app, external));
-        Write(connection, DotnetIndex.AssemblyDependent, DotnetIndex.AssemblyDependentFact(external, app));
         Write(connection, DotnetIndex.Compilation, DotnetIndex.CompilationFact(assembly, "net10.0", app));
         Write(connection, DotnetIndex.ProjectCompilation, DotnetIndex.ProjectCompilationFact(app, "net10.0", assembly));
 
@@ -216,8 +215,6 @@ public sealed class DotnetIndexTests
             "{f = F, p = P} where msbuild.SourceFileToProject {src = F, project = P}",
             "X.value where X = msbuild.PackageReference {project = P, package = K}",
             "{k = K, p = P} where msbuild.PackageDependent {package = K, project = P}",
-            "{p = P, a = A} where msbuild.AssemblyReference {project = P, assembly = A}",
-            "{a = A, p = P} where msbuild.AssemblyDependent {assembly = A, project = P}",
             "{a = A, f = F, p = P} where msbuild.Compilation {assembly = A, framework = F, project = P}",
             "X.value where X = msbuild.ProjectCompilation {project = P, framework = \"net10.0\"}",
         })
