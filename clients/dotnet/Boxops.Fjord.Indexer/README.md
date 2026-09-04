@@ -176,13 +176,16 @@ facts on the way in, one seek on the way out.
 
 **A declaration this layer cannot express is dropped and counted.** A signature mentioning
 `dynamic`, or a name that did not resolve, has no `csharp.AType` alternative — and that type
-sits in the key of `Method`, `Field` and `Parameter`. An `event` is the other reason, and a
-different one: this layer has no entity for one at all, so both forms of the declaration are
-dropped — and because `codemarkup` cross-references are written whether or not a definition
-was, an event is a symbol with uses and no definition. The run prints how many, because a
-layer that silently loses declarations is worse than one that says how many it lost. On a
-healthy checkout that declares no event it is zero, and a number other than zero found a
-broken workspace once.
+sits in the key of `Method`, `Field` and `Parameter`. The other reason is a declaration kind
+this layer has no entity for at all, which is a gap in the schema no checkout can fix: an
+`event`, both forms of it, and an `extension` block, which takes the members declared inside
+it down with it. Because `codemarkup` cross-references are written whether or not a
+definition was, each of those is a symbol with uses and no definition. The run prints how
+many and which of the two causes, because a layer that silently loses declarations is worse
+than one that says how many it lost. On a checkout that declares neither it is zero, and a
+number other than zero found a broken workspace once. Which kinds fall on which side is a
+census — `DeclarationCensusTests` walks every declaration form Roslyn derives from the bases
+the walk switches on, and refuses a form that is neither expressed nor counted.
 
 **The build layer degrades rather than disappears.** A design-time build knows the resolved
 framework, the assembly name MSBuild computed, versions after central package management,

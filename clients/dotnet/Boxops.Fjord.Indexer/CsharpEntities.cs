@@ -70,13 +70,25 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     public int InexpressibleTypes => Volatile.Read(ref _inexpressibleTypes);
 
     /// <summary>
-    /// Declarations of a kind that has no <c>csharp</c> entity at all — an event.
+    /// Declarations this layer has no entity for: a kind with no <c>csharp</c> predicate
+    /// at all — an event — and a named type whose kind has no <c>csharp.NamedType</c>
+    /// alternative — an <c>extension</c> block.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Kept apart from <see cref="InexpressibleTypes"/> because the two are acted on
     /// differently: a type this layer cannot express is a <c>dynamic</c>, a function
     /// pointer or a broken reference somewhere in a signature, and this is a gap in the
     /// schema that no checkout can fix.
+    /// </para>
+    /// <para>
+    /// <b>The three causes above are what falls here today and not what can.</b> Each is
+    /// one arm of a <c>switch</c> that ends in <c>_ =&gt; null</c>, so the next
+    /// declaration kind a compiler hands this walk is dropped with no fact and no tally
+    /// unless somebody routes it through <see cref="Dropped"/> —
+    /// <c>DeclarationCensusTests</c> is the guard that fails until they do, over every
+    /// declaration form Roslyn derives from the bases the walk switches on.
+    /// </para>
     /// </remarks>
     public int InexpressibleKinds => Volatile.Read(ref _inexpressibleKinds);
 
@@ -453,6 +465,14 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
         // cross-references `Reference` still mints pointing at a symbol nothing defines.
         IEventSymbol => Dropped(),
 
+        // **No entity and no tally**, which is right only because nothing the
+        // declaration walk visits arrives here. A local does, from `Reference`, and
+        // there a null is the answer rather than a loss: `csharp.Local` is a predicate
+        // this producer deliberately mints none of, and `Reference` writes the
+        // `codemarkup` half instead. A declaration kind arriving here would be dropped
+        // with no fact and no number, and nothing at run time can tell the two callers
+        // apart — so `DeclarationCensusTests` is the guard, over every declaration form
+        // Roslyn derives from the bases the walk switches on.
         _ => null,
     };
 
@@ -506,7 +526,12 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
                     Bool(type.IsStatic),
                     Bool(type.IsSealed))),
 
-            _ => null,
+            // **A type kind with no `csharp.NamedType` alternative — an `extension`
+            // block.** Counted rather than dropped, and counted here rather than at each
+            // member: a member of a type that cannot be named is dropped by this, and
+            // `Entity` memoises, so the cause is one tally and not one per declaration
+            // that fell over it.
+            _ => Dropped(),
         };
     }
 

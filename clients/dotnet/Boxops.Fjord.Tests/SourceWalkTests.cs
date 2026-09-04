@@ -81,11 +81,19 @@ public sealed class SourceWalkTests
         Walked(source, lines, repo, revision).Recorder;
 
     /// <summary>The same walk, keeping the tallies the run reports beside the facts.</summary>
+    /// <remarks>
+    /// <b><paramref name="language"/> is the compiler's default unless a claim needs
+    /// otherwise.</b> The real walk parses with whatever MSBuild says the project is, so
+    /// a form the pinned Roslyn accepts only under <c>Preview</c> is still one a checkout
+    /// can hand it — and there is no other way to put such a declaration in front of the
+    /// walk.
+    /// </remarks>
     internal static (Recorder Recorder, Boxops.Fjord.Indexer.Indexer Indexer) Walked(
         string source,
         bool lines = true,
         string? repo = null,
-        string? revision = null)
+        string? revision = null,
+        LanguageVersion? language = null)
     {
         var directory = Directory.CreateTempSubdirectory("fjord-source-walk");
         try
@@ -103,7 +111,10 @@ public sealed class SourceWalkTests
             var projects = ProjectIndex.Build(directory.FullName, directory.FullName, [], TextWriter.Null);
             var recorder = new Recorder();
 
-            var tree = CSharpSyntaxTree.ParseText(File.ReadAllText(path), path: path);
+            var tree = CSharpSyntaxTree.ParseText(
+                File.ReadAllText(path),
+                language is { } version ? new CSharpParseOptions(version) : null,
+                path: path);
             var compilation = CSharpCompilation.Create(
                 "Walked",
                 [tree],
@@ -191,6 +202,58 @@ public sealed class SourceWalkTests
 
         Assert.Contains("event", dropped, StringComparison.Ordinal);
         Assert.DoesNotContain("dynamic", dropped, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// **An `extension` block is a declaration kind too, and the run counts it.**
+    /// `TypeKind.Extension` has no `csharp.NamedType` alternative, so the block gets no
+    /// entity — and neither do the members declared inside it, since a member is keyed
+    /// on the type that contains it. What the walk must not do is write nothing and
+    /// report nothing: the tally is the only place a whole extension block's worth of
+    /// missing definitions shows up.
+    /// </summary>
+    /// <remarks>
+    /// One tally for the three declarations it drops, and that is the accounting on
+    /// purpose: the cause is the type, `Entity` memoises it, and a number that counted
+    /// every member of every unnameable type would say how big the checkout is rather
+    /// than what the schema is missing.
+    /// </remarks>
+    [Fact]
+    public void An_extension_block_this_layer_cannot_express_is_counted()
+    {
+        var (written, indexer) = Walked(
+            """
+            namespace Fixture
+            {
+                public static class Ext
+                {
+                    extension(int value)
+                    {
+                        public int Doubled => value * 2;
+
+                        public int Twice() => value * 2;
+                    }
+                }
+            }
+            """,
+            language: LanguageVersion.Preview);
+
+        Assert.Equal(1, indexer.Inexpressible);
+
+        var dropped = Assert.Single(Program.Dropped(indexer));
+
+        Assert.Contains("extension", dropped, StringComparison.Ordinal);
+        Assert.DoesNotContain("dynamic", dropped, StringComparison.Ordinal);
+
+        // The containing class is written, so the walk ran and this is a gap in the
+        // schema rather than a file it never read.
+        var named = written.Of(DotnetIndex.SymbolByName)
+            .Select(fact => Str(Fields(fact.Key)[0]))
+            .ToList();
+
+        Assert.Contains("Ext", named);
+        Assert.DoesNotContain("Doubled", named);
+        Assert.DoesNotContain("Twice", named);
     }
 
     /// <summary>

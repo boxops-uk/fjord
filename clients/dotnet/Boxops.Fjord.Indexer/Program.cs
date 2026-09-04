@@ -418,10 +418,12 @@ internal static class Program
     /// </summary>
     /// <remarks>
     /// <b>Two causes, so one line cannot carry them.</b> A signature naming a type with no
-    /// <c>csharp.AType</c> alternative is one, and an event — which this layer has no
-    /// entity for at all — is the other. Attributing the whole count to the first sends
+    /// <c>csharp.AType</c> alternative is one, and a declaration kind this layer has no
+    /// entity for at all is the other. Attributing the whole count to the first sends
     /// somebody looking for a <c>dynamic</c> that is not there, which is exactly the
-    /// silence the counter exists to break.
+    /// silence the counter exists to break — and so does naming one form of the second
+    /// cause when it has two: an event, and an <c>extension</c> block, whose members go
+    /// with it.
     /// </remarks>
     internal static IEnumerable<string> Dropped(Indexer indexer)
     {
@@ -435,7 +437,8 @@ internal static class Program
         if (indexer.InexpressibleKinds > 0)
         {
             yield return $"{Count(indexer.InexpressibleKinds)} declaration(s) dropped: "
-                + "an event, which this layer has no entity for at all";
+                + "a kind this layer has no entity for at all (an event, or an "
+                + "`extension` block)";
         }
     }
 
