@@ -23,11 +23,9 @@ use lasso::Rodeo;
 /// public and the failure it prevents is silent: the copy under `schema/` is what the
 /// database is served with for the rest of its life.
 ///
-/// Only the half `recover` itself refuses is reachable. The other half — `equivalent`
-/// answering false — needs two schemas that print alike and compare unlike, and there
-/// is no such pair: a numbering round-trips because print emits the ids and `recover`
-/// reads them, and a **family** `same_ty` cannot compare is now a compile error at the
-/// arm rather than a refusal here.
+/// This one provokes the half `recover` itself refuses — a name the language cannot
+/// spell. The other half, `equivalent` answering false over text that does lower, is
+/// [`a_built_schema_with_an_uncomparable_field_is_refused`].
 #[test]
 fn a_built_schema_create_cannot_recover_is_refused() {
     let mut rodeo = Rodeo::new();
@@ -55,6 +53,60 @@ fn a_built_schema_create_cannot_recover_is_refused() {
     );
     assert!(
         !dir.path().join("unspellable").exists(),
+        "refused, but a directory was left behind"
+    );
+}
+
+/// **`create` refuses a schema holding a field whose type comes back a different
+/// family**, through `recoverable()` → `equivalent` → `same_ty`.
+///
+/// A union of no alternatives is such a type: braces are shared with a record and the
+/// separator after the first alternative is what tells the two apart, so a union with
+/// nothing to separate prints as `{}` and lowers back as a **record**. The text is a
+/// schema — this is not the refusal `recover` makes — and `same_ty` is what catches it.
+/// Refused before anything exists, or the artifact embeds a schema that decodes every
+/// stored row of that field through the wrong family, silently.
+#[test]
+fn a_built_schema_with_an_uncomparable_field_is_refused() {
+    let mut rodeo = Rodeo::new();
+    let name = rodeo.get_or_intern("gen.P");
+    let field = rodeo.get_or_intern("choice");
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Record(Arc::from([(field, PredicateTy::Union(Arc::from([])))])),
+            value: None,
+        }]),
+    );
+
+    // **Which half is under test, asserted rather than assumed.** A test that only
+    // checked the refusal would pass on the parse error the sibling above provokes,
+    // and `same_ty` would stay unreached.
+    let text = fjord_schema::syntax::print::print(&schema);
+    let back = fjord_schema::syntax::recover(schema_doc::SCHEMA_FILE, &text)
+        .expect("the printed text lowers, so the refusal under test is `equivalent`'s");
+    assert!(
+        !fjord_schema::syntax::print::equivalent(&schema, &back),
+        "a union of no alternatives came back comparable:\n{text}"
+    );
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let catalog = Catalog::open(dir.path()).expect("a catalog");
+
+    let err = catalog
+        .create("uncomparable", &schema)
+        .expect_err("a field whose type does not survive the round trip must be refused");
+
+    let CatalogError::UnwritableSchema { detail, .. } = &err else {
+        panic!("got {err:?}")
+    };
+    assert!(
+        detail.contains("written back, it is a different schema"),
+        "refused, but for `recover`'s reason rather than `equivalent`'s: {detail}"
+    );
+    assert!(
+        !dir.path().join("uncomparable").exists(),
         "refused, but a directory was left behind"
     );
 }
