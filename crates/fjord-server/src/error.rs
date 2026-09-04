@@ -29,8 +29,46 @@ pub enum ServerError {
     #[error("protocol: {0}")]
     Protocol(String),
 
-    #[error("no database named `{0}`")]
-    UnknownDatabase(String),
+    /// A database the root holds and this server cannot open — a store fjall refused,
+    /// a sidecar that has gone, or a schema copy that cannot be read back.
+    ///
+    /// Distinct from the [`Catalog`](ServerError::Catalog) refusal an absent name gets
+    /// ([`CatalogError::NoSuchDatabase`](fjord_store_fjall::error::CatalogError::NoSuchDatabase))
+    /// in what it can *say*: which instance was chosen, and what went wrong with it.
+    /// An operator whose publish failed half-way needs the difference between a name
+    /// that is not there and a name that is there and broken, and both would otherwise
+    /// be "no database named `x`".
+    ///
+    /// Carries the fault rather than a rendered string, because
+    /// [`code`](ServerError::code) asks it whether the store is merely **held**: that
+    /// condition ends when the holder lets go, so it answers [`ErrorCode::InUse`]
+    /// rather than an absence a client would never retry. Boxed because this type is
+    /// the `Err` of every data path, and one large variant is paid for by all of them.
+    #[error("`{address}` names instance {instance}, which this server cannot open: {source}")]
+    Unservable {
+        address: String,
+        instance: String,
+        #[source]
+        source: Box<fjord_store_fjall::error::CatalogError>,
+    },
+
+    /// A `create` that published a database and then could not open it.
+    ///
+    /// **Not "no such database", and not "come back either".** `create` opens what it
+    /// published through the same path [`Registry::bind`](crate::Registry::bind) opens a
+    /// cold instance with, so the refusal that comes back is
+    /// [`Unservable`](ServerError::Unservable) — whose code is
+    /// [`ErrorCode::UnknownDatabase`] for a fault that will not clear and
+    /// [`ErrorCode::InUse`] for one that will. Both are wrong here: the client has just
+    /// been told the name was taken and the instance directory is under the root, so it
+    /// is neither absent nor arriving. This says what happened instead, and answers
+    /// [`ErrorCode::Internal`].
+    ///
+    /// Carries the fault rendered rather than typed, because nothing asks it a
+    /// question — the failed open has already written the reason to the server's log,
+    /// which is where `Internal` points.
+    #[error("`{database}` was created and this server could not then open it: {detail}")]
+    CreatedNotOpened { database: String, detail: String },
 
     /// A frame that needs a database, on a session bound to none.
     #[error("this session names no database; name one at startup to query or write")]
@@ -134,7 +172,25 @@ impl ServerError {
 
         match self {
             ServerError::Protocol(_) | ServerError::Wire(_) => ErrorCode::Protocol,
-            ServerError::UnknownDatabase(_) | ServerError::NoDatabase => ErrorCode::UnknownDatabase,
+
+            // **A database that is there and not openable *yet* is not an absent
+            // one.** Both conditions here end without anybody doing anything — the
+            // holder lets go, the copy into the store root finishes — so the answer a
+            // client can act on is the retryable one, and `InUse` is already what a
+            // held root answers. "No such database" is the one answer a client will
+            // never retry. The detail stays in the message either way.
+            ServerError::Unservable { source, .. }
+                if source.is_locked() || matches!(**source, CatalogError::NoStore { .. }) =>
+            {
+                ErrorCode::InUse
+            }
+
+            ServerError::Unservable { .. } | ServerError::NoDatabase => ErrorCode::UnknownDatabase,
+
+            // A `create` whose open failed is a fault in this server, not a name the
+            // client got wrong — and the reason is in the log line the open wrote.
+            ServerError::CreatedNotOpened { .. } => ErrorCode::Internal,
+
             ServerError::SchemaMismatch { .. } | ServerError::SchemaNotContained { .. } => {
                 ErrorCode::SchemaMismatch
             }

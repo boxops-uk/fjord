@@ -212,14 +212,14 @@ parsing English; the message exists because a person reads it.
 | Code | Means |
 |---|---|
 | 1 `Protocol` | Malformed or out-of-sequence frames |
-| 2 `UnknownDatabase` | No such database under this root |
+| 2 `UnknownDatabase` | No such database under this root, no such instance of one, no database named on this session at all — or one that is there and this server cannot open, and in that last case the message says which instance and why |
 | 3 `SchemaMismatch` | The claim disagrees with what this database holds |
 | 4 `ModeRefused` | A write session against a Complete database |
 | 5 `BadFacts` | A block that does not validate against the embedded schema |
 | 6 `Conflict` | Same key, different value |
 | 7 `BadQuery` | The query did not compile |
 | 8 `Internal` | Look at the server's logs |
-| 9 `InUse` | Something else holds this database — the one code worth **retrying** |
+| 9 `InUse` | The database is there and not usable **yet** — the root or the instance's store directory is held by something else, a session still has it, or a copy into the store root has not finished delivering it. The one code worth **retrying** |
 | 10 `Refused` | A well-formed request the server will not carry out — the answer is in the message |
 | 11 `Busy` | The server is at its connection cap and never read the request — **come back**, the other code worth retrying |
 

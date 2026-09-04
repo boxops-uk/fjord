@@ -171,8 +171,60 @@ fjord --data-dir ./out finish code
 Lifecycle commands work with **no server running** — that is the amendment the offline path exists
 for. A reader always goes through a server.
 
-Then the artifact is a directory: `tar` it, publish it, and untar it into a store root on the
-serving side. There is no registration step, because the filesystem is the catalog.
+Then the artifact is a directory: `tar` it, publish it, and unpack it into a store root on the
+serving side. There is no registration step, because the filesystem is the catalog — a server
+resolves every bind against the disk, so an instance that appears under a live root is bound by the
+next session that asks for it, with nothing restarted and nothing told.
+
+#### Publish by rename — required for a live root
+
+That same property is why **the instance directory must appear all at once**, and for a root a
+server is serving this is a requirement and not a preference: copying into place can *destroy the
+artifact you are publishing*. Unpack or `rsync` into a staging path *inside the same store root*,
+then `mv` the finished instance directory into `<root>/<name>/<instance>/`:
+
+```bash
+staging="$root/.staging-$instance"                   # dot-prefixed: the scan ignores it
+mkdir -p "$staging" && tar -C "$staging" -xf code.tar
+mkdir -p "$root/code"
+mv "$staging/$instance" "$root/code/$instance"       # one atomic rename
+rmdir "$staging"
+```
+
+A rename within a filesystem is atomic, so a session either does not see the instance or sees all
+of it. **This is what the tool itself does**, not an extra demand on operators: `fjord create`
+builds a database in a `.create-<ulid>/` scratch inside the root and moves the finished instance
+directory in under one `fs::rename`, which is the reason a killed `create` leaves no half-built
+database behind. An `rsync` straight into the root is the odd one out.
+
+Copying straight into `<root>/<name>/<instance>/` instead publishes the directory at its first byte
+and leaves it half a database for as long as the copy runs: the sidecar and the store files arrive
+in whatever order the copy chose, and a bind landing in between finds a database that records facts
+it cannot read. What such a bind gets depends on how far the copy has got, and the second half is
+the one that costs an artifact:
+
+- **Before the store's own marker file lands**, the bind is **refused**: it names the instance,
+  says the store has not arrived, and answers the retryable `InUse` rather than "no such database".
+  Nothing is written into the directory. This is an outage for every session that asks during the
+  copy, and nothing worse.
+- **After it lands and before the last of the store's internal manifests does**, the bind *opens*
+  the directory, and the open is a recovery: the storage engine treats a part-delivered internal
+  keyspace as one it never finished creating and **deletes it**, files the copy had already sent
+  included. The bind is then refused — the sealed sidecar records a fact count, the recovered store
+  holds fewer, and they are compared — but the refusal comes after the delete. The copy then
+  finishes, having sent every path it owed, and the published artifact is **permanently
+  unopenable**: a fresh reader of it fails on a file that is no longer there. Republishing is the
+  only repair.
+
+The fact-count check is why a *wrong answer* is no longer among the outcomes — before it, that bind
+was served `READY` on a `Complete` database answering zero rows, for the life of the process, while
+`fjord.db.List` went on reporting the count the sidecar records. It is a refusal and not a fix: the
+comparison can only be made once the store is open, and opening it is what deleted the files.
+
+Two details make the staging path work. It must be **under the store root** so the `mv` is a rename
+and not a copy; and it must start with a dot, which is what keeps the scan from reading a
+half-written sidecar out of it (`.` names are the catalog's own — the root lock and `create`'s
+scratch are two more).
 
 ### Scaling readers
 
@@ -195,9 +247,13 @@ Not built as commands, and mostly not needed as ones:
 - **Backup is a tar of the directory, Complete databases only.** A file-level copy of a Writable
   database is unsafe under single-process ownership and explicitly out of scope. Include the
   sidecar.
-- **Restore is an untar into the store root.** No registration step exists. Validate that the
-  sidecar parses, the status is Complete, and — if you recorded it — the content fingerprint
-  matches.
+- **Restore unpacks to a staging path and renames the instance directory in** — the shape
+  ["Publish by rename"](#publish-by-rename-required-for-a-live-root) describes, and for the same
+  reason: no registration step exists, so an instance directory becomes visible the moment it
+  appears, and one that appears a file at a time is a database nothing can serve until the last
+  file lands — and, past a certain point in the copy, one a bind will damage beyond repair.
+  Validate that the sidecar parses, the status is Complete, and — if you recorded it — the content
+  fingerprint matches, before the rename rather than after it.
 - The same mechanism serves the future copy-on-start reader-scaling mode.
 
 ## Gaps this design names

@@ -224,6 +224,65 @@ impl Entry {
     pub fn selector(&self) -> Selector {
         Selector::at(self.name(), &self.meta.instance)
     }
+
+    /// Open this instance's store — and **refuse a directory that holds none**.
+    ///
+    /// **The one way to open a resolved instance**, because
+    /// [`FjallDb::open`](crate::store::FjallDb::open) is create-or-recover and every
+    /// caller here has resolved a database it means to find already there. Handed the
+    /// path of a directory a copy into the store root is still filling, that call
+    /// stamps a fresh empty keyspace into the copy's target and serves it: `Complete`
+    /// on the sidecar's word, answering none of the facts the same sidecar records,
+    /// for as long as the handle is held. [`FjallDb::open_existing`] asks the disk
+    /// first instead.
+    ///
+    /// The presence check does not consult the status, and must not: `create` publishes
+    /// an instance directory with the store already in it — built in a scratch and
+    /// moved in under one rename — so there is no legitimate moment at which an
+    /// instance the root lists holds a sidecar and no store.
+    ///
+    /// **And a store that is there is checked against what the sidecar records.** The
+    /// presence check answers one level; fjall's create-or-recover recurs per keyspace
+    /// inside, and a recovery deletes a keyspace whose `current` manifest a copy has
+    /// not delivered yet — so a store can be there, open, and hold fewer facts than the
+    /// sealed sidecar beside it says. A `Complete` sidecar carries the count the seal
+    /// walked, so this compares it and refuses with
+    /// [`CatalogError::FactsDoNotMatch`], whose doc says what that does and does not
+    /// buy: the open has already deleted what had not arrived, so this converts a wrong
+    /// answer served for the life of the process into a refusal, and repairs nothing.
+    ///
+    /// Only for `Complete`, and only where the sidecar carries a count: a `Writable`
+    /// database has no recorded count to disagree with, and comparing against a
+    /// half-ingested one would refuse every database being written to.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::NoStore`] for a directory holding no store, naming this instance
+    /// and what is missing; [`CatalogError::FactsDoNotMatch`] for a sealed instance
+    /// whose store is not the one its sidecar describes; otherwise whatever the open
+    /// reports.
+    pub fn open_store(&self) -> Result<FjallDb, CatalogError> {
+        let db = FjallDb::open_existing(&self.path)?.ok_or_else(|| CatalogError::NoStore {
+            name: self.name().to_owned(),
+            instance: self.meta.instance.clone(),
+            path: self.path.clone(),
+        })?;
+
+        if let (Status::Complete, Some(recorded)) = (self.status(), self.meta.facts) {
+            let found = db.count_facts()?;
+            if found != recorded {
+                return Err(CatalogError::FactsDoNotMatch {
+                    name: self.name().to_owned(),
+                    instance: self.meta.instance.clone(),
+                    path: self.path.clone(),
+                    recorded,
+                    found,
+                });
+            }
+        }
+
+        Ok(db)
+    }
 }
 
 /// What sealing a database came to.
@@ -603,7 +662,7 @@ impl Catalog {
             });
         }
 
-        let db = FjallDb::open(&entry.path)?;
+        let db = entry.open_store()?;
         Ok((entry, db))
     }
 
@@ -614,7 +673,7 @@ impl Catalog {
     /// [`CatalogError::NoSuchDatabase`], or whatever opening the store reports.
     pub fn open_read(&self, selector: &Selector) -> Result<(Entry, FjallDb), CatalogError> {
         let entry = self.resolve(selector, Intent::Read)?;
-        let db = FjallDb::open(&entry.path)?;
+        let db = entry.open_store()?;
         Ok((entry, db))
     }
 
@@ -683,7 +742,7 @@ impl Catalog {
         })?;
         let schema = &schema;
 
-        let db = FjallDb::open(&entry.path)?;
+        let db = entry.open_store()?;
         let identity = seal(&name, &entry, &db, schema, allow_zero_facts)?;
 
         // Dropped before the sidecar write for the same reason the sync came first:

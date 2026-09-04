@@ -711,6 +711,18 @@ fn a_sealed_database_reopens_and_answers_identically() {
     assert_eq!(after.fingerprint, before.fingerprint);
     assert_eq!(after.facts, before.facts, "a fact went missing");
     assert!(after.facts > 0, "nothing was written, so nothing is proved");
+
+    // **And the cheap count agrees with the walk**, which is what
+    // [`Entry::open_store`] compares a sealed sidecar against on every open. A count
+    // that read differently from the walk that wrote the sidecar would refuse a healthy
+    // database on every bind — fjall's own `O(1)` count does exactly that, because a
+    // sealed database's journal is replayed into a memtable whose facts the tables also
+    // hold and it sums both.
+    assert_eq!(
+        db.count_facts().expect("the trees count"),
+        after.facts,
+        "the count a bind checks must be the count the seal recorded"
+    );
 }
 
 /// **Where the artifact's size settles, measured at three points.**

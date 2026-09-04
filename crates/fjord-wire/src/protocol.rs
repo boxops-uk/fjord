@@ -351,8 +351,11 @@ pub enum ErrorCode {
     Conflict = 6,
     BadQuery = 7,
     Internal = 8,
-    /// A database something else is holding — a session has it open, so it cannot be
-    /// taken away underneath. The one code here worth *retrying*.
+    /// A database that is there and not usable **yet**: a session has it open, so it
+    /// cannot be taken away underneath; another process holds the root or the
+    /// instance's store directory; or a copy into the store root has not finished
+    /// delivering it. The one code here worth *retrying* — every one of those ends
+    /// without the client changing anything about its request.
     InUse = 9,
     /// A well-formed request the server will not carry out: a name already taken, a
     /// name that cannot be a directory, an empty database sealed without the flag.

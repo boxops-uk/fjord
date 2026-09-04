@@ -339,7 +339,13 @@ where
     let database = if startup.database.is_empty() {
         None
     } else {
-        Some(registry.bind(&startup.database)?)
+        // **Off the reactor.** A bind walks the root's sidecars, and on a miss opens a
+        // store — replaying its journals, which is seconds on a large database. Both
+        // on a reactor thread would stall every other connection that thread drives.
+        let registry = Arc::clone(registry);
+        let address = startup.database.clone();
+
+        Some(blocking::run(move || registry.bind(&address)).await?)
     };
 
     let (identity, predicates) = match &database {
@@ -664,7 +670,7 @@ impl StreamTask {
         }
 
         let request = protocol::decode_control(payload)?;
-        let reply = self.session.registry.execute(&request).await?;
+        let reply = Arc::clone(&self.session.registry).execute(&request).await?;
 
         self.outbound
             .send(
