@@ -120,10 +120,34 @@ internal sealed class ProjectIndex
     /// </remarks>
     private readonly Dictionary<string, List<ProjectInfo>> _byDirectory = new(StringComparer.Ordinal);
 
+    /// <summary>The solution this index was built from, index-relative, or none.</summary>
+    private string? _solution;
+
+    /// <summary>The listed projects an edge can point at, index-relative.</summary>
+    private readonly List<string> _listed = [];
+
+    private readonly List<string> _unlinked = [];
+
     public IReadOnlyCollection<ProjectInfo> Projects => _byPath.Values;
 
     /// <summary>How many projects a design-time build, rather than XML, answered for.</summary>
     public int Built => _byPath.Values.Count(project => project.Built);
+
+    /// <summary>
+    /// Projects the solution lists that this index holds no <c>msbuild.Project</c> for, by
+    /// file name — the edges that were not written.
+    /// </summary>
+    /// <remarks>
+    /// <b>An omission a run has to say out loud.</b> A solution's membership is a claim
+    /// about the repository, and a project it lists that has no project fact loses both of
+    /// its edges — so a database can be missing a third of a solution and look complete.
+    /// The only such project a normal layout produces is one whose path climbs out of
+    /// <c>--root</c>: it comes back as <c>../../elsewhere</c>, which is not a name two runs
+    /// would agree on, so it gets no <c>src.File</c> and there is nothing for an edge to
+    /// point at. Same rule as shared source and as a dropped declaration kind: no edge
+    /// rather than a plausible one, named and counted rather than dropped.
+    /// </remarks>
+    public IReadOnlyList<string> Unlinked => _unlinked;
 
     /// <summary>
     /// Read every project under <paramref name="source"/>, then let the builds that
@@ -133,6 +157,7 @@ internal sealed class ProjectIndex
         string root,
         string source,
         IReadOnlyList<IAnalyzerResult> results,
+        ResolvedSolution? solution,
         TextWriter log)
     {
         var index = new ProjectIndex();
@@ -171,7 +196,72 @@ internal sealed class ProjectIndex
         log.WriteLine($"  build layer: {index._byPath.Count} project(s), "
             + $"{index.Built} from a design-time build, {index._byFile.Count} file(s) attributed exactly");
 
+        // Last, because it needs every project fact this layer will have: a project the
+        // glob missed and a build rescued is one an edge can point at, and asking before
+        // `Refine` would have counted it as lost.
+        if (solution is not null)
+        {
+            index.Link(root, solution, log);
+        }
+
         return index;
+    }
+
+    /// <summary>
+    /// The solution this index was built from, and which of the projects it lists an edge
+    /// can name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What the solution says, not what is on disk.</b> The membership is read from the
+    /// solution's own project list, so a <c>.csproj</c> the glob found beside it and the
+    /// solution does not name gets no edge — which is the difference between "the projects
+    /// of this solution" and "the projects in this directory", and the two are different
+    /// answers in any repository with a second solution in it.
+    /// </para>
+    /// <para>
+    /// <b>A listed project with no <c>msbuild.Project</c> fact gets no edge.</b> Both edges
+    /// are references to a <c>Project</c>, and a reference to a fact that does not exist is
+    /// not a fact — so the edge is left out, and <see cref="Unlinked"/> is what stops that
+    /// being silent.
+    /// </para>
+    /// </remarks>
+    private void Link(string root, ResolvedSolution solution, TextWriter log)
+    {
+        if (Paths.Relative(root, solution.File) is not { } path)
+        {
+            // The solution is outside `--root`, so it has no path this index can name it
+            // by and `msbuild.Solution`'s key cannot be built — the same rule that skips a
+            // project whose path climbs out. Written down rather than skipped, because a
+            // whole solution silently absent is what a consumer would read as "this
+            // checkout has no solution".
+            log.WriteLine($"  ! {System.IO.Path.GetFileName(solution.File)}: outside the "
+                + "index root, so there is no `src.File` to key a solution on and no "
+                + "solution facts are written");
+            return;
+        }
+
+        _solution = path;
+
+        foreach (var project in solution.Projects)
+        {
+            if (Paths.Relative(root, project) is { } listed && _byPath.ContainsKey(listed))
+            {
+                _listed.Add(listed);
+                continue;
+            }
+
+            _unlinked.Add(System.IO.Path.GetFileName(project));
+        }
+
+        log.WriteLine($"  solution {path}: {_listed.Count} of {solution.Projects.Count} "
+            + "listed project(s) have a project fact to be an edge to");
+
+        foreach (var name in _unlinked)
+        {
+            log.WriteLine($"  ! {name}: listed by {path} and has no `msbuild.Project` fact "
+                + "in this index, so neither solution edge names it");
+        }
     }
 
     /// <summary>The projects that compile <paramref name="file"/>, which may be none.</summary>
@@ -209,8 +299,9 @@ internal sealed class ProjectIndex
     }
 
     /// <summary>
-    /// Write the build layer itself: the projects, the assemblies, the compilations that
-    /// pair them, and the two dependency graphs.
+    /// Write the build layer itself: the solution where the run resolved one, the
+    /// projects, the assemblies, the compilations that pair them, and the two dependency
+    /// graphs.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -227,6 +318,8 @@ internal sealed class ProjectIndex
     /// </remarks>
     public void Emit(Action<uint, FjordFact> emit)
     {
+        EmitSolution(emit);
+
         foreach (var project in _byPath.Values)
         {
             emit(DotnetIndex.Project, project.Fact);
@@ -293,6 +386,60 @@ internal sealed class ProjectIndex
                     DotnetIndex.PackageDependent,
                     DotnetIndex.PackageDependentFact(package, project.Fact));
             }
+        }
+    }
+
+    /// <summary>
+    /// The solution this index was built from, and both edges to each project it lists.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Nothing at all for a run that resolved no solution.</b> MSBuild's containment is
+    /// one-way — a solution lists its projects and a project names no solution — so a run
+    /// handed a <c>.csproj</c> has nothing to resolve, and searching the disk for a
+    /// solution that happens to list it would put a claim in the database that the build
+    /// system does not make. The predicate therefore means <i>the solution this index was
+    /// built from</i>, which is a reading a consumer can use, and it is empty for a
+    /// project-only run rather than approximate.
+    /// </para>
+    /// <para>
+    /// <b>The solution file is interned as a path and gets no source-layer facts</b> — no
+    /// <c>src.FileLanguage</c>, no <c>src.FileDigest</c>, no <c>src.FileInfo</c> and no
+    /// line table — which is exactly how the <c>.csproj</c> in <c>msbuild.Project</c>'s own
+    /// key is interned. The source layer describes files the run <i>read as source</i>:
+    /// every offset in it is an offset into a file some compilation parsed, and nothing in
+    /// this database holds a position in a solution file. Writing a
+    /// <c>src.FileLanguage</c> of <c>xml</c> for it would also contradict
+    /// <c>config.Setting {dimension = "language"}</c>, which says what the semantic layers
+    /// cover; <c>--no-lines</c> and <c>--styles</c> are switches over that same source
+    /// table, and Roslyn's classifier has no <c>Document</c> for a file no compilation
+    /// contains. What makes the fact readable is the pair of edges below: through them the
+    /// <c>file</c> field joins to exactly what a project's does.
+    /// </para>
+    /// <para>
+    /// <b>Both directions, because <c>msbuild.sigla</c> stores both</b> — neither is
+    /// derivable in a seek from the other, so writing one would leave "which solution is
+    /// this project in" a read of every solution in the repository.
+    /// </para>
+    /// </remarks>
+    private void EmitSolution(Action<uint, FjordFact> emit)
+    {
+        if (_solution is not { } path)
+        {
+            return;
+        }
+
+        var solution = DotnetIndex.SolutionFact(DotnetIndex.FileFact(path));
+        emit(DotnetIndex.Solution, solution);
+
+        foreach (var listed in _listed)
+        {
+            // `_listed` holds only the paths `Link` found a project for, so the lookup
+            // cannot fail — the ones it could not are in `Unlinked` and are reported.
+            var project = _byPath[listed].Fact;
+
+            emit(DotnetIndex.SolutionToProject, DotnetIndex.SolutionToProjectFact(solution, project));
+            emit(DotnetIndex.ProjectToSolution, DotnetIndex.ProjectToSolutionFact(project, solution));
         }
     }
 

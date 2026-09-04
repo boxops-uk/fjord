@@ -417,4 +417,194 @@ public sealed class LoaderTests
         Assert.NotEmpty(Only(solution).Projects);
         Assert.Equal(Only(solution).Projects.Count, Only(solution).Build.Built);
     }
+
+    /// <summary>Every fact the build layer emits, by predicate.</summary>
+    private static ILookup<uint, FjordFact> Emitted(LoadedTarget target)
+    {
+        var facts = new List<(uint Predicate, FjordFact Fact)>();
+        target.Build.Emit((predicate, fact) => facts.Add((predicate, fact)));
+
+        return facts.ToLookup(entry => entry.Predicate, entry => entry.Fact);
+    }
+
+    /// <summary>The path a nested <c>src.File</c> holds — this producer carries no ids.</summary>
+    private static string PathOf(FjordValue reference) =>
+        Assert.IsType<FjordValue.Str>(
+            Assert.IsType<FjordRef.Nested>(
+                Assert.IsType<FjordValue.Ref>(reference).Value).Fact.Key).Value;
+
+    /// <summary>The one key field of a nested single-field record — a solution or a project.</summary>
+    private static string FileOf(FjordValue reference) =>
+        PathOf(Assert.IsType<FjordValue.Record>(
+            Assert.IsType<FjordRef.Nested>(
+                Assert.IsType<FjordValue.Ref>(reference).Value).Fact.Key).Fields[0]);
+
+    /// <summary>An edge's two ends, as the file path at each.</summary>
+    /// <remarks>
+    /// Both ends are one field deeper than they look: a <c>Solution</c> and a
+    /// <c>Project</c> are each a record holding a reference to a <c>src.File</c>, so the
+    /// path is two nestings down and an assertion on the wrong depth reads as a type
+    /// mismatch rather than as a wrong edge.
+    /// </remarks>
+    private static (string From, string To) Ends(FjordFact edge)
+    {
+        var fields = Assert.IsType<FjordValue.Record>(edge.Key).Fields;
+        return (FileOf(fields[0]), FileOf(fields[1]));
+    }
+
+    /// <summary>The file a single-field-keyed fact names.</summary>
+    private static string Keyed(FjordFact fact) =>
+        PathOf(Assert.IsType<FjordValue.Record>(fact.Key).Fields[0]);
+
+    /// <summary>
+    /// <b>A run that resolved a solution writes it, and both edges to every project it
+    /// lists.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both directions, because <c>msbuild.sigla</c> stores both: neither is derivable in
+    /// a seek from the other, so a producer that wrote one would leave "which solution is
+    /// this project in" a read of every solution in the repository.
+    /// </para>
+    /// <para>
+    /// <c>C</c> is the control. The build layer holds a project fact for it — the glob
+    /// found its <c>.csproj</c> — and <c>Graph.slnx</c> does not list it, so an edge
+    /// naming it would mean the membership had been written from what is on disk rather
+    /// than from what the solution says.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_solution_run_writes_the_solution_and_an_edge_each_way_per_listed_project()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var emitted = Emitted(Only(solution));
+
+        Assert.Equal("Graph.slnx", Keyed(Assert.Single(emitted[DotnetIndex.Solution])));
+
+        Assert.Equal(
+            [("Graph.slnx", "src/A/A.csproj"), ("Graph.slnx", "src/B/B.csproj")],
+            emitted[DotnetIndex.SolutionToProject].Select(Ends).Order());
+
+        Assert.Equal(
+            [("src/A/A.csproj", "Graph.slnx"), ("src/B/B.csproj", "Graph.slnx")],
+            emitted[DotnetIndex.ProjectToSolution].Select(Ends).Order());
+    }
+
+    /// <summary>
+    /// <b>A directory that resolves a solution is a solution run.</b>
+    /// </summary>
+    /// <remarks>
+    /// The discriminator is what the run <i>resolved</i>, not what was typed:
+    /// <c>ResolveEntryPoint</c> picks the <c>.slnx</c> out of a directory and enumerates
+    /// its projects, so that run has a solution and the facts belong to it. A producer
+    /// keyed on the spelling of <c>--source</c> would write them for one of these two
+    /// runs over one checkout and not the other.
+    /// </remarks>
+    [Fact]
+    public void A_directory_holding_a_solution_writes_the_solution_facts_naming_it_writes()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        var named = Emitted(Only(Loader.Load(Over(fixture), fixture.Root, TextWriter.Null)));
+        var found = Emitted(Only(Loader.Load(
+            new Options { Source = fixture.Root, Jobs = 2 }, fixture.Root, TextWriter.Null)));
+
+        // Non-empty first, or "the same as the other run" is two runs writing nothing.
+        Assert.Equal("Graph.slnx", Keyed(Assert.Single(found[DotnetIndex.Solution])));
+
+        Assert.Equal(
+            named[DotnetIndex.Solution].Select(Keyed),
+            found[DotnetIndex.Solution].Select(Keyed));
+        Assert.Equal(
+            named[DotnetIndex.SolutionToProject].Select(Ends).Order(),
+            found[DotnetIndex.SolutionToProject].Select(Ends).Order());
+        Assert.Equal(
+            named[DotnetIndex.ProjectToSolution].Select(Ends).Order(),
+            found[DotnetIndex.ProjectToSolution].Select(Ends).Order());
+    }
+
+    /// <summary>
+    /// <b>A project-only run writes no solution facts at all.</b>
+    /// </summary>
+    /// <remarks>
+    /// MSBuild's relationship is one-way — a solution lists its projects and a project
+    /// names no solution — so there is nothing to resolve from a <c>.csproj</c>, and
+    /// searching for a solution that happens to list it would be a claim the build system
+    /// does not make. The predicate means "the solution this index was built from", and
+    /// this index was built from a project.
+    /// </remarks>
+    [Fact]
+    public void A_project_only_run_writes_no_solution_and_no_edge()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        var solution = Loader.Load(
+            new Options { Source = fixture.Path("src", "A", "A.csproj"), Jobs = 2 },
+            fixture.Root,
+            TextWriter.Null);
+
+        var emitted = Emitted(Only(solution));
+
+        // The run resolved and emitted a build layer, so the three empties below are about
+        // the solution rather than about a run that found nothing.
+        Assert.NotEmpty(emitted[DotnetIndex.Project]);
+        Assert.Empty(emitted[DotnetIndex.Solution]);
+        Assert.Empty(emitted[DotnetIndex.SolutionToProject]);
+        Assert.Empty(emitted[DotnetIndex.ProjectToSolution]);
+    }
+
+    /// <summary>
+    /// <b>Listed is not loaded: a project with no <c>msbuild.Project</c> fact loses its
+    /// edge, by name and by count.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An edge to a fact that does not exist is not an option, and dropping it in silence
+    /// is the failure this producer keeps removing — a kind dropped with the counter that
+    /// exists to show it reading zero. So the omission is named where the build layer
+    /// names its others, and counted where the run reports its others.
+    /// </para>
+    /// <para>
+    /// <c>rescue</c> rooted at <c>app/</c> is the shape. <c>App.slnx</c> lists
+    /// <c>../lib/Lib.csproj</c>, whose path climbs out of the root — so it has no name two
+    /// runs would agree on, gets no <c>src.File</c> and no <c>msbuild.Project</c>, and
+    /// there is nothing for an edge to point at. The solution and the edge to <c>Main</c>
+    /// are still written, which is the other half: one unkeyable project does not cost the
+    /// solution the rest of its membership.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_listed_project_with_no_project_fact_is_named_and_counted_rather_than_dropped()
+    {
+        using var fixture = Fixture.Copy("rescue");
+        var log = new StringWriter();
+
+        var solution = Loader.Load(
+            new Options { Source = fixture.Path("app", "App.slnx"), Jobs = 2 },
+            fixture.Path("app"),
+            log);
+
+        var emitted = Emitted(Only(solution));
+
+        Assert.Equal("App.slnx", Keyed(Assert.Single(emitted[DotnetIndex.Solution])));
+        Assert.Equal(
+            [("App.slnx", "Main/Main.csproj")],
+            emitted[DotnetIndex.SolutionToProject].Select(Ends));
+        Assert.Equal(
+            [("Main/Main.csproj", "App.slnx")],
+            emitted[DotnetIndex.ProjectToSolution].Select(Ends));
+
+        // Named, so a reader knows *which* project lost its edge, and counted, so a run
+        // that lost fifty says fifty rather than printing fifty lines somebody has to
+        // notice.
+        Assert.Equal(["Lib.csproj"], Only(solution).Build.Unlinked);
+
+        // **The line, not the name.** This same log already says `built Lib.csproj` from
+        // the build layer, so asserting the bare name passes whether or not the `!` line
+        // is ever written — which is what it did.
+        Assert.Contains(
+            "! Lib.csproj: listed by App.slnx", log.ToString(), StringComparison.Ordinal);
+    }
 }

@@ -358,7 +358,7 @@ public sealed class SourceLayerDatabaseTests
 
         var compilation = document.Project.GetCompilationAsync().GetAwaiter().GetResult()!;
 
-        var projects = ProjectIndex.Build(root, root, [], TextWriter.Null);
+        var projects = ProjectIndex.Build(root, root, [], solution: null, TextWriter.Null);
 
         using var writing = FjordConnection.Connect(socket, "dotnet", DotnetIndex.Schema);
         using var sink = new FactSink(DotnetIndex.Schema, [new FjordTarget(writing)]);

@@ -108,7 +108,8 @@ public sealed class SourceWalkTests
                 Repo = repo,
                 Revision = revision,
             };
-            var projects = ProjectIndex.Build(directory.FullName, directory.FullName, [], TextWriter.Null);
+            var projects = ProjectIndex.Build(
+                directory.FullName, directory.FullName, [], solution: null, TextWriter.Null);
             var recorder = new Recorder();
 
             var tree = CSharpSyntaxTree.ParseText(
@@ -726,7 +727,7 @@ public sealed class SourceWalkTests
             File.WriteAllText(elsewhere, "namespace N;\n\npublic class Elsewhere { }\n");
 
             var options = new Options { Source = inside };
-            var projects = ProjectIndex.Build(inside, inside, [], TextWriter.Null);
+            var projects = ProjectIndex.Build(inside, inside, [], solution: null, TextWriter.Null);
             var recorder = new Recorder();
 
             var compilation = CSharpCompilation.Create(

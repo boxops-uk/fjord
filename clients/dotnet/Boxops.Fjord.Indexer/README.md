@@ -90,6 +90,8 @@ be matched to a checkout by inference.
 
 | predicate | what it holds |
 |---|---|
+| `msbuild.Solution` | the solution this index was built from, where the run resolved one — see below |
+| `msbuild.SolutionToProject` · `msbuild.ProjectToSolution` | its membership, both ways, one edge each per project the solution lists |
 | `msbuild.Project` | a `.csproj`, with what MSBuild evaluated on the value side: SDK, output type, assembly name, root namespace, platform |
 | `msbuild.Assembly` · `msbuild.Compilation` | the assembly a project **produces**, and the crossing of the two per target framework. Only a produced one: an assembly referenced from outside the graph is not named here at all |
 | `msbuild.SourceFileToProject` · `msbuild.ProjectToSourceFile` | both directions, because neither is a seek from the other |
@@ -157,14 +159,51 @@ table is what converts.
 whenever the file is edited, so a local gets no global name and `codemarkup.FileLocalXRef`
 answers a file-local jump span to span instead — and `csharp.FunctionPointerType`, which
 cannot be keyed, so a member typed as one is dropped and counted like a `dynamic` one.
-Three `msbuild` predicates — `Solution` and its two edges — are owed rather than
-impossible. The list is not prose: `PredicateCensusTests` holds it as a table and asserts
-every entry over a run of the `census` fixture, so a predicate that stops being written
-fails, and one that starts being written where the table excuses it fails too. That gate is
-what four declared-and-empty location predicates got past, and what made the case for
-deleting the two metadata-reference predicates rather than leaving them owed: a reference
-list from a design-time build is every resolved DLL, and nothing in it separates a
-`<Reference>` somebody wrote from the framework's own.
+**Nothing is owed any more.** Two predicates are impossible and say why above; three are
+written by some runs and not others; every other one this client declares is written by any
+run. The list is not prose: `PredicateCensusTests` holds it as a table and asserts every
+entry over a run of the `census` fixture, so a predicate that stops being written fails, and
+one that starts being written where the table excuses it fails too. That gate is what four
+declared-and-empty location predicates got past, and what made the case for deleting the two
+metadata-reference predicates rather than leaving them owed: a reference list from a
+design-time build is every resolved DLL, and nothing in it separates a `<Reference>`
+somebody wrote from the framework's own.
+
+**A third classification is for predicates written by some runs and not others**, which the
+three solution predicates are. Asserting one only over the run that fills it cannot tell it
+from a predicate that is always written, so the table's `Conditional` entries are asserted
+twice: rows after a run over `Census.slnx`, and none after a run over one of the same
+fixture's `.csproj` files.
+
+**The solution facts belong to the run that resolved a solution, and to no other.**
+`--source` may name a `.slnx` or a `.sln`, or a directory the loader picks one out of — that
+run has a solution and gets `msbuild.Solution` with both edges to every project the solution
+lists. Point it at a `.csproj`, or at a directory with no solution in it, and the three are
+**empty**: MSBuild's containment is one-way, so a project file names no solution, there is
+nothing to resolve from one, and searching the disk for a solution that happens to list it
+would put a claim in the database that the build system does not make. So the predicate reads
+*the solution this index was built from*, which is a question a consumer can act on — and
+"empty for a project-only run" is the answer rather than a gap. What decides it is what the
+run **resolved**, not what was typed: `--source ~/src/repo` and `--source ~/src/repo/Repo.slnx`
+are the same run and write the same facts.
+
+**The solution file is interned as a path and gets none of the per-file source facts** — no
+`src.FileLanguage`, no `src.FileDigest`, no `src.FileInfo`, no line table — which is exactly
+how the `.csproj` in `msbuild.Project`'s key is interned. The source layer describes files the
+run *read as source*: every offset in it is an offset into a file some compilation parsed, and
+nothing here holds a position in a solution file. A `src.FileLanguage` of `xml` would also
+contradict `config.Setting {dimension = "language"}`, which says what the semantic layers
+cover; `--no-lines` and `--styles` are switches over that same table, and Roslyn's classifier
+has no document for a file no compilation contains. What makes the fact readable is the two
+edges, through which its `file` joins to exactly what a project's does.
+
+**A project the solution lists that this index cannot key gets no edge, and the run says so.**
+Both edges are references to an `msbuild.Project`, and a reference to a fact that does not
+exist is not a fact — so the only such project an ordinary layout produces is one whose path
+climbs out of `--root`, which has no name two runs would agree on. It is named where the build
+layer names its other omissions and counted where the run reports its others, because a
+database holding two thirds of a solution's membership looks exactly like one holding all of
+it.
 
 **`codemarkup` is redundant with `csharp` by construction, and deliberately.** Every fact
 in it could be derived from the layer beside it — while `nyi/derivation` stands, a producer

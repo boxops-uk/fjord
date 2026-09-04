@@ -14,6 +14,9 @@ That shape is the one the loader's gates are about:
 - **C is discovered but not built**, which is the build layer's own case: `Discover` globs
   every `.csproj` under the source, so C gets a project fact from its XML while A and B get
   theirs from a design-time build.
+- **C is the control for the solution's membership.** It has a project fact and the solution
+  does not name it, so `msbuild.SolutionToProject` naming it would mean the membership had
+  been written from what is on disk rather than from what `Graph.slnx` lists.
 
 Nothing here references a package: a fixture that needs a restore is a fixture that needs a
 network, and these run in the same job as everything else.

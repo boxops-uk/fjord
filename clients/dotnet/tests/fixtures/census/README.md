@@ -8,6 +8,7 @@ predicates.
 
 | Shape | What it fills |
 |---|---|
+| `Census.slnx` itself, as the entry point | `msbuild.Solution` and both membership edges — written because this run resolved a solution, and asserted empty over a run entered at `Core/Core.csproj` instead |
 | two projects, one referencing the other | `msbuild.ProjectReference` and its reverse, and cross-project references |
 | `IShape` + `Rectangle : IShape` | `csharp.Interface`, `csharp.Class`, `csharp.Implements`, `codemarkup.Relation` |
 | `record Entry` · `readonly struct Corner` | `csharp.Record`, `csharp.Struct` |

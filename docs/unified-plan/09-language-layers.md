@@ -84,6 +84,18 @@ about `src.Decl`: **an identity must not carry an evaluation detail**, or re-eva
 different SDK mints a different project and every reference edge points at whichever variant the
 walk reached first.
 
+**`msbuild.Solution` and its two edges are written by the runs that resolved a solution, and are
+empty for the rest** — which is a thing a consumer needs told rather than left to discover.
+`Boxops.Fjord.Indexer` writes them when `--source` names a `.sln` or `.slnx`, or a directory it
+picks one out of; a run given a `.csproj` writes none of the three, because MSBuild's containment
+is one-way — a solution lists its projects and a project names no solution — so there is nothing
+to resolve from a project file and searching for a solution that happens to list it would state a
+relationship the build system does not. The predicate therefore means *the solution this index was
+built from*. The solution file is interned as a `src.File` path with no source-layer facts beside
+it, as `msbuild.Project`'s own `.csproj` is; and a listed project the index cannot key — its path
+climbs out of the index root — loses both edges and is counted, since both are references to an
+`msbuild.Project` and a reference to a fact that does not exist is not one.
+
 ## The scope decision, taken
 
 These five files are **118 predicates that nothing in this repository populates**, and

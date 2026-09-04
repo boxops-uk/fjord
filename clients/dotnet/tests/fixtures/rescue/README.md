@@ -11,3 +11,10 @@ uncertain; it was simply looked for in one place and found in another.
 `--root` is the fixture root, so `lib/Lib.csproj` is a name this index can use. A project
 whose path does not resolve under the root is a different case and still skipped: that one
 has no name two runs would agree on.
+
+**Rooted at `app/` instead, the same fixture is the other case.** `lib/Lib.csproj` then comes
+back as `../lib/Lib.csproj`, gets no `src.File` and no `msbuild.Project` — so it is a project
+the solution *lists* that no `msbuild.SolutionToProject` edge can point at. The solution and
+the edge to `Main` are still written; the missing one is named in the log and counted in
+`ProjectIndex.Unlinked`, because a database holding half a solution's membership looks exactly
+like one holding all of it.

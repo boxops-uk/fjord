@@ -259,7 +259,13 @@ public sealed class LedgerTests
             deduped = sink.Deduped;
         }
 
-        Assert.Equal(1260ul, created);
-        Assert.Equal(9878ul, deduped);
+        // **The solution facts moved both figures, and the delta is arithmetic.** The
+        // fixture's `Ledger.slnx` lists two projects, so the build layer now emits one
+        // `msbuild.Solution` — two created, the fact and its new `src.File` — and four
+        // edges, two each way. Each edge is one created key over four targets that already
+        // exist: the solution and its file, the project and its file. 1260 + 2 + 4 = 1266
+        // created, 9878 + (4 × 4) = 9894 deduped.
+        Assert.Equal(1266ul, created);
+        Assert.Equal(9894ul, deduped);
     }
 }

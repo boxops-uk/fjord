@@ -121,7 +121,7 @@ public sealed class ConcurrentWalkTests
 
             var options = new Options { Source = directory.FullName, Jobs = jobs };
             var projects = ProjectIndex.Build(
-                directory.FullName, directory.FullName, [], TextWriter.Null);
+                directory.FullName, directory.FullName, [], solution: null, TextWriter.Null);
             var recorder = new SourceWalkTests.Recorder();
 
             var compilation = CSharpCompilation.Create(

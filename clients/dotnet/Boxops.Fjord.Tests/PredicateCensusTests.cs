@@ -39,6 +39,22 @@ public sealed class PredicateCensusTests
         /// <summary>The fixture fills it, so the gate asserts rows.</summary>
         Written,
 
+        /// <summary>
+        /// Written for some runs and empty for others, and which is which is a property of
+        /// the run rather than of the corpus — the reason says what decides it.
+        /// </summary>
+        /// <remarks>
+        /// <b>Asserted over both cases, or it proves half of what it claims.</b> A
+        /// classification checked only against the run that fills the predicate cannot tell
+        /// "conditional" from "written", and one checked only against the run that leaves it
+        /// empty cannot tell it from <see cref="Owed"/>. So
+        /// <see cref="Every_predicate_behaves_as_the_audit_classifies_it"/> asserts rows over
+        /// a solution run and
+        /// <see cref="A_conditional_predicate_is_empty_over_the_run_its_condition_excludes"/>
+        /// asserts none over a project-only one.
+        /// </remarks>
+        Conditional,
+
         /// <summary>This producer does not write it, and that is settled — the reason says why.</summary>
         Excused,
 
@@ -75,15 +91,24 @@ public sealed class PredicateCensusTests
 
         // ---- msbuild ------------------------------------------------------------------
 
-        (DotnetIndex.Solution, Fill.Owed,
-            "nothing emits a solution fact. `--source` may be a `.slnx`, a `.csproj` or a "
-            + "directory holding one, so what the predicate means for a run that was given "
-            + "no solution is a decision this producer has not taken"),
+        (DotnetIndex.Solution, Fill.Conditional,
+            "the solution this index was built from, written when the run resolved one — "
+            + "`--source` naming a `.slnx` or `.sln`, or a directory the loader picks one "
+            + "out of. A run that fell through to a `.csproj`, or was handed one, writes "
+            + "nothing: MSBuild's relationship is one-way, so there is nothing to resolve "
+            + "from a project file and searching for a solution that lists it would be a "
+            + "claim the build system does not make"),
         (DotnetIndex.Project, Fill.Written, ""),
         (DotnetIndex.Assembly, Fill.Written, ""),
         (DotnetIndex.Package, Fill.Written, ""),
-        (DotnetIndex.SolutionToProject, Fill.Owed, "there is no `msbuild.Solution` to be an edge from"),
-        (DotnetIndex.ProjectToSolution, Fill.Owed, "there is no `msbuild.Solution` to be an edge to"),
+        (DotnetIndex.SolutionToProject, Fill.Conditional,
+            "one edge per project the solution lists that this index has an "
+            + "`msbuild.Project` for, written with the solution and empty without one. A "
+            + "listed project the index cannot key gets no edge and is named and counted "
+            + "instead — `ProjectIndex.Unlinked`"),
+        (DotnetIndex.ProjectToSolution, Fill.Conditional,
+            "the same edge reversed, because neither direction is a seek from the other; "
+            + "written and empty under the same condition"),
         (DotnetIndex.ProjectToSourceFile, Fill.Written, ""),
         (DotnetIndex.SourceFileToProject, Fill.Written, ""),
         (DotnetIndex.ProjectReference, Fill.Written, ""),
@@ -197,6 +222,12 @@ public sealed class PredicateCensusTests
     /// the two switches that decide whether a predicate is written at all: `--repo` and
     /// `--revision` for `src.FileOrigin`, and `--styles` for `src.FileLineStyles`.
     /// </para>
+    /// <para>
+    /// <b><c>--source</c> is the solution</b>, which is what makes this the case a
+    /// <see cref="Fill.Conditional"/> predicate is filled by. The other case is the test
+    /// below, and both are needed: over this run alone, <c>Conditional</c> and
+    /// <c>Written</c> are the same assertion.
+    /// </para>
     /// </remarks>
     [Fact]
     public void Every_predicate_behaves_as_the_audit_classifies_it()
@@ -225,12 +256,14 @@ public sealed class PredicateCensusTests
             var name = DotnetIndex.NameOf(predicate);
             var rows = connection.Query($"X where X = {name} _").Rows.Count;
 
-            if (fill is Fill.Written && rows == 0)
+            if (fill is Fill.Written or Fill.Conditional && rows == 0)
             {
-                wrong.Add($"{name}: classified Written, no rows");
+                wrong.Add($"{name}: classified {fill}, no rows — {why}");
             }
 
-            if (fill is not Fill.Written && rows > 0)
+            // Exhaustive rather than two named variants: a sixth `Fill` added above and
+            // forgotten here would escape both arms and be classified by nothing.
+            if (fill is not (Fill.Written or Fill.Conditional) && rows > 0)
             {
                 wrong.Add($"{name}: {rows} row(s), classified {fill} — {why}");
             }
@@ -244,5 +277,66 @@ public sealed class PredicateCensusTests
             wrong.Count == 0,
             $"{wrong.Count} predicate(s) do not behave as the audit table classifies them, "
             + $"after a run over the census fixture:\n  {string.Join("\n  ", wrong)}");
+    }
+
+    /// <summary>
+    /// <b>A conditional predicate is empty over the run its condition excludes.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The other half of <see cref="Fill.Conditional"/>, and the half that makes the
+    /// classification mean something: asserted only where it is filled, it is
+    /// indistinguishable from <see cref="Fill.Written"/>, and a producer that had quietly
+    /// started writing a solution fact for every run would pass.
+    /// </para>
+    /// <para>
+    /// The same fixture, entered at one of its <c>.csproj</c> files, so the difference
+    /// between the two runs is the entry point and nothing else. <c>msbuild.Project</c> is
+    /// asserted non-empty first: a run that resolved nothing would report every predicate
+    /// empty and satisfy this test for the wrong reason.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_conditional_predicate_is_empty_over_the_run_its_condition_excludes()
+    {
+        using var fixture = Fixture.Copy("census");
+        using var server = FjordServer.Serving("project-only", "dotnet.sigla");
+
+        var code = Program.Main([
+            "--source", fixture.Path("Core", "Core.csproj"),
+            "--root", fixture.Root,
+            "--at", $"{server.Socket}//project-only",
+            "--no-smoke",
+        ]);
+
+        Assert.Equal(0, code);
+
+        using var connection = FjordConnection.Connect(
+            server.Socket, "project-only", DotnetIndex.Schema);
+
+        long Rows(uint predicate) =>
+            connection.Query($"X where X = {DotnetIndex.NameOf(predicate)} _").Rows.Count;
+
+        Assert.NotEqual(0, Rows(DotnetIndex.Project));
+
+        var written = Audit
+            .Where(entry => entry.Fill is Fill.Conditional)
+            .Where(entry => Rows(entry.Predicate) > 0)
+            .Select(entry => DotnetIndex.NameOf(entry.Predicate))
+            .ToList();
+
+        Assert.True(
+            written.Count == 0,
+            "a run given a `.csproj` resolved no solution, so every predicate classified "
+            + $"Conditional must be empty — {string.Join(", ", written)} has rows");
+
+        // The table's own claim about which predicates those are, so a classification
+        // moved out of `Conditional` cannot leave this test asserting nothing.
+        Assert.Equal(
+            ["msbuild.ProjectToSolution", "msbuild.Solution", "msbuild.SolutionToProject"],
+            Audit
+                .Where(entry => entry.Fill is Fill.Conditional)
+                .Select(entry => DotnetIndex.NameOf(entry.Predicate))
+                .Order(StringComparer.Ordinal));
     }
 }

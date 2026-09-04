@@ -248,7 +248,7 @@ internal static class Program
             walking.Stop();
             files = indexer.Files;
 
-            Report(options, sink, indexer, walking.Elapsed);
+            Report(options, sink, indexer, target.Build, walking.Elapsed);
         }
 
         if (connection is not null && options.Smoke && files > 0)
@@ -347,7 +347,12 @@ internal static class Program
         return connections;
     }
 
-    private static void Report(Options options, FactSink sink, Indexer indexer, TimeSpan elapsed)
+    private static void Report(
+        Options options,
+        FactSink sink,
+        Indexer indexer,
+        ProjectIndex projects,
+        TimeSpan elapsed)
     {
         Console.WriteLine();
         Console.WriteLine($"indexed {Count(indexer.Files)} file(s) in {elapsed.TotalSeconds:F1}s");
@@ -405,6 +410,17 @@ internal static class Program
             // a bug in the schema rather than a fact about the repository.
             Console.WriteLine($"  {Count(indexer.Unattributed)} file(s) no project compiles "
                 + "(shared source, or outside every project directory)");
+        }
+
+        if (projects.Unlinked.Count > 0)
+        {
+            // A project the solution lists and this index cannot key — its path climbs out
+            // of `--root`, so there is no `src.File` for an edge to point at. Counted here
+            // because both of its solution edges are missing, and a database holding part
+            // of a solution's membership looks exactly like one holding all of it.
+            Console.WriteLine($"  {Count(projects.Unlinked.Count)} project(s) the solution "
+                + "lists have no project fact, so no solution edge names them "
+                + $"({string.Join(", ", projects.Unlinked)})");
         }
 
         foreach (var dropped in Dropped(indexer))

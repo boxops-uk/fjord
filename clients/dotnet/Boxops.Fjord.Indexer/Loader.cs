@@ -50,6 +50,26 @@ internal sealed record LoadedSolution(
     IReadOnlyList<string> Skipped);
 
 /// <summary>
+/// The solution file a run resolved, and the projects it lists — absolute paths.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Null is the answer for a run that resolved none</b>, and that is the whole
+/// discriminator for <c>msbuild.Solution</c> and its two edges: they belong to a run built
+/// from a solution and are absent from one built from a project. Nothing here searches for
+/// a solution that happens to list a given <c>.csproj</c> — MSBuild's containment is
+/// one-way, so the search would be inventing a claim the build system does not make.
+/// </para>
+/// <para>
+/// <b>Listed, not loaded.</b> These are the paths the solution names, whether or not the
+/// design-time build answered for them and whether or not they resolve under the index
+/// root — <see cref="ProjectIndex"/> is what decides which of them an edge can point at,
+/// and what to say about the rest.
+/// </para>
+/// </remarks>
+internal sealed record ResolvedSolution(string File, IReadOnlyList<string> Projects);
+
+/// <summary>
 /// One design-time build, as the thing that can be swapped for a test.
 /// </summary>
 /// <remarks>
@@ -115,6 +135,24 @@ internal static class Loader
 
         var workspace = new AdhocWorkspace();
         var analyzers = Analyzers(entry, options, log);
+
+        // **Captured before `--max-projects` narrows anything.** What a solution lists is a
+        // fact about the repository, the same rule the build layer already follows for
+        // which projects exist — so a run told to stop after two projects still says the
+        // solution has five, rather than recording a membership that depends on a flag.
+        //
+        // **The C# projects, because `Analyzers` has already narrowed to those.** A
+        // solution may list an `.fsproj`, and this producer writes no `msbuild.Project` for
+        // one — so counting it as an edge it failed to write would conflate "this index
+        // cannot key that project" with "this producer does not read that language", which
+        // are different facts with different fixes. The narrowing is said out loud one line
+        // above, as `N C# project(s) in the solution`.
+        var resolved = IsSolution(entry)
+            ? new ResolvedSolution(
+                entry,
+                [.. analyzers.Select(analyzer =>
+                    Path.GetFullPath(analyzer.ProjectFile.Path.ToString()))])
+            : null;
 
         if (options.MaxProjects > 0 && analyzers.Count > options.MaxProjects)
         {
@@ -212,6 +250,7 @@ internal static class Loader
                     result.TargetFramework, framework, StringComparison.Ordinal))],
                 options,
                 root,
+                resolved,
                 log));
         }
 
@@ -231,6 +270,7 @@ internal static class Loader
         IReadOnlyList<IAnalyzerResult> results,
         Options options,
         string root,
+        ResolvedSolution? solution,
         TextWriter log)
     {
         var workspace = new AdhocWorkspace();
@@ -287,7 +327,7 @@ internal static class Loader
         // the ones that built: a project MSBuild refused is still a project, its
         // references are still in its XML, and the files under it still have somewhere
         // to belong. The results that did succeed then overwrite what they know better.
-        var layer = ProjectIndex.Build(root, options.Source, results, log);
+        var layer = ProjectIndex.Build(root, options.Source, results, solution, log);
 
         return new LoadedTarget(framework, walking, layer);
     }
@@ -776,4 +816,16 @@ internal static class Loader
         throw new FileNotFoundException(
             $"no .slnx, .sln or .csproj directly under {source} — name one with --source");
     }
+
+    /// <summary>Whether the entry point this run resolved is a solution.</summary>
+    /// <remarks>
+    /// <b>Asked of what was resolved, not of what was typed.</b>
+    /// <see cref="ResolveEntryPoint"/> picks a solution out of a directory, so
+    /// <c>--source ~/src/repo</c> and <c>--source ~/src/repo/Repo.slnx</c> are the same
+    /// run — and a discriminator reading <c>options.Source</c> would write the solution
+    /// facts for one of the two and not the other, over one checkout.
+    /// </remarks>
+    private static bool IsSolution(string entry) =>
+        entry.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+        || entry.EndsWith(".sln", StringComparison.OrdinalIgnoreCase);
 }
