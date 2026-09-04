@@ -2681,7 +2681,10 @@ mod tests {
     use fjord_store::fact_store::Entity;
     use fjord_store_fjall::store::FjallDb;
     use fjord_store_mem::MemStore;
-    use std::{collections::BTreeSet, sync::atomic::Ordering};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::atomic::Ordering,
+    };
     use tempfile::TempDir;
 
     /// Run a plan whose head projects only scalars (no record field names to
@@ -7017,10 +7020,15 @@ mod tests {
         assert_rows(&model, 3);
     }
 
+    /// How many cases the properties below run. Named because the censuses that
+    /// bound their reach are stated as a rate against it, and a census whose
+    /// sample is unrelated to what a property runs bounds nothing.
+    const HEADLINE_CASES: u32 = 1024;
+
     proptest! {
         // This is the executor's headline gate, and a case is cheap (the whole
         // battery runs in well under a second), so take four times the default.
-        #![proptest_config(ProptestConfig::with_cases(1024))]
+        #![proptest_config(ProptestConfig::with_cases(HEADLINE_CASES))]
 
         // I4 — resume == uninterrupted run. **The executor's headline acceptance
         // gate.** Over schema-first `(plan, store)` pairs (1-/2-/3-level, seeks,
@@ -7117,6 +7125,79 @@ mod tests {
         }
     }
 
+    /// How many specs a census draws: eight times the cases a property runs, so
+    /// the **rate** it reports is pinned tightly enough for [`CENSUS_FLOOR`] to sit
+    /// far below every class measured over this generator and still catch a
+    /// collapse. The sample is a multiple of the property's cases and not a round
+    /// number of its own, because the rate is only interesting as a statement about
+    /// how often a property run reaches the class.
+    const CENSUS_DRAWS: usize = 8 * HEADLINE_CASES as usize;
+
+    /// The floor a class's draw count must clear — one draw in 64, so a
+    /// [`HEADLINE_CASES`]-case run of a property above reaches each class at least
+    /// sixteen times.
+    ///
+    /// **A census asserts a rate, never an existence.** `> 0` over a fixed sample
+    /// stays green for a class the strategy reaches one case in a thousand, and
+    /// that is exactly the state in which a property half-catches its own
+    /// regression: the class is reachable, so the census is telling the truth, and
+    /// most runs of the property still never see it. The floor is what makes the
+    /// census say *often enough* rather than *at all*.
+    ///
+    /// Calibrated against the collapse it exists to catch — field 0 drawn from the
+    /// prefix-free half of the domain, which is where this generator stood before
+    /// the bucket seek was fixed. That takes the NUL-extension bound from 424-496
+    /// draws per [`CENSUS_DRAWS`] to 57-68, and the two classes below it to zero,
+    /// against a floor of 128. The rarest class the generator draws as it stands is
+    /// a run answering a row over such a store, at 22-37 per 1024 across four
+    /// measured runs — 176-296 here, six standard deviations clear of the floor,
+    /// which is what keeps an entropy-drawn census a gate and not a coin toss.
+    const CENSUS_FLOOR: usize = CENSUS_DRAWS / 64;
+
+    /// [`CENSUS_DRAWS`] specs **from entropy, which is where the properties draw
+    /// from too**.
+    ///
+    /// A census over `TestRunner::deterministic()` counts one fixed sequence and
+    /// nothing ever re-samples it, so a class that sequence reaches at a rate the
+    /// population does not is a census green about runs nobody makes. That seed
+    /// measured representative here — and that was the part no test was asking.
+    fn census_draws() -> impl Iterator<Item = PlanAndStore> {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        let mut runner = TestRunner::default();
+
+        (0..CENSUS_DRAWS).map(move |_| {
+            arb_plan_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current()
+        })
+    }
+
+    /// Every class in `classes` was drawn at least [`CENSUS_FLOOR`] times out of
+    /// [`CENSUS_DRAWS`].
+    ///
+    /// The counts go in the message because the number *is* the finding: a class at
+    /// zero is a generator that lost a family, and a class at one or two is the
+    /// vacuous-property state the floor exists to name.
+    fn assert_census(counts: &BTreeMap<&'static str, usize>, classes: &[&'static str]) {
+        let thin: Vec<String> = classes
+            .iter()
+            .map(|what| (what, counts.get(what).copied().unwrap_or(0)))
+            .filter(|(_, count)| *count < CENSUS_FLOOR)
+            .map(|(what, count)| format!("{what} ({count})"))
+            .collect();
+
+        assert!(
+            thin.is_empty(),
+            "of {CENSUS_DRAWS} generated plans, fewer than {CENSUS_FLOOR} reached: {}",
+            thin.join(", ")
+        );
+    }
+
     /// **The census for the bound.** The property above says nothing unless the
     /// generator draws a range, and says nothing about the boundary arithmetic
     /// unless it draws each edge at each inclusivity. The empty range is counted
@@ -7133,32 +7214,39 @@ mod tests {
     /// because a family the generator never draws is a family every law over it
     /// passes vacuously for.
     ///
-    /// Counted over the generator rather than asserted per case, as the battery's
-    /// other census is: it is a claim about what is *drawn*.
+    /// Counted over the generator rather than asserted per case: it is a claim
+    /// about what is *drawn*. Stated as a **rate** against the cases the property
+    /// runs ([`CENSUS_FLOOR`]) and drawn from the source the property draws from
+    /// ([`census_draws`]), because a class the generator merely *reaches* is one
+    /// most runs of the property never see.
     #[test]
     fn the_battery_reaches_every_shape_of_a_bounded_seek() {
-        use ::proptest::{
-            strategy::{Strategy, ValueTree},
-            test_runner::TestRunner,
-        };
+        const CLASSES: [&str; 8] = [
+            "a closed lower edge",
+            "an open lower edge",
+            "a closed upper edge",
+            "an open upper edge",
+            "both edges at once",
+            "an empty range",
+            "a `bytes` key field",
+            "a bound a stored value extends through a NUL",
+        ];
 
-        const RUNS: usize = 300;
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
 
-        let mut runner = TestRunner::deterministic();
-        let mut seen: Vec<&'static str> = vec![];
-        let mut note = |what: &'static str| {
-            if !seen.contains(&what) {
-                seen.push(what);
-            }
-        };
-
-        for _ in 0..RUNS {
-            let spec = arb_plan_and_store()
-                .new_tree(&mut runner)
-                .unwrap()
-                .current();
+        for spec in census_draws() {
             let interner = spec.interner();
             let (_, plan) = spec.build(&interner);
+
+            // Noted per drawn plan and not per source: the rate that bounds a
+            // property's reach is the fraction of its *cases* reaching the class,
+            // so a plan carrying four open lower edges is still one such case.
+            let mut reached: Vec<&'static str> = vec![];
+            let mut note = |what: &'static str| {
+                if !reached.contains(&what) {
+                    reached.push(what);
+                }
+            };
 
             if spec.key_field_tys().any(|ty| ty == FieldTy::Bytes) {
                 note("a `bytes` key field");
@@ -7204,27 +7292,13 @@ mod tests {
                     }
                 }
             }
+
+            for what in reached {
+                *counts.entry(what).or_default() += 1;
+            }
         }
 
-        let missing: Vec<&str> = [
-            "a closed lower edge",
-            "an open lower edge",
-            "a closed upper edge",
-            "an open upper edge",
-            "both edges at once",
-            "an empty range",
-            "a `bytes` key field",
-            "a bound a stored value extends through a NUL",
-        ]
-        .into_iter()
-        .filter(|what| !seen.contains(what))
-        .collect();
-
-        assert!(
-            missing.is_empty(),
-            "{RUNS} generated plans never produced: {}",
-            missing.join(", ")
-        );
+        assert_census(&counts, &CLASSES);
     }
     /// **The census for the bucket seek.** The property above says nothing unless
     /// the generator draws a seek that splices a bound register's field, and nothing
@@ -7240,24 +7314,18 @@ mod tests {
     /// known gap for an invisible one.
     ///
     /// The third entry is the one that makes the law non-vacuous rather than merely
-    /// reachable: the pair in the store *and* a run that answers rows over it.
+    /// reachable: the pair in the store *and* a run that answers rows over it. It is
+    /// also the rarest class this generator draws, which is what [`CENSUS_FLOOR`] is
+    /// calibrated against.
     #[test]
     fn the_battery_reaches_a_bucket_seek_a_stored_value_extends() {
-        use ::proptest::{
-            strategy::{Strategy, ValueTree},
-            test_runner::TestRunner,
-        };
+        const SPLICED: &str = "a register field spliced into a seek";
+        const EXTENDED: &str = "a store holding a value that extends a spliced one through a NUL";
+        const ANSWERED: &str = "a run answering a row over such a store";
 
-        const RUNS: usize = 300;
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
 
-        let mut runner = TestRunner::deterministic();
-        let (mut splices, mut extended, mut answered) = (0usize, 0usize, 0usize);
-
-        for _ in 0..RUNS {
-            let spec = arb_plan_and_store()
-                .new_tree(&mut runner)
-                .unwrap()
-                .current();
+        for spec in census_draws() {
             let interner = spec.interner();
             let (store, plan) = spec.build(&interner);
 
@@ -7284,30 +7352,25 @@ mod tests {
                 })
             });
 
-            splices += usize::from(spliced);
+            if spliced {
+                *counts.entry(SPLICED).or_default() += 1;
+            }
 
             if !spec.splices_a_value_a_stored_one_extends() {
                 continue;
             }
-            extended += 1;
+            *counts.entry(EXTENDED).or_default() += 1;
 
             let rows = collect_rows(store, plan, &interner).expect("a run");
-            answered += usize::from(!rows.is_empty());
+
+            if !rows.is_empty() {
+                *counts.entry(ANSWERED).or_default() += 1;
+            }
         }
 
-        assert!(
-            splices > 0,
-            "{RUNS} generated plans never spliced a register field into a seek"
-        );
-        assert!(
-            extended > 0,
-            "{RUNS} generated stores never held a value extending a spliced one \
-             through a NUL — field 0's domain has gone prefix-free again"
-        );
-        assert!(
-            answered > 0,
-            "{RUNS} generated runs never answered a row over such a store"
-        );
+        // A thin `EXTENDED` is field 0's domain gone prefix-free again; a thin
+        // `ANSWERED` is the pair reaching the store but no run reading over it.
+        assert_census(&counts, &[SPLICED, EXTENDED, ANSWERED]);
     }
 
     /// **The census.** The battery above says nothing about disjunction unless
