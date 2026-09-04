@@ -490,7 +490,7 @@ screen and chosen so every shape the language has appears exactly once:
 | `code.Ref { from : Decl, to : Decl }` | a reference that is **not** leading (a fact-id compare as a residual rather than a seek), and a **two-hop chain** through `from.file` |
 | `code.Span { decl : Decl, at : { line : int, col : int } }` | a **nested record** inside a key |
 | `code.Kind { decl : Decl, what : kind }` | a **union behind** another field — matched by a residual on the discriminant |
-| `code.KindOf { what : kind, decl : Decl }` | the same fact in the other key order, so the union **leads** and the tag is a seek. The pattern `code.sigla` already uses for `Attribute`/`AttributeOf`, and for the same reason: the leading run is what a query narrows on |
+| `code.KindOf { what : kind, decl : Decl }` | the same fact in the other key order, so the union **leads** and the tag is a seek. The pattern `codemarkup.sigla` uses for `Relation`/`RelationOf`, and for the same reason: the leading run is what a query narrows on |
 
 with `kind` declared as `{ type : string = 5 | func : int = 2 }` — two
 alternatives, tags **neither contiguous, nor starting at zero, nor in

@@ -122,10 +122,12 @@ schema codemarkup {
   # `qualified` is the human-readable full name (`Namespace.Type.Method`), stored because it
   # is not derivable from the symbol string without a SCIP descriptor parser.
   #
-  # Would derive as (C#):
-  #   codemarkup.Definition {symbol = S, file = F} -> {span = SP, kind = K, name = N, qualified = Q}
-  #     where csharp.EntityBySymbol {symbol = S, entity = E}; E = csharp.Entity {method = M};
-  #           csharp.DefinitionLocation {definition = {method = M}, location = {file = F, span = SP}}; …
+  # Would derive as (C#), one rule per alternative of `csharp.Definition`, because the name and
+  # the kind come from a different predicate in each:
+  #   codemarkup.Definition {symbol = S, file = F} -> {span = SP, kind = {method_ = {}}, name = N, …}
+  #     where csharp.DefinitionBySymbol {symbol = S, definition = {method = M}};
+  #           csharp.DefinitionLocation {definition = {method = M}, location = {file = F, span = SP}};
+  #           M = csharp.Method {name = NM}; NM = csharp.Name N; …
   predicate Definition :
     { symbol : src.Symbol, file : src.File }
     -> { span : src.ByteSpan, kind : Kind, name : string, qualified : string }
@@ -146,9 +148,14 @@ schema codemarkup {
   # falls out of span containment with no join; `symbol` trails so a follow-up is a join
   # rather than a second round trip.
   #
-  # Would derive as:
-  #   codemarkup.FileDefinition {file = F, span = SP, symbol = S} -> {kind = K, name = N}
-  #     where D = codemarkup.Definition {symbol = S, file = F}; …
+  # Would derive as (C#) — from the language layer, not from `Definition`. `span`, `kind` and
+  # `name` sit on `Definition`'s **value** side, and a value can be neither matched nor projected
+  # field-wise, so a rule reading them back out of it cannot be written at all. `kind` and `name`
+  # come per alternative, as above:
+  #   codemarkup.FileDefinition {file = F, span = SP, symbol = S} -> {kind = {method_ = {}}, name = N}
+  #     where csharp.DefinitionLocation {definition = {method = M}, location = {file = F, span = SP}};
+  #           csharp.SymbolOf {definition = {method = M}, symbol = S};
+  #           M = csharp.Method {name = NM}; NM = csharp.Name N; …
   predicate FileDefinition :
     { file : src.File, span : src.ByteSpan, symbol : src.Symbol }
     -> { kind : Kind, name : string }
@@ -165,9 +172,15 @@ schema codemarkup {
   # "every reference in this file, resolved to where it is defined" is one query, and keeping
   # everything in the key means a 400-reference file is one scan and no point reads.
   #
-  # Would derive as (TypeScript):
+  # Would derive as (TypeScript), through `DeclRef` rather than `XRef`: `XRef` carries its target
+  # on the value side, so nothing could tie a declaration to the reference that names it.
   #   codemarkup.FileXRef {file = F, span = SP, target = S, role = R}
-  #     where X = typescript.XRef {file = F, span = SP}; typescript.SymbolOf {decl = D, symbol = S}; …
+  #     where typescript.DeclRef {target = D, file = F, span = SP};
+  #           typescript.SymbolOf {decl = D, symbol = S}; …
+  #
+  # `role` has no source in that rule and the elision does not hide one: the reference kind is
+  # `typescript.XRef.kind`, a value field, so it can be neither matched nor projected. A producer
+  # writes `role`; a derivation could not.
   predicate FileXRef :
     { file : src.File, span : src.ByteSpan, target : src.Symbol, role : Role }
 

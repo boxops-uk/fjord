@@ -102,8 +102,9 @@ playground to edit the query and explore everything the engine exposes.
 
 :::note Status
 The engine, the storage layer, the language, the wire protocol, the server, the client,
-the CLI, the shell and a code-search viewer are **built and guarded**. Ingestion from
-**files** and **stored derivation** are not. [Status & roadmap](status.html) has the
+the CLI and the shell are **built and guarded**. Ingestion from **files** and **stored
+derivation** are not, and the code-search viewer is retired — what replaces it is a browser
+application ([clients](clients.html#the-viewer)). [Status & roadmap](status.html) has the
 honest list.
 :::
 
@@ -120,7 +121,6 @@ honest list.
 <span class="pill ok">server + client</span>
 <span class="pill ok">CLI + shell</span>
 <span class="pill ok">parallel ingest</span>
-<span class="pill ok">code-search viewer</span>
 <span class="pill todo">file ingestion</span>
 <span class="pill todo">stored derivation</span>
 </p>

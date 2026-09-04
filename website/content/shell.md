@@ -98,13 +98,16 @@ piping.
 ### `:expand` — show the fact a reference names
 
 ```text
-sigla> R where R = src.Ref _
-"#23:60"
+sigla> R where R = codemarkup.SymbolXRef _
+  : codemarkup.SymbolXRef
+"#9:220"
 
 sigla> :expand
   references expand into the facts they name, all the way down
-sigla> R where R = src.Ref _
-{"to": {"module": {"file": "Boxops.Fjord.Client/Crc32.cs", "name": "Boxops.Fjord.Client"}, "name": "Crc32", "line": 7}, "file": "Boxops.Fjord.Client/Blocks.cs", "at": {"line": 98, "col": 24, "length": 5}}
+  each one is a point read — :timing counts them per page
+sigla> R where R = codemarkup.SymbolXRef _
+  : codemarkup.SymbolXRef
+{"target": "scip-csharp nuget Boxops.Fjord.Client 0.2.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4808, "length": 5}}
 ```
 
 A row carries a reference as a fact id, because that is what one is once stored — and sigla
@@ -120,11 +123,16 @@ a field somebody chose not to expand.
 
 ```text
 sigla> :profile
-sigla> {f = F, l = L} where src.Ref {to = src.Decl {name = "Crc32"}, file = F, at = {line = L}}
-STEP      EXAMINED
-src.Decl  483       full scan
-src.Ref   5
-488 examined, 5 produced
+  profile is on
+  what the next query examines is reported when it ends
+sigla> {f = F, at = S} where
+         codemarkup.SearchEntry
+           {nameLowercase = _, name = "Crc32", kind = _, symbol = T, file = _, line = _};
+         codemarkup.SymbolXRef {target = T, file = F, span = S}
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
 ```
 
 Per **step of the plan's body**, which is what the machine counts — so a fetch, a disjunction and
@@ -137,12 +145,13 @@ different query's numbers.
 ### `:schema` — and prefixes
 
 ```text
-sigla> :schema src.Decl
-sigla> :schema src.
+sigla> :schema codemarkup.SymbolXRef
+  predicate codemarkup.SymbolXRef: { target: src.Symbol, file: src.File, span: { start: int, length: int } }
+sigla> :schema codemarkup.
 ```
 
 An exact name describes one predicate; anything that does not resolve exactly falls back to
-**prefix matching**, so `:schema src.` dumps a namespace rather than failing.
+**prefix matching**, so `:schema codemarkup.` dumps a namespace rather than failing.
 
 Virtual predicates are printed like any other, because the served schema is what may be *asked*
 about. `fjord.db.List` is there, and `:list` is a query over it; `fjord.db.Interning` is its
@@ -152,24 +161,44 @@ how *is the interning cache working* is a query rather than a debugger session.
 ## Things worth trying
 
 ```sigla
-:plan D where D = src.Decl {name = "encode"..}
-:plan D where D = src.SearchByName {name = "encode"..}
+:plan E where E = codemarkup.SearchEntry
+                   {nameLowercase = _, name = "Crc32", kind = _, symbol = _, file = _, line = _}
+:plan S where codemarkup.SymbolByName {name = "Crc32", symbol = S}
 ```
 
-The same question twice, and the plans are the argument for what a derived predicate is: one
-scans and filters, the other seeks a range. Run both with `:profile` on and read the
-`EXAMINED` column.
+The same question twice, and the plans are the argument for what a second copy of the data is:
+`SearchEntry` leads with `nameLowercase`, so a constraint on `name` can only filter rows the
+scan already produced, while `SymbolByName` leads with `name` and seeks.
+
+```text
+  r0 <- codemarkup.SearchEntry scan
+       where name == "Crc32"
+  head r0#
+
+  r0 <- codemarkup.SymbolByName seek[name = "Crc32", symbol = _]
+  head r0.symbol
+```
+
+Run both with `:profile` on and read the `EXAMINED` column.
 
 ```sigla
-D.name where D = src.Decl _; !src.Ref {to = D}
+D.name where D = codemarkup.SearchEntry _; !codemarkup.SymbolXRef {target = D.symbol}
 ```
 
-Unused declarations — a negation, which is a test rather than a level: it binds nothing and each
-source is drained to its first row.
+Names nothing refers to — a negation, which is a test rather than a level: it binds nothing and
+each source is drained to its first row.
 
 ```sigla
-{decl = D.name, module = D.module.name} where D = src.Decl {name = "encode"..}
+{name = N, file = P} where
+  codemarkup.SearchEntry {nameLowercase = "crc".., name = N, kind = _, symbol = _, file = F, line = _};
+  F = src.File P
 ```
 
-Reading **through** a reference: `D.module` is a fact id, so its name is in another fact's key and
-the plan grows a fetch level.
+Reading **through** a reference: `F` is a fact id, so the path it names is in another fact's key
+and the plan grows a fetch level.
+
+```text
+  r0 <- codemarkup.SearchEntry seek[nameLowercase = "crc".., name = _, kind = _, symbol = _, file = _, line = _]
+  r1 <- src.File fetch[r0.file]
+  head {file = r1.0, name = r0.name}
+```

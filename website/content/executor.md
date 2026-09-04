@@ -155,15 +155,15 @@ a second level would read the same row again and could never disagree with the f
 
 ## Every construct, as a plan
 
-Each of these is `:plan` output over the sample code schema, and each one is a different
-piece of the machine — the concrete form of everything above.
+Each of these is `:plan` output over `schemas/demo.sigla`, the sample code schema, and each
+one is a different piece of the machine — the concrete form of everything above.
 
 **Reading through a reference** — a fetch level, one point read per row above it:
 
 ```text
-sigla> :plan N where src.Ref {to = D}; N = D.name
-  r0 <- src.Ref scan
-  r1 <- src.Decl fetch[r0.to]
+sigla> :plan N where code.Ref {to = D}; N = D.name
+  r0 <- code.Ref scan
+  r1 <- code.Decl fetch[r0.to]
   head r1.name
 ```
 
@@ -171,8 +171,8 @@ sigla> :plan N where src.Ref {to = D}; N = D.name
 level: the cursor stores nothing for it, because it is recomputed on resume.
 
 ```text
-sigla> :plan Y where src.Decl {line = L}; Y = L + 1
-  r0 <- src.Decl scan
+sigla> :plan Y where code.Decl {line = L}; Y = L + 1
+  r0 <- code.Decl scan
   r1 = r0.line + 1
   head r1=
 ```
@@ -181,9 +181,9 @@ sigla> :plan Y where src.Decl {line = L}; Y = L + 1
 source is drained only to its first row, because the question is whether a witness exists:
 
 ```text
-sigla> :plan F where F = src.File _; !src.Module {file = F, name = "Boxops.Fjord.Client"}
-  r0 <- src.File scan
-  absent src.Module seek[file = r0#, name = "Boxops.Fjord.Client"]
+sigla> :plan F where F = code.File _; !code.Decl {file = F, name = "Plan"}
+  r0 <- code.File scan
+  absent code.Decl seek[file = r0#, name = "Plan", line = _]
   head r0#
 ```
 
@@ -191,9 +191,9 @@ sigla> :plan F where F = src.File _; !src.Module {file = F, name = "Boxops.Fjord
 written: "does not start with X" is the two ranges either side of one, and a seek walks one.
 
 ```text
-sigla> :plan N where src.Decl {name = N}; N != "Block"..
-  r0 <- src.Decl scan
-       where name does not start with "Block"
+sigla> :plan N where code.Decl {name = N}; N != "key"..
+  r0 <- code.Decl scan
+       where name does not start with "key"
   head r0.name
 ```
 
@@ -201,10 +201,10 @@ sigla> :plan N where src.Decl {name = N}; N != "Block"..
 concatenated. Never DNF-expanded across conjuncts:
 
 ```text
-sigla> :plan X where src.Decl {module = M, name = X} | src.Module {file = _, name = X}
-  r0 <- src.Decl scan
-     | src.Module scan
-  head r0.1
+sigla> :plan X where code.Decl {file = X, name = _, line = _} | code.Digest {file = X}
+  r0 <- code.Decl scan
+     | code.Digest scan
+  head r0.0
 ```
 
 ## The register file, and the row–slot model
@@ -347,7 +347,7 @@ receives each row and answers `Continue` or `Suspend`.
 
 A `Row` is **borrowed and one-step-lived**: it is a view of the registers as they stand, not a
 copy. Nothing materialises a result set, at any layer — the server's chunk loop, the CLI's
-renderer and the viewer's pages are all consumers of this seam.
+renderer and the interactive site's stepped run are all consumers of this seam.
 
 ## The `Cursor` — bytes, and nothing else
 
@@ -522,10 +522,10 @@ counter back instead of throwing it away, **per step of the plan's body** — wh
 a fetch, a disjunction and a negation each a line of their own:
 
 ```text
-STEP      EXAMINED
-src.Decl  1000      full scan
-src.Ref   1
-1001 examined, 1 produced
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
 ```
 
 Read it against `:plan`: the plan is the intent, this is the outcome.

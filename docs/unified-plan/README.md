@@ -133,7 +133,7 @@ R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)
 
 ## What this adds up to
 
-**108 acceptance criteria across thirteen items** (W13 carries amendments to revision 2's own run
+**105 acceptance criteria across thirteen items** (W13 carries amendments to revision 2's own run
 gates rather than criteria of its own), plus revision 2's Runs 0–9.
 
 New on disk: **nine new schema files** — `src`, `config`, `codemarkup`, the five language schemas

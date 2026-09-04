@@ -134,8 +134,8 @@ moves. Ask the schema — `h` above — or treat an id as opaque and hand it bac
 ## A query stream
 
 ```text
-  →  Q   "{f = F, l = L} where src.Ref {…}"
-  ←  T   {f: src.File, l: int}
+  →  Q   "{f = F, at = S} where codemarkup.SymbolXRef {…}"
+  ←  T   {at: {start: int, length: int}, f: src.File}
   ←  D   one row
   ←  D   one row
   …
@@ -410,12 +410,15 @@ Two properties are load-bearing rather than incidental:
 ## What a client sends: the whole fact
 
 ```text
-    src.Decl {
-      module = src.Module {                    ← a whole fact, not an id
-        file = src.File "store/keys.py",       ← nested again
-        name = "keys"
+    code.Ref {
+      from = code.Decl {                       ← a whole fact, not an id
+        file = code.File "query/plan.py",      ← nested again
+        name = "Plan", line = 5
       },
-      name = "key_of", line = 12
+      to = code.Decl {
+        file = code.File "store/keys.py",
+        name = "key_of", line = 12
+      }
     }
 ```
 

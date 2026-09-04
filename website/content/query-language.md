@@ -7,7 +7,9 @@ sigla is a typed, Datalog-flavoured query language. A query is a **head pattern*
 `where`, and a list of **statements**:
 
 ```sigla
-{file = F, line = L} where src.Ref {to = src.Decl {name = "encode"}, file = F, at = {line = L}}
+{file = F, span = S} where
+  codemarkup.SymbolByName {name = "Crc32", symbol = T};
+  codemarkup.SymbolXRef {target = T, file = F, span = S}
 ```
 
 The head says what a row looks like. The statements say which rows there are. There is no
@@ -557,17 +559,17 @@ X where test.Foo {id = X, name = "ann"}      → 1; 3              (a scan, then
 `:plan` shows exactly which happened, and `--profile` shows what it cost:
 
 ```plan
-  r0 <- src.Decl scan
+  r0 <- codemarkup.SearchEntry scan
        where name == "Crc32"
-  r1 <- src.Ref seek[to = r0#, file = _, at = _]
-  head {f = r1.file, l = r1.at.line}
+  r1 <- codemarkup.SymbolXRef seek[target = r0.symbol, file = _, span = _]
+  head {at = r1.span, f = r1.file}
 ```
 
 ```text
-STEP      EXAMINED
-src.Decl  483       full scan
-src.Ref   5
-488 examined, 5 produced
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
 ```
 
 If a question you ask often reads far more rows than it produces, the answer is usually the

@@ -19,7 +19,8 @@ is no spelling, and adding one is not additive.
 
 That ✅ line does real work, and it is drawn deliberately: declaring a predicate keyed for the
 question you actually ask is an ordinary schema decision here, not a workaround. Four predicates in
-`schemas/code.sigla` exist for exactly that reason and each says so in a comment.
+`schemas/codemarkup.sigla` — `FileDefinition`, `SymbolXRef`, `SymbolByName` and `RelationOf` —
+exist for exactly that reason and each says so in a comment.
 
 ---
 
@@ -47,7 +48,7 @@ none of the five.
 |---|---|---|---|
 | 1 | `list_repos` | ✅ | `fjord.db.List` already *is* this |
 | 2 | `query` (BM25 + semantic + RRF) | ❌ | Retrieval expressible; scoring and ranking are not |
-| 3 | `context` | ✅ | `fjord-viewer`'s `/symbol/{name}`, shipping today |
+| 3 | `context` | ✅ | Every part of a symbol panel is a `codemarkup` seek — but nothing ships one |
 | 4 | `impact` | ◐ | One hop is a seek; closure is a client-side BFS |
 | 5 | `trace` | ◐ | Client-side bidirectional BFS |
 | 6 | `detect_changes` | ◐ | Line→decl containment filters under the current key layouts; impact half is #4 |
@@ -84,22 +85,27 @@ client-side skip, and worth saying rather than papering over.
 
 ### 3 · `context` — 360-degree symbol view
 
-This ships. `fjord-viewer` answers a symbol panel with `definition`, `references` and
-`definition_span` (`crates/fjord-viewer/src/query.rs`), all seeks. Categorised references are one
-seek per category, and the schema pattern for the reverse directions already exists: `src.Extends`
-answers "who derives from this", `src.DerivesFrom` answers "what does this derive from", and
-`schemas/code.sigla` says in a comment that the second exists *precisely because* a symbol panel
-asks the opposite question to the fan-out. `src.AttributeOf` is the same choice made again.
+**The queries ship; no user interface does.** `schemas/codemarkup.sigla` is the surface a UI
+reads, and every part of a symbol panel is a seek in it: `Definition` for the declaration site,
+`SymbolInfo` for the hover card, `SymbolXRef` for the uses. The reverse directions are declared
+rather than sorted for — `Relation` answers "what does this extend", `RelationOf` answers "who
+extends this", and the file says in a comment that the second exists *precisely because* a symbol
+panel asks the opposite question to the fan-out.
+
+What was retired with `fjord-viewer` is the *rendering*, not the answering. A UI over this is a
+client of the protocol like any other, and nothing in this row is waiting on the engine.
 
 Process participation is a join, given a process predicate keyed both ways. Nothing new is needed.
 
-The trap this feature teaches is worth carrying, because it is invisible from outside. `search` was
-once written to **bind** the declaration — `…, to = D}; D = src.Decl {module = M}` — and cost
-**30 seconds** where the fetch spelling costs **2 ms**. A row bind *claims* its variable
-(`flatten`'s `Claims`), so the statement saying what `D` is must run before anything reading it,
-and no reordering rescues that: it is not an ordering question. `src.Decl` scanned its 888,177 rows
-and the seek became a residual on each one. **Every feature on this list that reads through a
-reference is one spelling away from that cliff.**
+The trap this feature teaches is worth carrying, because it is invisible from outside. A
+find-references query written to **bind** the declaration — `…, to = D}; D = <a declaration
+predicate> {…}` — was measured at **30 seconds** where the fetch spelling costs **2 ms**. A row
+bind *claims* its variable (`flatten`'s `Claims`), so the statement saying what `D` is must run
+before anything reading it, and no reordering rescues that: it is not an ordering question. The
+declaration predicate scanned its 888,177 rows and the seek became a residual on each one.
+**Every feature on this list that reads through a reference is one spelling away from that
+cliff.** The corpus that produced those two figures no longer exists — read them as the lesson
+they are, not as current numbers ([performance](../website/content/performance.md)).
 
 ### 10 · `route_map` · 11 · `tool_map`
 
@@ -110,8 +116,9 @@ Two predicates keyed in opposite directions and a join between them:
   where api.Fetch {component = C, route = R}; api.Handles {route = R, handler = H}
 ```
 
-Both are the `src.Ref`/`src.FileXRef` pattern — the same edges declared twice so each direction
-seeks. The map's order falls out of key order, which is what a route map wants anyway.
+Both are the `codemarkup.FileXRef`/`codemarkup.SymbolXRef` pattern — the same edges declared
+twice so each direction seeks. The map's order falls out of key order, which is what a route map
+wants anyway.
 
 ### 12 · `shape_check` — response shapes against consumers' accesses
 
@@ -134,8 +141,9 @@ is the settled multiplicity answer and is what makes the antijoin seek in the fi
 
 The verdict holds for **persisted** findings, which is what the feature says. A flow stored as one
 fact per step, keyed `{flow, index}`, reads back in step order as a seek — structurally identical
-to `src.Param {decl, index, name}`, which exists so that a method's parameters come back in order.
-An `int` in the middle of a key is the idiom, and it is already in the sample schema.
+to `csharp.MethodParameter {method, index, parameter}`, which exists so that a method's parameters
+come back in order. An `int` in the middle of a key is the idiom, and it is already in the shipped
+schemas.
 
 What is *not* supported is **deriving** flows at query time. That is reachability, and it is #4.
 
@@ -154,8 +162,9 @@ holding state across iterations conflicts with [I8](../website/content/invariant
 
 What this costs in practice is less than a ❌ would suggest, which is why these are ◐:
 
-- **Each hop is a seek.** All four edge predicates in `schemas/code.sigla` lead with the end you
-  fan out *from* — that is what `{base, type}` buys. A frontier expansion is one query.
+- **Each hop is a seek.** `codemarkup.Relation` and `codemarkup.RelationOf` hold every edge kind
+  twice, each leading with the end you fan out *from*. A frontier expansion is one query whichever
+  direction it runs.
 - **Blast radius is a client-side BFS**: N round trips for depth N. **Depth grouping is free** —
   the round number *is* the depth, which is exactly what `impact` reports.
 - **`trace` wants shortest path**, which needs the client driving the search in any system;
@@ -178,14 +187,14 @@ independently-built databases can never be stacked, **in Glean either**, because
 must be allocated above the base's at create time. So `detect_changes` compares a working tree
 against *the commit that was indexed*, not against a continuously updated graph.
 
-Mapping a changed line to the declaration containing it is a range containment — `line <= L` and
-`L <= endLine` against `src.DeclSpan`. Comparisons are byte compares, sound because
-[I1](../website/content/invariants.md#i1) makes encoded order value order, but both **filter** under
-the current key layouts. `src.Decl.line` follows the declaration name, and
-`src.DeclSpan.endLine` follows `col`; a file-scoped containment query fixes neither intervening
-field, so its seek prefix closes before reaching either comparison. The new bounded seek would
-apply to a purpose-built index whose compared field ended the fixed prefix, but the schema does
-not carry that index today.
+Mapping a changed offset to the declaration containing it is a range containment —
+`span.start <= X` and `X < span.start + span.length` against `codemarkup.FileDefinition`.
+Comparisons are byte compares, sound because [I1](../website/content/invariants.md#i1) makes
+encoded order value order, but both **filter**: that key is `{file, span, symbol}` and `span` is a
+nested record, so a comparison against one of its components is a residual — `:plan` renders it as
+`where span.start >= …` under a full scan — and there is no spelling that puts a range constraint
+*inside* a nested record position at all. A bounded seek would apply to a purpose-built index
+whose compared field ended the fixed prefix; no shipped schema carries one.
 
 Which processes the changed declarations affect is #4.
 
@@ -208,15 +217,17 @@ rejected by name *until something else wants the operator*. This is that somethi
 
 ### 8 · `rename` — multi-file coordinated rename
 
-The graph half is the flagship. `src.Ref` leads with `to`, which is what makes find-references a
-seek and what `bench/FINDINGS.md` §11 records as making it answerable at all. "Every reference to
-this declaration" is one seek, and it is what `fjord_viewer::query::references` already asks.
+The graph half is the flagship. `codemarkup.SymbolXRef` leads with `target`, which is what makes
+find-references a seek and what `bench/FINDINGS.md` §11 records as making it answerable at all.
+"Every reference to this symbol" is one seek, and it is the query
+[Getting started](../website/content/getting-started.md) ends on.
 
 The text half is where it stops. Prefix search is a range under I1 — the one place the two codecs
 genuinely agree with Glean's — but **substring and regex are absent**: no `contains`, no suffix
-index, and no `toLower` at read time, which is why `src.SearchByLowerName` exists as a second
-stored copy of the same names. A trigram or suffix index is expressible as facts and needs no
-language change; it is simply not built, and the cost lands on the indexer.
+index, and no `toLower` at read time, which is why `codemarkup.SearchEntry` leads with a
+`nameLowercase` field holding a second, case-folded copy of the same names. A trigram or suffix
+index is expressible as facts and needs no language change; it is simply not built, and the cost
+lands on the indexer.
 
 Fuzzy helps here more than anywhere else on this list, because "find the things spelled nearly like
 this" is the discovery step a rename across an unfamiliar codebase actually starts with.
@@ -259,7 +270,7 @@ Four sub-features, failing for four different reasons, which is why this is ❌ 
 
 **Grouping works.** "Process-grouped" is free if the schema declares a predicate keyed by process:
 the output stream is ordered by key order, so grouped output falls out. It is the same trick
-`src.FileXRef` uses to hand a renderer its cross-references already sorted by line and column.
+`codemarkup.FileXRef` uses to hand a renderer a file's cross-references already sorted by span.
 
 **BM25 retrieval works; BM25 scoring does not.** Postings as facts — `Posting {term, doc} -> tf` —
 are seekable on the leading term, and document length is another predicate. What is missing is the
@@ -311,9 +322,10 @@ forecloses the key truncation Glean adopted.
 
 What Fjord lacks is not order but a **chosen** order: the order is a consequence of the schema and
 the plan, never of the query. The standing answer — *if you want the data in another order, declare
-it twice* — is what `src.SearchByName`, `src.FileXRef`, `src.DerivesFrom` and `src.AttributeOf`
-already are. It covers more of GitNexus than it first appears: process grouping, route maps,
-parameter order, flow step order, and a file's cross-references in render order are all free.
+it twice* — is what `codemarkup.SymbolByName`, `codemarkup.SymbolXRef`, `codemarkup.RelationOf`
+and `csharp.DefinitionBySymbol` already are. It covers more of GitNexus than it first appears:
+process grouping, route maps, parameter order, flow step order, and a file's cross-references in
+render order are all free.
 
 ### (b) Ordering by a computed value — ranking — is the real gap, and it is not additive
 
@@ -348,10 +360,11 @@ discovering later.
   bytes only — [I4](../website/content/invariants.md#i4) and
   [I8](../website/content/invariants.md#i8) untouched. This is the kind of claim this repository
   would want a property test for before believing it.
-- **It only helps on a leading key field.** `src.SearchByLowerName` is keyed `{name, to}`, so the
-  schema pattern fuzzy needs already exists and already carries the comment explaining why. Fuzzy
-  on a non-leading field, or on a variable an earlier level bound, degrades to a residual over a
-  full scan — and there is no fuzzy residual op either.
+- **It only helps on a leading key field.** `codemarkup.SearchEntry` leads with `nameLowercase`,
+  so the schema pattern fuzzy needs already exists and already carries the comment explaining
+  why — `:plan` over it renders a fuzzy match as `seek~[nameLowercase ~1 "cr"]`. Fuzzy on a
+  non-leading field, or on a variable an earlier level bound, degrades to a residual over a full
+  scan — and there is no fuzzy residual op either.
 - **It does not help ranking.** Edit distance is a natural relevance score and there is nowhere to
   put it. A fuzzy seek returns candidates in *key* order, not distance order — the ordering gap
   arriving immediately, inside the one feature fuzzy was supposed to rescue.

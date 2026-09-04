@@ -267,12 +267,15 @@ A producer does not send ids. It sends **the target fact**, written inline where
 reference belongs, to any depth:
 
 ```text
-    src.Decl {
-      module = src.Module {                    ← a whole fact, not an id
-        file = src.File "store/keys.py",       ← nested again
-        name = "keys"
+    code.Ref {
+      from = code.Decl {                       ← a whole fact, not an id
+        file = code.File "query/plan.py",      ← nested again
+        name = "Plan", line = 5
       },
-      name = "key_of", line = 12
+      to = code.Decl {
+        file = code.File "store/keys.py",
+        name = "key_of", line = 12
+      }
     }
 ```
 

@@ -145,8 +145,8 @@ served from its embedded schema and a client's per-predicate fingerprint has to 
 a union that grew is a different predicate to every client compiled against the old one.
 
 On the query side, a one-field record against a union-typed field names an alternative —
-`src.Ref {to = {decl = D}}` — and `X.to.decl?` selects one and binds its payload. Both are
-seeks when the union leads the key. See [unions in the query
+`code.Resolves {to = {decl = D}}` — and `X.to.decl?` selects one and binds its payload. Both
+are seeks when the union leads the key. See [unions in the query
 language](query-language.html#unions).
 
 ## Field order is the index design
@@ -173,19 +173,19 @@ unanswerable. The fix was to move a field.
 
 :::warn Declaring a key alphabetically is a choice
 It makes the index shape a consequence of what the fields happen to be called. If the same
-data is wanted in two orders, declare it twice — that is what `src.SearchByName`,
-`src.FileXRef`, `src.DerivesFrom` and `src.AttributeOf` are, and each of them says so in a
-comment.
+data is wanted in two orders, declare it twice — that is what `codemarkup.SymbolByName`,
+`codemarkup.FileXRef`, `codemarkup.RelationOf` and `csharp.DefinitionBySymbol` are, and each
+of them says so in a comment.
 :::
 
 Two other placement rules worth internalising:
 
 - **A field a query must match on belongs in the key**, not the value side: a value cannot
   be matched ([I6](invariants.html#i6)).
-- **A trailing key field costs the seeks nothing.** `src.Ref` carries the reference's
-  length in its key rather than its value, because a key field is already in the register
-  the scan is holding while a value is a point read per row — and it trails, so every
-  prefix above it still narrows exactly as it did.
+- **A trailing key field costs the seeks nothing.** `codemarkup.SearchEntry` carries the
+  file and line a hit renders in its key rather than its value, because a key field is
+  already in the register the scan is holding while a value is a point read per row — and
+  they trail, so every prefix above them still narrows exactly as it did.
 
 ## Namespaces and imports
 

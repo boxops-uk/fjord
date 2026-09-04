@@ -251,8 +251,8 @@ the canonical schema source — which is the text `create --schema` would take, 
 
 ```bash
 fjord query code 'F where src.File F' --limit 20
-fjord query code 'D where D = src.Decl _' --format jsonl --expand
-fjord query code 'R where R = src.Ref _' --count --timing
+fjord query code 'D where D = codemarkup.Definition _' --format jsonl --expand
+fjord query code 'R where R = codemarkup.SymbolXRef _' --count --timing
 fjord query '/tmp/fjord.sock//code' 'F where src.File F'
 ```
 

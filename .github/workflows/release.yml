@@ -199,9 +199,11 @@ jobs:
       - name: Website builds clean
         run: python3 website/build.py --strict
       # The drift gate: site links and anchors resolve, invariant citations in the
-      # crates resolve to the registry, nothing references a retired doc, and no
-      # build-plan phase number survives in code or the book. Each check is a way
-      # the documentation actually went stale once.
+      # crates resolve to the registry, nothing references a retired doc, no
+      # build-plan phase number survives in code or the book, and nothing describes a
+      # retired *name* as live — a deleted schema, a retired crate, a deleted script,
+      # a removed flag, a retired predicate. Each check is a way the documentation
+      # actually went stale once, and the last is the one four hand sweeps missed.
       - name: Documentation is consistent
         run: python3 scripts/check-docs.py
 
