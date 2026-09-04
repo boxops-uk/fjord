@@ -134,16 +134,26 @@ impl<'a> MemorySources<'a> {
         }
     }
 
-    /// The entry: the first source in the list.
+    /// The entry: the first source in the list, keyed the way [`find`] keys every
+    /// other one.
+    ///
+    /// [`find`]: SchemaSources::find
     ///
     /// # Errors
     ///
     /// When the list is empty, because there is then nothing to resolve.
-    pub fn entry(&self) -> Result<(&'a str, &'a str), String> {
-        self.sources
+    pub fn entry(&self) -> Result<Source, String> {
+        let (name, text) = self
+            .sources
             .first()
             .copied()
-            .ok_or_else(|| "no schema sources at all".to_owned())
+            .ok_or_else(|| "no schema sources at all".to_owned())?;
+
+        Ok(Source {
+            name: name.to_owned(),
+            text: text.to_owned(),
+            identity: name.to_owned(),
+        })
     }
 }
 
@@ -166,15 +176,11 @@ impl SchemaSources for MemorySources<'_> {
     }
 
     fn searched(&self) -> String {
-        if self.sources.is_empty() {
-            "no sources at all".to_owned()
-        } else {
-            self.sources
-                .iter()
-                .map(|(name, _)| *name)
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
+        self.sources
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -200,14 +206,15 @@ pub fn resolve_from<'a>(
     resolve_with(entry, &sources)
 }
 
-/// Resolve `entry` — a name and its text — following its imports through `sources`.
+/// Resolve `entry` — a source and its identity — following its imports through
+/// `sources`.
 ///
 /// # Errors
 ///
 /// A rendered reason: a source that cannot be read, an import nothing resolves, a
 /// syntax error in any source, or anything lowering refuses about the union — a
 /// redeclaration most of all.
-fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Resolved, String> {
+fn resolve_with(entry: Source, sources: &impl SchemaSources) -> Result<Resolved, String> {
     let mut files: Vec<String> = vec![];
     let mut texts: Vec<String> = vec![];
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -216,14 +223,7 @@ fn resolve_with(entry: (&str, &str), sources: &impl SchemaSources) -> Result<Res
     // useful "unresolved import" message: a namespace with no source is only ever a
     // problem in the source that named it — and it is what lets a namespace mismatch
     // point at the `import` rather than at every use site downstream.
-    let mut pending: Vec<(Source, Option<Asked>)> = vec![(
-        Source {
-            name: entry.0.to_owned(),
-            text: entry.1.to_owned(),
-            identity: entry.0.to_owned(),
-        },
-        None,
-    )];
+    let mut pending: Vec<(Source, Option<Asked>)> = vec![(entry, None)];
 
     while let Some((source, asked_by)) = pending.pop() {
         // **Dedup by identity, not by name** — see [`Source::identity`].
@@ -361,7 +361,14 @@ pub fn resolve(entry: &Path, roots: &[PathBuf]) -> Result<Resolved, String> {
     let text = std::fs::read_to_string(entry)
         .map_err(|source| format!("{}: {source}", entry.display()))?;
 
-    resolve_with((&entry.display().to_string(), &text), &FsSources { search })
+    resolve_with(
+        Source {
+            name: entry.display().to_string(),
+            text,
+            identity: identity(entry),
+        },
+        &FsSources { search },
+    )
 }
 
 /// The filesystem provider: an import name is a path under one of the roots.
@@ -384,12 +391,7 @@ impl SchemaSources for FsSources {
 
         Ok(Some(Source {
             name: path.display().to_string(),
-            // **`canonicalize`, not the path as written.** Two roots may spell one file
-            // two ways, and a diamond reaches it twice.
-            identity: std::fs::canonicalize(&path)
-                .unwrap_or_else(|_| path.clone())
-                .display()
-                .to_string(),
+            identity: identity(&path),
             text,
         }))
     }
@@ -405,6 +407,23 @@ impl SchemaSources for FsSources {
                 .join(", ")
         }
     }
+}
+
+/// A path as a dedup key: **`canonicalize`, not the path as written.** Two roots may
+/// spell one file two ways, and a diamond reaches it twice.
+///
+/// **Every path put in `seen` goes through here, the entry's included.** Key the entry
+/// by the spelling the caller used and the set holds two key spaces: an entry reached
+/// again through an import — a cycle — is read a second time, and every declaration in
+/// it becomes a redeclaration of itself. A relative entry path and a symlinked root are
+/// both enough; an absolute path under an already-canonical directory is not, which is
+/// why no test that builds one can see it.
+#[cfg(feature = "fs")]
+fn identity(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
 }
 
 /// `lang.rust` → `lang/rust.sigla`.
@@ -449,6 +468,21 @@ mod tests {
         let resolved = resolve(&entry, &[]);
 
         (dir, resolved)
+    }
+
+    /// `a` imports `b` imports `a`, written into `dir` — the shape that reads the entry
+    /// twice when the entry's dedup key is not the key `find` hands back.
+    fn cycle_in(dir: &Path) {
+        std::fs::write(
+            dir.join("a.sigla"),
+            "schema a { import b\n predicate A : { b : b.B } }",
+        )
+        .expect("it writes");
+        std::fs::write(
+            dir.join("b.sigla"),
+            "schema b { import a\n predicate B : string }",
+        )
+        .expect("it writes");
     }
 
     fn names(schema: &Schema) -> Vec<String> {
@@ -702,6 +736,48 @@ mod tests {
         assert_eq!(names(&resolved.schema), ["a.A", "b.B"]);
     }
 
+    /// **The entry's dedup key has to be the key every other source's is.** `find`
+    /// canonicalises, so a frontier seeded with the path as the caller spelled it holds
+    /// two key spaces in one set: the entry reached again through an import — a cycle —
+    /// is read a second time, and every declaration in it becomes a redeclaration of
+    /// itself.
+    ///
+    /// A relative path is the spelling a person types. Every other case here builds an
+    /// absolute path under a Linux tempdir, which is already canonical, so none of them
+    /// can see this.
+    #[test]
+    fn a_relative_entry_path_is_deduped_like_every_other_source() {
+        // Inside the working directory, so the relative spelling is well defined
+        // without this test changing a directory the rest of the suite shares.
+        let here = std::env::current_dir().expect("a working directory");
+        let dir = tempfile::TempDir::new_in(&here).expect("a scratch directory");
+        cycle_in(dir.path());
+
+        let entry = Path::new(dir.path().file_name().expect("a name")).join("a.sigla");
+        let resolved = resolve(&entry, &[]).expect("a cycle through a relative entry");
+
+        assert_eq!(resolved.files.len(), 2, "{:?}", resolved.files);
+        assert_eq!(names(&resolved.schema), ["a.A", "b.B"]);
+    }
+
+    /// The same claim through the other spelling that is not canonical: an absolute
+    /// path whose directory is a symlink. `canonicalize` follows it and the entry's own
+    /// spelling does not.
+    #[test]
+    fn an_entry_reached_through_a_symlink_is_deduped_like_every_other_source() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        std::fs::create_dir(dir.path().join("real")).expect("a directory");
+        cycle_in(&dir.path().join("real"));
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link"))
+            .expect("a symlink");
+
+        let entry = dir.path().join("link").join("a.sigla");
+        let resolved = resolve(&entry, &[]).expect("a cycle through a symlinked directory");
+
+        assert_eq!(resolved.files.len(), 2, "{:?}", resolved.files);
+        assert_eq!(names(&resolved.schema), ["a.A", "b.B"]);
+    }
+
     /// A diamond reads the shared file once. Reading it twice would make every
     /// declaration in it a redeclaration of itself, which is the error this dedup
     /// exists to *not* raise.
@@ -762,12 +838,13 @@ mod tests {
     #[test]
     fn predicate_ids_are_assigned_by_sorted_qualified_name() {
         // The *file* order and the sorted order disagree at every position, and the
-        // reserved namespace is declared first so that "last" is a claim rather than an
-        // accident of where it was written.
+        // reserved namespace is written first — in the entry, which is read first — so
+        // that "last" is a claim rather than an accident of where it was put.
         let (_dir, resolved) = resolving(&[
             (
                 "main.sigla",
-                "schema zeta { import alpha\n import mid\n predicate Z : string }",
+                "schema fjord.db { predicate List : string }\n\
+                 schema zeta { import alpha\n import mid\n predicate Z : string }",
             ),
             ("alpha.sigla", "schema alpha { predicate A : string }"),
             ("mid.sigla", "schema mid { predicate M : string }"),
@@ -777,8 +854,16 @@ mod tests {
 
         assert_eq!(
             names(&resolved.schema),
-            ["alpha.A", "mid.M", "zeta.Z"],
+            ["alpha.A", "mid.M", "zeta.Z", "fjord.db.List"],
             "ids follow the sorted qualified name, not the order the files were read"
+        );
+
+        // The reserved half of the rule, which the sort alone would put between
+        // `alpha.A` and `mid.M`: a server adding a predicate it answers itself must
+        // move no id a database has already written into its keyspaces.
+        assert_eq!(
+            names(&resolved.schema).last().map(String::as_str),
+            Some("fjord.db.List")
         );
 
         // And the entry file's own predicate is *not* first, which is the reading the
@@ -814,5 +899,90 @@ mod tests {
             panic!("it does not parse");
         };
         assert!(failed.contains("broken.sigla"), "{failed}");
+    }
+
+    /// **The first root on the schema path wins**, and the second half is what says the
+    /// order is read at all: the same two roots, reversed, resolve the other file.
+    #[test]
+    fn the_first_root_that_declares_a_namespace_is_the_one_read() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let root = |name: &str, predicate: &str| {
+            let root = dir.path().join(name);
+            std::fs::create_dir_all(&root).expect("a directory");
+            std::fs::write(
+                root.join("base.sigla"),
+                format!("schema base {{ predicate {predicate} : string }}"),
+            )
+            .expect("it writes");
+            root
+        };
+
+        let (one, two) = (root("one", "One"), root("two", "Two"));
+
+        // The entry sits in a directory of its own, so what is under test is the rule
+        // about roots rather than the one about the entry's own directory.
+        let away = dir.path().join("away");
+        std::fs::create_dir_all(&away).expect("a directory");
+        let entry = away.join("main.sigla");
+        std::fs::write(&entry, "schema app { import base }").expect("it writes");
+
+        let first = resolve(&entry, &[one.clone(), two.clone()]).expect("it resolves");
+        assert_eq!(names(&first.schema), ["base.One"]);
+
+        let reversed = resolve(&entry, &[two, one]).expect("it resolves");
+        assert_eq!(names(&reversed.schema), ["base.Two"]);
+    }
+
+    /// **The entry file's own directory is searched before the roots**, which is what
+    /// makes a self-contained directory of schemas need nothing configured.
+    #[test]
+    fn the_entry_directory_is_searched_before_the_roots() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("a directory");
+        std::fs::write(
+            elsewhere.join("base.sigla"),
+            "schema base { predicate Elsewhere : string }",
+        )
+        .expect("it writes");
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("a directory");
+        std::fs::write(
+            home.join("base.sigla"),
+            "schema base { predicate Home : string }",
+        )
+        .expect("it writes");
+        let entry = home.join("main.sigla");
+        std::fs::write(&entry, "schema app { import base }").expect("it writes");
+
+        let resolved = resolve(&entry, &[elsewhere]).expect("it resolves");
+        assert_eq!(names(&resolved.schema), ["base.Home"]);
+    }
+
+    /// First match wins in an embedded set too, and by the list's own order: two
+    /// sources of one name are one source, and it is the first.
+    #[test]
+    fn the_first_source_of_a_name_is_the_one_read() {
+        const ENTRY: (&str, &str) = ("main.sigla", "schema app { import base }");
+        const ONE: (&str, &str) = ("base.sigla", "schema base { predicate One : string }");
+        const TWO: (&str, &str) = ("base.sigla", "schema base { predicate Two : string }");
+
+        let first = resolve_from([ENTRY, ONE, TWO]).expect("it resolves");
+        assert_eq!(names(&first.schema), ["base.One"]);
+
+        let reversed = resolve_from([ENTRY, TWO, ONE]).expect("it resolves");
+        assert_eq!(names(&reversed.schema), ["base.Two"]);
+    }
+
+    /// An empty set has no entry, and says so rather than resolving to an empty schema.
+    #[test]
+    fn an_empty_set_of_sources_is_refused() {
+        let empty: [(&str, &str); 0] = [];
+
+        let Err(failed) = resolve_from(empty) else {
+            panic!("there is nothing to resolve");
+        };
+        assert!(failed.contains("no schema sources"), "{failed}");
     }
 }
