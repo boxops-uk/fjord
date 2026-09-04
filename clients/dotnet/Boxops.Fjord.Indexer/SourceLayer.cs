@@ -243,11 +243,29 @@ internal static class SourceLayer
 
         /// <summary>The one-based line a UTF-16 position is on.</summary>
         /// <remarks>
+        /// <para>
         /// One-based to match <c>src.FileLine</c>, which every other line number in this
         /// database is keyed by — Roslyn counts from zero.
+        /// </para>
+        /// <para>
+        /// <b>Clamped to the last line the table holds.</b> Roslyn reports a phantom empty
+        /// line at the end of a newline-terminated file and no row is written for it, so
+        /// the unclamped number is one a <c>src.FileLine</c> join answers nothing for —
+        /// in range for the file, wrong for the database, and silent at every layer that
+        /// carries it.
+        /// </para>
         /// </remarks>
-        public long Line(int position) =>
-            text.Length == 0 ? 1 : text.Lines.GetLinePosition(Math.Min(position, text.Length)).Line + 1;
+        public long Line(int position)
+        {
+            if (rows.Count == 0)
+            {
+                return 1;
+            }
+
+            var line = text.Lines.GetLinePosition(Math.Min(position, text.Length)).Line + 1;
+
+            return Math.Min(line, rows.Count);
+        }
 
         /// <summary>
         /// A Roslyn span as a <c>src.ByteSpan</c> — a byte start and a byte length.

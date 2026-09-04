@@ -199,6 +199,64 @@ public sealed class ScipConverterTests
     }
 
     /// <summary>
+    /// <b>The <c>scip-syntax-1</c> payload means what the format says it means.</b>
+    /// </summary>
+    /// <remarks>
+    /// <c>styles</c> is opaque to fjord — it stores the bytes and defines nothing about
+    /// them — so nothing but a decoder here can say that the producer and the name it
+    /// published agree. Three unsigned varints per token, in the order the format names:
+    /// the byte start from the line's own start, the byte length, and SCIP's
+    /// <c>SyntaxKind</c>. A producer that wrote them in another order, or in UTF-16
+    /// columns, would round-trip, publish the same encoding name, and render every line
+    /// wrong.
+    /// </remarks>
+    [Fact]
+    public void The_style_payload_is_three_varints_per_token()
+    {
+        using var server = FjordServer.Serving("style-bytes", "index.sigla");
+        using var connection = Converted(server, "style-bytes");
+
+        // `export function greet(who: string): string {` is all ASCII, so the byte
+        // columns are the character ones: two keywords, the function name, the parameter.
+        Assert.Equal(
+            [(0L, 6L, 4L), (7L, 8L, 4L), (16L, 5L, 15L), (22L, 3L, 6L)],
+            Styles(connection, "src/greet.ts", 1));
+
+        // The template-literal line: `who` is character 18 of it and byte 19 of it,
+        // because the accented letter before it is two UTF-8 bytes. A column copied
+        // rather than converted would say 18 here and agree everywhere else.
+        Assert.Equal([(19L, 3L, 6L)], Styles(connection, "src/greet.ts", 2));
+    }
+
+    /// <summary>One line's <c>scip-syntax-1</c> payload, decoded to its triples.</summary>
+    private static List<(long Start, long Length, long Kind)> Styles(
+        FjordConnection connection, string path, long line)
+    {
+        var value = Assert.Single(connection.Query(
+            $$"""
+            X.value where
+              F = src.File "{{path}}";
+              X = src.FileLineStyles {file = F, line = {{line}}}
+            """).Rows);
+
+        var payload = Assert.IsType<FjordValue.Bytes>(
+            Assert.IsType<FjordValue.Record>(value).Fields[0]).Value.Span;
+
+        var tokens = new List<(long, long, long)>();
+        var at = 0;
+
+        while (at < payload.Length)
+        {
+            tokens.Add((
+                (long)Varint.Read(payload, ref at),
+                (long)Varint.Read(payload, ref at),
+                (long)Varint.Read(payload, ref at)));
+        }
+
+        return tokens;
+    }
+
+    /// <summary>
     /// <b>A name is recovered from a descriptor when the index gives none.</b>
     /// </summary>
     /// <remarks>
@@ -216,5 +274,23 @@ public sealed class ScipConverterTests
     [InlineData("scip-csharp nuget Fixture 1.0.0 Ledger/Core/Store#Add(+1).", "Add")]
     [InlineData("local 4", "4")]
     public void The_last_descriptor_is_the_name(string symbol, string expected) =>
+        Assert.Equal(expected, Descriptors.NameOf(symbol));
+
+    /// <summary>
+    /// <b>A doubled space is an escaped space, not a field separator.</b>
+    /// </summary>
+    /// <remarks>
+    /// SCIP's grammar says the scheme, manager, package name and version are "any UTF-8,
+    /// escape spaces with double space", so a package whose name holds a space arrives as
+    /// five fields with six spaces between the first five words. Counting single spaces
+    /// takes the version for a descriptor and answers a name that is really a version
+    /// number — in range, plausible, and wrong.
+    /// </remarks>
+    [Theory]
+    [InlineData("scip-csharp nuget My  Package 1.0.0 Rectangle#", "Rectangle")]
+    [InlineData("scip-csharp my  manager Fixture 1.0.0 Store#", "Store")]
+    [InlineData("my  scheme nuget Fixture 1.0.0 Store#", "Store")]
+    [InlineData("scip-csharp nuget Fixture 1.0  beta Store#", "Store")]
+    public void An_escaped_space_is_not_a_field_separator(string symbol, string expected) =>
         Assert.Equal(expected, Descriptors.NameOf(symbol));
 }

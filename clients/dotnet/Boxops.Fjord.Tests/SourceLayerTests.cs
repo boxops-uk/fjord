@@ -315,6 +315,49 @@ public sealed class SourceLayerTests
     }
 
     /// <summary>
+    /// **The phantom line is not a line number either.** Roslyn reports an empty final
+    /// line at the end of a newline-terminated file and the table holds no row for it, so
+    /// a position at the very end has to resolve to the last line there is — a
+    /// `DefinitionLocation` keyed one past it joins `src.FileLine` nowhere, and every
+    /// number involved stays in range.
+    /// </summary>
+    [Fact]
+    public void The_end_of_a_newline_terminated_file_is_the_last_line_the_table_holds()
+    {
+        var (rows, _) = Table("a\nb\n");
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2, OffsetsOf("a\nb\n").Line("a\nb\n".Length));
+    }
+
+    /// <summary>
+    /// **Over the corpus: every position resolves to a line the table holds.**
+    /// </summary>
+    [Fact]
+    public void Every_position_resolves_to_a_line_the_table_holds()
+    {
+        foreach (var file in Corpus())
+        {
+            var (rows, _) = Table(file);
+            var offsets = OffsetsOf(file);
+
+            for (var position = 0; position <= file.Length; position++)
+            {
+                var line = offsets.Line(position);
+
+                if (rows.Count == 0)
+                {
+                    Assert.Equal(1, line);
+                    continue;
+                }
+
+                Assert.InRange(line, 1, rows.Count);
+                Assert.Equal(line, rows[(int)line - 1].Number);
+            }
+        }
+    }
+
+    /// <summary>
     /// **Over the generated corpus: a converted position is the byte count of the text
     /// before it.** The oracle is the obvious, quadratic implementation — which is what
     /// the line-table shortcut has to agree with.
@@ -450,30 +493,53 @@ public sealed class SourceLayerTests
     /// against the table this producer writes: the greatest `start` at or below the
     /// offset. Every byte of every file must land on the line that contains it.
     /// </summary>
+    /// <remarks>
+    /// <b>The oracle reaches the answer by the other route</b> — walk the text a
+    /// codepoint at a time, counting UTF-8 bytes, and ask Roslyn which line that UTF-16
+    /// position is on — because a seek checked against nothing but the table it seeks in
+    /// is satisfied by any table, a UTF-16 one included. That is the bug this whole
+    /// column exists to prevent, and it is in range for every file.
+    /// </remarks>
     [Fact]
     public void Every_byte_offset_resolves_to_the_line_that_holds_it()
     {
         foreach (var file in Corpus())
         {
-            var (rows, info) = Table(file);
+            var text = SourceText.From(file);
+            var (rows, info) = SourceLayer.LineTable(text);
+
             if (rows.Count == 0)
             {
                 continue;
             }
 
-            for (long offset = 0; offset < info.Bytes; offset++)
-            {
-                // The seek `FileLineAt {file = F, start = X..}` with a client-side limit
-                // of one, read backwards: the last row at or below the offset.
-                var found = rows.Last(row => row.Start <= offset);
-                var next = rows.FirstOrDefault(row => row.Start > offset);
+            long at = 0;
 
-                Assert.True(offset >= found.Start);
-                if (next.Number != 0)
+            for (var position = 0; position < file.Length; position++)
+            {
+                // A high surrogate carries its pair; the low half is not a codepoint of
+                // its own and has no line position to ask about.
+                if (char.IsLowSurrogate(file[position]))
                 {
-                    Assert.True(offset < next.Start);
+                    continue;
                 }
+
+                var width = char.IsHighSurrogate(file[position]) ? 2 : 1;
+                var holds = text.Lines.GetLinePosition(position).Line + 1;
+
+                for (var offset = at; offset < at + Encoding.UTF8.GetByteCount(file.AsSpan(position, width)); offset++)
+                {
+                    // The seek `FileLineAt {file = F, start = X..}` with a client-side
+                    // limit of one, read backwards: the last row at or below the offset.
+                    var found = rows.Last(row => row.Start <= offset);
+
+                    Assert.Equal(holds, found.Number);
+                }
+
+                at += Encoding.UTF8.GetByteCount(file.AsSpan(position, width));
             }
+
+            Assert.Equal(info.Bytes, at);
         }
     }
 }

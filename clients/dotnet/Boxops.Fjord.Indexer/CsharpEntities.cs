@@ -26,12 +26,17 @@ namespace Boxops.Fjord.Indexer;
 /// <b>Nothing here holds a fact id.</b> Every reference is the target fact nested inline,
 /// so the whole entity graph is built bottom-up and the server interns it; the memo exists
 /// to stop rebuilding it, not to remember an identity. That is also why a cycle is
-/// impossible to write and possible to *build*: the memo is filled before the containing
-/// chain is walked.
+/// impossible to write and possible to *build*, and why the memo cannot be what breaks
+/// one: a symbol's entry is filled only once its whole nested chain has been walked, so a
+/// symbol reached from itself finds nothing there. The per-thread set below is the break,
+/// and deleting it on the strength of the memo recurses until the stack runs out.
 /// </para>
 /// <para>
-/// <b>Not thread-safe.</b> The walk holds its own gate around every call, as it does for
-/// the declaration memo this replaces.
+/// <b>Several walker threads call this at once, and nothing gates them.</b> That is what
+/// the concurrent maps, the per-thread in-progress set and the interlocked counter are
+/// for. A memo entry is published by whichever thread wins its <c>TryAdd</c> and only
+/// that thread emits, so one fact reaches the sink however many threads raced to build
+/// it — a gate assumed here instead is how that machinery gets simplified away.
 /// </para>
 /// </summary>
 internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
@@ -48,12 +53,13 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     /// The symbols this thread is in the middle of building.
     /// </summary>
     /// <remarks>
-    /// <b>Per thread, and consulted before the memo.</b> A cycle is broken by seeing a
-    /// symbol already on this thread's own stack — <c>class C&lt;T&gt; where T : C&lt;T&gt;</c>
-    /// is the shape — and it must not be broken by seeing one another thread happens to be
-    /// working on. A shared in-progress marker would do exactly that, and the two threads
-    /// would write facts of different depths under one key: a conflict this producer
-    /// created, on a machine with more cores.
+    /// <b>Per thread, and reached only where the memo misses.</b> A cycle is broken by
+    /// seeing a symbol already on this thread's own stack —
+    /// <c>class C&lt;T&gt; where T : C&lt;T&gt;</c> is the shape — and it must not be
+    /// broken by seeing one another thread happens to be working on. A shared in-progress
+    /// marker would do exactly that, and the two threads would write facts of different
+    /// depths under one key: a conflict this producer created, on a machine with more
+    /// cores.
     /// </remarks>
     [ThreadStatic]
     private static HashSet<ISymbol>? _building;

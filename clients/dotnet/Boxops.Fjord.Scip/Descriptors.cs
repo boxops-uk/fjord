@@ -33,8 +33,8 @@ internal static class Descriptors
             return symbol["local ".Length..];
         }
 
-        // Five space-separated fields: scheme, manager, package name, version, and then
-        // the descriptors, which are the rest of the string.
+        // Five fields: scheme, manager, package name, version, and then the descriptors,
+        // which are the rest of the string.
         var descriptors = Rest(symbol, 4);
 
         if (descriptors.Length == 0)
@@ -130,23 +130,37 @@ internal static class Descriptors
             ? name[1..^1].Replace("``", "`", StringComparison.Ordinal)
             : name;
 
-    /// <summary>Everything after the <paramref name="skip"/>th space.</summary>
+    /// <summary>Everything after the <paramref name="skip"/>th field separator.</summary>
+    /// <remarks>
+    /// <b>A doubled space is an escaped space, not a separator.</b> SCIP's grammar makes
+    /// the scheme, manager, package name and version "any UTF-8, escape spaces with
+    /// double space", so counting single spaces takes a package named <c>My Package</c>
+    /// for two fields and starts the descriptors inside the version. The name that falls
+    /// out is a version fragment: in range, plausible, and never refused by anything.
+    /// </remarks>
     private static string Rest(string symbol, int skip)
     {
         var at = 0;
+        var separators = 0;
 
-        for (var n = 0; n < skip; n++)
+        while (at < symbol.Length && separators < skip)
         {
-            var space = symbol.IndexOf(' ', at);
-
-            if (space < 0)
+            if (symbol[at] != ' ')
             {
-                return string.Empty;
+                at++;
+                continue;
             }
 
-            at = space + 1;
+            if (at + 1 < symbol.Length && symbol[at + 1] == ' ')
+            {
+                at += 2;
+                continue;
+            }
+
+            at++;
+            separators++;
         }
 
-        return symbol[at..];
+        return separators == skip ? symbol[at..] : string.Empty;
     }
 }

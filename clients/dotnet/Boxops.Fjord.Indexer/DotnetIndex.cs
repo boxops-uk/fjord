@@ -10,11 +10,6 @@ namespace Boxops.Fjord.Indexer;
 /// independently.</b>
 /// </para>
 /// <para>
-/// This replaces <see cref="CodeIndex"/>, whose schema is being retired. It arrives a
-/// layer at a time rather than as one 67-predicate paste, because each layer's emission
-/// lands with its own gate and a declaration nothing writes is a name in a file.
-/// </para>
-/// <para>
 /// <b>A client may declare only what it writes, and that is the contract rather than a
 /// shortcut.</b> Predicate ids here are <i>this client's</i>: a block header carries the
 /// predicate's **name**, and a nested reference takes its predicate from the field's
@@ -149,10 +144,6 @@ internal static class DotnetIndex
     /// <b>Append only.</b> I10 froze these the day the layer shipped: one added in the
     /// wrong place renumbers every one after it, which reads on disk as every file having
     /// changed language.
-    /// </para>
-    /// <para>
-    /// <b>Its own copy, not <see cref="CodeIndex"/>'s.</b> That class is being deleted, and
-    /// a statement that borrows from it would break when it goes.
     /// </para>
     /// <para>
     /// <b>Declared above <see cref="Schema"/> on purpose.</b> Static field initialisers run

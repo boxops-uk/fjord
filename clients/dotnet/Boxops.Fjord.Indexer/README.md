@@ -347,7 +347,7 @@ That number is interning working, and producing it is the whole point of the exe
 `--dry-run` is the honest way to measure this side without one.
 
 **`contended` is what the walk pays for sharing.** Several threads produce facts into
-sixty-nine per-predicate batches, and a thousand of a hundred and twenty-one thousand found
+sixty-seven per-predicate batches, and a thousand of a hundred and twenty-one thousand found
 one already held — for under a twentieth of a second in total. It replaced a single lock
 around the whole of fact production, and the number is here so the replacement can be
 compared with what it replaced rather than assumed better.

@@ -13,12 +13,12 @@ namespace Boxops.Fjord.Client;
 /// and a dozen references interleaved, and a single queue would mean a block per fact.
 /// </para>
 /// <para>
-/// <b>A full block is handed to a writer thread, not written where it filled.</b> The
-/// walk holds <c>Indexer._gate</c> across every <see cref="Add"/>, so writing inline
-/// meant one walker thread sat in a network round trip and a server intern — measured
-/// at 368 ms per block — while the other seven blocked on the lock. On the 25M-fact
-/// <c>dotnet/runtime</c> index that was 2255s of 4828s, and it is why <see cref="Add"/>
-/// now only detaches the full list and queues it.
+/// <b>A full block is handed to a writer thread, not written where it filled.</b>
+/// <see cref="Add"/> holds that predicate's own lock across the flush, so a write done
+/// inline would hold it across a network round trip and a server intern — measured at
+/// 368 ms per block — and every other producer of that predicate would queue behind it.
+/// A flush detaches the full list and hands it over; nothing but that happens under the
+/// lock.
 /// </para>
 /// <para>
 /// <b>Several writers, each with its own target.</b> The server excludes writers per

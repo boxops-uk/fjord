@@ -170,12 +170,25 @@ public sealed class SourceLayerDatabaseTests
                 + "codemarkup.SearchEntry {nameLowercase = \"th\".., name = N, kind = K, "
                 + "symbol = S, file = F, line = L}").Rows);
 
-            // **Containment, both ways.** A relation rather than a field, so "what is in
-            // this type" and "what contains this member" are both seeks.
-            Assert.NotEmpty(connection.Query(
-                "{kind = K} where codemarkup.Relation {from = A, kind = K, to = B}").Rows);
-            Assert.NotEmpty(connection.Query(
-                "{kind = K} where codemarkup.RelationOf {to = A, kind = K, from = B}").Rows);
+            // **Containment, both ways, and which way is which.** A relation rather than
+            // a field, so "what is in this type" and "what contains this member" are both
+            // seeks — and `codemarkup.sigla` reads `Relation` as "`from` <kind> `to`", so
+            // the containing type is `from`. The two predicates carry one edge reversed,
+            // so a fact written under the other one's id answers both of these and
+            // answers them backwards, with every symbol still resolving.
+            var contains = Related(
+                connection, "codemarkup.Relation {from = A, kind = {contains = _}, to = B}");
+
+            Assert.Contains(contains, edge =>
+                edge.From.EndsWith("Fixture/Deep/Thing#", StringComparison.Ordinal)
+                && edge.To.EndsWith("Fixture/Deep/Thing#Do().", StringComparison.Ordinal));
+            Assert.DoesNotContain(contains, edge =>
+                edge.From.EndsWith("Fixture/Deep/Thing#Do().", StringComparison.Ordinal));
+
+            Assert.Contains(
+                Related(connection, "codemarkup.RelationOf {from = A, kind = {contains = _}, to = B}"),
+                edge => edge.From.EndsWith("Fixture/Deep/Thing#", StringComparison.Ordinal)
+                    && edge.To.EndsWith("Fixture/Deep/Thing#Do().", StringComparison.Ordinal));
 
             // **The hover card**, which is a value fetch on one symbol rather than a join.
             Assert.NotEmpty(connection.Query(
@@ -200,6 +213,19 @@ public sealed class SourceLayerDatabaseTests
             directory.Delete(recursive: true);
         }
     }
+
+    /// <summary>
+    /// The symbol pairs a relation pattern answers, named by the field it binds them to
+    /// rather than by the predicate's own field order.
+    /// </summary>
+    private static List<(string From, string To)> Related(FjordConnection connection, string edge) =>
+        [.. connection.Query(
+            "{from = FromName, to = ToName} where "
+            + "A = src.Symbol FromName; B = src.Symbol ToName; "
+            + edge).Rows
+            .Select(row => (Str(Fields(row)[0]), Str(Fields(row)[1])))];
+
+    private static string Str(FjordValue value) => Assert.IsType<FjordValue.Str>(value).Value;
 
     private static long Int(FjordValue value) => Assert.IsType<FjordValue.Int>(value).Value;
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Boxops.Fjord.Client;
 using Boxops.Fjord.Indexer;
@@ -8,19 +9,21 @@ namespace Boxops.Fjord.Tests;
 
 /// <summary>
 /// <para>
-/// <b>The new target schema, and the claim that lets it arrive a layer at a time.</b>
+/// <b>The schema a .NET producer states, and the claim that it may state less.</b>
 /// </para>
 /// <para>
-/// <c>schemas/dotnet.sigla</c> resolves to 67 predicates. <see cref="DotnetIndex"/>
-/// declares ten of them — the layers whose emission exists — and that is legal rather
-/// than provisional: predicate ids are the client's own, a block header carries the
-/// predicate's name, and a nested reference takes its predicate from the field's declared
-/// target. Nothing positional crosses the wire, so a client states what it writes.
+/// <c>schemas/dotnet.sigla</c> resolves to 67 predicates and <see cref="DotnetIndex"/>
+/// states all 67. Declaring fewer stays legal rather than provisional: predicate ids are
+/// the client's own, a block header carries the predicate's name, and a nested reference
+/// takes its predicate from the field's declared target. Nothing positional crosses the
+/// wire, so a client states what it writes.
 /// </para>
 /// <para>
-/// This is the test that would fail if that were wrong, and it is worth failing on its
-/// own: the alternative reading — that a client must state the whole database — turns
-/// every layer of the switch into one 67-predicate paste with no gate until the end.
+/// <c>A_client_may_declare_only_the_predicates_it_writes</c> is the test that would fail
+/// if that were wrong, and it asserts it with a one-predicate schema of its own rather
+/// than with this client's count — which would have stopped asserting anything the
+/// moment the transcription finished. The two round trips below then write a fact of
+/// every predicate a layer declares and read it back, ten and sixteen of them.
 /// </para>
 /// </summary>
 public sealed class DotnetIndexTests
@@ -71,13 +74,14 @@ public sealed class DotnetIndexTests
     }
 
     /// <summary>
-    /// **Every declared predicate round-trips against the server's own schema.** The
-    /// fingerprint asserts provenance and nothing about the shapes; what proves a
-    /// transcription is writing a fact of each predicate and reading it back, because the
-    /// server decodes against its statement rather than this one.
+    /// **The source layer round-trips against the server's own schema.** Ten predicates:
+    /// the nine <c>src.*</c> and <c>config.Setting</c>. The fingerprint asserts
+    /// provenance and nothing about the shapes; what proves a transcription is writing a
+    /// fact of each predicate and reading it back, because the server decodes against its
+    /// statement rather than this one.
     /// </summary>
     [Fact]
-    public void Every_declared_predicate_round_trips_through_the_server()
+    public void The_source_layer_round_trips_through_the_server()
     {
         using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
         using var connection = FjordConnection.Connect(server.Socket, "dotnet", DotnetIndex.Schema);
@@ -225,13 +229,18 @@ public sealed class DotnetIndexTests
         // keyed a project on a path string and carried no reference graph at all.
         // `src.File` is key-only, so the path is bound in the key position — asking for
         // `A.value` is `reject/no-value`, which is the diagnostic that found this.
-        var edges = connection.Query(
-            "{from = FromPath, to = ToPath} where "
-            + "A = src.File FromPath; B = src.File ToPath; "
-            + "P = msbuild.Project {file = A}; Q = msbuild.Project {file = B}; "
-            + "msbuild.ProjectReference {from = P, to = Q}").Rows;
+        //
+        // **Named ends, not a row count.** The two predicates carry one edge reversed, so
+        // a fact written under the other one's id answers each of these with a row and
+        // answers it backwards — `App` would be the project depended *on*, and a "what
+        // breaks if I change this" query would name the wrong half of the repository.
+        Assert.Equal(
+            [("App/App.csproj", "Lib/Lib.csproj")],
+            ProjectPairs(connection, "msbuild.ProjectReference {from = P, to = Q}"));
 
-        Assert.Single(edges);
+        Assert.Equal(
+            [("App/App.csproj", "Lib/Lib.csproj")],
+            ProjectPairs(connection, "msbuild.ProjectReferencedBy {from = P, to = Q}"));
 
         // **One project file, one project.** Two evaluations differing only in what
         // MSBuild resolved reach the same key, because the key is the file — this is the
@@ -254,6 +263,22 @@ public sealed class DotnetIndexTests
         Assert.Throws<FjordServerException>(() =>
             connection.Write(DotnetIndex.Project, [reEvaluated]));
     }
+
+    /// <summary>
+    /// The project pairs an edge pattern answers, as the two projects' file paths in the
+    /// order the pattern binds <c>P</c> and <c>Q</c>.
+    /// </summary>
+    private static List<(string P, string Q)> ProjectPairs(FjordConnection connection, string edge) =>
+        [.. connection.Query(
+            "{p = PPath, q = QPath} where "
+            + "A = src.File PPath; B = src.File QPath; "
+            + "P = msbuild.Project {file = A}; Q = msbuild.Project {file = B}; "
+            + edge).Rows
+            .Select(row => (Text(row, 0), Text(row, 1)))];
+
+    /// <summary>One string field of a record row.</summary>
+    private static string Text(FjordValue row, int field) =>
+        Assert.IsType<FjordValue.Str>(Assert.IsType<FjordValue.Record>(row).Fields[field]).Value;
 
     /// <summary>Write one fact, and assert something actually landed.</summary>
     /// <remarks>
