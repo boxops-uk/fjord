@@ -96,7 +96,7 @@ fn blob(path: &str, contents: i64) -> WireFact {
 /// A door onto a server, and the whole of what a claim needs to know about one.
 ///
 /// Growing this and [`Client::connect`] is how a new listener joins the battery.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Over {
     UnixSocket,
     Tcp,
@@ -105,15 +105,121 @@ enum Over {
 /// Every door the server below opens.
 const EVERY: [Over; 2] = [Over::UnixSocket, Over::Tcp];
 
-/// Run one claim over every door.
+/// Run one claim over every door, and report every door it failed over.
 ///
 /// The door is **printed rather than asserted**: libtest shows a failing test's output,
 /// and without this an assertion firing inside a claim would not say which transport it
 /// fired on — the first thing anybody wants to know.
+///
+/// **A door whose claim fails does not stop the next one.** Returning at the first
+/// panic would report one door and say nothing about the other, and a reader could not
+/// tell a transport-specific defect from one both doors share — which is the single
+/// question this battery exists to answer. Each panic is caught so the run continues,
+/// the hook prints it where it happened, and the doors that failed are named together at
+/// the end. A claim is a `fn` pointer that starts its own server, so no state crosses
+/// from one door to the next for the unwind to have damaged, and [`PORT`] is taken
+/// through `PoisonError::into_inner` — so a claim that panicked while holding it does
+/// not take the next door down with it.
 fn over_every_door(claim: fn(Over)) {
+    let mut failed = Vec::new();
+
     for over in EVERY {
         println!("--- over {over:?}");
-        claim(over);
+
+        if std::panic::catch_unwind(|| claim(over)).is_err() {
+            failed.push(over);
+        }
+    }
+
+    assert!(
+        failed.is_empty(),
+        "the claim failed over {failed:?}, of {} door(s) tried",
+        EVERY.len()
+    );
+}
+
+/// **A claim that fails over one door is still tried over the other.**
+///
+/// The battery's own guard, and it is about the report rather than about a protocol: a
+/// helper that stopped at the first failing door would leave a reader unable to say
+/// whether the second door broke too, and a claim's whole purpose here is to be answered
+/// once per transport. Driven with a claim planted to fail over the first door, so what
+/// is asserted is which doors ran and which the report names.
+#[test]
+fn a_claim_that_fails_over_one_door_is_still_tried_over_the_other() {
+    static TRIED: std::sync::Mutex<Vec<Over>> = std::sync::Mutex::new(Vec::new());
+
+    fn refuses_the_first_door(over: Over) {
+        TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(over);
+
+        assert!(
+            !matches!(over, Over::UnixSocket),
+            "planted: this claim refuses {over:?}"
+        );
+    }
+
+    let report = std::panic::catch_unwind(|| over_every_door(refuses_the_first_door))
+        .expect_err("a claim that fails over a door has to fail its test");
+
+    assert_eq!(
+        *TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        EVERY.to_vec(),
+        "a door the battery never tried is a door its report cannot speak for"
+    );
+
+    let message = report
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .expect("the battery's own failure is a formatted message");
+
+    // Both halves: the door that failed is named, and the door that passed is not
+    // implicated with it.
+    assert!(message.contains("UnixSocket"), "{message}");
+    assert!(!message.contains("Tcp"), "{message}");
+}
+
+/// **A claim that fails over every door names every door.**
+///
+/// The other half of the report, and the reason the doors are collected rather than
+/// counted: one door failing and both failing are different defects — a transport's own
+/// and the protocol's — and a report that cannot tell them apart sends a reader to the
+/// wrong half of the server.
+#[test]
+fn a_claim_that_fails_over_every_door_names_every_door() {
+    static TRIED: std::sync::Mutex<Vec<Over>> = std::sync::Mutex::new(Vec::new());
+
+    fn refuses_every_door(over: Over) {
+        TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(over);
+
+        panic!("planted: this claim refuses {over:?}");
+    }
+
+    let report = std::panic::catch_unwind(|| over_every_door(refuses_every_door))
+        .expect_err("a claim that fails over every door has to fail its test");
+
+    assert_eq!(
+        *TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        EVERY.to_vec(),
+        "every door is tried whatever the one before it did"
+    );
+
+    let message = report
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .expect("the battery's own failure is a formatted message");
+
+    for over in EVERY {
+        assert!(message.contains(&format!("{over:?}")), "{message}");
     }
 }
 
