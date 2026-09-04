@@ -8,6 +8,17 @@
 
 use fjord_schema::{fingerprint, syntax::resolve};
 
+/// **The shipped set, resolved** — `schemas/index.sigla` and everything it imports.
+///
+/// Shared by the claims below that are about the files rather than about the reader,
+/// so a change to where they live is one edit rather than one per test.
+fn composite() -> resolve::Resolved {
+    let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+
+    resolve::resolve(&root.join("schemas/index.sigla"), &[root.join("schemas")])
+        .expect("the composite resolves")
+}
+
 /// **The embedded reader follows imports**, and it is handed more than one file here so
 /// that it is not only ever handed one.
 ///
@@ -235,9 +246,7 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
 fn every_vocabulary_is_contiguous_and_unique() {
     use fjord_schema::schema::{PredicateId, PredicateTy};
 
-    let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-    let resolved = resolve::resolve(&root.join("schemas/index.sigla"), &[root.join("schemas")])
-        .expect("the composite resolves");
+    let resolved = composite();
     let schema = &resolved.schema;
 
     /// Every union reachable in a type, with the alternatives it declares.
@@ -327,4 +336,219 @@ fn every_vocabulary_is_contiguous_and_unique() {
             spelling(alternatives)
         );
     }
+}
+
+/// **The shipped schemas declare a union and a strict subset of it**, and a join
+/// over the two is refused whichever predicate is written first.
+///
+/// `csharp.RefKind` is `{ in = 0 | none_ = 1 | out = 2 | ref = 3 | refReadOnly = 4 }`
+/// and `csharp.Variance` is its first three alternatives, agreeing on the name,
+/// discriminant and payload of every one they share. That is the one shape where
+/// reading only one of the two alternative lists still answers *yes* in one
+/// direction — walking the subset's finds nothing missing — so a one-sided walk
+/// makes typing depend on statement order. Both sit where a query reaches them:
+/// `csharp.Parameter.refKind` against the payload of `csharp.TypeParameter.variance`.
+///
+/// The hand-built family in `fjord_engine::ty`
+/// (`a_union_and_a_strict_superset_disagree_whichever_side_is_named_first`) proves
+/// the law over every non-empty strict subset of three alternatives. This proves the
+/// law was **load-bearing** — that the answer to a real two-predicate join over the
+/// C# layer depended on which predicate came first — which is the part a reader who
+/// finds the hand-built family cannot tell, and the reason neither test replaces the
+/// other.
+///
+/// The last row is the control that stops the first two passing for the wrong
+/// reason: the **same** union on both sides of the same join plans, so what is
+/// refused above is the subset relation and not a union meeting a union at all.
+#[test]
+fn a_shipped_union_and_its_strict_subset_are_refused_either_way_round() {
+    let resolved = composite();
+    let schema = &resolved.schema;
+
+    for (source, expected) in [
+        (
+            "X where csharp.Parameter {refKind = X}; \
+             csharp.TypeParameter {variance = {just = X}}",
+            vec!["reject/type-mismatch"],
+        ),
+        // The same join with the statements swapped. Before `unify_union` walked
+        // both sides this one compiled and answered rows the other rejected.
+        (
+            "X where csharp.TypeParameter {variance = {just = X}}; \
+             csharp.Parameter {refKind = X}",
+            vec!["reject/type-mismatch"],
+        ),
+        (
+            "X where csharp.Parameter {refKind = X}; csharp.Local {refKind = X}",
+            vec![],
+        ),
+    ] {
+        let mut compilation = fjord_engine::compile::Compilation::new(source, schema);
+        let planned = compilation.plan().is_some();
+        let codes: Vec<&str> = compilation.diagnostics().codes().collect();
+
+        assert_eq!(codes, expected, "{source}");
+        assert_eq!(
+            planned,
+            expected.is_empty(),
+            "{source}: planned = {planned}, with {codes:?}"
+        );
+    }
+}
+
+/// **Which strict-subset union pairs the shipped set holds** — an inventory, pinned.
+///
+/// A pair like this is not a fault: `Variance` really is `RefKind`'s first three
+/// alternatives upstream, and transcribing both faithfully is the right thing to do.
+/// What it is, is the **one input class** union unification answers asymmetrically
+/// if it reads only one side — a bug that has shipped here once already — and a
+/// latent one, because nothing about either declaration says the other exists.
+///
+/// So when this fires, a reader:
+///
+/// 1. confirms the nesting is intended, rather than a discriminant transcribed into
+///    the wrong vocabulary — which is what it looks like from one file;
+/// 2. accepts that **no query can join the two fields, in either direction**, and
+///    that a `reject/type-mismatch` is the intended answer for them;
+/// 3. adds the pair here, and a join over it to
+///    [`a_shipped_union_and_its_strict_subset_are_refused_either_way_round`], so the
+///    order-independence is anchored on the new pair too.
+///
+/// Compared by name, discriminant **and** payload, which is what `unify_union`
+/// compares: two vocabularies nested by name alone are already different types and
+/// refused for a reason this says nothing about. A pair is named by the **first**
+/// field each of its two vocabularies is reached at — a named type is inlined at
+/// every use, so `RefKind` is also `csharp.Parameter.refKind`, which is the site the
+/// join above is written over.
+/// One union as `unify_union` compares it: every alternative's name, discriminant
+/// and payload shape, in declaration order.
+type Vocabulary = Vec<(String, u32, String)>;
+
+/// A vocabulary and the field path it was reached at.
+type Reached = (Vocabulary, String);
+
+#[test]
+fn the_shipped_set_holds_one_strict_subset_union_pair() {
+    use fjord_schema::schema::{PredicateId, PredicateTy};
+
+    /// Every union in a type, as its alternative set, with one place it is reached.
+    fn walk(
+        ty: &PredicateTy,
+        at: &str,
+        into: &mut Vec<Reached>,
+        schema: &fjord_schema::schema::Schema,
+    ) {
+        let name = |sym| schema.interner().resolve(sym).unwrap_or("?").to_owned();
+
+        match ty {
+            PredicateTy::Record(fields) => {
+                for (field, ty) in fields.iter() {
+                    walk(ty, &format!("{at}.{}", name(*field)), into, schema);
+                }
+            }
+            PredicateTy::Union(alternatives) => {
+                into.push((
+                    alternatives
+                        .iter()
+                        .map(|alt| (name(alt.name), alt.disc, shape(&alt.ty, schema)))
+                        .collect(),
+                    at.to_owned(),
+                ));
+
+                for alt in alternatives.iter() {
+                    walk(&alt.ty, &format!("{at}.{}", name(alt.name)), into, schema);
+                }
+            }
+            PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes | PredicateTy::Fact(_) => {}
+        }
+    }
+
+    /// A payload, rendered far enough to tell two of them apart. Nested unions
+    /// recurse, so a subset relation is never claimed over payloads that differ
+    /// deeper in.
+    fn shape(ty: &PredicateTy, schema: &fjord_schema::schema::Schema) -> String {
+        let name = |sym| schema.interner().resolve(sym).unwrap_or("?").to_owned();
+
+        match ty {
+            PredicateTy::Int => "int".to_owned(),
+            PredicateTy::Str => "string".to_owned(),
+            PredicateTy::Bytes => "bytes".to_owned(),
+            PredicateTy::Fact(id) => format!(
+                "fact {}",
+                schema.get(*id).and_then(|p| p.name()).unwrap_or("?")
+            ),
+            PredicateTy::Record(fields) => format!(
+                "{{{}}}",
+                fields
+                    .iter()
+                    .map(|(field, ty)| format!("{} : {}", name(*field), shape(ty, schema)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            PredicateTy::Union(alternatives) => format!(
+                "{{{}}}",
+                alternatives
+                    .iter()
+                    .map(|alt| format!(
+                        "{} : {} = {}",
+                        name(alt.name),
+                        shape(&alt.ty, schema),
+                        alt.disc
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
+        }
+    }
+
+    let resolved = composite();
+    let schema = &resolved.schema;
+
+    let mut unions: Vec<Reached> = vec![];
+    for index in 0..schema.len() {
+        let predicate = schema.get(PredicateId(index as u32)).expect("in range");
+        let at = predicate.name().unwrap_or("?").to_owned();
+        walk(&predicate.predicate().key, &at, &mut unions, schema);
+
+        if let Some(value) = &predicate.predicate().value {
+            walk(value, &format!("{at}.value"), &mut unions, schema);
+        }
+    }
+
+    // A named type is inlined at every use, so one vocabulary appears once per field
+    // naming it. Deduplicated by alternative set, keeping the first place it is
+    // reached so a failure can name one.
+    let mut vocabularies: Vec<Reached> = vec![];
+    for (alternatives, at) in unions {
+        if !vocabularies.iter().any(|(seen, _)| *seen == alternatives) {
+            vocabularies.push((alternatives, at));
+        }
+    }
+
+    assert!(
+        vocabularies.len() >= 20,
+        "only {} distinct vocabularies in the composite — this should be finding \
+         dozens, so the walk is missing them",
+        vocabularies.len()
+    );
+
+    let mut pairs: Vec<String> = vec![];
+    for (subset, subset_at) in &vocabularies {
+        for (superset, superset_at) in &vocabularies {
+            if subset.len() >= superset.len() || !subset.iter().all(|alt| superset.contains(alt)) {
+                continue;
+            }
+
+            pairs.push(format!("{subset_at} within {superset_at}"));
+        }
+    }
+
+    pairs.sort();
+
+    assert_eq!(
+        pairs,
+        ["csharp.TypeParameter.variance.just within csharp.Local.refKind"],
+        "the strict-subset union pairs in the shipped set have changed — see this \
+         test's doc comment for what to do about a new one"
+    );
 }
