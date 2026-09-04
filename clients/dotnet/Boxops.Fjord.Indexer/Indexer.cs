@@ -89,6 +89,16 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// fabricated type. Counted because a layer that silently loses declarations is worse
     /// than one that says how many.
     /// </remarks>
+    public int InexpressibleTypes => _entities.InexpressibleTypes;
+
+    /// <summary>Declarations of a kind with no `csharp` entity at all — an event.</summary>
+    public int InexpressibleKinds => _entities.InexpressibleKinds;
+
+    /// <summary>Declarations dropped for either reason.</summary>
+    /// <remarks>
+    /// The two causes are reported apart, because a run that says <c>dynamic</c> over a
+    /// checkout containing none costs somebody a search for it.
+    /// </remarks>
     public int Inexpressible => _entities.Inexpressible;
 
     /// <summary>Lines of source written as <c>src.FileLine</c> facts.</summary>
@@ -462,7 +472,10 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         if (symbol is null)
         {
-            Interlocked.Increment(ref _unresolved);
+            if (!IsConstraintKeyword(name))
+            {
+                Interlocked.Increment(ref _unresolved);
+            }
 
             return;
         }
@@ -555,6 +568,24 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             SampleName = canonical.Name;
         }
     }
+
+    /// <summary>
+    /// Whether a name is a <c>where</c> clause's constraint keyword rather than a type.
+    /// </summary>
+    /// <remarks>
+    /// <b>There is no symbol to resolve, so this is not an unresolved name.</b>
+    /// <c>notnull</c> and <c>unmanaged</c> are the two constraints C# spells as an
+    /// identifier, and Roslyn parses each as a <c>TypeConstraint</c> whose type binds to
+    /// nothing — counting them puts an indexing failure that did not happen into a number
+    /// operators read as one. Every other keyword constraint (<c>class</c>,
+    /// <c>struct</c>, <c>new()</c>, <c>default</c>, <c>allows ref struct</c>) has a syntax
+    /// node of its own and never reaches this walk as a name. The position is checked as
+    /// well as the spelling: outside a constraint both words are ordinary identifiers, and
+    /// a type by either name that fails to bind is a real miss.
+    /// </remarks>
+    private static bool IsConstraintKeyword(SimpleNameSyntax name) =>
+        name is IdentifierNameSyntax { Parent: TypeConstraintSyntax }
+        && name.Identifier.Text is "notnull" or "unmanaged";
 
     /// <summary>
     /// The <c>codemarkup</c> projection of one declaration: the same facts, re-keyed for

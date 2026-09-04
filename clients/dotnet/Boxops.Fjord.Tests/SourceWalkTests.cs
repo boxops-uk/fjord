@@ -161,6 +161,126 @@ public sealed class SourceWalkTests
     }
 
     /// <summary>
+    /// **The run says which cause dropped a declaration, not just how many.**
+    /// The counter has two causes — a type with no `csharp.AType` alternative, and an
+    /// event, which this layer has no entity for at all — and the whole point of counting
+    /// rather than dropping in silence is that somebody can act on the number. A line
+    /// naming `dynamic` over a checkout that contains none sends them looking for it.
+    /// </summary>
+    [Fact]
+    public void An_event_is_reported_as_an_event_and_not_as_a_dynamic()
+    {
+        var (_, indexer) = Walked("""
+            namespace Fixture
+            {
+                public delegate void Handler();
+
+                public class Thing
+                {
+                    public event Handler Changed;
+                }
+            }
+            """);
+
+        var dropped = Assert.Single(Program.Dropped(indexer));
+
+        Assert.Contains("event", dropped, StringComparison.Ordinal);
+        Assert.DoesNotContain("dynamic", dropped, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// **The other cause still reads as itself.** The census for the test above, which a
+    /// report that never names `dynamic` at all would satisfy.
+    /// </summary>
+    [Fact]
+    public void A_dynamic_signature_is_reported_as_a_type_the_layer_cannot_express()
+    {
+        var (_, indexer) = Walked("""
+            namespace Fixture
+            {
+                public class Thing
+                {
+                    public dynamic Loose(dynamic value) => value;
+                }
+            }
+            """);
+
+        var dropped = Assert.Single(Program.Dropped(indexer));
+
+        Assert.Contains("dynamic", dropped, StringComparison.Ordinal);
+        Assert.DoesNotContain("event", dropped, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// **A constraint keyword is not a name the compiler failed to bind.**
+    /// `Unresolved` is read as a health signal — the count of names a broken workspace
+    /// cost the index — so a `where` clause spelling a constraint as an identifier must
+    /// not land in it. There is no symbol to resolve, and reporting one says an indexing
+    /// failure happened where none did.
+    /// </summary>
+    [Fact]
+    public void A_constraint_keyword_is_not_an_unresolved_name()
+    {
+        var (_, indexer) = Walked("""
+            namespace Fixture
+            {
+                public interface IFace
+                {
+                }
+
+                public static class Bounds
+                {
+                    public static string NotNull<T>(T value)
+                        where T : notnull => value.ToString() ?? string.Empty;
+
+                    public static string Unmanaged<T>(T value)
+                        where T : unmanaged => value.ToString() ?? string.Empty;
+
+                    public static string Faced<T>(T value)
+                        where T : IFace => value.ToString() ?? string.Empty;
+                }
+            }
+            """);
+
+        Assert.Equal(0, indexer.Unresolved);
+
+        // The interface constraint is a real type reference and stays one: an exclusion
+        // drawn around `where` clauses rather than around the two keywords would drop
+        // every declared bound out of the index and still report zero unresolved. Five
+        // bindable names in each of the first two methods — `T` twice, `value`,
+        // `ToString`, `Empty` — and six in the third, which also names `IFace`.
+        Assert.Equal(16, indexer.References);
+    }
+
+    /// <summary>
+    /// **A name that really does not bind is still counted.**
+    /// The census for the exclusion above, which a counter that excluded everything would
+    /// satisfy. Both keywords are here beside one identifier nothing declares, so the
+    /// one is the miss and not the constraints.
+    /// </summary>
+    [Fact]
+    public void A_name_the_compiler_cannot_bind_is_counted()
+    {
+        var (_, indexer) = Walked("""
+            namespace Fixture
+            {
+                public static class Bounds
+                {
+                    public static string NotNull<T>(T value)
+                        where T : notnull => value.ToString() ?? string.Empty;
+
+                    public static string Unmanaged<T>(T value)
+                        where T : unmanaged => value.ToString() ?? string.Empty;
+
+                    public static object Loose() => nope;
+                }
+            }
+            """);
+
+        Assert.Equal(1, indexer.Unresolved);
+    }
+
+    /// <summary>
     /// **The phantom line, at the seam.** Roslyn ends a newline-terminated file with an
     /// empty line, so the walk used to write a fact for a line that `src.sigla` says is
     /// not there — in nearly every file of every index.

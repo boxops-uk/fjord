@@ -407,13 +407,34 @@ internal static class Program
                 + "(shared source, or outside every project directory)");
         }
 
-        if (indexer.Inexpressible > 0)
+        foreach (var dropped in Dropped(indexer))
         {
-            // A signature mentioning `dynamic` or an unresolved name cannot be keyed —
-            // `csharp.AType` has no alternative for either — so the declaration is
-            // dropped. Said out loud because the alternative is a silently smaller index.
-            Console.WriteLine($"  {Count(indexer.Inexpressible)} declaration(s) dropped: "
-                + "a type this layer cannot express (`dynamic`, or a name that did not resolve)");
+            Console.WriteLine($"  {dropped}");
+        }
+    }
+
+    /// <summary>
+    /// What this run could not express, one line per cause.
+    /// </summary>
+    /// <remarks>
+    /// <b>Two causes, so one line cannot carry them.</b> A signature naming a type with no
+    /// <c>csharp.AType</c> alternative is one, and an event — which this layer has no
+    /// entity for at all — is the other. Attributing the whole count to the first sends
+    /// somebody looking for a <c>dynamic</c> that is not there, which is exactly the
+    /// silence the counter exists to break.
+    /// </remarks>
+    internal static IEnumerable<string> Dropped(Indexer indexer)
+    {
+        if (indexer.InexpressibleTypes > 0)
+        {
+            yield return $"{Count(indexer.InexpressibleTypes)} declaration(s) dropped: "
+                + "a type this layer cannot express (`dynamic`, or a name that did not resolve)";
+        }
+
+        if (indexer.InexpressibleKinds > 0)
+        {
+            yield return $"{Count(indexer.InexpressibleKinds)} declaration(s) dropped: "
+                + "an event, which this layer has no entity for at all";
         }
     }
 

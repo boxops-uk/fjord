@@ -74,18 +74,31 @@ internal ref struct Protobuf(ReadOnlySpan<byte> bytes)
         throw new FormatException("a varint ran off the end of the message");
     }
 
-    /// <summary>The current length-delimited field's bytes.</summary>
+    /// <summary>
+    /// The current length-delimited field's bytes.
+    /// </summary>
+    /// <remarks>
+    /// <b>The length is compared where it arrived, in 64 bits.</b> Narrowing it to an
+    /// <c>int</c> first splits the malformed range in two: <c>0x1_0000_0005</c> truncates
+    /// to 5, which is small, positive and inside a short message — the field is taken and
+    /// every field after it is read at an offset the reader invented. Adding it to
+    /// <c>_at</c> as an <c>int</c> has the other half of the same problem, wrapping
+    /// negative for a length near <c>int.MaxValue</c> and passing the bound it was meant
+    /// to fail.
+    /// </remarks>
     public ReadOnlySpan<byte> Bytes()
     {
-        var length = (int)Varint();
+        var length = Varint();
 
-        if (length < 0 || _at + length > _bytes.Length)
+        // `_at` is never past the end, so the remainder is non-negative and a length
+        // that survives this comparison fits in an `int`.
+        if (length > (ulong)(_bytes.Length - _at))
         {
             throw new FormatException("a length-delimited field ran off the end of the message");
         }
 
-        var slice = _bytes.Slice(_at, length);
-        _at += length;
+        var slice = _bytes.Slice(_at, (int)length);
+        _at += (int)length;
 
         return slice;
     }
@@ -133,7 +146,7 @@ internal ref struct Protobuf(ReadOnlySpan<byte> bytes)
                 break;
 
             case 1:
-                _at += 8;
+                Fixed(8);
                 break;
 
             case 2:
@@ -141,16 +154,30 @@ internal ref struct Protobuf(ReadOnlySpan<byte> bytes)
                 break;
 
             case 5:
-                _at += 4;
+                Fixed(4);
                 break;
 
             default:
                 throw new FormatException($"wire type {Wire} is not one this reader knows");
         }
+    }
 
-        if (_at > _bytes.Length)
+    /// <summary>
+    /// Step over a fixed-width payload.
+    /// </summary>
+    /// <remarks>
+    /// Refused before the offset moves, rather than noticed after. Every read here
+    /// assumes <c>_at</c> is inside the span — an offset left past the end makes the
+    /// remainder <see cref="Bytes"/> measures against negative, and any length at all
+    /// then looks legal.
+    /// </remarks>
+    private void Fixed(int width)
+    {
+        if (width > _bytes.Length - _at)
         {
             throw new FormatException("a field ran off the end of the message");
         }
+
+        _at += width;
     }
 }

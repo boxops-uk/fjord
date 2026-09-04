@@ -109,14 +109,25 @@ public sealed class LedgerTests
     }
 
     /// <summary>
-    /// <b>Every file belongs to a project, and every declaration is expressible.</b>
+    /// <b>Every file belongs to a project, every declaration is expressible, and every
+    /// name binds.</b>
     /// </summary>
     /// <remarks>
-    /// The two ways a ledger run can be stable and wrong. A file no project compiles gets
-    /// no <c>msbuild.SourceFileToProject</c> edge, and a declaration whose type this layer
-    /// cannot key is dropped — both quietly, both producing a smaller index that seals to a
-    /// perfectly reproducible identity. The fixture is built to make both zero, so a
+    /// <para>
+    /// The three ways a ledger run can be stable and wrong. A file no project compiles
+    /// gets no <c>msbuild.SourceFileToProject</c> edge, a declaration whose type this
+    /// layer cannot key is dropped, and a name the compiler cannot bind writes no
+    /// reference at all — each quietly, each producing a smaller index that seals to a
+    /// perfectly reproducible identity. The fixture is built to make all three zero, so a
     /// number other than zero is a defect rather than a property of the corpus.
+    /// </para>
+    /// <para>
+    /// <b><c>Unresolved</c> is not free over this corpus.</b> <c>Names.cs</c> constrains a
+    /// type parameter <c>where T : notnull</c>, which is a constraint keyword and not a
+    /// type — the one name here with nothing to bind to, and the one a walk can miscount
+    /// as a name it failed to bind. So zero is a claim about the walk rather than about
+    /// the fixture, and a one is the misreading rather than a broken corpus.
+    /// </para>
     /// </remarks>
     [Fact]
     public void The_frozen_corpus_loses_no_file_and_no_declaration()
@@ -150,7 +161,12 @@ public sealed class LedgerTests
 
         Assert.Equal(0, indexer.Unattributed);
         Assert.Equal(0, indexer.Inexpressible);
+        Assert.Equal(0, indexer.Unresolved);
         Assert.True(indexer.Declarations > 30, $"{indexer.Declarations} declarations");
+
+        // The census for the zero above: a walk that bound nothing, or one run with
+        // references off, reports no unresolved name either.
+        Assert.True(indexer.References > 50, $"{indexer.References} references");
     }
 
     /// <summary>Every predicate's stored row count, asked of the database itself.</summary>

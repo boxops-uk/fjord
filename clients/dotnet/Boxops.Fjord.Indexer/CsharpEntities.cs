@@ -33,7 +33,7 @@ namespace Boxops.Fjord.Indexer;
 /// </para>
 /// <para>
 /// <b>Several walker threads call this at once, and nothing gates them.</b> That is what
-/// the concurrent maps, the per-thread in-progress set and the interlocked counter are
+/// the concurrent maps, the per-thread in-progress set and the interlocked counters are
 /// for. A memo entry is published by whichever thread wins its <c>TryAdd</c> and only
 /// that thread emits, so one fact reaches the sink however many threads raced to build
 /// it — a gate assumed here instead is how that machinery gets simplified away.
@@ -64,10 +64,24 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     [ThreadStatic]
     private static HashSet<ISymbol>? _building;
 
-    private int _inexpressible;
+    private int _inexpressibleTypes, _inexpressibleKinds;
 
     /// <summary>Types this producer could not express, counted rather than hidden.</summary>
-    public int Inexpressible => Volatile.Read(ref _inexpressible);
+    public int InexpressibleTypes => Volatile.Read(ref _inexpressibleTypes);
+
+    /// <summary>
+    /// Declarations of a kind that has no <c>csharp</c> entity at all — an event.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart from <see cref="InexpressibleTypes"/> because the two are acted on
+    /// differently: a type this layer cannot express is a <c>dynamic</c> or a broken
+    /// reference somewhere in a signature, and this is a gap in the schema that no
+    /// checkout can fix.
+    /// </remarks>
+    public int InexpressibleKinds => Volatile.Read(ref _inexpressibleKinds);
+
+    /// <summary>Everything dropped, whichever of the two reasons dropped it.</summary>
+    public int Inexpressible => InexpressibleTypes + InexpressibleKinds;
 
     // ---- the vocabularies ------------------------------------------------------------
 
@@ -280,14 +294,14 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
 
             case IErrorTypeSymbol:
             case IDynamicTypeSymbol:
-                Interlocked.Increment(ref _inexpressible);
+                Interlocked.Increment(ref _inexpressibleTypes);
                 return null;
 
             case INamedTypeSymbol named:
                 return Named(named) is { } value ? FjordValue.Alt(1u, value) : null;
 
             default:
-                Interlocked.Increment(ref _inexpressible);
+                Interlocked.Increment(ref _inexpressibleTypes);
                 return null;
         }
     }
@@ -419,7 +433,7 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     /// <summary>No entity, and the run says how many — never one without the other.</summary>
     private FjordFact? Dropped()
     {
-        Interlocked.Increment(ref _inexpressible);
+        Interlocked.Increment(ref _inexpressibleKinds);
 
         return null;
     }
@@ -428,7 +442,7 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     {
         if (type is IErrorTypeSymbol || type.TypeKind is TypeKind.Error)
         {
-            Interlocked.Increment(ref _inexpressible);
+            Interlocked.Increment(ref _inexpressibleTypes);
             return null;
         }
 
