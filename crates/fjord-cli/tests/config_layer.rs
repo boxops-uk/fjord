@@ -235,8 +235,9 @@ fn the_position_encodings_disagree_exactly_where_it_matters() {
 const SCHEMAS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas");
 
 /// The file the fixture databases are about. A non-BMP codepoint on the **first** line
-/// and another before the identifier on the second, so a wrong unit misses twice: it
-/// picks the wrong line's row, and then the wrong column inside it.
+/// and another before the identifier on the second, so **both halves of the conversion
+/// differ between the units**: the second line's own start (byte 15, code unit 13) and
+/// the column inside it. Over ASCII neither would, and every reading below would agree.
 const SOURCE: &[&str] = &["// \u{1f600} header", "let \u{1f600} = parse();", "}"];
 const SOURCE_PATH: &str = "src/main.rs";
 const SYMBOL: &str = "scip-rust rust . . parse().";
@@ -506,8 +507,16 @@ fn fetched(root: &Path, db: &str) -> Vec<Line> {
 /// retired viewer's `chars()` bug. Two databases over the same source file — one
 /// declaring `utf8`, one `utf16` — each holding the same reference with its span counted
 /// in its own unit. The consumer reads the declaration out of the database, fetches the
-/// line table, converts, and lands on the identifier in both; the same conversion driven
-/// by the *other* declaration does not, and nothing reports an error when it doesn't.
+/// line table, converts, and lands on the identifier in both.
+///
+/// **The other declaration's reading misses, and the two directions miss differently** —
+/// so each is asserted for what it is. In the `utf8` database the byte offset read as
+/// UTF-16 code units lands on a character boundary two bytes past the identifier and
+/// reads `rse()`: in range, on a boundary, wrong text, and nothing reports it. In the
+/// `utf16` database the code-unit offset read as bytes lands *mid-surrogate*, and
+/// `locate` answers `None` rather than slicing there — detectable, not silent. Asserting
+/// only that neither reading found the identifier is satisfied by "found nothing", which
+/// leaves half the differential proving the weaker claim.
 ///
 /// The non-BMP codepoints are what give this teeth: over ASCII the two units are the
 /// same number and every reading agrees.
@@ -615,16 +624,27 @@ fn a_span_is_read_through_the_unit_the_database_declares() {
             line.text
         );
 
-        // **And reading it in the other unit fails without failing.** It either lands
-        // on different text or on no character boundary at all, and the database
-        // reports neither: every index involved is in range, which is exactly why the
-        // viewer's version of this bug survived so long.
+        // **And reading it in the other unit misses, in the way that unit misses.**
         let wrong = locate(unit.other(), &lines, offset)
-            .and_then(|(line, at)| line.text.get(at..at + IDENT.len()));
-        assert_ne!(
-            wrong,
-            Some(IDENT),
-            "`{db}`: the other unit found `{IDENT}` too, so the declaration decides nothing"
-        );
+            .map(|(line, at)| (line.line, at, line.text.get(at..at + IDENT.len())));
+
+        match unit {
+            // The emoji is two code units and four bytes, so counting it as two walks
+            // two bytes further into the line: a boundary, in range, and the wrong five
+            // bytes — the reading nothing in the stack can report.
+            Unit::Utf8 => assert_eq!(
+                wrong,
+                Some((2, 13, Some("rse()"))),
+                "`{db}`: the other unit has to read the wrong text silently"
+            ),
+            // The same difference the other way round leaves three bytes to spend
+            // where the emoji costs four, so the walk stops inside it. `locate` refuses
+            // that rather than slicing there, which is a consumer's one chance to
+            // notice.
+            Unit::Utf16 => assert_eq!(
+                wrong, None,
+                "`{db}`: the other unit has to land mid-character, which `locate` refuses"
+            ),
+        }
     }
 }
