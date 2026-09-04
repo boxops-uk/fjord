@@ -112,8 +112,8 @@ use crate::{
 /// about the protocol and disagree about the data".
 ///
 /// **4 marks the `bytes` scalar family.** The wire descriptor gained `TAG_BYTES`, and a
-/// peer built before it meets that tag with no case for it: [`decode_desc`](crate::desc)
-/// answers [`WireError::UnknownRefForm`](crate::WireError::UnknownRefForm) and refuses
+/// peer built before it meets that tag with no case for it: [`decode_desc`](crate::desc::decode_desc)
+/// answers [`WireError::UnknownRefForm`] and refuses
 /// the stream rather than reading the field as a `string` and handing its caller bytes
 /// that are not text. Refusing is right, and it is *where* it happens that needs this
 /// number — the schema fingerprint does not catch it, because a peer may open a
