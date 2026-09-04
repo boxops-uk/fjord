@@ -75,15 +75,17 @@ internal sealed class Converter(FactSink sink, string root, TextWriter log)
             return 0;
         }
 
+        // Read before anything is written, so a document this converter has to refuse
+        // contributes no half of itself to the database.
+        var named = Named(document);
+
         var file = ScipFacts.FileFact(document.RelativePath);
         sink.Add(ScipFacts.File, file);
 
         var lines = Lines.Of(text);
         Emit(file, lines);
 
-        var named = document.Symbols.ToDictionary(
-            symbol => symbol.Symbol, StringComparer.Ordinal);
-
+        var locals = LocalTargets(document, lines);
         var written = 0;
 
         foreach (var occurrence in document.Occurrences)
@@ -98,6 +100,27 @@ internal sealed class Converter(FactSink sink, string root, TextWriter log)
             var end = lines.Offset(
                 occurrence.EndLine, occurrence.EndCharacter, document.PositionEncoding);
             var length = Math.Max(0, end - start);
+
+            // **A local never reaches `src.Symbol`.** Its id is an occurrence ordinal
+            // scoped to this document, so `local 1` here and `local 1` in the next file
+            // are different entities — interning the string would make find-references
+            // in one file answer the other file's unrelated variable. A local with no
+            // definition in this document has no span to point at and is dropped.
+            if (Descriptors.IsLocal(occurrence.Symbol))
+            {
+                if (locals.TryGetValue(occurrence.Symbol, out var target))
+                {
+                    sink.Add(
+                        ScipFacts.FileLocalXRef,
+                        ScipFacts.FileLocalXRefFact(
+                            file, start, length, target.Start, target.Length,
+                            ScipFacts.RoleOf(occurrence.Roles)));
+
+                    written += 1;
+                }
+
+                continue;
+            }
 
             var symbol = SymbolOf(occurrence.Symbol);
 
@@ -143,6 +166,66 @@ internal sealed class Converter(FactSink sink, string root, TextWriter log)
         written += Styles.Emit(sink, file, document, lines);
 
         return written;
+    }
+
+    /// <summary>
+    /// What this document says about each of its symbols, one entry per symbol.
+    /// </summary>
+    /// <remarks>
+    /// <b>A duplicate is refused rather than resolved.</b> Two <c>SymbolInformation</c>
+    /// entries for one symbol disagree about the kind and the display name and there is no
+    /// entry to prefer, so the file is malformed — and <c>ToDictionary</c>'s
+    /// <c>ArgumentException</c> is outside the CLI's catch filter, which turns a malformed
+    /// input into a stack trace instead of a diagnosis naming the symbol.
+    /// </remarks>
+    private static Dictionary<string, SymbolInformation> Named(Document document)
+    {
+        var named = new Dictionary<string, SymbolInformation>(StringComparer.Ordinal);
+
+        foreach (var information in document.Symbols)
+        {
+            if (!named.TryAdd(information.Symbol, information))
+            {
+                throw new FormatException(
+                    $"{document.RelativePath} states `{information.Symbol}` twice; a "
+                    + "document carries one SymbolInformation per symbol");
+            }
+        }
+
+        return named;
+    }
+
+    /// <summary>
+    /// Where each of this document's locals is declared, as a byte span.
+    /// </summary>
+    /// <remarks>
+    /// Built per document rather than per converter, which is the whole point: the map
+    /// is keyed on a string whose scope is one file, so a converter-wide one would let
+    /// the last file indexed decide where every earlier file's <c>local 1</c> points.
+    /// The first definition wins, so a symbol an index defines twice still answers the
+    /// span a reader reaches first.
+    /// </remarks>
+    private static Dictionary<string, (long Start, long Length)> LocalTargets(
+        Document document, Lines lines)
+    {
+        var targets = new Dictionary<string, (long, long)>(StringComparer.Ordinal);
+
+        foreach (var occurrence in document.Occurrences)
+        {
+            if (!occurrence.IsDefinition || !Descriptors.IsLocal(occurrence.Symbol))
+            {
+                continue;
+            }
+
+            var start = lines.Offset(
+                occurrence.StartLine, occurrence.StartCharacter, document.PositionEncoding);
+            var end = lines.Offset(
+                occurrence.EndLine, occurrence.EndCharacter, document.PositionEncoding);
+
+            targets.TryAdd(occurrence.Symbol, (start, Math.Max(0, end - start)));
+        }
+
+        return targets;
     }
 
     /// <summary>The line table, and the offset lookup that inverts it.</summary>

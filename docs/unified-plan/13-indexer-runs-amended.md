@@ -397,9 +397,11 @@ syntax kind over one span, so one pass fills both the cross-reference layer and
 
 **Landed as `clients/dotnet/Boxops.Fjord.Scip`** — `scip2fjord`, referencing
 `Boxops.Fjord.Client` and no indexer, which is R8a's claim checked by a second consumer.
-Twelve predicates against a database of a hundred and thirty-eight; the four gate queries
-answered against a converted TypeScript index. Two things worth knowing beyond the run's
-own spec:
+Fourteen predicates against a database of a hundred and thirty-eight; the four gate queries
+answered against a converted TypeScript index. A SCIP `local` is one of them only through
+`codemarkup.FileLocalXRef` — the id is an occurrence ordinal scoped to a document, so
+`local 1` in two files names two variables and interning it would join them. Two things
+worth knowing beyond the run's own spec:
 
 - **The fixture is written, not captured**, by a Python encoder beside it. There is no SCIP
   indexer here and there is not going to be one, so a fixture produced by the code that

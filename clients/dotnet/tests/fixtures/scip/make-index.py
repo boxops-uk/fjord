@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build `index.scip`, the fixture SCIP index, from an independent encoder.
+"""Build `index.scip` and `locals.scip`, the fixture SCIP indexes, from an independent
+encoder.
 
 **Why a script and not a captured artifact.** There is no SCIP indexer in this
 repository and there is not going to be one — that is R9's whole point — so the fixture
@@ -158,8 +159,45 @@ def index() -> bytes:
     return out
 
 
+# ---- `locals.scip`, the second fixture ----------------------------------------------
+
+# **`local 1` is a different variable in each of these documents.** SCIP's spec: "Local
+# symbols MUST only be used for entities which are local to a Document, and cannot be
+# accessed from outside the Document" — the number is an occurrence ordinal, so every
+# indexed file restarts it. Two documents that each name one is the smallest index that
+# tells a converter which minted them globally from one that did not.
+LOCAL = "local 1"
+COUNT = f"{PACKAGE} src/`count.ts`/count()."
+LABEL = f"{PACKAGE} src/`label.ts`/label()."
+
+COUNT_TS = 'export function count(): number {\n  const total = 1;\n  return total;\n}\n'
+LABEL_TS = 'export function label(): string {\n  const text = "x";\n  return text;\n}\n'
+
+
+def local_document(path: str, body: str, symbol: str, name: str, local: str) -> bytes:
+    # The two locals are spelled differently so their spans differ: a converter that
+    # crossed the files would answer a span that is in neither document's own run.
+    occurrences = [
+        occurrence([0, 16, 16 + len(name)], symbol, DEFINITION,
+                   SYNTAX_IDENTIFIER_FUNCTION),
+        occurrence([1, 8, 8 + len(local)], LOCAL, DEFINITION, SYNTAX_IDENTIFIER),
+        occurrence([2, 9, 9 + len(local)], LOCAL, READ_ACCESS, SYNTAX_IDENTIFIER),
+    ]
+    # No `SymbolInformation` for the local: SCIP carries none for one, which is why a
+    # converter has to fall back to the descriptor for its name.
+    symbols = [symbol_information(symbol, KIND_FUNCTION, name)]
+    return document(path, "TypeScript", body, occurrences, symbols)
+
+
+def locals_index() -> bytes:
+    out = delimited(1, metadata("file:///fixture"))
+    out += delimited(2, local_document("src/count.ts", COUNT_TS, COUNT, "count", "total"))
+    out += delimited(2, local_document("src/label.ts", LABEL_TS, LABEL, "label", "text"))
+    return out
+
+
 if __name__ == "__main__":
-    path = Path(__file__).with_name("index.scip")
-    payload = index()
-    path.write_bytes(payload)
-    print(f"wrote {path} ({len(payload)} bytes)", file=sys.stderr)
+    for name, payload in [("index.scip", index()), ("locals.scip", locals_index())]:
+        path = Path(__file__).with_name(name)
+        path.write_bytes(payload)
+        print(f"wrote {path} ({len(payload)} bytes)", file=sys.stderr)

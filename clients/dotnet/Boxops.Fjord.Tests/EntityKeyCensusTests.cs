@@ -296,6 +296,49 @@ public sealed class EntityKeyCensusTests
     }
 
     /// <summary>
+    /// **Two local functions of one name in two methods of one type are two keys.**
+    /// A local function is not a member, so the census's walk above never reaches one —
+    /// and its documentation id is `M:Fixture.Host.Helper`, which names the containing
+    /// *type* the key already holds and not the method that declares it.
+    /// </summary>
+    /// <remarks>
+    /// **Two of one name in one method still reach one key**, and that is not fixed here:
+    /// separating sibling scopes needs the scope path
+    /// `docs/unified-plan/13-indexer-runs-amended.md` reserves for a local that genuinely
+    /// needs a name, and an ordinal within the method would renumber on every insertion —
+    /// the instability Run 4 exists to remove.
+    /// </remarks>
+    [Fact]
+    public void Two_local_functions_of_one_name_in_two_methods_are_two_keys()
+    {
+        var compilation = Compile(
+            """
+            namespace Fixture
+            {
+                public class Host
+                {
+                    public void One() { int Helper() => 1; Helper(); }
+                    public void Two() { int Helper() => 2; Helper(); }
+                }
+            }
+            """);
+
+        var tree = compilation.SyntaxTrees.First();
+        var model = compilation.GetSemanticModel(tree);
+        var entities = new CsharpEntities((_, _) => { });
+
+        var keys = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.LocalFunctionStatementSyntax>()
+            .Select(node => entities.Entity(model.GetDeclaredSymbol(node)!)!)
+            .Select(fact => Render(fact.Predicate, fact.Key))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(2, keys.Count);
+    }
+
+    /// <summary>
     /// **Two parameters of the same shape are one fact, and that is the schema's
     /// intent.** `csharp.Parameter`'s key is name, type and modifiers with no containing
     /// method, exactly as `csharp.TypeParameter`'s is name and constraints — so

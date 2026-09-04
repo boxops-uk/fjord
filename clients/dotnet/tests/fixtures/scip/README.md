@@ -33,4 +33,12 @@ declare `UTF16CodeUnitOffsetFromLineStart`, which is what a TypeScript indexer c
 There is one external symbol — a reference to `String` from a package the index does not
 contain — because a real index always has some.
 
-To rebuild it: `python3 make-index.py`.
+`locals.scip` is the second index, and it is about one line of the specification: "Local
+symbols MUST only be used for entities which are local to a Document, and cannot be
+accessed from outside the Document". `src/count.ts` and `src/label.ts` each declare and
+read a local, and **each indexer numbered its own `local 1`** — so the two strings are
+equal and the two variables are not. A converter that interns one answers a span in
+`label.ts` when asked for the uses of `count.ts`'s `total`; one that routes them to
+`codemarkup.FileLocalXRef` answers span to span inside one file and mints nothing.
+
+To rebuild both: `python3 make-index.py`.

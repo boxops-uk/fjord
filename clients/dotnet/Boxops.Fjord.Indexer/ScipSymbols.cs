@@ -97,12 +97,27 @@ internal static class ScipSymbols
     /// introduces is excluded, and so is anything whose kind SCIP has no descriptor for.
     /// </summary>
     private static bool HasGlobalName(ISymbol symbol) =>
-        symbol.Kind switch
+        symbol switch
         {
-            SymbolKind.Namespace or SymbolKind.NamedType or SymbolKind.Method
-                or SymbolKind.Property or SymbolKind.Field or SymbolKind.Event
-                or SymbolKind.Parameter or SymbolKind.TypeParameter => true,
-            _ => false,
+            // The grammar escapes a name by wrapping it in backticks, and a bare pair is
+            // no name at all — so a lambda, whose Roslyn name is empty, would take one
+            // string for every lambda in its method and emit one no parser accepts.
+            { Name.Length: 0 } => false,
+
+            // A local function and a lambda are introduced by a method body, so nothing
+            // outside that body can reach either.
+            IMethodSymbol
+            {
+                MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction,
+            } => false,
+
+            _ => symbol.Kind switch
+            {
+                SymbolKind.Namespace or SymbolKind.NamedType or SymbolKind.Method
+                    or SymbolKind.Property or SymbolKind.Field or SymbolKind.Event
+                    or SymbolKind.Parameter or SymbolKind.TypeParameter => true,
+                _ => false,
+            },
         };
 
     /// <summary>

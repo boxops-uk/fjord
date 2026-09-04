@@ -174,22 +174,34 @@ public sealed class ScipSymbolsTests
     /// count gives one commit two different symbol sets depending on the walk — and a
     /// sealed identity hashes the facts. Counting a `docId`-sorted order removes it.
     /// </summary>
+    /// <remarks>
+    /// **Each member carries its own identity into the comparison**, which is what makes
+    /// this a claim about the mapping rather than the set. Under declaration-order
+    /// counting the two overloads swap which is bare and which is `+1`, so the set of
+    /// strings is identical either way and an assertion over sorted symbols alone is
+    /// green with the sort in `Disambiguator` deleted.
+    /// </remarks>
     [Fact]
     public void A_partial_classs_overloads_do_not_depend_on_file_order()
     {
         const string First = "namespace N { public partial class T { public void M(int a) {} } }";
         const string Second = "namespace N { public partial class T { public void M(string a) {} } }";
 
-        List<string> Symbols(params string[] sources) =>
+        List<string> Mapping(params string[] sources) =>
             [.. Members(Compile(sources), "N.T")
                 .Where(member => member.Name == "M")
-                .Select(member => ScipSymbols.Of(member)!)
-                .OrderBy(symbol => symbol, StringComparer.Ordinal)];
+                .Select(member => $"{member.GetDocumentationCommentId()} => {ScipSymbols.Of(member)}")
+                .OrderBy(pair => pair, StringComparer.Ordinal)];
 
-        var forwards = Symbols(First, Second);
-        var backwards = Symbols(Second, First);
+        var forwards = Mapping(First, Second);
+        var backwards = Mapping(Second, First);
 
-        Assert.Equal(2, forwards.Count);
+        Assert.Equal(
+            [
+                "M:N.T.M(System.Int32) => scip-csharp nuget Walked 0.0.0.0 N/T#M().",
+                "M:N.T.M(System.String) => scip-csharp nuget Walked 0.0.0.0 N/T#M(+1).",
+            ],
+            forwards);
         Assert.Equal(forwards, backwards);
     }
 
@@ -257,6 +269,71 @@ public sealed class ScipSymbolsTests
             .First();
 
         Assert.Null(ScipSymbols.Of(model.GetDeclaredSymbol(declarator)!));
+    }
+
+    /// <summary>
+    /// **A local function has no global name either.** Nothing outside the method that
+    /// declares it can reach it, so a global string for it is wrong on the grounds a
+    /// local's is — and two of one name in two methods of one type would be one string.
+    /// </summary>
+    [Fact]
+    public void A_local_function_has_no_symbol()
+    {
+        var compilation = Compile(
+            """
+            public class T
+            {
+                void One() { int Helper() => 1; Helper(); }
+                void Two() { int Helper() => 2; Helper(); }
+            }
+            """);
+
+        var tree = compilation.SyntaxTrees.First();
+        var model = compilation.GetSemanticModel(tree);
+
+        var declarations = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.LocalFunctionStatementSyntax>()
+            .ToList();
+
+        Assert.Equal(2, declarations.Count);
+        Assert.All(
+            declarations,
+            declaration => Assert.Null(ScipSymbols.Of(model.GetDeclaredSymbol(declaration)!)));
+    }
+
+    /// <summary>
+    /// **An empty Roslyn name is not a descriptor.** The grammar escapes a name by
+    /// wrapping it in backticks, and a bare pair is no name at all — so a lambda, whose
+    /// name is empty, would take one string for every lambda in its method.
+    /// </summary>
+    [Fact]
+    public void A_lambda_has_no_symbol()
+    {
+        var compilation = Compile(
+            """
+            public class T
+            {
+                void M()
+                {
+                    System.Func<int> one = () => 1;
+                    System.Func<int> two = () => 2;
+                }
+            }
+            """);
+
+        var tree = compilation.SyntaxTrees.First();
+        var model = compilation.GetSemanticModel(tree);
+
+        var lambdas = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ParenthesizedLambdaExpressionSyntax>()
+            .ToList();
+
+        Assert.Equal(2, lambdas.Count);
+        Assert.All(
+            lambdas,
+            lambda => Assert.Null(ScipSymbols.Of(model.GetSymbolInfo(lambda).Symbol!)));
     }
 
     [Fact]

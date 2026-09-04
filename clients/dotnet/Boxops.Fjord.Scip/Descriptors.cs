@@ -24,11 +24,23 @@ namespace Boxops.Fjord.Scip;
 /// </remarks>
 internal static class Descriptors
 {
+    /// <summary>
+    /// Whether a symbol is one of SCIP's document-scoped locals.
+    /// </summary>
+    /// <remarks>
+    /// <b>The whole grammar of one is <c>local &lt;id&gt;</c>, and it names nothing outside
+    /// its document.</b> The id is an occurrence ordinal, so two documents each carry a
+    /// <c>local 1</c> and the two are unrelated — treating the string as an identity joins
+    /// them into one.
+    /// </remarks>
+    public static bool IsLocal(string symbol) =>
+        symbol.StartsWith("local ", StringComparison.Ordinal);
+
     /// <summary>The short name a SCIP symbol's last descriptor gives.</summary>
     public static string NameOf(string symbol)
     {
         // A local is `local <n>`, which has no descriptors at all.
-        if (symbol.StartsWith("local ", StringComparison.Ordinal))
+        if (IsLocal(symbol))
         {
             return symbol["local ".Length..];
         }

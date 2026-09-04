@@ -22,9 +22,16 @@ two hundred lines that can be read.
 ## What it writes, and what it does not
 
 `src.File`, the line table, `src.Symbol`, `config.Setting`, and the `codemarkup` surface:
-`Definition`, `FileDefinition`, `FileXRef`, `SymbolXRef`, `SearchEntry`, `SymbolByName`.
-Twelve predicates against a database of a hundred and thirty-eight — a client declares the
-shapes it uses, not the database's whole schema.
+`Definition`, `FileDefinition`, `FileXRef`, `SymbolXRef`, `FileLocalXRef`, `SearchEntry`,
+`SymbolByName`. Fourteen predicates against a database of a hundred and thirty-eight — a
+client declares the shapes it uses, not the database's whole schema.
+
+**A SCIP `local` is not a symbol and does not become one.** The spec is explicit — "Local
+symbols MUST only be used for entities which are local to a Document, and cannot be
+accessed from outside the Document" — and the id is an occurrence ordinal, so `local 1` in
+two files names two different variables and moves when either is edited. They are routed to
+`codemarkup.FileLocalXRef`, which answers span to span inside one file, and are kept out of
+`src.Symbol`, `SearchEntry` and `SymbolByName` entirely.
 
 There is **no declaration layer, no type graph and no build layer**, because a SCIP index
 contains none of those. Revision 2 required this converter to synthesise `src.Decl`,

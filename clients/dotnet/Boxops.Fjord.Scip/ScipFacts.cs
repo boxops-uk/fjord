@@ -7,7 +7,7 @@ namespace Boxops.Fjord.Scip;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Twelve predicates against a database of a hundred and thirty-eight.</b> A client
+/// <b>Fourteen predicates against a database of a hundred and thirty-eight.</b> A client
 /// declares the shapes it uses, not the database's whole schema: predicate ids are its
 /// own, a block header carries the predicate's name, and a nested reference takes its
 /// predicate from the field's declared target. What is checked is that this database holds
@@ -42,13 +42,15 @@ internal static class ScipFacts
     public const uint FileDefinition = 8;
     public const uint FileXRef = 9;
     public const uint SymbolXRef = 10;
-    public const uint SearchEntry = 11;
-    public const uint SymbolByName = 12;
+    public const uint FileLocalXRef = 11;
+    public const uint SearchEntry = 12;
+    public const uint SymbolByName = 13;
 
     public static readonly uint[] Predicates =
     [
         File, Symbol, FileInfo, FileLine, FileLineAt, FileLineStyles, Setting,
-        Definition, FileDefinition, FileXRef, SymbolXRef, SearchEntry, SymbolByName,
+        Definition, FileDefinition, FileXRef, SymbolXRef, FileLocalXRef, SearchEntry,
+        SymbolByName,
     ];
 
     /// <summary>`src.Bool`, spelled as the source layer spells it.</summary>
@@ -183,6 +185,14 @@ internal static class ScipFacts
                     ("span", ByteSpan)),
                 null),
             new FjordPredicate(
+                "codemarkup.FileLocalXRef",
+                FjordType.Rec(
+                    ("file", FjordType.Reference(File)),
+                    ("span", ByteSpan),
+                    ("target", ByteSpan),
+                    ("role", Role)),
+                null),
+            new FjordPredicate(
                 "codemarkup.SearchEntry",
                 FjordType.Rec(
                     ("nameLowercase", FjordType.String),
@@ -265,6 +275,20 @@ internal static class ScipFacts
 
     public static FjordFact SymbolXRefFact(FjordFact target, FjordFact file, long start, long length) =>
         new(SymbolXRef, FjordValue.Rec(R(target), R(file), Span(start, length)));
+
+    /// <summary>A reference whose target is file-local, answered span to span.</summary>
+    /// <remarks>
+    /// No <c>src.Symbol</c>: a SCIP <c>local</c> is an occurrence ordinal scoped to one
+    /// document, so <c>local 1</c> in two files names two different entities and interning
+    /// it would make them one.
+    /// </remarks>
+    public static FjordFact FileLocalXRefFact(
+        FjordFact file, long start, long length,
+        long targetStart, long targetLength, FjordValue role) =>
+        new(
+            FileLocalXRef,
+            FjordValue.Rec(
+                R(file), Span(start, length), Span(targetStart, targetLength), role));
 
     public static FjordFact SearchEntryFact(
         string name, FjordValue kind, FjordFact symbol, FjordFact file, long line) =>

@@ -500,8 +500,21 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
             // conversion operator overloads on *return type*, so a signature is not
             // enough; `GetDocumentationCommentId` encodes the parameter list and, for a
             // conversion, the return type as `~T`.
-            FjordValue.Of(method.GetDocumentationCommentId() ?? method.ToDisplayString())));
+            FjordValue.Of(Disambiguator(method))));
     }
+
+    /// <summary>What separates two methods this key would otherwise agree on.</summary>
+    /// <remarks>
+    /// <b>A local function's documentation id does not name the method that declares
+    /// it.</b> Roslyn answers <c>M:Fixture.Host.Helper</c> for one — the containing
+    /// *type*, which <c>containingType</c> already holds — so two local functions of one
+    /// name in two methods of one type reach one key, and one entity is then two
+    /// declarations a jump cannot tell apart.
+    /// </remarks>
+    private static string Disambiguator(IMethodSymbol method) =>
+        method.MethodKind == MethodKind.LocalFunction
+            ? $"{method.ContainingSymbol.ToDisplayString()}.{method.ToDisplayString()}"
+            : method.GetDocumentationCommentId() ?? method.ToDisplayString();
 
     private FjordFact? FieldEntity(IFieldSymbol field)
     {

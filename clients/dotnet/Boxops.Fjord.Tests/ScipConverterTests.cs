@@ -41,11 +41,12 @@ public sealed class ScipConverterTests
     };
 
     /// <summary>Convert the fixture index into a fresh database, and hand back a connection.</summary>
-    private static FjordConnection Converted(FjordServer server, string database)
+    private static FjordConnection Converted(
+        FjordServer server, string database, string fixture = "index.scip")
     {
         var index = Path.Combine(
             FjordServer.RepositoryRoot, "clients", "dotnet", "tests", "fixtures", "scip",
-            "index.scip");
+            fixture);
 
         var code = Program.Main([
             "--input", index,
@@ -127,6 +128,104 @@ public sealed class ScipConverterTests
 
         Assert.Single(search);
         Assert.Contains("greet", Rendered(search[0]), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>A document that states one symbol twice is refused, and says which symbol.</b>
+    /// </summary>
+    /// <remarks>
+    /// Two <c>SymbolInformation</c> entries for one symbol disagree about the kind and the
+    /// display name, so there is no entry to prefer and the input is malformed. The trap is
+    /// the obvious reading: <c>ToDictionary</c> raises an <c>ArgumentException</c>, which
+    /// the CLI's catch filter does not name — so a malformed file leaves a stack trace
+    /// where a person needs the path and the symbol.
+    /// </remarks>
+    [Fact]
+    public void A_document_that_states_one_symbol_twice_is_refused()
+    {
+        using var sink = new FactSink(ScipFacts.Schema, []);
+
+        var document = new Document(
+            "src/greet.ts",
+            "TypeScript",
+            "export function greet(): string {\n  return \"hi\";\n}\n",
+            1,
+            [new Occurrence([0, 16, 21], Greet, 1, 0)],
+            [
+                new SymbolInformation(Greet, 17, "greet"),
+                new SymbolInformation(Greet, 26, "greeting"),
+            ]);
+
+        var failure = Assert.Throws<FormatException>(
+            () => new Converter(sink, ".", TextWriter.Null).Convert(document));
+
+        Assert.Contains("src/greet.ts", failure.Message, StringComparison.Ordinal);
+        Assert.Contains(Greet, failure.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>A SCIP `local` is scoped to its document and never becomes a `src.Symbol`.</b>
+    /// </summary>
+    /// <remarks>
+    /// The specification is explicit — "Local symbols MUST only be used for entities which
+    /// are local to a Document, and cannot be accessed from outside the Document" — and the
+    /// number is an occurrence ordinal, so `local 1` in two files names two different
+    /// variables. Interning it joins them: "find every use" in one file answers a span in
+    /// the other, and a search offers `1` as a name to jump to. `codemarkup.FileLocalXRef`
+    /// answers them span to span inside one document instead, which is the decision
+    /// `docs/unified-plan/15-retire-code-sigla.md` records and the .NET indexer already
+    /// writes.
+    /// </remarks>
+    [Fact]
+    public void A_local_is_answered_span_to_span_and_never_interned()
+    {
+        using var server = FjordServer.Serving("locals", "index.sigla");
+        using var connection = Converted(server, "locals", "locals.scip");
+
+        // **Nothing anywhere targets a `local 1`.** Four rows here — two per file — is
+        // the converter having made one identity out of two variables.
+        var interned = connection.Query(
+            """
+            {file = P, at = S} where
+              codemarkup.SymbolXRef {target = T, file = F, span = S};
+              T = src.Symbol "local 1";
+              F = src.File P
+            """).Rows;
+
+        Assert.Empty(interned);
+
+        // Nor is it a name anybody can search for, or jump to by name.
+        var names = connection.Query(
+            """
+            N where
+              codemarkup.SearchEntry
+                {nameLowercase = _, name = N, kind = _, symbol = _, file = _, line = _}
+            """).Rows.Select(Rendered).ToList();
+
+        Assert.Equal(["count", "label"], names.Order(StringComparer.Ordinal));
+
+        // **The uses are answered span to span, and only within the file.** `total` is
+        // declared at byte 42 of `count.ts` and read at byte 62; the declaration counts
+        // as a use of itself for the reason every definition is a cross-reference.
+        var uses = connection.Query(
+            """
+            {at = S, to = D} where
+              codemarkup.FileLocalXRef {file = F, span = S, target = D, role = _};
+              F = src.File "src/count.ts"
+            """).Rows.Select(Rendered).ToList();
+
+        Assert.Equal(["{{42, 5}, {42, 5}}", "{{62, 5}, {42, 5}}"], uses);
+
+        // `label.ts` names its local `text`, so its spans are its own — which is what a
+        // shared `local 1` would have made impossible to tell.
+        var other = connection.Query(
+            """
+            {at = S, to = D} where
+              codemarkup.FileLocalXRef {file = F, span = S, target = D, role = _};
+              F = src.File "src/label.ts"
+            """).Rows.Select(Rendered).ToList();
+
+        Assert.Equal(["{{42, 4}, {42, 4}}", "{{63, 4}, {42, 4}}"], other);
     }
 
     /// <summary>
