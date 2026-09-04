@@ -107,7 +107,7 @@ be matched to a checkout by inference.
 | `csharp.ArrayType` · `PointerType` | the type shapes a name alone cannot spell. `csharp.FunctionPointerType` cannot be written at all: its `signature` is a `csharp.Method`, whose key leads with a containing type, and a function pointer's signature symbol has none |
 | `csharp.Implements` | **the closure**, not the list the declaration writes: a type that says `: List<T>` *is* an `IEnumerable`, and sigla has no recursion to close it at query time |
 | `csharp.DefinitionLocation` · `EntityXRef` · `EntityRef` | where an entity is written, and every reference to it in both directions |
-| `csharp.ObjectCreationLocation` · `MethodInvocationLocation` · `MemberAccessLocation` · `TypeLocation` | the same positions per *kind* — a construction and the constructor it calls, a call and the member access it went through, the field or property a `.` reaches, and every type written in source |
+| `csharp.ObjectCreationLocation` · `MethodInvocationLocation` · `MemberAccessLocation` · `TypeLocation` | the same positions per *kind* — a construction and the constructor it calls, a call and the member access it went through, the field, property or method a `.` reaches, and every type spelled as a *name* |
 | `csharp.SymbolOf` · `DefinitionBySymbol` | the crossing between an entity and its SCIP symbol |
 
 **The `codemarkup` layer** — the same facts re-keyed for the questions a UI asks, with the
@@ -146,7 +146,8 @@ constructor the compiler chose, which no other predicate here holds;
 `.`, the member access it went through; `MemberAccessLocation` carries the field, property
 or method a `.` reaches — the accessed member, not the expression it was reached through,
 which is the reading the schema's own comment states and the only one that answers a field
-or property read at all; `TypeLocation` carries every type written in source. Every span is
+or property read at all; `TypeLocation` carries every type spelled as a name — a keyword-spelled
+one (`int`, `string`) is a `PredefinedTypeSyntax` and never reaches the walk. Every span is
 the identifier's extent, converted to the UTF-8 bytes `config.Setting
 {dimension = "position-encoding"}` declares — Roslyn counts UTF-16 code units, and the line
 table is what converts.

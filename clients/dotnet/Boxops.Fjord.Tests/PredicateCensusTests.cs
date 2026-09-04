@@ -170,9 +170,18 @@ public sealed class PredicateCensusTests
     {
         // By name rather than by id, because the failure has to be readable: a diff of
         // predicate numbers says `52` where a reader needs `csharp.TypeLocation`.
+        //
+        // **The population is the schema statement, not the id array.** `DotnetIndex.Predicates`
+        // is kept by hand beside it, so a predicate declared in one and forgotten in the other
+        // would escape this census — which is the defect this census exists to catch, one layer
+        // up. The next assertion is what keeps the two the same set.
         Assert.Equal(
-            [.. DotnetIndex.Predicates.Select(DotnetIndex.NameOf).Order(StringComparer.Ordinal)],
+            [.. DotnetIndex.Schema.Predicates.Select(predicate => predicate.Name).Order(StringComparer.Ordinal)],
             Audit.Select(entry => DotnetIndex.NameOf(entry.Predicate)).Order(StringComparer.Ordinal));
+
+        Assert.Equal(
+            [.. Enumerable.Range(0, DotnetIndex.Schema.Predicates.Count).Select(id => (uint)id).Order()],
+            DotnetIndex.Predicates.Order());
 
         Assert.Empty(Audit
             .Where(entry => (entry.Fill is Fill.Written) != (entry.Why.Length == 0))
