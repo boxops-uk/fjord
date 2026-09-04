@@ -162,10 +162,13 @@ fn local_registers(
 }
 
 fn seek_key_escapes(key: &SeekKey, bound: &[(Address, PredicateId)], found: &mut Vec<Escape>) {
-    // Both part-carrying keys, and matched together on purpose: a bounded seek is
-    // an ordinary seek with a range after its parts, so a splice hidden in one
-    // would escape unseen if this only knew about the other.
-    let (SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. }) = key else {
+    // Every part-carrying key, and matched together on purpose: a bounded seek and
+    // a prefix range are an ordinary seek with a range after their parts, so a
+    // splice hidden in one would escape unseen if this only knew about the others.
+    let (SeekKey::Composite(parts)
+    | SeekKey::Bounded { parts, .. }
+    | SeekKey::PrefixRange { parts, .. }) = key
+    else {
         return;
     };
 
@@ -246,10 +249,10 @@ mod tests {
     use fjord_schema::schema::AlternativeNamed;
 
     use super::*;
-    use fjord_encoding::tuple::Value;
+    use fjord_encoding::tuple::{MARK_STRING, Value};
     use fjord_schema::schema::Symbol;
 
-    use crate::plan::{Access, FieldPath, Level, SeekKey};
+    use crate::plan::{Access, FieldPath, Level, RangeEdge, SeekKey};
 
     /// Predicate 9 and up are the query's own; everything below is the schema's.
     fn is_local(id: PredicateId) -> bool {
@@ -343,6 +346,55 @@ mod tests {
                 predicate: LOCAL,
             }]
         );
+    }
+    /// **A splice ahead of a range is still a splice**, whichever range follows it.
+    ///
+    /// Each part-carrying seek form asserted rather than the one the walk was
+    /// written against, because the walk matches them together in a **refutable**
+    /// `let … else`: a form nobody added to that pattern does not go red, it falls
+    /// through the `else` and the escape is never reported.
+    #[test]
+    fn splicing_a_local_id_ahead_of_a_range_is_an_escape() {
+        let ranged = |seek_key| {
+            plan_of(
+                vec![
+                    scan(LOCAL, 0),
+                    Step::Level(Level::seek(
+                        Access {
+                            predicate_id: BASE,
+                            seek_key,
+                        },
+                        Box::new([Address::new(1)]),
+                        Box::new([]),
+                    )),
+                ],
+                Project::Lit(Value::Int(1)),
+            )
+        };
+        let parts =
+            || -> Box<[SeekKeyPart]> { Box::new([SeekKeyPart::RegisterFactId(Address::new(0))]) };
+        let expected = vec![Escape::SeekKeyFactId {
+            address: Address::new(0),
+            predicate: LOCAL,
+        }];
+
+        for seek_key in [
+            SeekKey::PrefixRange {
+                parts: parts(),
+                prefix: Box::new([MARK_STRING, b'a']),
+            },
+            SeekKey::Bounded {
+                parts: parts(),
+                lo: Some(RangeEdge {
+                    value: Box::new([MARK_STRING, b'a', 0]),
+                    inclusive: true,
+                }),
+                hi: None,
+            },
+        ] {
+            let shape = format!("{seek_key:?}");
+            assert_eq!(escapes(&ranged(seek_key), &is_local), expected, "{shape}");
+        }
     }
 
     #[test]

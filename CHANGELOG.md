@@ -7,6 +7,40 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### An equality on a `string` or `bytes` key field answered rows of other values
+
+`X = "a"` answered three rows over a store holding `"a"`, `"a\0"` and `"a\0z"` — and a join
+narrowed by such a field matched the same way, since a splice is the same seek with someone
+else's bytes in it. `int`, `Fact` and record key fields were never affected, and neither was the
+prefix pattern `X = "a"..`, which wants those rows.
+
+This is the sibling of the excluding-bound defect below, and the same arithmetic: a terminated
+field encodes as `MARK ++ escaped(payload) ++ 0x00`, so `enc(v)` is a proper byte prefix of
+`enc(w)` exactly when `w` is `v` with a NUL and more after it. A seek opened
+`[prefix, strinc(prefix))` — the range of everything sharing its bytes — which is right for a
+byte-prefix pattern and one value too wide for a complete field encoding. Silent, because a
+constant bind **folds**: the equality is not in the residual list, so nothing behind the seek
+re-checked what it let through. The same off-by-one closed the open end of a one-sided bound
+behind a splice (`file = F, line >= 1000` over a `bytes` file field).
+
+The fix is that the plan now **says which of the two it holds**. A byte-prefix pattern is
+`SeekKey::PrefixRange`, a variant of its own beside the parts because nothing may follow a
+partial field encoding — the rule a bounded seek's edges already followed — and a
+`SeekKey::Prefix` or `Composite` is a run of complete field encodings. The first ends at
+`strinc`, the second at `above_field`. Read off the byte string the two are indistinguishable,
+and whichever end is picked is wrong for the other.
+
+**A resume token for a query holding a prefix pattern is refused after this and must be
+re-issued.** `PrefixRange` takes its own fingerprint tag, which is the point of the variant: two
+plans holding the same bytes as the two readings open different ranges and must not accept each
+other's cursors. Eight of the corpus's plan fingerprints move, all of them prefix patterns; no
+other plan shape changes. The cursor **layout** is unmoved, so `CURSOR_VERSION` stays at 3, and a
+folded equality's fingerprint is unmoved too — a token saved against one by an older build is
+refused by the range check instead, `BadResumeKey` rather than an answer from the wrong place.
+
+Nothing on disk moved: no marker, no encoding, no format stamp. The end of a range is query-time
+arithmetic.
+
 ### The protocol is 4, which is what `bytes` always said it was · **rebuild your clients**
 
 The `bytes` family was described as a protocol bump in three places — the doc comment on the

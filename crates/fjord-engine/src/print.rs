@@ -402,7 +402,9 @@ fn seek(
             constants(&mut cursor, bytes, &mut pins);
             &[][..]
         }
-        SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => parts,
+        SeekKey::Composite(parts)
+        | SeekKey::Bounded { parts, .. }
+        | SeekKey::PrefixRange { parts, .. } => parts,
     };
 
     for part in parts.iter() {
@@ -419,6 +421,19 @@ fn seek(
                 cursor += 1;
             }
         }
+    }
+
+    // **A byte-prefix pattern reads as one because the plan says it is one**, not
+    // because the bytes failed to decode as a whole field. The two forms are the
+    // same bytes, and a rendering that inferred which it held would be guessing at
+    // the very thing the variant was added to record.
+    if let SeekKey::PrefixRange { prefix: bytes, .. } = seek_key {
+        let ty = key_field_ty(key_ty, cursor);
+        let rendered =
+            prefix(interner, ty, bytes).map_or_else(|| opaque(bytes), |text| format!("{text}.."));
+
+        pins.push((cursor, rendered));
+        cursor += 1;
     }
 
     // One entry of the rendered key: `name = pin` where the field is pinned, `name
@@ -474,10 +489,11 @@ fn seek(
 /// decoding one field at a time against the declared type — the same walk the
 /// executor makes, rather than a second reading of the layout.
 ///
-/// The last field may be a **string prefix**, which is a string's encoding with its
-/// terminator dropped and so decodes as a truncation rather than as a value: that is
-/// what a decode failing on the final field means, and it is the difference between
-/// a seek that is an equality and one that is a range.
+/// A decode failing on the final field means bytes that are not a whole field: a
+/// plan built by hand, or one built against another schema. Rendered as the
+/// truncation it is rather than dropped, because a seek nobody can read is a seek
+/// nobody can check. A **byte-prefix pattern** does not arrive here — it is
+/// [`SeekKey::PrefixRange`], which [`seek`] renders from the variant.
 fn constant_fields(
     schema: &Schema,
     interner: &LocalInterner,

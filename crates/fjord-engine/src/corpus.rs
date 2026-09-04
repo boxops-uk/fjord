@@ -1395,6 +1395,15 @@ mod tests {
         );
     }
 
+    /// **A fingerprint that moves refuses every cursor in flight against it.**
+    ///
+    /// A resume token carries the fingerprint of the plan that issued it and
+    /// [`Executor::resume`](crate::iter::Executor::resume) refuses a cursor whose
+    /// does not match, so an entry changing here is a query whose pages stop
+    /// resuming across the deploy. That is the safe direction and it is not free,
+    /// which is why the list is checked in: a plan-shape change that moves a
+    /// fingerprint has to say which queries it moved and why, rather than being
+    /// noticed by a client.
     #[test]
     fn every_supported_entrys_plan_fingerprint_is_stable() {
         use crate::compile::Compilation;
@@ -1442,18 +1451,18 @@ mod tests {
             "537febb51776ac0e",
             "bf7f4da079aa8760",
             "9fdd3e823c7f9ad3",
-            "d6d91409bcbcf1b7",
+            "ac9e84cd6f2470b4",
             "d6db97d05b158f41",
             "5c24b3eb080617e6",
             "1e1c5619833194a7",
-            "5a2d66dc40df5089",
-            "5a2d66dc40df5089",
+            "726e41f65bf6b640",
+            "726e41f65bf6b640",
             "f36ba4c7fdd56959",
             "97f44414433a7172",
             "e229f3eab3c43fed",
             "fb6b77ec9cbd6edc",
             "aa5f81506112a81a",
-            "6a908ca81cfe84bd",
+            "ad7555e41e5adf50",
             "df98ffd6b9ef26eb",
             "2492014dd8bca10c",
             "b1a21a89a4c3e1ff",
@@ -1497,8 +1506,8 @@ mod tests {
             "84bee93b29cc8aaf",
             "022de69dabfcd016",
             "600faa6ab5bc327f",
-            "958498fd4564f540",
-            "958498fd4564f540",
+            "54db76ab3d741bb9",
+            "54db76ab3d741bb9",
             "2dd142da1c9d558f",
             "2dd142da1c9d558f",
             "6f0a934d9fb9e1f1",
@@ -1507,10 +1516,10 @@ mod tests {
             "87f4cde294e3d5f9",
             "20c6e0ccd33651e3",
             "7d9081f6358f8445",
-            "10fb47580e274181",
+            "63f9674bea661d04",
             "1a06fae56554c5c3",
             "6ec539c285ca3870",
-            "958498fd4564f540",
+            "54db76ab3d741bb9",
             "3db4a2f29bc37327",
             "6645e951bdd44fc4",
             "49fad4cae8ee0b02",

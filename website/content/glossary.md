@@ -193,12 +193,16 @@ range) rather than being filtered afterwards. Sargeability is **order-dependent*
 [Query efficiency](query-efficiency.html)
 
 **seek / SeekKey** — the range a level's scan opens on, built from constant bytes and register
-splices, and optionally bounded at the field they stop at by a folded order comparison.
+splices, and optionally *ranged* at the field they stop at: by a folded order comparison
+(`SeekKey::Bounded`) or by a byte-prefix pattern (`SeekKey::PrefixRange`). Which variant it is
+decides where the range ends, because a whole field encoding and a byte prefix of one are almost
+the same bytes and want opposite ends. [Executor](executor.html)
 
 **separator** — the byte string between one field value's keys and the next value's: the value's
-encoding then `0xFF`. What a bounded seek uses at an edge that **excludes** the value, and not the
-same thing as **strinc** — a terminated field's encoding is a byte prefix of a greater value's
-whenever that value extends it through a NUL. [Executor](executor.html)
+encoding then `0xFF`. Where a seek's range ends **at a value** — a bounded edge that excludes it,
+and the end of any seek whose parts are complete field encodings. Not the same thing as
+**strinc** — a terminated field's encoding is a byte prefix of a greater value's whenever that
+value extends it through a NUL. [Executor](executor.html)
 
 **sigla** — Fjord's query and schema *language*.
 
@@ -216,7 +220,8 @@ for queries here (sigla has no recursion and the base is total); it returns unde
 stored derivation, as a topological sort of the derivation graph.
 
 **strinc** — the prefix successor: the smallest byte string greater than every string with a given
-prefix. The exclusive upper bound of a prefix scan.
+prefix. The exclusive upper bound of a prefix scan, which is what a byte-prefix **pattern** wants
+and what an equality does not — see **separator**.
 
 **Step** — one position in a plan's body: a level, a derive or a test. Exactly three kinds, and a
 test asserting that is the cheapest guard in the project.

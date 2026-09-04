@@ -103,6 +103,17 @@ answer `> v` without those rows and `<= v` with them. `0xFF` is what lies betwee
 at `v` runs on with a marker and every marker is below it, while a key of one of those greater
 values runs on with the escape byte itself.
 
+The **other** range is `SeekKey::PrefixRange`, the folded form of sigla's `..` string-prefix
+operator, and it sits beside the parts for the reason the edges do: a byte prefix of a field is
+not a field, so nothing may follow it either. It is also why the *variant* rather than the byte
+string decides where a range ends. `X = "a"` and `X = "a"..` are two questions over almost the
+same bytes — a constant is a whole field encoding, and the pattern is that encoding without its
+terminator — and they want opposite ends. The equality wants the keys of one value, which stops
+at the separator; the pattern wants every value the prefix starts, which is what the successor
+of everything sharing those bytes is for. So the separator is not only a bounded edge's: it ends
+*every* seek whose parts are complete field encodings, and the successor belongs to a seek that
+pins no field at all or one whose last bytes are only part of one.
+
 A **guided** source is the third shape, and it is deliberately not a fourth kind of thing: it
 carries an ordinary `Access`, so `lo` and `hi` come from the same prefix machinery, and the
 `Guide` decides only what is visited *inside* that range. A [Levenshtein

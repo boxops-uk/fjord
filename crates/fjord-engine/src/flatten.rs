@@ -538,15 +538,21 @@ struct SeekBuilder {
     /// At most one: a second fuzzy pattern on the same field filters instead, which
     /// is what "both hold" means when only one of them can drive the walk.
     guide: Option<Guide>,
-    /// The field a **prefix range** closed the seek prefix on, if one did.
+    /// The **prefix range** that closed the seek prefix, if one did: the field it
+    /// landed on and the partial field encoding it opens.
     ///
-    /// This is what makes `X = "pa"..; X = "parse"~2` one guided seek over the
-    /// `"pa"` bucket rather than a bucket scan with a filter. A prefix closes the
+    /// The path is what makes `X = "pa"..; X = "parse"~2` one guided seek over the
+    /// `"pa"` range rather than a bucket scan with a filter. A prefix closes the
     /// seek because nothing may follow it *in the key*, but a guide does not follow
     /// it — it narrows the same field further, inside the range the prefix chose.
     /// Any other field closing the seek leaves nothing for a guide to attach to,
     /// which is why this remembers the path rather than a flag.
-    range_at: Option<FieldPath>,
+    ///
+    /// The bytes ride with it rather than joining `parts`, because a partial field
+    /// encoding is not a part: merged into the run of complete ones it would be the
+    /// same byte string as an equality and the seek would end at the wrong place
+    /// ([`SeekKey::PrefixRange`]).
+    range: Option<(FieldPath, Vec<u8>)>,
     /// The bounds an order comparison folded onto the field that ended the prefix.
     ///
     /// At most one edge per sense, and both of them on **one** field: a second
@@ -572,7 +578,7 @@ impl SeekBuilder {
             residuals: vec![],
             building: true,
             guide: None,
-            range_at: None,
+            range: None,
             lo: None,
             hi: None,
             folded: vec![],
@@ -605,14 +611,33 @@ impl SeekBuilder {
     /// The finished seek: a plain byte prefix where every part is constant — which
     /// is the common case and needs no per-row work — and a composite where a
     /// register's bytes have to be spliced in each time the level is opened.
+    ///
+    /// A range comes first either way, because a range is the last thing in a seek
+    /// and no byte string says so — which is why each is a variant rather than a
+    /// longer prefix.
     fn seek_key(&self) -> SeekKey {
-        // A bound is the last thing in a seek and there is no byte string that says
-        // so, which is why it is a variant rather than a longer prefix.
+        // Both would be a seek narrowed twice on one field, and the two ways a
+        // level reaches them are exclusive: `bound` folds only where a bare capture
+        // would have closed the prefix, and a prefix pattern has closed it already.
+        debug_assert!(
+            self.range.is_none() || (self.lo.is_none() && self.hi.is_none()),
+            "a level is narrowed by a prefix range or by a bound, never both"
+        );
+
         if self.lo.is_some() || self.hi.is_some() {
             return SeekKey::Bounded {
                 parts: self.parts.clone().into(),
                 lo: self.lo.clone(),
                 hi: self.hi.clone(),
+            };
+        }
+
+        // A partial field encoding, so the range ends above every value it starts
+        // rather than between two of them ([`SeekKey::PrefixRange`]).
+        if let Some((_, prefix)) = &self.range {
+            return SeekKey::PrefixRange {
+                parts: self.parts.clone().into(),
+                prefix: prefix.clone().into(),
             };
         }
 
@@ -3636,12 +3661,15 @@ impl Flattener<'_> {
             }
 
             // A prefix narrows to a *range*, so it can end a seek but nothing may
-            // follow it in one: the bytes after it are not the field's.
+            // follow it in one: the bytes after it are not the field's. Held apart
+            // from the parts for that reason — as bytes among them it would be
+            // indistinguishable from the complete encoding it is a prefix of, and
+            // the range would end at the separator between two values instead of
+            // above every value the prefix starts.
             Const::Prefix(bytes) => {
                 if level.building {
-                    level.parts.push(SeekKeyPart::Bytes(bytes.into()));
                     level.building = false;
-                    level.range_at = Some(path.clone());
+                    level.range = Some((path.clone(), bytes));
                 } else {
                     level.residuals.push(Residual {
                         path: path.clone(),
@@ -3664,7 +3692,8 @@ impl Flattener<'_> {
                 distance,
                 anchor,
             } => {
-                let attachable = level.building || level.range_at.as_ref() == Some(path);
+                let attachable =
+                    level.building || level.range.as_ref().map(|(at, _)| at) == Some(path);
 
                 if attachable && level.guide.is_none() {
                     level.guide = Some(Guide {
@@ -5188,6 +5217,14 @@ mod tests {
                                 "seek[{}]",
                                 parts.iter().map(part_shape).collect::<Vec<_>>().join(" ")
                             ),
+                            // `k..` — a range over one field rather than a pin on
+                            // it, which is the distinction the two forms of the
+                            // same bytes turn on.
+                            SeekKey::PrefixRange { parts, .. } => {
+                                let mut shape: Vec<String> = parts.iter().map(part_shape).collect();
+                                shape.push("k..".to_owned());
+                                format!("seek[{}]", shape.join(" "))
+                            }
                             // The bound reads as the relation it folded: `seek[>=k
                             // <k]` over a scalar key, `seek[r0.0 >=k]` behind a
                             // splice. Which field it is on is the one the parts
@@ -5220,6 +5257,7 @@ mod tests {
                             SeekKey::Prefix(bytes) if bytes.is_empty() => {
                                 format!("seek~[{}]", guide.path)
                             }
+                            SeekKey::PrefixRange { .. } => format!("seek~[k.. {}]", guide.path),
                             _ => format!("seek~[k {}]", guide.path),
                         },
                     };
@@ -5494,6 +5532,11 @@ mod tests {
     /// string is a byte prefix of every string that starts with it, so the range
     /// scan is exactly the match ([I1]). The terminator is what it drops — a
     /// terminated string would be the equality, not the prefix.
+    ///
+    /// **And the plan says which of the two it holds**, because the bytes cannot:
+    /// dropping the terminator is what makes these the bytes an equality on a
+    /// *shorter* value would seek, and the two want different ends of the range
+    /// ([`SeekKey::PrefixRange`]).
     #[test]
     fn a_string_prefix_narrows_the_scan() {
         let flattened = compile("X where X = test.Name \"abc\"..");
@@ -5501,7 +5544,7 @@ mod tests {
 
         assert_eq!(
             describe(plan, &flattened.interner),
-            lines(&["r0 <- test.Name seek[k]", "head r0"])
+            lines(&["r0 <- test.Name seek[k..]", "head r0"])
         );
 
         let mut expected = str_field("abc");
@@ -5514,8 +5557,11 @@ mod tests {
             .seek_key()
             .expect("a seek")
         {
-            SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
-            other => panic!("expected a prefix seek, got {other:?}"),
+            SeekKey::PrefixRange { parts, prefix } => {
+                assert!(parts.is_empty(), "the range is the whole seek");
+                assert_eq!(prefix.as_ref(), expected.as_slice());
+            }
+            other => panic!("expected a prefix range, got {other:?}"),
         }
     }
 
@@ -5567,11 +5613,12 @@ mod tests {
 
         assert_eq!(
             describe(plan, &flattened.interner),
-            lines(&["r0 <- test.Name seek[k]", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..]", "head r0.0:str"])
         );
 
         // The same bytes the prefix written at the field seeks — `put_str` without
-        // its terminator, which is what every string starting with it begins with.
+        // its terminator, which is what every string starting with it begins with —
+        // and in the same variant, so the range ends in the same place.
         let mut expected = str_field("a");
         expected.pop().expect("a terminated string");
         match &plan
@@ -5582,8 +5629,11 @@ mod tests {
             .seek_key()
             .expect("a seek")
         {
-            SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
-            other => panic!("expected a prefix seek, got {other:?}"),
+            SeekKey::PrefixRange { parts, prefix } => {
+                assert!(parts.is_empty(), "the range is the whole seek");
+                assert_eq!(prefix.as_ref(), expected.as_slice());
+            }
+            other => panic!("expected a prefix range, got {other:?}"),
         }
 
         assert_eq!(rows("X where test.Name X; X = \"a\"..").len(), 4);
@@ -5596,7 +5646,7 @@ mod tests {
     fn a_constraint_extends_a_seek_that_is_still_building() {
         assert_eq!(
             shape("X where test.Foo {id = 1, name = X}; X = \"a\".."),
-            lines(&["r0 <- test.Foo seek[k]", "head r0.1:str"])
+            lines(&["r0 <- test.Foo seek[k k..]", "head r0.1:str"])
         );
 
         // ...and behind an open field there is no seek left to extend, so it
@@ -5634,7 +5684,7 @@ mod tests {
         // The constraint, for contrast, at the same field of the same predicate.
         assert_eq!(
             shape("X where test.Name X; X = \"a\".."),
-            lines(&["r0 <- test.Name seek[k]", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..]", "head r0.0:str"])
         );
 
         assert_eq!(rows("X where test.Name X; X != \"a\"..").len(), 1);
@@ -5671,7 +5721,7 @@ mod tests {
     fn a_constraint_and_a_denial_on_one_variable_both_hold() {
         assert_eq!(
             shape("X where test.Name X; X = \"a\"..; X != \"an\".."),
-            lines(&["r0 <- test.Name seek[k] where 0 !^= k", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..] where 0 !^= k", "head r0.0:str"])
         );
 
         assert_eq!(
@@ -5900,7 +5950,7 @@ mod tests {
     fn two_constraints_on_one_variable_both_hold() {
         assert_eq!(
             shape("X where test.Name X; X = \"a\"..; X = \"an\".."),
-            lines(&["r0 <- test.Name seek[k] where 0 ^= k", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..] where 0 ^= k", "head r0.0:str"])
         );
 
         assert_eq!(
@@ -6002,7 +6052,7 @@ mod tests {
     /// two spellings of one query must compile to one plan.
     #[test]
     fn a_range_pattern_takes_the_seek_and_the_bound_filters() {
-        let expected = lines(&["r0 <- test.Name seek[k] where 0 < k", "head r0.0:str"]);
+        let expected = lines(&["r0 <- test.Name seek[k..] where 0 < k", "head r0.0:str"]);
 
         assert_eq!(
             shape("N where test.Name N; N = \"an\"..; N < \"anno\""),
@@ -6126,7 +6176,7 @@ mod tests {
         assert_eq!(
             shape("X where test.Name X | test.Name X; X = \"a\".."),
             lines(&[
-                "r0 <- test.Name seek[k] | test.Name seek[k]",
+                "r0 <- test.Name seek[k..] | test.Name seek[k..]",
                 "head r0.0:str"
             ])
         );
@@ -7305,7 +7355,9 @@ mod tests {
             .expect("a seek")
         {
             SeekKey::Prefix(bytes) => assert!(!bytes.is_empty(), "a constant prefix"),
-            SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => assert!(
+            SeekKey::Composite(parts)
+            | SeekKey::Bounded { parts, .. }
+            | SeekKey::PrefixRange { parts, .. } => assert!(
                 matches!(parts.first(), Some(SeekKeyPart::Bytes(_))),
                 "the fold must reach the seek prefix, got {parts:?}",
             ),
@@ -8150,7 +8202,8 @@ mod tests {
 /// |---|---|
 /// | a constant in the leading key field | `SeekKey::Prefix(non-empty)` |
 /// | a bound variable, then anything determined | a composite seek of several parts |
-/// | a string prefix (`"a"..`) behind an open field | `ResidualOp::Prefix` |
+/// | a string prefix (`"a"..`) on a field the seek reached | `SeekKey::PrefixRange` |
+/// | the same prefix behind an open field | `ResidualOp::Prefix` |
 /// | a **record-typed** key field given sub-field by sub-field | nested `FieldPath`s |
 /// | three-field keys | more than one residual on a level |
 /// | a **row bind** (`R0 = gen.P0 {…}`) | `Project::FactRef`, and a register a head reads through |
@@ -10438,6 +10491,7 @@ mod battery {
     #[derive(Debug, Default)]
     struct Shapes {
         constant_seek: bool,
+        prefix_range_seek: bool,
         multi_part_seek: bool,
         constant_in_composite: bool,
         prefix_residual: bool,
@@ -10478,6 +10532,7 @@ mod battery {
 
             for (present, what) in [
                 (self.constant_seek, "a constant seek prefix"),
+                (self.prefix_range_seek, "a `SeekKey::PrefixRange`"),
                 (self.multi_part_seek, "a composite seek of several parts"),
                 (
                     self.constant_in_composite,
@@ -10629,6 +10684,10 @@ mod battery {
                             match &access.seek_key {
                                 SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
                                 SeekKey::Composite(parts) => self.observe_parts(parts),
+                                SeekKey::PrefixRange { parts, .. } => {
+                                    self.prefix_range_seek = true;
+                                    self.observe_parts(parts);
+                                }
                                 SeekKey::Bounded { parts, lo, hi } => {
                                     self.bounded_seek = true;
                                     self.bounded_below |= lo.is_some();

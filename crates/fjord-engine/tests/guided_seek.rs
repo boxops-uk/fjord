@@ -57,12 +57,17 @@ fn guided_plan(term: &str, distance: u8, range: Option<&str>, anchor: FuzzyAncho
         None => SeekKey::Prefix(Box::new([])),
         // A string's encoding without its terminator: what every string starting
         // with it begins with. This is the anchored spelling — `X = "pa"..` —
-        // whose whole job is to hand the automaton a bucket instead of a
-        // predicate.
+        // whose whole job is to hand the automaton a range instead of a predicate.
+        // A `SeekKey::PrefixRange` and not a `Prefix`, which is the difference
+        // between a range over one field and an equality on it: the same bytes,
+        // and the range ends in a different place.
         Some(prefix) => {
             let mut bytes = str_field(prefix);
             bytes.pop();
-            SeekKey::Prefix(bytes.into())
+            SeekKey::PrefixRange {
+                parts: Box::new([]),
+                prefix: bytes.into(),
+            }
         }
     };
 
