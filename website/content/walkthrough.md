@@ -84,7 +84,7 @@ created code (01M1JJXF8HDVGMHY3XK2WVFZ3J) against /path/to/fjord/schemas/dotnet.
 fjord serve
   data dir   ./db
   socket     ./db/fjord.sock
-  protocol   3
+  protocol   4
   connections 524288 at once  (half the descriptor limit; --max-connections sets it)
   databases  1
     code                 writable
@@ -123,7 +123,7 @@ indexing /path/to/fjord/clients/dotnet
   1 target framework(s) — net10.0, loaded in 7.6s
 
 connecting to ./db/fjord.sock//code, 1 writer(s)
-  connected: protocol 3, 69 predicates, schema c20dfe719b04e025
+  connected: protocol 4, 69 predicates, schema c20dfe719b04e025
 
         8 files        13,128 facts      6,520 facts/s  Boxops.Fjord.Client
        31 files        79,264 facts      9,916 facts/s  Boxops.Fjord.Indexer

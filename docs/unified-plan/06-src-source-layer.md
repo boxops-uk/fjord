@@ -122,15 +122,18 @@ and no `LIMIT` in sigla, so the shape is a range upward bounded by the client �
 which the level that captures `S` folds into the seek:
 
 ```
-L where src.FileLineAt {file = F, start = S, line = L}; S >= 12345
+S, L where src.FileLineAt {file = F, start = S, line = L}; S >= 12345
 ```
 
-with a client-side limit of 1.
+with a client-side limit of 1. **`S` is projected because it is what distinguishes the first two
+cases**: the row alone does not say which it is, and a consumer holding only the line number is one
+line wrong at every line start.
 
-- Exact hit: the returned row **is** the answer — and **the last line's start is an exact hit like
-  any other**, because the range upward from it finds it.
-- Mid-line `X`: the returned row is the line *after* the one containing `X`, so the answer is
-  `line - 1` — arithmetic on a row already in hand, no second seek.
+- Exact hit — `S` equals the offset: the returned row **is** the answer, and **the last line's
+  start is an exact hit like any other**, because the range upward from it finds it.
+- Mid-line `X` — `S` greater than the offset: the returned row is the line *after* the one
+  containing `X`, so the answer is `line - 1` — arithmetic on a row already in hand, no second
+  seek.
 - **`X` strictly past the last line's start: the range is empty.** The consumer must fall back to
   `FileInfo.lines`, and that fallback is not optional — it is the common case for a reference in the
   last line of a file. Issue #39 does not state it.

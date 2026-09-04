@@ -444,8 +444,20 @@ pub struct Scan {
 /// A block whose declared bytes run past the end of `haystack` is not a hit: the
 /// checksum cannot be computed without them. A worker handed a byte range therefore
 /// finds the boundaries it can read whole, and the truncated tail belongs to the
-/// next range — that tail is the benign instance of `damaged`, and it carries
-/// [`WireError::LengthOutOfRange`] rather than a checksum failure.
+/// next range.
+///
+/// **How that tail is reported turns on how much of the header the range holds**, and
+/// the quiet case is the one to design around. With the header complete, the tail is
+/// the benign instance of `damaged`, carrying [`WireError::LengthOutOfRange`] rather
+/// than a checksum failure. With the range ending *inside* the header — fewer than
+/// [`OVERHEAD`] bytes past the marker — there is no header yet to disbelieve, so the
+/// scan reports neither a block nor damage and answers `Scan { block: None, damaged:
+/// None }`: the same answer it gives for a range holding no block at all. Nothing
+/// distinguishes them, and nothing can, which is why a caller **splitting a file into
+/// ranges must overlap them by at least [`OVERHEAD`] bytes**. Ranges that meet exactly
+/// lose a block whose marker and header straddle the join: the first range cannot
+/// validate it and the second begins past its marker, so neither range finds it and
+/// neither reports anything missing.
 #[must_use]
 pub fn find_block(haystack: &[u8], from: usize) -> Scan {
     let mut at = from;

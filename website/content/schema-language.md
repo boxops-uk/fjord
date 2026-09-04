@@ -79,7 +79,7 @@ Three things about the shape:
   first field: `,` continues a record, `|` starts a sum. That is one token of lookahead, and
   it is Angle's shape too.
 - **A keyword may be a field name.** The sample schema has
-  `src.Extends { base, type }`, and `type` is also how a named type is declared. That costs
+  `code.Extends { type, base }`, and `type` is also how a named type is declared. That costs
   the grammar nothing, because a field name is never in a position where a keyword could
   start something.
 

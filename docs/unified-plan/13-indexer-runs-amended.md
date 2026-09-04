@@ -90,14 +90,16 @@ anything landing from **W6/W9**. **3.6** claims the identity is *unchanged*, whi
 keeping — if it moves, something else broke. Add one line to Run 0: a moved baseline is accepted with
 a written cause, never as a diff someone approves.
 
-**+ The SDK pin applies to every later baseline, not only Run 0's.** `global.json` is `10.0.100`
-with `rollForward: latestFeature`, so a 10.0.2xx SDK brings different reference assemblies, and a
-display string is stored as a *value*, which a sealed identity hashes. **Re-pointed:** it was
-`src.TypeOf` storing `type.ToDisplayString()`, and that predicate is gone. The exposure is not —
-`codemarkup.Definition` carries the hover signature (`CodeMarkup.cs:132`) and two `csharp`
-predicates fall back to `ToDisplayString()` when a symbol has no documentation comment id
-(`CsharpEntities.cs:422`, `:461`). Same argument, three sites instead of one: a sealed identity is
-more SDK-sensitive than counts, not less.
+**+ The SDK pin applies to every later baseline, not only Run 0's.** `global.json` was `10.0.100`
+with `rollForward: latestFeature`, which selects the *highest* installed feature band — so a
+10.0.2xx SDK brings different reference assemblies, and a display string is stored as a *value*,
+which a sealed identity hashes. **Re-pointed:** it was `src.TypeOf` storing
+`type.ToDisplayString()`, and that predicate is gone. The exposure is not —
+`codemarkup.Definition` carries the hover signature (`CodeMarkup.cs`, through
+`SourceLayer.Clip`) and two `csharp` predicates fall back to `ToDisplayString()` when a symbol has
+no documentation comment id (`CsharpEntities`' method and property entities). Same argument, three
+sites instead of one: a sealed identity is more SDK-sensitive than counts, not less. **Closed:**
+`rollForward` is `latestPatch` now, so the band the comment claims is the band the policy holds.
 
 **Re-cut: the gate names two things that no longer exist, and one that never existed.** Revision 2
 gates R0 on *"Identity equal across both axes; `Conflicts == 0`; `M == 0`; \"no project compiles\"

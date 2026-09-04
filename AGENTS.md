@@ -108,6 +108,7 @@ cargo test -- --ignored --list      # the invariant coverage ledger
 python3 scripts/check-guards.py     # every pending guard names a claim and a live owner
 python3 -m unittest scripts/test_check_guards.py  # the ledger gate's mutation controls
 python3 -m unittest scripts/test_check_exhaustive.py  # the exhaustiveness probe's guards
+python3 -m unittest scripts/test_check_docs.py    # the drift gate's mutation controls
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)

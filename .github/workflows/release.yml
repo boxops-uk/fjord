@@ -120,10 +120,13 @@ jobs:
       # **`global-json-file` pins the feature band, and `rollForward` is what makes that
       # true.** A 10.0.2xx SDK brings different reference assemblies, and three sites
       # store a `ToDisplayString()` as a *value* a sealed identity hashes —
-      # `codemarkup.Definition`'s hover signature (`CodeMarkup.cs:132`) and the two
-      # `csharp` predicates that fall back to it when a symbol has no documentation
-      # comment id (`CsharpEntities.cs:422`, `:461`). `latestFeature` would have selected
-      # the *highest* installed band, which is the exposure rather than the pin.
+      # `codemarkup.Definition`'s hover signature (`CodeMarkup.cs`, `SourceLayer.Clip`)
+      # and the two `csharp` predicates that fall back to it when a symbol has no
+      # documentation comment id — `CsharpEntities`' method and property entities, each
+      # `GetDocumentationCommentId() ?? ToDisplayString()`. Named by member rather than
+      # by line: this stack moved that file twice, and a line number is false the moment
+      # anything above it moves. `latestFeature` would have selected the *highest*
+      # installed band, which is the exposure rather than the pin.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: clients/dotnet/global.json
@@ -172,6 +175,11 @@ jobs:
       # work it declined to touch. Cheap to check and silent to get wrong.
       - name: The exhaustiveness probe refuses a dirty tree without eating it
         run: python3 -m unittest scripts/test_check_exhaustive.py
+      # The drift gate has six checks and every one of them is a way the documentation
+      # went stale once. A gate that stops firing says nothing, so these plant one
+      # violation per check against a throwaway tree and assert each is caught.
+      - name: The drift gate's mutation controls
+        run: python3 -m unittest scripts/test_check_docs.py
       # **The other configuration.** `fjord-inspect` turns the engine's `trace`
       # feature on, so the workspace run above builds the engine *traced* — which
       # is what puts the alloc-free and no-value-fetch guards on the build the

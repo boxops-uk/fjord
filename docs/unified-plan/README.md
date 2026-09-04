@@ -71,7 +71,7 @@ revision 2's runs, a new sub-run (R3.7), an edit to the required CI job, a 61-fi
 piece of work it explicitly declines to price (extracting an `IFactWriter` from a raw `Thread[]` —
 **dropped**, with the reason recorded: it would be an abstraction over a `Thread[]` with one
 implementation and no second caller, and `IBlockTarget` is already the swappable thing). Its
-acceptance criteria are the runs' own gates, which is why it contributes none of the 106 below.
+acceptance criteria are the runs' own gates, which is why it contributes none of the count below.
 
 **All fifteen items have landed.** W13's runs are done except R4, cancelled by D12, and R7,
 deferred to a 1.0 profiling pass by D15. What each run found — including six defects no issue had
@@ -133,7 +133,7 @@ R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)
 
 ## What this adds up to
 
-**105 acceptance criteria across thirteen items** (W13 carries amendments to revision 2's own run
+**114 acceptance criteria across fourteen items** (W13 carries amendments to revision 2's own run
 gates rather than criteria of its own), plus revision 2's Runs 0–9.
 
 New on disk: **nine new schema files** — `src`, `config`, `codemarkup`, the five language schemas
