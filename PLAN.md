@@ -272,6 +272,31 @@ carries **JSON of the constructs, not a rendered string**, because a page that
 receives structure can lay it out and a page that receives text can only print
 it.
 
+### A transport a browser can open
+
+**Unbuilt, and it is the one thing between the browser application and a real database.** A
+browser cannot open a Unix socket or raw TCP, which is the whole of the client crate's
+`Transport`. The answer of record is a **WebSocket listener carrying the same frames** — one
+protocol, one codec, one set of goldens, rather than a second JSON-shaped surface — default-closed
+the way `--listen-tcp` is (`ops-I10`). W11's fourth criterion assumes it exists; it does not, and
+`grep -rni 'websocket|tungstenite|ws://'` over the tree returns prose only.
+
+The test side is ready: the socket battery is transport-generic and runs over Unix and TCP, so a
+third door is one `Over` arm and one `Client::connect` arm rather than a second battery. What is
+left is **four decisions, not one implementation**:
+
+1. **A dependency.** RFC 6455 is a handshake, masking and close frames — `tokio-tungstenite`, or
+   hand-rolled against the one thing we need.
+2. **How a fjord frame maps onto a WebSocket message** — one frame per binary message, or the
+   frame stream inside a message stream. This is a *wire-format* decision, and what the .NET
+   golden means depends on it.
+3. **The public surface.** `serve_on` grows a third door and the CLI a flag, and it must be
+   default-closed like TCP, which is `ops-I10` rather than a preference.
+4. **`Accepting` cannot host it as it stands.** Its contract is an `AsyncRead`/`AsyncWrite` pair
+   per accepted connection; a WebSocket connection needs an HTTP upgrade completed first and is
+   message-framed rather than a byte stream. That is an adapter, or a fourth associated item — not
+   a fifth `impl Accepting`.
+
 ### Movement 1 — the seam becomes a crate, and each implementation its own ✅
 
 Three crates replace `fjord-store`. It keeps its name and becomes **the
@@ -723,6 +748,15 @@ Three things this turned up:
 - **Ingest stays impossible in a browser**, and that is not a gap: interning
   needs a real backend and durable id claims.
 
+
+## Gates worth extending
+
+Not absences in the product — absences in what the product's own checks can see.
+
+| Gate | What it does not cover |
+|---|---|
+| `RUSTDOCFLAGS="-D warnings" cargo doc` | Only the four **published** crates, which is why a broken intra-doc link in `fjord-encoding` survived a release and why one in `fjord-wire` — published, and therefore gated — went red for hours before a gate run caught it. `cargo doc --workspace --no-deps --keep-going` fails seven more crates with roughly thirty findings between them: `fjord-engine`, `fjord-ingest`, `fjord-store-fjall`, `fjord-inspect`, `fjord-server` and `fjord-cli` among them. Worth clearing in one pass and then requiring, because the class is invisible until the day a crate is published |
+| `scripts/check-docs.py`'s retired-name sweep | A hard-coded list of names somebody remembered to add. The check its own commit title claims — *the book names predicates the tree declares* — would extract `ns.Predicate` from the book, compare against `schemas/`, and allowlist the deliberate negatives; a list cannot catch the next retirement, only the last one |
 
 ## Operational gaps
 

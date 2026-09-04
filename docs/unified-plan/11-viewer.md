@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Issues** | [#36](https://github.com/boxops-uk/fjord/issues/36) Q4, [#39](https://github.com/boxops-uk/fjord/issues/39), [#42](https://github.com/boxops-uk/fjord/issues/42) item 3 |
-| **Area** | `crates/fjord-viewer` (deleted), `fjord-server` (a WebSocket listener), and a new browser application |
+| **Area** | `crates/fjord-viewer` (deleted), `fjord-server` (a WebSocket listener — **still unbuilt**, see criterion 4), and a new browser application |
 | **Depends on** | **W7** (`position-encoding`) for the unit rule. **W6** and **W8** for the data the new viewer reads, not for the retirement |
 | **Blocks** | **R9** — whose gate was "the viewer answers `/symbol/{name}`" and now needs another |
 | **Invariants** | `ops-I10` — a new listener is default-closed, as TCP is |
@@ -101,6 +101,12 @@ when somebody changes a stylesheet.
 4. **The WebSocket listener** carries the same frames, is default-closed, and is covered by the
    existing socket battery run over the new transport — not by a second battery, which would be
    two statements of one protocol.
+   **Not met: the listener was not built.** `grep -rni 'websocket|tungstenite|ws://'` over
+   `crates/`, `wasm/`, `web/` and `clients/` returns prose and nothing else, so no battery can run
+   over it and no test can close this. The battery half *is* done — it is transport-generic now and
+   runs over Unix and TCP, so a third door is an arm rather than a second battery, and the listener
+   inherits this coverage the day it lands. What is left is four decisions rather than one
+   implementation, and they are recorded in [`PLAN.md`](../../PLAN.md#a-transport-a-browser-can-open).
 5. **R9's gate is the converter's own**, stated as queries and rows in `docs/unified-plan/13-indexer-runs-amended.md`.
 
 ## Not in scope
