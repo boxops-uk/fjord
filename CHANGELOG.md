@@ -7,6 +7,22 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### The protocol is 4, which is what `bytes` always said it was · **rebuild your clients**
+
+The `bytes` family was described as a protocol bump in three places — the doc comment on the
+wire descriptor's own `TAG_BYTES`, the release note below, and the decision that accepted it —
+and `fjord_wire::protocol::VERSION` stayed at 3. It is 4 now, and the .NET client's
+`ProtocolVersion` with it. **A client built before this is refused at the handshake until it is
+rebuilt**, which is the designed failure and the reason the field exists.
+
+The schema fingerprint does not cover this, which is the part worth understanding. A peer may
+open a connection *without* asserting a schema and then ask the server to describe its own —
+that is how a client discovers what a database holds. Such a peer, built before `bytes`, agreed
+about the protocol at the handshake and then met descriptor tag 5 with no case for it, failing
+mid-stream on `UnknownRefForm`. Version 2 was minted for a change of exactly this shape, for
+exactly this reason: an older peer should be told it speaks a different protocol rather than left
+to fail a comparison it cannot interpret.
+
 ### An excluding bound on a `string` or `bytes` field answered the wrong rows
 
 `X > v` dropped rows that satisfy it and `X <= v` returned rows that do not, whenever the

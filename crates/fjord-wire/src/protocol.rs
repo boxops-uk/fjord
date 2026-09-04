@@ -44,9 +44,12 @@
 //! server holds every database under the root; remotely they are answered through the
 //! virtual predicate `fjord.db.List` — the normal query machinery, no bespoke message.
 //!
-//! All of it is **additive**, so [`VERSION`] does not move: a client that predates
-//! control frames never sends one and is never sent one. The .NET client under
-//! `clients/dotnet` is the check that this is true rather than hoped.
+//! The lifecycle is **additive**, so it moved no [`VERSION`]: a client that predates
+//! control frames never sends one and is never sent one. That is a statement about
+//! these frames and not a general rule — a change is additive only when an older peer
+//! can go its whole life without meeting it, which a new *tag* inside an existing
+//! payload cannot (see [`VERSION`], 4). The .NET client under `clients/dotnet` is the
+//! check that this is true rather than hoped.
 //!
 //! # Asking what an id names is a question of its own
 //!
@@ -108,6 +111,18 @@ use crate::{
 /// separate axis: one says "we disagree about the protocol", the other "we agree
 /// about the protocol and disagree about the data".
 ///
+/// **4 marks the `bytes` scalar family.** The wire descriptor gained `TAG_BYTES`, and a
+/// peer built before it meets that tag with no case for it: [`decode_desc`](crate::desc)
+/// answers [`WireError::UnknownRefForm`](crate::WireError::UnknownRefForm) and refuses
+/// the stream rather than reading the field as a `string` and handing its caller bytes
+/// that are not text. Refusing is right, and it is *where* it happens that needs this
+/// number — the schema fingerprint does not catch it, because a peer may open a
+/// connection without asserting a schema and then ask the server to describe its own
+/// (`Connection::open(.., assert_schema: false)`, which is how a client discovers what a
+/// database holds). Without the bump those two peers agree at the handshake and fail
+/// mid-stream on a descriptor; with it, the older one is told it speaks a different
+/// protocol, which is the whole business of this field.
+///
 /// **3 marks the listing-digest change.** `FETCH` gained its optional digest and a
 /// query over a virtual predicate gained a `LISTING_DIGEST` frame; an older peer
 /// cannot skip either change because one alters an existing payload and the other is
@@ -118,7 +133,7 @@ use crate::{
 /// `fjord-schema` over the canonical form. Every number changed, so a client pinned
 /// to the old one is told it speaks a different protocol rather than left to fail a
 /// comparison it cannot interpret.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Frame kinds this protocol assigns, beyond the ones the codec already names.
 pub mod kinds {
@@ -1238,12 +1253,15 @@ mod tests {
         assert_eq!(decode_complete(&encode_complete(3, 4)), Ok((3, 4)));
     }
 
-    /// Changing an existing frame's payload is a protocol version, not an additive
-    /// frame: otherwise old and new peers complete the handshake and disagree only
-    /// once the changed request is already in flight.
+    /// **A tripwire, not a fact.** Changing what an existing frame's payload *means* —
+    /// its layout, or a tag a peer must have a case for — is a protocol version and not
+    /// an additive frame, because otherwise old and new peers complete the handshake and
+    /// disagree only once the changed request is already in flight. The literal is here
+    /// so that moving it is deliberate: whoever changes it comes past this comment, and
+    /// [`VERSION`] itself records what each number marks.
     #[test]
-    fn the_fetch_digest_layout_has_its_own_protocol_version() {
-        assert_eq!(VERSION, 3);
+    fn the_protocol_version_moves_only_on_purpose() {
+        assert_eq!(VERSION, 4);
     }
 
     #[test]

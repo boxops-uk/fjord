@@ -119,9 +119,15 @@ cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknow
 (cd web && npm run smoke)           # that demo, driven in a real browser
 
 # The other implementation of the protocol, and where the indexer runs' gates live.
+cargo build --release --bin fjord   # the server the .NET tests drive — see below
 (cd clients/dotnet && dotnet build Boxops.Fjord.slnx -warnaserror)
 (cd clients/dotnet && dotnet test)  # drives real MSBuild and a real server; ~2 minutes
 ```
+
+**The .NET suite drives a `fjord` binary it does not build.** It takes `target/release/fjord`
+if there is one and `target/debug/fjord` otherwise, so a *stale* release binary is what it runs
+— which fails as a protocol or fingerprint mismatch, at the handshake, with nothing pointing at
+the build you forgot. CI builds it explicitly for this reason; so does the line above.
 
 The `--no-default-features` line is what makes "the embedded schema path touches no
 filesystem" mechanical: `fs` is a default-on feature, so without it `FsSources` is not

@@ -38,8 +38,10 @@ const TAG_UNION: u64 = 4;
 /// Appended after [`TAG_UNION`], on the same argument — and it is what makes `bytes`
 /// **a protocol bump**: a peer built before it meets tag 5, has no case for it, and
 /// refuses the stream rather than reading the field as a `string` and handing its
-/// caller non-UTF-8. That is the right behaviour, and the protocol version exists for
-/// exactly this.
+/// caller non-UTF-8. That is the right behaviour, and it is why
+/// [`VERSION`](crate::protocol::VERSION) is 4 — so the refusal happens at the handshake,
+/// where a peer is told it speaks a different protocol, rather than mid-stream on a
+/// descriptor it cannot read.
 const TAG_BYTES: u64 = 5;
 
 /// A row's shape, with names a peer can read.
