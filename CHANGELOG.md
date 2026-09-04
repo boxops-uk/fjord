@@ -7,6 +7,32 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### An excluding bound on a `string` or `bytes` field answered the wrong rows
+
+`X > v` dropped rows that satisfy it and `X <= v` returned rows that do not, whenever the
+comparison folded into a seek on a `string` or `bytes` key field and the stored values differ by
+a trailing NUL. `>= v` and `< v` were always right, and `int` was never affected.
+
+The cause is the storage codec's escape scheme meeting a byte-prefix successor. A terminated
+field encodes as `MARK ++ escaped(payload) ++ 0x00`, and `escaped` writes a payload NUL as
+`0x00 0xFF` — so `enc(v)` is a proper **byte** prefix of `enc(w)` exactly when `w = v ++ 0x00 ++ …`,
+and every such `w` is strictly greater than `v`. The excluding edge was `strinc(prefix ++ enc(v))`,
+the successor of everything sharing that prefix, which cuts those greater values off with the
+value's own rows.
+
+It was silent, and that is the part worth stating: folding a comparison into the seek **removes it
+from the residual list** — the range is meant to be the exact answer rather than a superset — so
+nothing behind the seek re-checked the boundary.
+
+The edge is now `above_field(k) = k ++ 0xFF`, which lands between one value's keys and the next
+value's rather than at the end of a byte prefix. Every field mark is at or below `MARK_BYTES`
+(`0x53`) and a group terminator is `0x00`, so a key that continues *at* `v` continues with a byte
+below `0xFF`, while a NUL-extension of `v` continues with `0xFF` itself. It is also total where
+`strinc` is not — an all-`0xFF` prefix has no successor.
+
+**Live since 0.1.0 for `string`**, where it needed a NUL inside a stored string to show. The
+`bytes` family made it ordinary rather than exotic, which is how it was found.
+
 ### The exhaustiveness probe no longer eats the edit it refuses to touch
 
 `scripts/check-exhaustive.sh` armed `trap restore EXIT` — a `git checkout` of the file it is
