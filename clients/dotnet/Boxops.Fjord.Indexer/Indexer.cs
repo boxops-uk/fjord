@@ -611,7 +611,11 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// </remarks>
     private void Relate(ISymbol symbol, FjordFact named)
     {
-        void Edge(ISymbol? other, uint kind)
+        // **`fromOther` is the direction, and getting it wrong is silent.**
+        // `codemarkup.sigla` reads `Relation` as "`from` <kind> `to`", and `RelationOf`
+        // carries the same edge reversed — so a transposed pair still answers both
+        // queries with every symbol resolving, and says "Base extends Derived".
+        void Edge(ISymbol? other, uint kind, bool fromOther)
         {
             if (other is null || ScipSymbols.Of(other) is not { } text)
             {
@@ -620,26 +624,26 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
             var target = DotnetIndex.SymbolFact(text);
             var value = DotnetIndex.Tagged(kind);
+            var from = fromOther ? target : named;
+            var to = fromOther ? named : target;
 
             sink.Add(DotnetIndex.Symbol, target);
-            sink.Add(DotnetIndex.Relation, DotnetIndex.RelationFact(target, value, named));
-            sink.Add(DotnetIndex.RelationOf, DotnetIndex.RelationOfFact(named, value, target));
+            sink.Add(DotnetIndex.Relation, DotnetIndex.RelationFact(from, value, to));
+            sink.Add(DotnetIndex.RelationOf, DotnetIndex.RelationOfFact(to, value, from));
         }
 
-        // `contains`, written from the container's side: the argument order above is
-        // (from, kind, to), so the container is `from`.
-        Edge(symbol.ContainingSymbol as INamedTypeSymbol, 1u);
+        Edge(symbol.ContainingSymbol as INamedTypeSymbol, 1u, fromOther: true);
 
         if (symbol is INamedTypeSymbol type)
         {
             if (type.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
             {
-                Edge(baseType, 2u);
+                Edge(baseType, 2u, fromOther: false);
             }
 
             foreach (var iface in type.Interfaces)
             {
-                Edge(iface, 3u);
+                Edge(iface, 3u, fromOther: false);
             }
         }
 
@@ -653,7 +657,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                     IEventSymbol @event => @event.OverriddenEvent,
                     _ => null,
                 },
-                4u);
+                4u,
+                fromOther: false);
         }
     }
 

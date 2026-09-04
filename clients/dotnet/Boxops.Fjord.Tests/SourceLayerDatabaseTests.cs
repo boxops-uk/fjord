@@ -215,6 +215,94 @@ public sealed class SourceLayerDatabaseTests
     }
 
     /// <summary>
+    /// The heritage fixture. <see cref="Source"/> is one class with no base type, no
+    /// interface and no <c>override</c>, so every relation kind but <c>contains</c> is
+    /// unreachable from it and a transposed edge is invisible to every assertion above.
+    /// </summary>
+    private const string Hierarchy = """
+        namespace Fixture.Aviary
+        {
+            public interface IQuack
+            {
+                void Quack();
+            }
+
+            public class Bird
+            {
+                public virtual void Fly()
+                {
+                }
+            }
+
+            public class Duck : Bird, IQuack
+            {
+                public override void Fly()
+                {
+                }
+
+                public void Quack()
+                {
+                }
+            }
+        }
+        """;
+
+    /// <summary>
+    /// <para>
+    /// <b>Heritage edges run from the deriving symbol to the one it derives from.</b>
+    /// </para>
+    /// <para>
+    /// <c>codemarkup.sigla</c> fixes the direction — <c>Relation</c> reads "<c>from</c>
+    /// &lt;kind&gt; <c>to</c>" — and <c>RelationOf</c> is the same edge reversed. So a
+    /// transposed pair answers both queries with every symbol resolving and says "Base
+    /// extends Derived": neither direction recovers the truth, and a row count notices
+    /// nothing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Heritage_edges_run_from_the_deriving_symbol_to_the_one_it_derives_from()
+    {
+        using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
+        var directory = Directory.CreateTempSubdirectory("fjord-heritage-db");
+
+        try
+        {
+            var path = Path.Combine(directory.FullName, "Aviary.cs");
+            File.WriteAllText(path, Hierarchy);
+
+            Index(directory.FullName, path, server.Socket);
+
+            using var connection = FjordConnection.Connect(server.Socket, "dotnet", DotnetIndex.Schema);
+
+            foreach (var (kind, from, to) in new (string Kind, string From, string To)[]
+            {
+                ("extends", "Fixture/Aviary/Duck#", "Fixture/Aviary/Bird#"),
+                ("implements", "Fixture/Aviary/Duck#", "Fixture/Aviary/IQuack#"),
+                ("overrides", "Fixture/Aviary/Duck#Fly().", "Fixture/Aviary/Bird#Fly()."),
+            })
+            {
+                var edges = Related(
+                    connection, $"codemarkup.Relation {{from = A, kind = {{{kind} = _}}, to = B}}");
+                var reversed = Related(
+                    connection, $"codemarkup.RelationOf {{from = A, kind = {{{kind} = _}}, to = B}}");
+
+                Assert.Contains(edges, edge => Ends(edge, from, to));
+                Assert.Contains(reversed, edge => Ends(edge, from, to));
+                Assert.DoesNotContain(edges, edge => Ends(edge, to, from));
+                Assert.DoesNotContain(reversed, edge => Ends(edge, to, from));
+            }
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    private static bool Ends((string From, string To) edge, string from, string to) =>
+        edge.From.EndsWith(from, StringComparison.Ordinal)
+        && edge.To.EndsWith(to, StringComparison.Ordinal);
+
+    /// <summary>
     /// The symbol pairs a relation pattern answers, named by the field it binds them to
     /// rather than by the predicate's own field order.
     /// </summary>

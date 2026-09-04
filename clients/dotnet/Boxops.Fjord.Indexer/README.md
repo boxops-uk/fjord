@@ -148,9 +148,13 @@ facts on the way in, one seek on the way out.
 
 **A declaration this layer cannot express is dropped and counted.** A signature mentioning
 `dynamic`, or a name that did not resolve, has no `csharp.AType` alternative — and that type
-sits in the key of `Method`, `Field` and `Parameter`. The run prints how many, because a
+sits in the key of `Method`, `Field` and `Parameter`. An `event` is the other reason, and a
+different one: this layer has no entity for one at all, so both forms of the declaration are
+dropped — and because `codemarkup` cross-references are written whether or not a definition
+was, an event is a symbol with uses and no definition. The run prints how many, because a
 layer that silently loses declarations is worse than one that says how many it lost. On a
-healthy checkout it is zero, and a number other than zero found a broken workspace once.
+healthy checkout that declares no event it is zero, and a number other than zero found a
+broken workspace once.
 
 **The build layer degrades rather than disappears.** A design-time build knows the resolved
 framework, the assembly name MSBuild computed, versions after central package management,

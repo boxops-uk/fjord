@@ -72,6 +72,14 @@ public sealed class SourceWalkTests
         string source,
         bool lines = true,
         string? repo = null,
+        string? revision = null) =>
+        Walked(source, lines, repo, revision).Recorder;
+
+    /// <summary>The same walk, keeping the tallies the run reports beside the facts.</summary>
+    internal static (Recorder Recorder, Boxops.Fjord.Indexer.Indexer Indexer) Walked(
+        string source,
+        bool lines = true,
+        string? repo = null,
         string? revision = null)
     {
         var directory = Directory.CreateTempSubdirectory("fjord-source-walk");
@@ -96,21 +104,60 @@ public sealed class SourceWalkTests
                 [tree],
                 [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)]);
 
+            // Fully qualified: from `Boxops.Fjord.Tests`, the bare name `Indexer`
+            // resolves to the sibling *namespace* rather than the type in it.
+            Boxops.Fjord.Indexer.Indexer indexer;
+
             using (var sink = new FactSink(DotnetIndex.Schema, [recorder]))
             {
-                // Fully qualified: from `Boxops.Fjord.Tests`, the bare name `Indexer`
-                // resolves to the sibling *namespace* rather than the type in it.
-                new Boxops.Fjord.Indexer.Indexer(options, sink, directory.FullName, projects)
-                    .Index(compilation, null);
+                indexer = new Boxops.Fjord.Indexer.Indexer(
+                    options, sink, directory.FullName, projects);
+                indexer.Index(compilation, null);
                 sink.Drain();
             }
 
-            return recorder;
+            return (recorder, indexer);
         }
         finally
         {
             directory.Delete(recursive: true);
         }
+    }
+
+    /// <summary>
+    /// **A declaration this layer cannot express is counted, not lost in silence.**
+    /// `csharp` has no event entity, and both event forms reach the walk — so `Declare`
+    /// writes nothing for one, which is correct, and the run's own tally is the only
+    /// thing that can say so. A zero here is an index whose cross-references point at
+    /// definitions that were never written, reading as a clean run.
+    /// </summary>
+    [Fact]
+    public void An_event_declaration_this_layer_cannot_express_is_counted()
+    {
+        var (written, indexer) = Walked("""
+            namespace Fixture
+            {
+                public delegate void Handler();
+
+                public class Thing
+                {
+                    public event Handler Changed;
+
+                    public event Handler Renamed { add { } remove { } }
+                }
+            }
+            """);
+
+        // The field-like form and the accessor form, both of them.
+        Assert.Equal(2, indexer.Inexpressible);
+
+        var named = written.Of(DotnetIndex.SymbolByName)
+            .Select(fact => Str(Fields(fact.Key)[0]))
+            .ToList();
+
+        Assert.Contains("Thing", named);
+        Assert.DoesNotContain("Changed", named);
+        Assert.DoesNotContain("Renamed", named);
     }
 
     /// <summary>

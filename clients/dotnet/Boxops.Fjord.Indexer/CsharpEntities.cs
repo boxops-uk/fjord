@@ -406,8 +406,23 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
         IPropertySymbol property => PropertyEntity(property),
         IParameterSymbol parameter => ParameterEntity(parameter),
         ITypeParameterSymbol parameter => TypeParameterEntity(parameter),
+
+        // **There is no `csharp` event entity, and `Declare` returns on a null.** So this
+        // arm is the only thing that can say the declaration was dropped: without it the
+        // walk writes no definition for either event form, counts neither, and leaves the
+        // cross-references `Reference` still mints pointing at a symbol nothing defines.
+        IEventSymbol => Dropped(),
+
         _ => null,
     };
+
+    /// <summary>No entity, and the run says how many — never one without the other.</summary>
+    private FjordFact? Dropped()
+    {
+        Interlocked.Increment(ref _inexpressible);
+
+        return null;
+    }
 
     private FjordFact? NamedTypeEntity(INamedTypeSymbol type)
     {
