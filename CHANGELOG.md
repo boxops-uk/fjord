@@ -7,6 +7,86 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `csharp.FullName` carries an arity, so `Result` and `Result<T>` are two entities · **rebuild your clients, recreate your databases**
+
+C# holds a type name at two arities in one declaration space, and `class Result` beside
+`class Result<T>` is the everyday idiom. `csharp.FullName` was `{name, containingNamespace}` — a
+name with the arity stripped, because that is what Roslyn's `ISymbol.Name` answers — and the four
+named types key on it. So the pair was **one** `csharp.Class` with **two**
+`csharp.DefinitionLocation` rows: the shape a partial class has, never an error, and
+`csharp.TypeTypeParameter` hung `T` off the merged entity. A commit had already made the two mint
+distinct SCIP symbols, so this was newly *visible* rather than newly *made*: before that the run
+died on a `codemarkup.SymbolInfo` conflict before anything could merge.
+
+It is `{name, containingNamespace, arity}` now, `arity` last. Over the `arity` fixture, indexed
+through a real server, `csharp.Class` answers two rows named `Result` — one at arity 0 and one at
+arity 1 — with a definition location each, where it answered one row with two.
+
+**Field order is the design, not a formality.** `name` still leads, so "the fully-qualified names
+spelled `Foo`" is a range; `{name, containingNamespace}` is a range over the arities; and
+`{name, containingNamespace, arity}` is an **exact seek** — the query that could not be asked
+before. `:plan` shows all three.
+
+**And it completes the type-parameter decision rather than reversing it.** The named types carry
+their parameters as `TypeTypeParameter` edges because a list cannot lead anything after it in a
+key. An arity is that list's scalar summary, and a scalar can sit in a key where a list cannot:
+the edges keep the parameters, the key gains the count.
+
+`csharp.Name` is untouched and still holds the arity-stripped simple name, so `NameLowerCase` and
+the two search predicates mean what they meant. `csharp.Method` is untouched too: it keys on
+`Name` plus a `docId` that already encodes arity, which is why generic *method* overloads never
+merged.
+
+**Adding a field changes a predicate's type, not the predicate set, so no predicate id
+renumbers** — the expensive half of the last flag day, and this one does not have it. `describe`
+over a database created before and after shows every id paired with the same name; what moved is
+the per-predicate fingerprint of the 27 `csharp.*` predicates whose type reaches `FullName`
+through the `AType`/`NamedType`/`Definition` unions. `csharp.Name`, `NameLowerCase`, `Namespace`
+and `TypeParameter` did not move.
+
+**Three whole-schema fingerprints move, and eight do not:**
+
+| schema | was | is | predicates, imports resolved |
+|---|---|---|---|
+| `csharp.sigla` | `0xcd1ded4ad8d8b187` | `0x13b475c0b02c4228` | 40 → 40 |
+| `dotnet.sigla` | `0x32c681adade8a5f7` | `0x4e90774b9a0814cc` | 65 → 65 |
+| `index.sigla` | `0x49cbd96832c1ae21` | `0x48932239a227a7f8` | 136 → 136 |
+
+Every client carrying an old constant is refused at the handshake until it is rebuilt, which is
+the designed failure. Two constants were re-pasted — the indexer's (`dotnet.sigla`) and the SCIP
+converter's (`index.sigla`); the demo's is over `demo.sigla` and unmoved. The .NET package goes to
+**0.4.0** in this same change, because a moved fingerprint *is* a client release — and the bump is
+visible in the book's expanded rows, where a symbol reads
+`nuget Boxops.Fjord.Client 0.4.0.0 …` rather than `0.3.0.0`.
+
+`clients/dotnet/golden/` came back byte-identical, established by running `emit-golden.sh` and
+hashing rather than by reasoning: all three goldens are over `demo.sigla` and two throwaway
+schemas, none of which imports `csharp`.
+
+**Measured over the reference corpus.** `Surface.slnx` indexed before and after: 40 more distinct
+facts, from 12 `csharp.FullName` rows that were holding 31 different named types between them and
+now hold one row each — `System.Action` at three arities, `System.Func` at three, `ValueTuple` at
+seven, and `Task`/`ValueTask`/`EventHandler`/`Expression`/five `CompilerServices` builders at two
+apiece. `csharp.Class` goes 1,421 → 1,426 and `csharp.Struct` 241 → 253. `quarantine/Arity`,
+indexed alone, goes from 10 declarations on **5** entities to 10 on **10**, the nested pair
+`ArityOuter<T>.ArityInner<U>` / `ArityOuter.ArityInner<U, V>` included.
+
+**What the key still has no field for is the assembly**, and the corpus measures that too:
+`Assemblies.Left` and `Assemblies.Right` declare one namespace-qualified name each, agreeing at
+every arity, so **8** entities there are still reached by two declarations — two classes, three
+methods, one field and two properties. It is unmoved by this change and is now the open item in
+`docs/unified-plan/15-retire-code-sigla.md` §S3.
+
+The gates are `ArityPairTests.Each_arity_is_its_own_class_fact_with_its_own_location` and
+`EntityKeyCensusTests.Two_arities_are_two_entity_keys_and_a_partial_classs_halves_are_one`, and
+the second is the one that matters: it asserts the arity pair is two keys **and** that a partial
+class's two halves are one, because a fix that keyed on something per-declaration would satisfy
+the first and break the second. `PartialMemberTests` holds the same contrast in a database.
+
+The book's transcripts are re-taken from a real run rather than edited, which also picked up drift
+nobody had: the run now sees 57 projects under `clients/dotnet` rather than 20, because the
+reference corpus's fixture projects live there.
+
 ### `msbuild.AssemblyReference` and `msbuild.AssemblyDependent` are deleted · **rebuild your clients, recreate your databases**
 
 Both were declared, given ids, listed in the .NET client's batch set — and **never written by

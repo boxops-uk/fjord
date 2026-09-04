@@ -98,6 +98,15 @@ public sealed class PartialMemberTests
     /// span, so the implementing half stays reachable as a second location — which is what
     /// a partial *type* has answered "where is this written" with all along.
     /// </para>
+    /// <para>
+    /// <b>And that is the claim a fix for the arity merge must leave standing.</b>
+    /// <c>Result</c> beside <c>Result&lt;T&gt;</c> used to be one entity with two
+    /// locations, which is exactly this shape, and
+    /// <c>ArityPairTests.Each_arity_is_its_own_class_fact_with_its_own_location</c> asserts
+    /// they are two entities with one each. A regression that made every declaration its
+    /// own entity would satisfy that one and break the <c>csharp.Class</c> assertion below,
+    /// which is why the two exist as a pair.
+    /// </para>
     /// </remarks>
     [Fact]
     public void One_definition_per_member_per_file_and_a_location_for_each_half()
@@ -140,6 +149,16 @@ public sealed class PartialMemberTests
                 indexed.Connection,
                 "X where X = codemarkup.FileDefinition {file = F, span = SP, symbol = S}; "
                 + $"S = src.Symbol \"{Full(Tick)}\""));
+
+        // **One `csharp.Class` for a partial type, with a location for each part.** The
+        // entity is keyed on `{name, containingNamespace, arity}` and nothing per
+        // declaration, so `Together`'s two parts and `Across`'s two files each reach one
+        // fact — the shape two arities of a name used to be indistinguishable from.
+        foreach (var (name, parts) in ((string Name, int Parts)[])[("Together", 2), ("Across", 2)])
+        {
+            Assert.Equal(1, Rows(indexed.Connection, Classes(name)));
+            Assert.Equal(parts, LocatedClasses(indexed.Connection, name).Distinct().Count());
+        }
     }
 
     /// <summary>
@@ -251,6 +270,21 @@ public sealed class PartialMemberTests
 
     private static string Methods(string name) =>
         $"M where M = csharp.Method {{name = N}}; N = csharp.Name \"{name}\"";
+
+    /// <summary>Every <c>csharp.Class</c> fact of a non-generic type name.</summary>
+    private static string Classes(string name) =>
+        $"C where C = csharp.Class {{name = FN}}; FN = csharp.FullName {{name = N, arity = 0}}; "
+        + $"N = csharp.Name \"{name}\"";
+
+    /// <summary>Where every <c>csharp.DefinitionLocation</c> of that class starts.</summary>
+    private static List<long> LocatedClasses(FjordConnection connection, string name) =>
+        [.. connection.Query(
+                "{at = X.location.span.start} where "
+                + "X = csharp.DefinitionLocation {definition = {type = {namedType = {class_ = C}}}}; "
+                + $"C = csharp.Class {{name = FN}}; FN = csharp.FullName {{name = N, arity = 0}}; "
+                + $"N = csharp.Name \"{name}\"")
+            .Rows
+            .Select(row => Assert.IsType<FjordValue.Int>(Field(row, 0)).Value)];
 
     private static int Rows(FjordConnection connection, string query) =>
         connection.Query(query).Rows.Count;

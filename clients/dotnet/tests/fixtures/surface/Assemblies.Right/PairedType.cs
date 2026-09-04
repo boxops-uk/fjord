@@ -2,14 +2,14 @@
 //
 // This file and `Assemblies.Left/PairedType.cs` declare THE SAME namespace-qualified type
 // names. That is the mechanism, not an accident: `CsharpEntities.FullName` is
-// `{Name(symbol.Name), Namespace(symbol.ContainingNamespace)}` with no assembly field, and
-// `csharp.Class` keys on that plus base type, containing type, accessibility and the boolean
-// modifiers — every one of which the two copies agree about. So the two declarations intern
-// ONE `csharp.Class` row with two `csharp.DefinitionLocation` spans, one `csharp.SymbolOf`
-// mapping to two symbol strings, and a `csharp.EntityXRef` that cannot tell
-// `AsmLeftUses`'s use of `AsmPairSignal` from `AsmRightUses`'s. The SCIP layer is expected
-// to get this right, because `Package` writes the containing assembly's own identity into
-// the symbol string.
+// `{Name(symbol.Name), Namespace(symbol.ContainingNamespace), symbol.Arity}` with no
+// assembly field, and `csharp.Class` keys on that plus base type, containing type,
+// accessibility and the boolean modifiers — every one of which the two copies agree about,
+// the arity included. So the two declarations intern ONE `csharp.Class` row with two
+// `csharp.DefinitionLocation` spans, one `csharp.SymbolOf` mapping to two symbol strings,
+// and a `csharp.EntityXRef` that cannot tell `AsmLeftUses`'s use of `AsmPairSignal` from
+// `AsmRightUses`'s. The SCIP layer is expected to get this right, because `Package` writes
+// the containing assembly's own identity into the symbol string.
 //
 // **The two copies must stay declaration-identical, including these doc comments.** Only the
 // one body line marked below differs. `codemarkup.SymbolInfo` is keyed on the symbol alone

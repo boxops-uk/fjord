@@ -132,32 +132,36 @@ public sealed class ArityPairTests
 
     /// <summary>
     /// <para>
-    /// <b>The entity layer still merges the two arities into one fact, and that is an open
-    /// maintainer decision rather than something this unit took.</b>
+    /// <b>Each arity is its own <c>csharp.Class</c> fact, with its own definition
+    /// location.</b>
     /// </para>
     /// <para>
     /// `csharp.Class` is key-only and its key leads with a `csharp.FullName` of
-    /// `{name, containingNamespace}`, where the name is the arity-stripped one. So the
-    /// database holds **one** class named `Result` with **two** `DefinitionLocation` rows
-    /// beside it — indistinguishable from a partial class — and `csharp.SymbolOf` maps
-    /// *both* symbols onto it. `Interface`, `Record`, `Struct` and `csharp.FullName` share
-    /// the shape.
+    /// `{name, containingNamespace, arity}`, so `Result` and `Result&lt;T&gt;` are two
+    /// facts and `csharp.SymbolOf` crosses one symbol to each. Before the arity was in
+    /// that key they were **one** fact carrying **two** `DefinitionLocation` rows —
+    /// indistinguishable from a partial class, and never an error — with both symbols
+    /// crossing onto the merged entity. `Interface`, `Record` and `Struct` share the key
+    /// shape and so share the repair.
     /// </para>
     /// <para>
-    /// **This is newly observable and was not newly created**: until the symbol string
-    /// distinguished the arities the run died before anything could merge. Fixing it needs
-    /// either a schema change — a fingerprint move, so a flag day — or a redefinition of
-    /// what `csharp.Name` holds. `docs/unified-plan/15-retire-code-sigla.md` §S3 carries
-    /// the decision and the indexer README carries the limitation.
+    /// <b>One location each is the load-bearing half.</b> Two rows is what the merge
+    /// looked like, so a fix that split the entity but left both locations under one of
+    /// them would answer "two classes" and still be wrong about where either is written.
     /// </para>
     /// </summary>
     /// <remarks>
-    /// <b>A gate on a known limitation, so that removing it is deliberate.</b> Whoever
-    /// takes the decision makes this red, which is the point: a consumer must not read
-    /// "arities are distinguished now" and believe it of the entity layer.
+    /// <b>The partial class is the claim next to this one, and it is asserted elsewhere
+    /// rather than here</b> — `arity` holds no partial type and a fixture is not edited to
+    /// suit a test. `PartialMemberTests.One_definition_per_member_per_file_and_a_location_for_each_half`
+    /// asserts the contrast over the `partial` fixture: one entity, two locations. Read
+    /// together they are what separates this fix from a regression that made every
+    /// declaration its own entity, and
+    /// `EntityKeyCensusTests.Two_arities_are_two_entity_keys_and_a_partial_classs_halves_are_one`
+    /// holds both in one compilation at the key level.
     /// </remarks>
     [Fact]
-    public void The_entity_layer_still_merges_the_two_arities_into_one_class()
+    public void Each_arity_is_its_own_class_fact_with_its_own_location()
     {
         using var fixture = Fixture.Copy("arity");
         using var server = FjordServer.Serving("arity", "dotnet.sigla");
@@ -171,35 +175,42 @@ public sealed class ArityPairTests
 
         using var connection = FjordConnection.Connect(server.Socket, "arity", DotnetIndex.Schema);
 
-        // One class fact for the two declarations.
-        var classes = Strings(
-            connection,
-            "N where csharp.Class {name = FN}; FN = csharp.FullName {name = M}; M = csharp.Name N");
+        // Two class facts named `Result`, one per arity — and the arity is what says so.
+        var arities = connection.Query(
+            "{arity = FN.arity} where csharp.Class {name = FN}; "
+            + "FN = csharp.FullName {name = M}; M = csharp.Name \"Result\"").Rows;
 
-        Assert.Equal(1, classes.Count(name => name == "Result"));
+        Assert.Equal(
+            [0L, 1L],
+            arities.Select(row => Assert.IsType<FjordValue.Int>(
+                Assert.IsType<FjordValue.Record>(row).Fields[0]).Value).Order());
 
-        // Two definition locations under it, which is the shape a partial class has.
-        var located = connection.Query(
-            "{at = X.location.span.start} where "
-            + "X = csharp.DefinitionLocation {definition = {type = {namedType = {class_ = C}}}}; "
-            + "C = csharp.Class {name = FN}; FN = csharp.FullName {name = M}; "
-            + "M = csharp.Name \"Result\"").Rows;
+        // One definition location under each, rather than two under one of them.
+        foreach (var arity in (long[])[0L, 1L])
+        {
+            var located = connection.Query(
+                "{at = X.location.span.start} where "
+                + "X = csharp.DefinitionLocation {definition = {type = {namedType = {class_ = C}}}}; "
+                + $"C = csharp.Class {{name = FN}}; FN = csharp.FullName {{name = M, arity = {arity}}}; "
+                + "M = csharp.Name \"Result\"").Rows;
 
-        Assert.Equal(2, located.Count);
+            Assert.Single(located);
+        }
 
-        // And both symbols cross to that one entity, so the crossing is many-to-one.
-        var crossed = Symbols(
-            connection,
-            "T where csharp.SymbolOf {definition = {type = {namedType = {class_ = C}}}, symbol = S}; "
-            + "C = csharp.Class {name = FN}; FN = csharp.FullName {name = M}; "
-            + "M = csharp.Name \"Result\"; S = src.Symbol T");
+        // And the crossing is one-to-one now: one symbol reaches each entity.
+        foreach (var (arity, symbol) in ((long Arity, string Symbol)[])[(0L, Bare), (1L, Generic)])
+        {
+            var crossed = Symbols(
+                connection,
+                "T where csharp.SymbolOf {definition = {type = {namedType = {class_ = C}}}, symbol = S}; "
+                + $"C = csharp.Class {{name = FN}}; FN = csharp.FullName {{name = M, arity = {arity}}}; "
+                + "M = csharp.Name \"Result\"; S = src.Symbol T");
 
-        Assert.Equal(2, crossed.Count);
-        Assert.Contains(Bare, crossed);
-        Assert.Contains(Generic, crossed);
+            Assert.Equal([symbol], crossed);
+        }
 
-        // The `codemarkup` surface, by contrast, does keep them apart: the symbol is in
-        // every key there, so the search index has a row per arity.
+        // The `codemarkup` surface kept them apart all along — the symbol is in every key
+        // there — and the two layers now agree rather than disagreeing.
         var found = Symbols(
             connection,
             "T where codemarkup.SearchEntry {nameLowercase = \"result\", name = N, kind = K, "

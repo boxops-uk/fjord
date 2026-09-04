@@ -106,9 +106,13 @@ fn moving_a_declaration_into_an_imported_file_moves_no_fingerprint() {
 /// and then the two sides would agree by construction, which is the whole thing the
 /// golden exists to avoid.
 ///
-/// So it is a grep rather than a build. Two constants, restated independently on purpose
-/// — `DotnetIndex.cs`'s is what the indexer sends and `Program.cs`'s is what the demo sends
-/// — and both are checked, because "we updated the client" has meant one of them before.
+/// So it is a grep rather than a build. **Three** constants, restated independently on
+/// purpose — `DotnetIndex.cs`'s is what the indexer sends, `ScipFacts.cs`'s is what the SCIP
+/// converter sends, and `Program.cs`'s is what the demo sends — and all three are checked,
+/// because "we updated the client" has meant one of them before. This sentence said *two*
+/// while the table below held three, and the one it left out was `ScipFacts.cs` — the
+/// constant that then went stale through a flag day and was caught by its own refused
+/// handshake rather than by this gate's account of itself.
 #[test]
 fn the_dotnet_clients_carry_the_fingerprint_the_schema_has() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -207,10 +211,10 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
         ("bundle.sigla", "0xf67c15e97c486055"),
         ("codemarkup.sigla", "0x71c5a26efad9c90a"),
         ("config.sigla", "0xac3c414ab7ff574f"),
-        ("csharp.sigla", "0xcd1ded4ad8d8b187"),
+        ("csharp.sigla", "0x13b475c0b02c4228"),
         ("demo.sigla", "0x03678fcd1e7924e3"),
-        ("dotnet.sigla", "0x32c681adade8a5f7"),
-        ("index.sigla", "0x49cbd96832c1ae21"),
+        ("dotnet.sigla", "0x4e90774b9a0814cc"),
+        ("index.sigla", "0x48932239a227a7f8"),
         ("msbuild.sigla", "0xfad0dcb5ca7f6cd9"),
         ("npm.sigla", "0x89e3bbe02c94cb17"),
         ("src.sigla", "0x76a9b57d832f5ad9"),

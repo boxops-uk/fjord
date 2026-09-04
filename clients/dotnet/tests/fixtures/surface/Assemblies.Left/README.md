@@ -6,10 +6,16 @@ nothing else does: `M17`, the entity layer's missing assembly axis.
 
 ## The mechanism
 
-`CsharpEntities.FullName` is `{Name(symbol.Name), Namespace(symbol.ContainingNamespace)}` — a
-simple name and a namespace, and no third field. `csharp.Class` is keyed on that plus base type,
-containing type, accessibility and the boolean modifiers. There is no assembly anywhere in the
-key, so **two assemblies that declare the same namespace-qualified type name intern one row**.
+`CsharpEntities.FullName` is
+`{Name(symbol.Name), Namespace(symbol.ContainingNamespace), symbol.Arity}` — a simple name, a
+namespace and a count of type parameters, and no fourth field. `csharp.Class` is keyed on that
+plus base type, containing type, accessibility and the boolean modifiers. There is no assembly
+anywhere in the key, so **two assemblies that declare the same namespace-qualified type name
+intern one row**.
+
+**The arity field does not reach this**, which is why the pair still measures what it was built
+to: the two sides agree at every arity, so `AsmPairSignal` fuses at 0 and `AsmPairSlot<T>` fuses
+at 1. The assembly is a separate axis and wants a separate key field.
 
 `Assemblies.Left/PairedType.cs` and `Assemblies.Right/PairedType.cs` therefore declare, in the
 namespace `Surface.Assemblies.Shared`:

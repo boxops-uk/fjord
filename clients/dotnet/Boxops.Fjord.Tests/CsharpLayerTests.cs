@@ -40,6 +40,9 @@ public sealed class CsharpLayerTests
     private static readonly FjordValue Private = Tag(3u);
     private static readonly FjordValue NoneRef = Tag(1u);
 
+    /// <summary>`arity` for a name with no type parameters.</summary>
+    private static readonly FjordValue Zero = FjordValue.Of(0L);
+
     [Fact]
     public void Every_csharp_predicate_round_trips_through_the_server()
     {
@@ -56,17 +59,19 @@ public sealed class CsharpLayerTests
         var thing = Name("Thing");
         var fixture = Name("Fixture");
         var ns = new FjordFact(DotnetIndex.Namespace, Rec(R(fixture), Nothing));
-        var thingName = new FjordFact(DotnetIndex.FullName, Rec(R(thing), R(ns)));
+        var thingName = new FjordFact(DotnetIndex.FullName, Rec(R(thing), R(ns), Zero));
 
-        FjordFact FullNameOf(string text) =>
-            new(DotnetIndex.FullName, Rec(R(Name(text)), R(ns)));
+        // `arity` trails the key. `IThing` below is declared at one, so the field is not
+        // proved by a constant — a producer that always wrote 0 would pass otherwise.
+        FjordFact FullNameOf(string text, long arity = 0L) =>
+            new(DotnetIndex.FullName, Rec(R(Name(text)), R(ns), FjordValue.Of(arity)));
 
         // ---- the named types ---------------------------------------------------------
 
         var cls = new FjordFact(DotnetIndex.Class, Rec(
             R(thingName), Nothing, Nothing, Public, False, False, False));
         var iface = new FjordFact(DotnetIndex.Interface, Rec(
-            R(FullNameOf("IThing")), Nothing, Public, False));
+            R(FullNameOf("IThing", 1L)), Nothing, Public, False));
         var record = new FjordFact(DotnetIndex.Record, Rec(
             R(FullNameOf("Point")), Nothing, Nothing, Public, False, False));
         var strct = new FjordFact(DotnetIndex.Struct, Rec(

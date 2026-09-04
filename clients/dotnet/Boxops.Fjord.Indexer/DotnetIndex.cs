@@ -29,7 +29,7 @@ internal static class DotnetIndex
     /// Carried, not computed — the whole schema's, not this partial statement's. A stale
     /// one fails the handshake loudly, which is the assertion it is for.
     /// </remarks>
-    public const ulong SchemaFingerprint = 0x32c681adade8a5f7;
+    public const ulong SchemaFingerprint = 0x4e90774b9a0814cc;
 
     // ---- src: the shared source layer ------------------------------------------------
 
@@ -304,7 +304,8 @@ internal static class DotnetIndex
 
         new FjordPredicate("csharp.FullName", FjordType.Rec(
             ("name", FjordType.Reference(Name)),
-            ("containingNamespace", FjordType.Reference(Namespace))), null),
+            ("containingNamespace", FjordType.Reference(Namespace)),
+            ("arity", FjordType.Integer)), null),
 
         new FjordPredicate("csharp.Class", FjordType.Rec(
             ("name", FjordType.Reference(FullName)),

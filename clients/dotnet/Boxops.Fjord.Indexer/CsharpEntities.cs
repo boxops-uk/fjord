@@ -214,17 +214,26 @@ internal sealed class CsharpEntities(Action<uint, FjordFact> emit)
     }
 
     /// <summary>
-    /// `csharp.FullName` — a simple name plus the namespace containing it.
+    /// `csharp.FullName` — a simple name, the namespace containing it, and its arity.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The <i>namespace</i>, not the containing type: a nested type's nesting is
     /// `containingType` on its own predicate, and its full name is the pair a search for
     /// "the class named X in namespace Y" seeks on.
+    /// </para>
+    /// <para>
+    /// <b>The arity comes from the symbol and never from counting written type
+    /// arguments.</b> <c>typeof(Store&lt;&gt;)</c> writes none and Roslyn still reports
+    /// <c>Arity</c> 1 for it, so a count taken from syntax puts an unbound spelling on the
+    /// arity-0 entity — a wrong row rather than a missing one.
+    /// </para>
     /// </remarks>
-    public FjordFact FullName(ISymbol symbol) =>
+    public FjordFact FullName(INamedTypeSymbol symbol) =>
         new(DotnetIndex.FullName, FjordValue.Rec(
             FjordValue.Of(FjordRef.To(Name(symbol.Name))),
-            FjordValue.Of(FjordRef.To(Namespace(symbol.ContainingNamespace)))));
+            FjordValue.Of(FjordRef.To(Namespace(symbol.ContainingNamespace))),
+            FjordValue.Of((long)symbol.Arity)));
 
     // ---- the type unions -------------------------------------------------------------
 

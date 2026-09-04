@@ -26,9 +26,9 @@ namespace Boxops.Fjord.Tests;
 /// <para>
 /// The fixture is the one review #34 asked for: two overloads on one line, a
 /// conversion-operator pair, and a type with a same-line constructor — plus a pair of
-/// types overloaded on <b>arity</b>, where the census reports a collision that is not
-/// this unit's to remove. See
-/// <see cref="Two_arities_of_one_type_name_reach_one_entity_key"/>.
+/// types overloaded on <b>arity</b> and a <b>partial</b> class written twice, which are
+/// the two shapes a reader has to keep apart. See
+/// <see cref="Two_arities_are_two_entity_keys_and_a_partial_classs_halves_are_one"/>.
 /// </para>
 /// </summary>
 public sealed class EntityKeyCensusTests
@@ -39,7 +39,8 @@ public sealed class EntityKeyCensusTests
         public static implicit operator int(Thing t) => 0; public static implicit operator long(Thing t) => 0L;
         public int Count; public string Label { get; set; } }
         public class SameLine { public SameLine() {} public SameLine(int a) {} }
-        public class Result { public bool Ok; } public class Result<T> { public T Value; } }
+        public class Result { public bool Ok; } public class Result<T> { public T Value; }
+        public partial class Split { public int A; } public partial class Split { public int B; } }
         """;
 
     /// <summary>The same code, formatted the way a person would write it.</summary>
@@ -84,6 +85,16 @@ public sealed class EntityKeyCensusTests
             public class Result<T>
             {
                 public T Value;
+            }
+
+            public partial class Split
+            {
+                public int A;
+            }
+
+            public partial class Split
+            {
+                public int B;
             }
         }
         """;
@@ -240,18 +251,20 @@ public sealed class EntityKeyCensusTests
     }
 
     /// <summary>
-    /// **Zero conflicts, apart from the arity pair.** Two declarations reaching one key is
-    /// the defect Run 4 existed to remove, and the fixture is built out of the three
-    /// shapes that caused it.
+    /// **Zero conflicts.** Two declarations reaching one key is the defect Run 4 existed to
+    /// remove, and the fixture is built out of the shapes that caused it — the two
+    /// overloads on one line, the conversion-operator pair, the same-line constructor, and
+    /// the arity pair, whose collision `csharp.FullName.arity` is what closes.
     /// </summary>
     /// <remarks>
-    /// The one exception is stated by name rather than filtered by shape, so a *second*
-    /// collision fails here even though it would be one entry in the same list — and
-    /// <see cref="Two_arities_of_one_type_name_reach_one_entity_key"/> is what makes the
-    /// exception a claim about the layer rather than a hole in this assertion.
+    /// **The list is asserted empty rather than filtered**, so a collision of any shape
+    /// fails here and names itself. What an empty list cannot say is that the arity pair is
+    /// two *distinct* keys rather than one declaration quietly lost, which is why
+    /// <see cref="Two_arities_are_two_entity_keys_and_a_partial_classs_halves_are_one"/>
+    /// counts them.
     /// </remarks>
     [Fact]
-    public void No_two_declarations_reach_one_entity_key_except_the_arity_pair()
+    public void No_two_declarations_reach_one_entity_key()
     {
         var collisions = Census(Compile(Crammed))
             .Where(entry => entry.Value.Count > 1)
@@ -259,48 +272,37 @@ public sealed class EntityKeyCensusTests
             .OrderBy(entry => entry, StringComparer.Ordinal)
             .ToList();
 
-        var collision = Assert.Single(collisions);
-
-        // The predicate, the name in its key and the two declarations that reached it —
-        // not the whole rendered key, which carries every modifier field and would move
-        // when one is added for a reason that has nothing to do with this.
-        Assert.StartsWith(
-            "csharp.Class({csharp.FullName({csharp.Name(\"Result\")",
-            collision,
-            StringComparison.Ordinal);
-        Assert.EndsWith("<- Fixture.Result, Fixture.Result<T>", collision, StringComparison.Ordinal);
+        Assert.Empty(collisions);
     }
 
     /// <summary>
     /// <para>
-    /// **Two arities of one type name reach one entity key, and that is an open
-    /// maintainer decision rather than a defect this unit took.**
+    /// **Two arities of one type name are two entity keys; a partial class's two halves are
+    /// one.** Both, in one test, because either alone reads as the other's regression.
     /// </para>
     /// <para>
-    /// `csharp.Class` is key-only and its key leads with a `csharp.FullName` of
-    /// `{name, containingNamespace}` — a simple name with the arity stripped. So
-    /// `Result` and `Result&lt;T&gt;` are **one** fact with **two**
-    /// `csharp.DefinitionLocation` rows beside it, which is indistinguishable from a
-    /// partial class. `Interface`, `Record`, `Struct` and `csharp.FullName` itself have
-    /// the same shape.
+    /// `csharp.FullName` is `{name, containingNamespace, arity}` and the four named types
+    /// lead their keys with it, so `Result` and `Result&lt;T&gt;` — two unrelated types
+    /// that share a spelling, which is what a C# declaration space permits — are two facts.
+    /// The whole `csharp.FullName` key of each is asserted rather than the count alone, so
+    /// what the test says is *the arity and nothing else* is what separates them.
     /// </para>
     /// <para>
-    /// **Fixing the symbol string did not fix this, and it is what made it visible**: the
-    /// run used to die on the `codemarkup.SymbolInfo` conflict before anything could
-    /// merge. What it needs is either a schema change — a fingerprint move, so a flag day
-    /// — or a redefinition of what `csharp.Name` holds. `docs/unified-plan/15-retire-code-sigla.md`
-    /// §S3 carries it as the open decision, and the indexer README carries it as a
-    /// limitation a consumer will meet.
+    /// **And a partial class must stay one fact reached from every declaration.** That is
+    /// the claim a careless fix breaks: keying on a file, a span or a per-declaration
+    /// ordinal would split the arities too and satisfy the first half of this test while
+    /// making every `partial` part its own type.
     /// </para>
     /// </summary>
     /// <remarks>
-    /// **The symbols are asserted beside the merged key**, because the two halves are what
-    /// a reader has to keep apart: `src.Symbol` distinguishes the arities and the entity
-    /// layer does not. A test asserting only the collision reads as "arity is broken",
-    /// and one asserting only the symbols reads as "arity is fixed".
+    /// The symbols are asserted beside the keys because the two layers agree now and a
+    /// reader has to be able to see that they do: `src.Symbol` spells the arity in the
+    /// descriptor, `csharp.FullName` carries it as a scalar, and
+    /// `ArityPairTests.Each_arity_is_its_own_class_fact_with_its_own_location` is the same
+    /// pair of claims in a real database.
     /// </remarks>
     [Fact]
-    public void Two_arities_of_one_type_name_reach_one_entity_key()
+    public void Two_arities_are_two_entity_keys_and_a_partial_classs_halves_are_one()
     {
         var compilation = Compile(Crammed);
         var entities = new CsharpEntities((_, _) => { });
@@ -309,20 +311,50 @@ public sealed class EntityKeyCensusTests
             .Select(name => compilation.GetTypeByMetadataName(name)!)
             .ToList();
 
-        var keys = arities
-            .Select(type => Render(DotnetIndex.Class, entities.Entity(type)!.Key))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+        // The identity itself, whole: one name, one namespace, two arities. The global
+        // namespace is a fact named by the empty string, which is why `Fixture` nests.
+        const string Ns = "csharp.Namespace({csharp.Name(\"Fixture\"), "
+            + "1:csharp.Namespace({csharp.Name(\"\"), 0:{}})})";
 
-        var symbols = arities.Select(type => ScipSymbols.Of(type)!).ToList();
+        Assert.Equal(
+            [
+                $"csharp.FullName({{csharp.Name(\"Result\"), {Ns}, 0}})",
+                $"csharp.FullName({{csharp.Name(\"Result\"), {Ns}, 1}})",
+            ],
+            arities.Select(type => Render(DotnetIndex.FullName, entities.FullName(type).Key)));
 
-        Assert.Single(keys);
+        // And so the entity keyed on it is two facts and not one.
+        Assert.Equal(
+            2,
+            arities
+                .Select(type => Render(DotnetIndex.Class, entities.Entity(type)!.Key))
+                .Distinct(StringComparer.Ordinal)
+                .Count());
+
         Assert.Equal(
             [
                 "scip-csharp-2 nuget Fixture 0.0.0.0 Fixture/Result#",
                 "scip-csharp-2 nuget Fixture 0.0.0.0 Fixture/Result+1#",
             ],
-            symbols);
+            arities.Select(type => ScipSymbols.Of(type)!));
+
+        // **The contrast, in the same compilation.** `Split` is written twice, so the walk
+        // reaches it once per declaration — and both reach the one key a partial class has
+        // always had, with a `csharp.DefinitionLocation` per half.
+        var tree = compilation.SyntaxTrees.First();
+        var model = compilation.GetSemanticModel(tree);
+        var split = compilation.GetTypeByMetadataName("Fixture.Split")!;
+
+        Assert.Equal(2, split.DeclaringSyntaxReferences.Length);
+        Assert.Equal(0, split.Arity);
+
+        var halves = split.DeclaringSyntaxReferences
+            .Select(reference => model.GetDeclaredSymbol(reference.GetSyntax())!)
+            .Select(symbol => Render(DotnetIndex.Class, entities.Entity(symbol)!.Key))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Single(halves);
     }
 
     /// <summary>

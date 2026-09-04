@@ -371,10 +371,18 @@ What it still does not do, each for a reason:
   keys on a symbol across revisions: `csharp.Method` carries `docId` itself and is reached
   through `csharp.SymbolOf`. What *was* removed is the half that was not inherent: the
   ordinal no longer depends on the order the compiler was handed the files.
-- **Two arities of one type name are one `csharp` entity**, and this is the one item on
-  this list that is an open maintainer decision rather than a decided trade. It has its
-  own section below, because a consumer reading "arities are distinguished now" of
-  `src.Symbol` must not believe it of the entity layer.
+- **Two assemblies declaring one namespace-qualified type name are one `csharp` entity.**
+  `csharp.FullName` carries no assembly, so `W.S` compiled twice is one row — and its
+  members go with it, because they key on a containing type that fused. It has its own
+  section below. The *arity* axis of the same key is closed: `csharp.FullName` carries an
+  `arity`, so `Result` and `Result<T>` are two entities.
+- **`csharp.Method` is only as fine as the `docId` it trails**, and the pinned compiler
+  hands two C# 14 shapes one. A compound-assignment operator is `Name = "op_UnaryPlus"` and
+  `M:…op_UnaryPlus(T)` whatever its token, so `MemLedger`'s `+=`, `checked +=` and `-=` are
+  one `csharp.Method`; and two `extension` blocks over one receiver type both get
+  `M:…#ctor(TReceiver)`, so their synthesised constructors are one. Four of the reference
+  corpus's twelve merged entities are this, and it is a third axis — neither arity nor
+  assembly — that a further disambiguator would have to close.
 
 **One collision shape is left, and it is `file`-scoped types.** Two classes of it are
 closed. *Two members of one type* are separated — a type name by its arity, a method and an
@@ -404,39 +412,42 @@ consumer may join on such a name across databases is a decision, and
 the collision as it stands so that closing it is deliberate.
 
 Two further residues sit beside it and neither is a collision — the ordinal is not stable
-across an edit (above), and the entity layer still merges two arities of a name (below).
-The `partial` fixture and `PartialMemberTests` are the gates on the two shapes that *are*
-closed, so a regression there is a failing run rather than a silently different index.
+across an edit (above), and the entity layer has no assembly axis (below). The `partial`
+fixture and `PartialMemberTests` are the gates on the two shapes that *are* closed, so a
+regression there is a failing run rather than a silently different index.
 
-## The entity layer merges two arities of a name, and that is not decided yet
+## The entity layer tells two arities apart, and does not tell two assemblies apart
 
-`src.Symbol` distinguishes `Result` from `Result<T>`. **`csharp.Class` does not.** Its key
-leads with a `csharp.FullName` of `{name, containingNamespace}`, where the name is
-Roslyn's arity-stripped one, and the predicate is key-only — so the two declarations are
-one fact rather than a conflict. What a database holds for the pair is:
+`csharp.FullName` is `{name, containingNamespace, arity}`, and the four named types lead
+their keys with it. So `Result` and `Result<T>` are **two** `csharp.Class` facts with a
+`csharp.DefinitionLocation` each, `csharp.SymbolOf` crosses one symbol to each, and the C#
+entity model now agrees with `src.Symbol` and with `codemarkup` rather than disagreeing.
+`ArityPairTests.Each_arity_is_its_own_class_fact_with_its_own_location` is the gate, and
+`EntityKeyCensusTests.Two_arities_are_two_entity_keys_and_a_partial_classs_halves_are_one`
+holds it apart from the shape it used to be indistinguishable from: **a partial class is
+still one fact with a location per part**, which is what a partial type has answered "where
+is this written" with all along.
 
-| | what it holds |
+**What the key still has no field for is the assembly.** Two assemblies compiled in one
+run may each declare `W.S`, and every field of the key agrees — same name, same namespace,
+same arity, same modifiers — so they intern one row:
+
+| | what a database holds for `W.S` declared in two assemblies |
 |---|---|
 | `csharp.Class` · `Interface` · `Record` · `Struct` · `csharp.FullName` | **one** fact for the two declarations |
-| `csharp.DefinitionLocation` | **two** rows against that one entity — the shape a partial class has, and indistinguishable from one |
-| `csharp.SymbolOf` · `DefinitionBySymbol` | two rows, so the crossing is many-to-one: both symbols reach the merged entity |
-| `codemarkup.Definition` · `SymbolInfo` · `FileDefinition` · `SearchEntry` · `SymbolByName` · `Relation` · `RelationOf` | **two** of each, one per arity — the symbol is in every key there, so this half is correct |
+| `csharp.DefinitionLocation` | **two** rows against it, one per assembly |
+| `csharp.SymbolOf` · `DefinitionBySymbol` | two rows: the crossing is many-to-one, because `Package` puts the assembly identity in the symbol string |
+| `csharp.Method` · `Field` · `Property` | fused as well wherever they agree, since each keys on a containing type that fused |
+| `codemarkup.*` | **two** of each — the symbol is in every key there, so that half is correct |
 
-So the language-independent surface answers per arity and the C# entity model does not: a
-`Result` a UI navigates through `codemarkup` is the right one, and a `Result` reached
-through `csharp.SymbolOf` is a merge of both.
+Measured over the reference corpus, which carries `Assemblies.Left` and `Assemblies.Right`
+for exactly this: **12** entities are reached by more than one declaration, **8** of them
+this shape — two classes, three methods, one field and two properties — and the arity field
+moves none of them, because the two sides agree at every arity.
 
-**It became observable with the arity suffix and was not created by it.** Until the symbol
-string told the two apart, the run died on the `codemarkup.SymbolInfo` conflict before
-anything could merge — so this is a defect the fix *revealed*.
-
-**What it waits on is a decision, not a patch.** Either `csharp.Name` stops holding the
-arity-stripped name, or the four named-type keys gain a field — and a key that gains a
-field is a schema change, so a fingerprint move and a flag day.
-`docs/unified-plan/15-retire-code-sigla.md` §S3 carries it as the open item. Until it is
-taken, `EntityKeyCensusTests.Two_arities_of_one_type_name_reach_one_entity_key` and
-`ArityPairTests.The_entity_layer_still_merges_the_two_arities_into_one_class` are the gates
-that make removing the limitation deliberate rather than incidental.
+The fix is a further key field and therefore another flag day;
+`docs/unified-plan/15-retire-code-sigla.md` §S3 carries it as the open item, and
+`Assemblies.Left/README.md` is the fixture's own account of the mechanism.
 
 ## Two things that had to be got right
 

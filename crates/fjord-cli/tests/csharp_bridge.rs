@@ -147,11 +147,13 @@ fn a_union_typed_variable_joins_the_two_csharp_bridges() {
         value: None,
     };
 
+    // `arity` trails the key: `Parser` declares no type parameters, so 0.
     let full_name = WireFact {
         predicate: id("csharp.FullName"),
         key: WireValue::Record(Box::from([
             nested(name("Parser")),
             nested(namespace.clone()),
+            WireValue::Int(0),
         ])),
         value: None,
     };

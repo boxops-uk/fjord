@@ -373,39 +373,41 @@ dotnet run --project clients/dotnet/Boxops.Fjord.Indexer --configuration Release
 ```text
 indexing /path/to/fjord/clients/dotnet
   paths relative to /path/to/fjord/clients/dotnet
-  schema fingerprint 32c681adade8a5f7
+  schema fingerprint 4e90774b9a0814cc
   entry point /path/to/fjord/clients/dotnet/Boxops.Fjord.slnx
   5 C# project(s) in the solution
-  built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 3.0s)
-  built Boxops.Fjord.Indexer.csproj (net10.0, 15 files, 3.0s)
-  built Boxops.Fjord.Scip.csproj (net10.0, 11 files, 3.0s)
-  built Boxops.Fjord.Client.csproj (net10.0, net8.0, 15 files, 5.7s)
-  built Boxops.Fjord.Tests.csproj (net10.0, 26 files, 2.6s)
-  build layer: 20 project(s), 5 from a design-time build, 55 file(s) attributed exactly
+  built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 3.1s)
+  built Boxops.Fjord.Indexer.csproj (net10.0, 15 files, 3.1s)
+  built Boxops.Fjord.Scip.csproj (net10.0, 11 files, 3.1s)
+  built Boxops.Fjord.Client.csproj (net10.0, net8.0, 15 files, 5.3s)
+  built Boxops.Fjord.Tests.csproj (net10.0, 32 files, 2.6s)
+  build layer: 57 project(s), 5 from a design-time build, 61 file(s) attributed exactly
+  solution Boxops.Fjord.slnx: 5 of 5 listed project(s) have a project fact to be an edge to
   1 target framework(s) — net10.0, loaded in 6.6s
 
 connecting to ./db2/fjord.sock//dotnet, 1 writer(s)
-  connected: protocol 4, 67 predicates, schema 32c681adade8a5f7
+  connected: protocol 4, 67 predicates, schema 4e90774b9a0814cc
 
-       13 files        23,577 facts      9,216 facts/s  Boxops.Fjord.Demo
-       25 files        80,659 facts      9,116 facts/s  Boxops.Fjord.Indexer
-       55 files       152,173 facts     13,941 facts/s  Boxops.Fjord.Tests
+       13 files        23,738 facts      9,144 facts/s  Boxops.Fjord.Demo
+       25 files        84,036 facts     10,846 facts/s  Boxops.Fjord.Indexer
+       53 files       163,014 facts     16,434 facts/s  Boxops.Fjord.Tests
 
-indexed 55 file(s) in 12.5s
+indexed 61 file(s) in 12.2s
   …
-  total                      152,173 facts in 82 blocks
-  server                     133,860 created, 1,488,644 deduped
-  writing                        4.1s  (summed over 1 writer(s), overlapped — not wall clock)
-  queueing                       1.6s  (walk blocked on a full queue)
-  contended                      0.0s  (69 of 152,173 facts waited for a batch)
-  throughput                  12,207 facts/s
+  total                      179,214 facts in 92 blocks
+  server                     158,242 created, 1,728,840 deduped
+  writing                        4.9s  (summed over 1 writer(s), overlapped — not wall clock)
+  queueing                       2.3s  (walk blocked on a full queue)
+  contended                      2.0s  (241 of 179,214 facts waited for a batch)
+  throughput                  14,639 facts/s
 
-references: 18,247 resolved, 5,483 to declarations outside the index, 2 unresolved
+references: 21,361 resolved, 6,883 to declarations outside the index, 2 unresolved
 ```
 
-**`1,488,644 deduped`** is the same trick as step 4 at scale: a million and a half facts
-touched, a hundred and thirty thousand rows written, because every reference the walk sends
-is the target fact nested inline and a file named a few thousand times is stored once.
+**`1,728,840 deduped`** is the same trick as step 4 at scale: one and three-quarter million
+facts touched, a hundred and fifty-eight thousand rows written, because every reference the
+walk sends is the target fact nested inline and a file named a few thousand times is stored
+once.
 
 Find-references over that corpus is two seeks. `codemarkup.SearchEntry` finds the symbol by
 name, and `codemarkup.SymbolXRef` leads with the target, so its uses are a range rather than

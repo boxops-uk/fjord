@@ -120,7 +120,7 @@ internal static class ScipFacts
     /// it sat inline as a positional argument through one flag day, where nothing checked
     /// it and the converter's own tests were the first to notice at the handshake.
     /// </remarks>
-    public const ulong SchemaFingerprint = 0x49cbd96832c1ae21;
+    public const ulong SchemaFingerprint = 0x48932239a227a7f8;
 
     /// <summary>The schema this converter claims, and the database it fills.</summary>
     public static readonly FjordSchema Schema = new(

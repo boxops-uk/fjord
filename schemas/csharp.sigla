@@ -69,9 +69,15 @@ schema csharp {
   # because `A.B` and `C.B` are different namespaces both named `B`.
   predicate Namespace : { name : Name, containingNamespace : MaybeNamespace }
 
-  # A simple name plus the namespace containing it. `name` leads, so "the fully-qualified
-  # names spelled `Foo`" is a range.
-  predicate FullName : { name : Name, containingNamespace : Namespace }
+  # A simple name, the namespace containing it, and how many type parameters it declares.
+  # `name` leads, so "the fully-qualified names spelled `Foo`" is a range, and `Foo` in `N`
+  # at any arity is one too; `arity` trails, so `Foo<T>` in `N` is an exact seek.
+  #
+  # **Arity is part of a named type's identity and not a modifier of it.** C# holds `Foo`
+  # and `Foo<T>` in one declaration space as two unrelated types, so a key without the
+  # count merges them into one fact carrying two `DefinitionLocation` rows — which is
+  # exactly the shape a partial class has, and so is never an error.
+  predicate FullName : { name : Name, containingNamespace : Namespace, arity : int }
 
   # ---- closed vocabularies -----------------------------------------------------------------
 
@@ -162,6 +168,11 @@ schema csharp {
   # Each is identified by its `FullName`, which leads the key so "the class named X" is a seek.
   # Glean carries type parameters in the key too; here they are edges (`TypeTypeParameter`),
   # because a list cannot lead anything after it in a key.
+  #
+  # `FullName.arity` is the **scalar summary** of that list, and it completes that decision
+  # rather than reversing it: a scalar can sit in a key where a list cannot, so the edges
+  # keep the parameters and the key keeps the count. Without the count `Foo` and `Foo<T>`
+  # are one fact here, and `TypeTypeParameter` then hangs `T` off the merged entity.
 
   predicate Class :
     { name                  : FullName

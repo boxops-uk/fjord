@@ -345,32 +345,35 @@ Both defects the old key had are asserted gone rather than argued: two overloads
 keys, and reformatting the fixture moves not a single one. The conversion-operator pair is its own
 test, since it is the case that needs `docId` at all.
 
-**Open, and owed a decision rather than a patch: two arities of a type name are one entity.**
-`csharp.Class`, `Interface`, `Record`, `Struct` and `csharp.FullName` are key-only, and the key leads
-with a `FullName` of `{name, containingNamespace}` — where `csharp.Name` holds Roslyn's
-arity-stripped name. So `class Result` beside `class Result<T>`, the everyday idiom, is **one**
-`csharp.Class` with **two** `csharp.DefinitionLocation` rows against it, which is indistinguishable
-from a partial class; `csharp.SymbolOf` then maps both symbols onto the merged entity. The
-`codemarkup` half is not affected — the symbol is in every key there, so it holds two of each.
+**Closed by a flag day: `csharp.FullName` carries an arity.** `csharp.Class`, `Interface`,
+`Record`, `Struct` and `FunctionPointerType` all lead their keys with a `FullName`, and nothing else
+in the schema references it — so it *is* a named type's identity, and one field fixes all of them.
+It is now `{name, containingNamespace, arity}`, with `name` still leading and `arity` last, which
+keeps "the names spelled `Foo`" and "`Foo` in `N` at any arity" ranges and makes "`Foo<T>` in `N`" an
+exact seek. `class Result` beside `class Result<T>` is **two** `csharp.Class` facts with a
+`csharp.DefinitionLocation` each, and `csharp.SymbolOf` crosses one symbol to each.
 
-It became observable when `src.Symbol` started carrying the arity (`N/Result+1#`, scheme token
-`scip-csharp-2`) and was **not created by it**: before that the two declarations minted one string,
-`codemarkup.SymbolInfo` is keyed `{symbol}` with the signature on the value side, and the run died
-on the conflict before anything could merge. So the fix revealed this rather than causing it.
+**The scalar completes the type-parameter decision rather than reversing it.** The named types carry
+their parameters as `TypeTypeParameter` edges because a list cannot lead anything after it in a key.
+An arity is that list's scalar summary, and a scalar *can* sit in a key: the edges keep the
+parameters, the key gains the count.
 
-**The decision is which of two things moves**, and both are the maintainer's:
+`csharp.Name` was left holding the arity-stripped simple name, which is the other thing that could
+have moved and the more expensive one — every consumer of a simple name would change meaning,
+`NameLowerCase` and the two search predicates included. `csharp.Method` needed nothing either: it
+keys on `Name` plus a `docId` that already encodes arity, which is why generic *method* overloads
+never merged.
 
-| | cost |
-|---|---|
-| the four named-type keys gain a field | a key changes, so a fingerprint move and a flag day |
-| `csharp.Name` stops holding the arity-stripped name | every consumer of a simple name changes meaning, including `NameLowerCase` and the two search predicates |
-
-Until it is taken the limitation is gated rather than argued —
-`EntityKeyCensusTests.Two_arities_of_one_type_name_reach_one_entity_key` and
-`ArityPairTests.The_entity_layer_still_merges_the_two_arities_into_one_class` both go red when it is
-— and it is written up for a consumer in the indexer's README, because reading
-"arities are distinguished now" of `src.Symbol` and believing it of the entity layer is the mistake
-that costs somebody an afternoon.
+**What the key still has no field for is the assembly.** Two assemblies compiled in one run may each
+declare `W.S` — same name, same namespace, same arity, same modifiers — and intern one row, with
+their members going too because those key on a containing type that fused. Over the reference corpus
+that is **8** merged entities across `Assemblies.Left`/`Assemblies.Right` (two classes, three
+methods, one field, two properties), unmoved by the arity field. Closing it is a further key field
+and therefore another flag day, and it is the open item this section now carries. The gates are
+`ArityPairTests.Each_arity_is_its_own_class_fact_with_its_own_location` and
+`EntityKeyCensusTests.Two_arities_are_two_entity_keys_and_a_partial_classs_halves_are_one`, the
+second of which holds the fix apart from the regression it resembles: **a partial class is still one
+fact with a location per part.**
 
 ### S4 — `codemarkup.*`
 
@@ -480,8 +483,9 @@ commit; a criterion is a test or a command, never prose.
 5. **The entity key has no conflict on the three cases that broke the old one.**
    `EntityKeyCensusTests` runs the census over the predicates that carry an identity — the four
    named types, `Method`, `Field`, `Property`, `Namespace`, `FullName` — and reports zero
-   conflicts over a fixture holding two overloads on one line, a conversion-operator pair and a
-   type with a same-line constructor; reformatting the fixture yields an identical key set. The
+   conflicts over a fixture holding two overloads on one line, a conversion-operator pair, a
+   type with a same-line constructor, a type name at two arities and a partial class written
+   twice; reformatting the fixture yields an identical key set. The
    structural identities `Parameter` and `TypeParameter` are excluded deliberately and their
    sharing is asserted as its own claim. Two of the three cases are their own tests —
    `Two_overloads_on_one_line_are_two_keys` and

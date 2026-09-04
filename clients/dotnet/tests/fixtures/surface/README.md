@@ -59,9 +59,9 @@ not:
 - **C# 14 needs `LangVersion=preview`** under the pinned Roslyn, which maps `latest` to C# 13, so
   `Preview` and `quarantine/Partial` hold the shapes the default version rejects;
 - **`Assemblies.Left` and `Assemblies.Right` declare one type name twice with no reference between
-  them**, which is the whole point of the pair — the entity layer's type identity carries no
-  assembly, so two assemblies' `W.S` fuse into one row. A `ProjectReference` would make it
-  CS0433 instead of a fusion.
+  them**, which is the whole point of the pair — the entity layer's type identity carries a name, a
+  namespace and an arity but no assembly, so two assemblies' `W.S` fuse into one row at any arity.
+  A `ProjectReference` would make it CS0433 instead of a fusion.
 
 ## What it is built to have, and where each property is asserted
 

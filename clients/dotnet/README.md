@@ -140,11 +140,17 @@ been regenerated and not committed, which is a `git status` away.
 So the order below is for a person, and nothing enforces it:
 
 1. **Edit the schema** — `schemas/demo.sigla` for the demo and the fixture,
-   `schemas/dotnet.sigla` for what the indexer writes.
-2. **Read the new number** — `fjord --schema-path ./schemas schema check <file>`.
+   `schemas/dotnet.sigla` for what the indexer writes. **A shared layer moves more than
+   itself**: `csharp.sigla` is imported by `dotnet.sigla` and by `index.sigla`, so editing
+   it moves three numbers, and which three is a thing to read off the imports rather than
+   remember.
+2. **Read the new number** — `fjord --schema-path ./schemas schema check <file>`, over
+   **every** shipped schema rather than the one you edited, so the set that moved is
+   measured and not guessed.
 3. **Paste it into the constant that states *that* schema.** The clients are written
-   against different schemas: `Boxops.Fjord.Demo/Program.cs` states `demo.sigla` and
-   `Boxops.Fjord.Indexer/DotnetIndex.cs` states `dotnet.sigla`, each restated
+   against different schemas: `Boxops.Fjord.Demo/Program.cs` states `demo.sigla`,
+   `Boxops.Fjord.Indexer/DotnetIndex.cs` states `dotnet.sigla`, and
+   `Boxops.Fjord.Scip/ScipFacts.cs` states `index.sigla` — three, each restated
    independently on purpose. The test above checks each against its own, so a missed one
    is a red suite rather than a refused handshake at somebody's site.
 4. **Regenerate the goldens** — `./clients/dotnet/emit-golden.sh`. This needs a .NET SDK,

@@ -28,12 +28,17 @@ that has nothing to do with interning would conflate the two. It is deliberately
 either: that one's edits are for a *shape* filling a predicate its audit table excuses, and this
 fills none.
 
-**The entity layer merges the pair, and that is why the fixture also asserts it.** `csharp.Class`
-is key-only on an arity-stripped `csharp.FullName`, so this fixture produces **one** class named
-`Result` with **two** `csharp.DefinitionLocation` rows — indistinguishable from a partial class.
-It became observable here for the first time, because until the symbol string distinguished the
-arities the run died before anything could merge. It is an open maintainer decision, recorded in
-[`docs/unified-plan/15-retire-code-sigla.md`](../../../../docs/unified-plan/15-retire-code-sigla.md)
-§S3 and in [the indexer's README](../../../Boxops.Fjord.Indexer/README.md), and
-`The_entity_layer_still_merges_the_two_arities_into_one_class` is the gate that makes removing it
-deliberate.
+**The entity layer keeps the pair apart too, and that is the fixture's other claim.**
+`csharp.FullName` is `{name, containingNamespace, arity}` and `csharp.Class` leads its key with
+it, so this fixture produces **two** classes named `Result` with **one**
+`csharp.DefinitionLocation` each. It produced one with two rows until the arity went into the key
+— indistinguishable from a partial class, and never an error — which became observable here for
+the first time, because until the symbol string distinguished the arities the run died before
+anything could merge. `Each_arity_is_its_own_class_fact_with_its_own_location` is the gate.
+
+**The partial class is the claim next to it and is deliberately not in this fixture.** One entity
+with two definition locations is exactly what a partial class *should* produce, so a fix that
+split the arities by keying on something per-declaration would break it while passing everything
+here. That contrast is asserted over [`partial`](../partial/README.md), by
+`PartialMemberTests.One_definition_per_member_per_file_and_a_location_for_each_half`, and at the
+key level by `EntityKeyCensusTests`, which holds both shapes in one compilation.

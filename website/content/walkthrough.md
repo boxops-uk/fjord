@@ -111,67 +111,77 @@ dotnet run --project $FJ/clients/dotnet/Boxops.Fjord.Indexer --configuration Rel
 ```text
 indexing /path/to/fjord/clients/dotnet
   paths relative to /path/to/fjord/clients/dotnet
-  schema fingerprint 32c681adade8a5f7
+  schema fingerprint 4e90774b9a0814cc
   entry point /path/to/fjord/clients/dotnet/Boxops.Fjord.slnx
   5 C# project(s) in the solution
   built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 3.1s)
-  built Boxops.Fjord.Scip.csproj (net10.0, 11 files, 3.2s)
-  built Boxops.Fjord.Indexer.csproj (net10.0, 15 files, 3.2s)
-  built Boxops.Fjord.Client.csproj (net10.0, net8.0, 15 files, 5.6s)
-  built Boxops.Fjord.Tests.csproj (net10.0, 26 files, 2.7s)
-  build layer: 20 project(s), 5 from a design-time build, 55 file(s) attributed exactly
+  built Boxops.Fjord.Indexer.csproj (net10.0, 15 files, 3.1s)
+  built Boxops.Fjord.Scip.csproj (net10.0, 11 files, 3.1s)
+  built Boxops.Fjord.Client.csproj (net10.0, net8.0, 15 files, 5.3s)
+  built Boxops.Fjord.Tests.csproj (net10.0, 32 files, 2.6s)
+  build layer: 57 project(s), 5 from a design-time build, 61 file(s) attributed exactly
+  solution Boxops.Fjord.slnx: 5 of 5 listed project(s) have a project fact to be an edge to
   1 target framework(s) — net10.0, loaded in 6.6s
 
 connecting to ./db/fjord.sock//code, 1 writer(s)
-  connected: protocol 4, 67 predicates, schema 32c681adade8a5f7
+  connected: protocol 4, 67 predicates, schema 4e90774b9a0814cc
 
-       13 files        23,577 facts      9,513 facts/s  Boxops.Fjord.Demo
-       25 files        80,659 facts     11,241 facts/s  Boxops.Fjord.Indexer
-       55 files       152,173 facts     16,355 facts/s  Boxops.Fjord.Tests
+       13 files        23,738 facts      9,144 facts/s  Boxops.Fjord.Demo
+       25 files        84,036 facts     10,846 facts/s  Boxops.Fjord.Indexer
+       53 files       163,014 facts     16,434 facts/s  Boxops.Fjord.Tests
 
-indexed 55 file(s) in 10.8s
-  src.File                                    55
-  src.Symbol                              16,569
-  src.FileLine                            16,801
-  src.FileLineAt                          16,801
+indexed 61 file(s) in 12.2s
+  src.File                                    61
+  src.Symbol                              19,299
+  src.FileLine                            20,805
+  src.FileLineAt                          20,805
   config.Setting                               7
-  msbuild.Project                             20
-  csharp.Name                              3,356
-  csharp.Class                               467
-  csharp.Method                            2,005
-  codemarkup.Definition                      958
-  codemarkup.FileXRef                     14,658
-  codemarkup.SearchEntry                     958
+  msbuild.Project                             57
+  csharp.Name                              3,591
+  csharp.Class                               492
+  csharp.Method                            2,193
+  codemarkup.Definition                    1,093
+  codemarkup.FileXRef                     17,120
+  codemarkup.SearchEntry                   1,093
   …
-  total                      152,173 facts in 82 blocks
-  server                     133,860 created, 1,488,644 deduped
-  writing                        4.2s  (summed over 1 writer(s), overlapped — not wall clock)
-  queueing                       1.7s  (walk blocked on a full queue)
-  contended                      0.1s  (364 of 152,173 facts waited for a batch)
-  throughput                  14,057 facts/s
+  total                      179,214 facts in 92 blocks
+  server                     158,242 created, 1,728,840 deduped
+  writing                        4.9s  (summed over 1 writer(s), overlapped — not wall clock)
+  queueing                       2.3s  (walk blocked on a full queue)
+  contended                      2.0s  (241 of 179,214 facts waited for a batch)
+  throughput                  14,639 facts/s
 
-references: 18,247 resolved, 5,483 to declarations outside the index, 2 unresolved
+references: 21,361 resolved, 6,883 to declarations outside the index, 2 unresolved
 ```
 
-**Sixty-five predicates in the schema, and the run filled fifty-five of them.** The
+**Sixty-five predicates in the schema, and the run filled fifty-eight of them.** The
 handshake above says sixty-seven, which is those sixty-five plus the two virtual
-`fjord.db.*` the server appends; the ten a run leaves empty are all in the schema. The set is five schemas
+`fjord.db.*` the server appends; the seven a run leaves empty are all in the schema.
+
+**One of those seven is not empty in the database**, and the difference is worth knowing:
+the tally counts what the producer wrote *top-level*, and `csharp.FullName` is only ever
+written nested inside the entities that key on it — so the producer reports zero for it
+while `X where X = csharp.FullName _` over this very index answers 402 rows. A predicate counted zero here means
+nobody wrote it *as a fact of its own*, not that nothing in the database has one. The set is five schemas
 composed: `src` for files and lines, `config` for what the index was built against,
 `msbuild` for the project graph, `csharp` for the semantic layer, and `codemarkup` for the
 surface a UI reads. A producer writes what it has, and a predicate nobody fills is a name in
 a file rather than a hole in the database.
 
 `contended` is what the walk paid for sharing: several threads producing facts into
-sixty-five per-predicate batches, and 364 of 152,173 facts found one already held.
+sixty-five per-predicate batches, and a couple of hundred of the 179,214 found one already
+held. That number is the one figure on this page that does not reproduce — it is how the
+threads happened to interleave, and a second run of the same command gives a different one,
+where the fact count beside it does not.
 
-Read the two server counts together: **a million and a half facts touched, a hundred and
-thirty thousand rows exist** — because every reference the walk wrote was the target fact
-**nested inline** rather than an id:
+Read the two server counts together: **one and three-quarter million facts touched, a
+hundred and fifty-eight thousand rows exist** — because every reference the walk wrote was
+the target fact **nested inline** rather than an id:
 
 ```text
 codemarkup.SymbolXRef {
   target = src.Symbol                                     ← a whole fact, not an id
-    "scip-csharp-2 nuget Boxops.Fjord.Client 0.3.0.0
+    "scip-csharp-2 nuget Boxops.Fjord.Client 0.4.0.0
      Boxops/Fjord/Client/Crc32#",
   file = src.File "Boxops.Fjord.Client/Blocks.cs",        ← nested again
   span = { start = 4808, length = 5 }
@@ -180,9 +190,9 @@ codemarkup.SymbolXRef {
 
 The server interns each nested fact bottom-up — a parent's key has no bytes until its
 children have ids — and substitutes the id. A file named a few thousand times is written
-once and deduplicated the rest, which is where 1,488,644 of those facts went. That is why
+once and deduplicated the rest, which is where 1,728,840 of those facts went. That is why
 an indexer needs no map from entities to identities and no emission order: it emits what it
-holds where the syntax walk stands. (The `5,483 to declarations outside the index` are
+holds where the syntax walk stands. (The `6,883 to declarations outside the index` are
 references to the BCL and to packages — real code points at code nobody walked, and the
 indexer says so rather than inventing targets.)
 
@@ -221,9 +231,9 @@ $AP --data-dir ./db query code \
 LINE  NAME
 27    BadFacts
 29    BadQuery
-539   BaseOfKind
+36    Bare
+548   BaseOfKind
 84    Batch
-543   Because
 5 row(s)
 fjord: stopped at 5 rows; raise or drop --limit to see the rest
 ```
@@ -240,11 +250,11 @@ $AP --data-dir ./db query code 'R where R = codemarkup.SymbolXRef _' --format js
 ```
 
 ```json
-"#9:236"
-"#9:238"
+"#9:225"
+"#9:227"
 ```
 
-`#9:236` is a `FactId`: predicate 9, sequence 236. sigla cannot ask what it names — a query
+`#9:225` is a `FactId`: predicate 9, sequence 225. sigla cannot ask what it names — a query
 names a fact by its key, never by its number, and putting an id in the language would put a
 storage detail in a query. So the question goes to the **protocol**, and the client asks it:
 
@@ -254,8 +264,8 @@ $AP --data-dir ./db query code 'R where R = codemarkup.SymbolXRef _' \
 ```
 
 ```json
-{"target": "scip-csharp-2 nuget Boxops.Fjord.Client 0.3.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4808, "length": 5}}
-{"target": "scip-csharp-2 nuget Boxops.Fjord.Client 0.3.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4834, "length": 5}}
+{"target": "scip-csharp-2 nuget Boxops.Fjord.Client 0.4.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4808, "length": 5}}
+{"target": "scip-csharp-2 nuget Boxops.Fjord.Client 0.4.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4834, "length": 5}}
 ```
 
 That is the **logical form**: the same shape a producer sends, and the same shape the
@@ -315,12 +325,12 @@ AT         F
 {4873, 5}  #56:2
 5 row(s)
 STEP                    EXAMINED
-codemarkup.SearchEntry  958       full scan
+codemarkup.SearchEntry  1093      full scan
 codemarkup.SymbolXRef   5
-963 examined, 5 produced
+1098 examined, 5 produced
 ```
 
-Nine hundred and fifty-eight search entries examined to find one, then exactly five rows for
+A thousand and ninety-three search entries examined to find one, then exactly five rows for
 its references. The fix is not a query change; it is asking the key the way it is keyed:
 
 ```text
@@ -447,7 +457,7 @@ $AP --data-dir ./db finish code
 
 ```text
 sealing code — merging trees, then computing identity
-sealed code: 133860 facts, 38857833 bytes, identity 0x30cd1182ff7010e4
+sealed code: 158242 facts, 45963455 bytes, identity 0xc5a6a64833095a1a
 ```
 
 `finish` makes the data durable, **merges every tree**, computes
@@ -456,7 +466,7 @@ act. Now the database is an artifact:
 
 ```text
 NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS   BYTES     CREATED
-code  01M1PCG31908ZED3YT1YKQBT9D  complete  32c681adade8  30cd1182ff70  133860  38857833  2026-09-04 14:17:28Z
+code  01M1QAWV1J9QZ7YJ9MTRZWHYKV  complete  4e90774b9a08  c5a6a6483309  158242  45963455  2026-09-04 23:08:43Z
 ```
 
 and every writer is refused at the handshake, structurally rather than per fact — pointing
@@ -471,9 +481,9 @@ could not write to ./db/fjord.sock//code: ModeRefused: `code` is complete: it ta
 
 | You saw | The rule behind it |
 |---|---|
-| 1,488,644 facts deduped against 133,860 created | Interning **is** the dedup; a nested reference resolves to one row |
+| 1,728,840 facts deduped against 158,242 created | Interning **is** the dedup; a nested reference resolves to one row |
 | A name that filtered and a symbol that seeked | Field order is key order, and key order is the index design |
-| `#9:236` in a row, expanded on request | Stored, a reference is a `FactId`; expansion is a protocol question, not a query one |
+| `#9:225` in a row, expanded on request | Stored, a reference is a `FactId`; expansion is a protocol question, not a query one |
 | A scan, then a seek spliced with its id | A plan is a nested loop, and the order of its steps *is* the nesting |
 | `:more` returning the next three | A resume token is bytes, so paging holds nothing open |
 | A caret with no round trip | The client compiles; the server decides what runs |
