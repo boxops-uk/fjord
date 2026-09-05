@@ -546,7 +546,7 @@ internal static class Loader
                     return usable;
                 }
 
-                Say($"  ! {name}: the design-time build failed, skipping it — {Because(plain, results)}");
+                Say($"  ! {name}: the design-time build failed, skipping it — {Because(analyzer, plain, results)}");
                 return [];
             }
             catch (Exception failure) when (attempt < Attempts)
@@ -597,15 +597,52 @@ internal static class Loader
     /// real cause, and naming it is the difference between a fixable run and a mystery.
     /// </para>
     /// </remarks>
-    private static string Because(IAnalyzerResults? plain, IAnalyzerResults? inner)
+    private static string Because(
+        IProjectAnalyzer analyzer,
+        IAnalyzerResults? plain,
+        IAnalyzerResults? inner)
     {
         var reasons = Reasons(plain).Concat(Reasons(inner)).ToList();
 
-        return reasons.FirstOrDefault(error =>
+        if (reasons.FirstOrDefault(error =>
                 !error.Contains("does not exist in the project", StringComparison.Ordinal))
-            ?? "MSBuild reported no error and logged no compiler invocation, so there is "
-                + "nothing to read. A target skipped as up to date does this";
+            is { } named)
+        {
+            return named;
+        }
+
+        // **It reached no compiler and MSBuild called that success, so there is no cause
+        // to report — only facts.** The message here used to assert one anyway ("a target
+        // skipped as up to date does this"), and two of twelve repositories in a
+        // compatibility sweep were told exactly that when the real reason was a platform
+        // this host is not. A diagnostic that names one possibility out of several reads
+        // as a finding, and sends whoever believes it after the wrong thing.
+        //
+        // So: the possibilities, and the two facts that decide between them — what the
+        // project says it compiles for, and what this is running on. Both are knowable
+        // without a build, which is the point, because the build is what failed.
+        var host = System.Runtime.InteropServices.RuntimeInformation.OSDescription.Split(' ')[0];
+        var declared = Frameworks(analyzer);
+
+        return "MSBuild reported no error and reached no compiler, so there is nothing to "
+            + "read — a target skipped as up to date, a workload this host does not have, "
+            + $"or a platform it is not. This build is running on {host}"
+            + (declared.Count > 0
+                ? $", and the project compiles for {string.Join(", ", declared)}"
+                : ", and the project names no target framework this could read");
     }
+
+    /// <summary>The project file's own target frameworks, which need no build to read.</summary>
+    /// <remarks>
+    /// <b>From the project rather than from the build, because the build is what failed.</b>
+    /// A design-time build that reaches no compiler comes back with no results at all, so
+    /// the frameworks are not in what it returned — and they are among the few things that
+    /// tell a reader whether this host was ever going to build it.
+    /// </remarks>
+    private static IReadOnlyList<string> Frameworks(IProjectAnalyzer analyzer) =>
+        [.. (analyzer.ProjectFile.TargetFrameworks ?? [])
+            .Where(framework => !string.IsNullOrEmpty(framework))
+            .Distinct()];
 
     /// <summary>Every project the entry point names.</summary>
     private static IReadOnlyList<IProjectAnalyzer> Analyzers(string entry, Options options, TextWriter log)
