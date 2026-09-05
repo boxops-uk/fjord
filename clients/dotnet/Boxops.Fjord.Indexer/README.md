@@ -482,6 +482,40 @@ the same decision `--max-files` already made.
 `ReferenceAssemblyTests` and [`refimpl`](../tests/fixtures/refimpl/README.md) are the gate,
 and the exit code is the assertion.
 
+### And when neither of them is a restatement, one is left out by name
+
+`src/coreclr/System.Private.CoreLib` and `src/mono/System.Private.CoreLib` are the same
+collision without the same answer: two real implementations of one assembly, one per
+runtime, neither carrying `ReferenceAssemblyAttribute`. The symbols collide identically —
+the coordinate is the assembly identity and theirs is one string — so a run reaching both
+dies on `codemarkup.SymbolInfo` exactly as a `ref/` pair did.
+
+**Dropping one silently would be wrong here, because what is dropped is source somebody
+wrote.** So the second project producing an assembly already walked is left out, named,
+and counted:
+
+```
+  1 project(s) left unwalked: another project already produces their assembly, and one
+  database cannot hold two
+    src/mono/System.Private.CoreLib/System.Private.CoreLib.csproj
+```
+
+`--strict` turns that into a failed run, which is the reading a project that would not
+build already gets: off by default because a developer indexing a repository wants the
+rest of it, on for CI because "the index is complete" should be a check. **Which one is
+kept is the solution's order** — arbitrary between the two and stable across runs, which
+is the most a producer can offer: nothing in a build graph says which implementation of an
+assembly a reader meant. Indexing both means two databases, the decision `--framework`
+already makes for a checkout that compiles twice.
+
+**The two rules are ordered, and the order is asserted.** The reference-assembly test runs
+first, so a `ref/` project never claims an identity and the implementation beside it is
+still walked however the solution listed the pair — `sfx.slnx` lists `ref/` first, so the
+other order would keep every restatement and leave every implementation out, exiting 0 and
+answering every documentation query with the empty string.
+`SharedAssemblyTests.A_reference_assembly_listed_first_does_not_claim_the_assembly` is
+that gate, and [`identity`](../tests/fixtures/identity/README.md) is the fixture.
+
 ## Two things that had to be got right
 
 **`Compile`, not `Build`.** Buildalyzer's default targets are `Clean;Build`, and both

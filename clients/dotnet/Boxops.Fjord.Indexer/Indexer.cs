@@ -71,10 +71,30 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     private int _unspellable, _referenceAssemblies;
     private long _lines, _styled;
 
+    // **Not interlocked, unlike the counters above, because `Index` is not concurrent.**
+    // Files inside one project are walked in parallel; the projects themselves are handed
+    // over one at a time, which is what makes "the first one wins" a fact about the
+    // solution's order rather than about which thread got there first.
+    private readonly HashSet<string> _assemblies = [];
+    private readonly List<string> _duplicates = [];
+
     public int Files => Volatile.Read(ref _files_);
 
     /// <summary>Compilations left unwalked because they are reference assemblies.</summary>
     public int ReferenceAssemblies => Volatile.Read(ref _referenceAssemblies);
+
+    /// <summary>
+    /// Projects left unwalked because another project already produced their assembly,
+    /// by the path each was declared at.
+    /// </summary>
+    /// <remarks>
+    /// <b>Which one is kept is the order projects are walked in</b>, and that order is the
+    /// solution's — chosen sequentially, like the files inside one, so two runs over a
+    /// checkout leave out the same project. Arbitrary between the two and stable across
+    /// runs is the most a producer can offer here: nothing in a build graph says which
+    /// implementation of an assembly a reader meant.
+    /// </remarks>
+    public IReadOnlyList<string> DuplicateAssemblies => _duplicates;
 
     public int Declarations => Volatile.Read(ref _declarations);
 
@@ -202,6 +222,33 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         if (IsReferenceAssembly(compilation))
         {
             Interlocked.Increment(ref _referenceAssemblies);
+            return;
+        }
+
+        // **A second project producing an assembly already walked is left out**, because
+        // one database cannot hold both. Every symbol they declare in common mints one
+        // `src.Symbol` — the package coordinate is the assembly identity, and theirs is
+        // the same string — so `codemarkup.SymbolInfo`, keyed `{symbol}` with
+        // `{signature, doc, modifiers}` on the value side, is one key wanted twice with
+        // two values. Ingest refuses that (`ops-I4`) and the write stream dies part-way
+        // through, which is what `src/coreclr/System.Private.CoreLib` beside
+        // `src/mono/System.Private.CoreLib` does to a run over `dotnet/runtime`.
+        //
+        // **Not the same defect as a reference assembly, and not the same answer.** That
+        // one is an API surface restated for the compiler and is dropped because nothing
+        // is lost. These are two real implementations for two runtimes, and what is
+        // dropped is source somebody wrote — so it is reported by name and `--strict`
+        // fails the run, the same reading a project that would not build gets. Indexing
+        // both means two databases, which is the decision `--framework` already makes for
+        // a checkout that compiles twice.
+        //
+        // The reference-assembly test above runs first for a reason: a `ref/` project
+        // never claims an identity, so the implementation beside it is still the one
+        // walked however the solution ordered the pair.
+        if (!_assemblies.Add(compilation.Assembly.Identity.GetDisplayName()))
+        {
+            _duplicates.Add(
+                Relative(project?.FilePath) ?? project?.Name ?? compilation.AssemblyName ?? "?");
             return;
         }
 

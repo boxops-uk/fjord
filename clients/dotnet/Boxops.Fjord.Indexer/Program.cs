@@ -256,6 +256,20 @@ internal static class Program
             Smoke(connection, indexer);
         }
 
+        // **The same reading a project that would not build gets** — the load layer checks
+        // its own skips before the walk, and this is the skip only the walk can see, so it
+        // is checked here rather than beside that one. A run that left a project's source
+        // out is not a complete index, and `--strict` is what makes that a check rather
+        // than a line somebody reads.
+        if (options.Strict && indexer.DuplicateAssemblies.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"--strict: {indexer.DuplicateAssemblies.Count} project(s) were left out of "
+                + "this index because another project produces the same assembly — "
+                + string.Join(", ", indexer.DuplicateAssemblies));
+            return 1;
+        }
+
         return 0;
     }
 
@@ -411,6 +425,23 @@ internal static class Program
             // doc comment.
             Console.WriteLine($"  {Count(indexer.ReferenceAssemblies)} reference assembly(s) "
                 + "left unwalked: the implementation beside each one declares the same API");
+        }
+
+        if (indexer.DuplicateAssemblies.Count > 0)
+        {
+            // Named individually, because this is source somebody wrote that is not in the
+            // index — where a reference assembly is a restatement of source that is. A
+            // reader has to be able to see *which* project, to decide whether the one that
+            // was kept is the one they meant.
+            Console.WriteLine(
+                $"  {Count(indexer.DuplicateAssemblies.Count)} project(s) left unwalked: "
+                + "another project already produces their assembly, and one database "
+                + "cannot hold two");
+
+            foreach (var project in indexer.DuplicateAssemblies)
+            {
+                Console.WriteLine($"    {project}");
+            }
         }
 
         if (indexer.Unattributed > 0)
