@@ -492,6 +492,9 @@ internal static class Program
     /// and one keyed by what it points at seeks. Both keyings are stored, which is the
     /// whole argument for a derived predicate.
     /// </remarks>
+    /// <summary>Rows each smoke query prints, and therefore the most any of them reads.</summary>
+    private const int Sample = 5;
+
     private static void Smoke(FjordConnection connection, Indexer indexer)
     {
         var sample = indexer.SampleName;
@@ -526,15 +529,30 @@ internal static class Program
                 + $"csharp.SymbolOf {{definition = D, symbol = S}}; "
                 + $"Y = src.Symbol S; S = src.Symbol _");
 
-            // A definition, where it is written, and the text of that line: two
-            // references followed and the result used as the key of a third predicate.
-            // No string is compared — the file is an id by the time the line is seeked.
-            Run($"the line declaring a definition, which is a fetch then a seek",
-                "{line = L.line, text = L.value} where "
-                + "csharp.DefinitionLocation {definition = D, location = {file = F, span = _}}; "
-                + "L = src.FileLine {file = F}");
+            // A declaration, the line it is written on, and the text of that line: the
+            // search index carries the line number in its key, so the line table is
+            // reached by its own key and answers one row.
+            //
+            // **A `src.FileLine {file = F}` seek is a prefix over every line of the
+            // file**, so pairing it with anything that binds only the file is a cross
+            // product — every declaration in a file against every line of it, which is
+            // tens of millions of rows on a real repository and looks like a join in the
+            // query's shape. Reaching the line from `csharp.DefinitionLocation` instead
+            // would need the greatest `src.FileLineAt.start` at or below a definition's
+            // byte offset, and sigla has no descending seek: the line number in this key
+            // is what makes it a seek at all.
+            Run($"the line declaring a definition, which is a seek keyed by file and line",
+                "{name = N, line = Ln, text = L.value} where "
+                + "codemarkup.SearchEntry {name = N, file = F, line = Ln}; "
+                + "L = src.FileLine {file = F, line = Ln}");
         }
 
+        // **Five rows and a total, and neither reads the result.** A smoke query is a
+        // demonstration whose size nobody chose: one of these once answered 109,720,432
+        // rows, and collecting them to print five killed the run at 20.6 GB. The count
+        // executes the query without encoding a row, and the sample is one bounded page —
+        // so what this prints costs the same whether the answer has five rows or a
+        // hundred million.
         void Run(string what, string sigla)
         {
             Console.WriteLine();
@@ -545,20 +563,22 @@ internal static class Program
 
             try
             {
-                var result = connection.Query(sigla);
+                var total = connection.CountRows(sigla);
                 started.Stop();
 
-                foreach (var row in result.Rows.Take(5))
+                var page = connection.Page(sigla, limit: Sample);
+
+                foreach (var row in page.Rows)
                 {
-                    Console.WriteLine($"    {Render(row, result.Shape)}");
+                    Console.WriteLine($"    {Render(row, page.Shape)}");
                 }
 
-                if (result.Rows.Count > 5)
+                if (total > page.Rows.Count)
                 {
-                    Console.WriteLine($"    ... and {Count(result.Rows.Count - 5)} more");
+                    Console.WriteLine($"    ... and {Count(total - page.Rows.Count)} more");
                 }
 
-                Console.WriteLine($"    {Count(result.Rows.Count)} row(s) in {started.Elapsed.TotalSeconds:F2}s");
+                Console.WriteLine($"    {Count(total)} row(s) in {started.Elapsed.TotalSeconds:F2}s");
             }
             catch (FjordServerException failure)
             {

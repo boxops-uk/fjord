@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net.Sockets;
 using System.Text;
 
@@ -28,6 +29,15 @@ public sealed record WriteSummary(ulong Created, ulong Deduped)
 
 /// <summary>A query's rows, and the shape they came in.</summary>
 public sealed record QueryResult(FjordType Shape, IReadOnlyList<FjordValue> Rows);
+
+/// <summary>One page of a result, and where to carry on from.</summary>
+/// <remarks>
+/// <paramref name="Resume"/> is <see langword="null"/> when this page reached the end of
+/// the result. It is the terminator: an empty token is not one, and a caller that pages
+/// until the rows run out rather than until the token does will ask one more time and be
+/// told nothing.
+/// </remarks>
+public sealed record QueryPage(FjordType Shape, IReadOnlyList<FjordValue> Rows, byte[]? Resume);
 
 /// <summary>
 /// A connection to a Fjord server.
@@ -61,6 +71,15 @@ public sealed class FjordConnection : IDisposable
     private readonly NetworkStream _stream;
     private readonly FjordSchema _schema;
     private uint _nextStream = 1;
+    private bool _streaming;
+
+    /// <summary>Rows per round trip when a caller does not choose.</summary>
+    /// <remarks>
+    /// Big enough that a page is not a round trip per handful of rows, small enough that
+    /// abandoning one after the first row cannot cost much: the drain that hands the
+    /// connection back is bounded by this and by nothing else.
+    /// </remarks>
+    public const int DefaultPageSize = 1024;
 
     private FjordConnection(Socket socket, FjordSchema schema, ServerHello hello)
     {
@@ -280,6 +299,269 @@ public sealed class FjordConnection : IDisposable
             var rowAt = 0;
             rows.Add(ValueCodec.ReadValue(frame.Payload, _schema, shape, ref rowAt));
         }
+    }
+
+    /// <summary>How many rows a query has, without encoding one of them.</summary>
+    /// <remarks>
+    /// The plan and the executor are the same as a query's; what differs is that the
+    /// accumulator keeps a number instead of a row. `bench/FINDINGS.md` §9 puts row
+    /// encoding at 1.5× the executor and the wire above it at another 3.6×, all of which
+    /// a caller that only wants the total throws away — so asking this rather than
+    /// counting <see cref="Query"/>'s rows is the difference between a number and a
+    /// result set held in memory.
+    /// </remarks>
+    public long CountRows(string sigla)
+    {
+        var stream = _nextStream++;
+        FrameIo.Write(_stream, FrameKind.QueryCount, stream, Encoding.UTF8.GetBytes(sigla));
+
+        var counted = FrameIo.Read(_stream);
+        ThrowIfError(counted);
+
+        if (counted.Kind != FrameKind.Count)
+        {
+            throw new FjordProtocolException(
+                $"expected a count, got `{(char)counted.Kind}`");
+        }
+
+        if (counted.Payload.Length < 8)
+        {
+            throw new FjordProtocolException(
+                $"a count frame of {counted.Payload.Length} bytes, where 8 are needed");
+        }
+
+        var total = BinaryPrimitives.ReadUInt64LittleEndian(counted.Payload);
+
+        var complete = FrameIo.Read(_stream);
+        ThrowIfError(complete);
+
+        if (complete.Kind != FrameKind.Complete)
+        {
+            throw new FjordProtocolException(
+                $"expected the stream to complete, got `{(char)complete.Kind}`");
+        }
+
+        return (long)total;
+    }
+
+    /// <summary>One page of a query's rows, and the token to carry on from.</summary>
+    /// <remarks>
+    /// <b>Paging is stateless, which is the whole point of the token.</b> The server keeps
+    /// nothing between pages: each request carries the query and where to resume, so a
+    /// caller may take page two on a different connection, or an hour later, or never. A
+    /// result that lived in the session would have to be held by whoever asked for it, and
+    /// "everything after key K" is not expressible in the language.
+    /// </remarks>
+    /// <param name="sigla">The query.</param>
+    /// <param name="limit">The most rows this page may carry; 0 asks for all of them.</param>
+    /// <param name="cursor">A previous page's <see cref="QueryPage.Resume"/>, or null to start.</param>
+    public QueryPage Page(string sigla, ulong limit, byte[]? cursor = null)
+    {
+        var stream = _nextStream++;
+        FrameIo.Write(_stream, FrameKind.QueryPage, stream, EncodePage(limit, cursor, sigla));
+
+        var shape = ReadRowDescription();
+        var rows = new List<FjordValue>();
+        byte[]? resume = null;
+
+        while (true)
+        {
+            var frame = FrameIo.Read(_stream);
+            ThrowIfError(frame);
+
+            if (frame.Kind == FrameKind.Complete)
+            {
+                return new QueryPage(shape, rows, resume);
+            }
+
+            if (frame.Kind == FrameKind.Resume)
+            {
+                resume = frame.Payload;
+                continue;
+            }
+
+            if (frame.Kind != FrameKind.DataRow)
+            {
+                throw new FjordProtocolException(
+                    $"expected a data row, got `{(char)frame.Kind}`");
+            }
+
+            var at = 0;
+            rows.Add(ValueCodec.ReadValue(frame.Payload, _schema, shape, ref at));
+        }
+    }
+
+    /// <summary>
+    /// A query's rows, pulled a page at a time and yielded one by one — so
+    /// <c>Take(n)</c> costs one page rather than the whole result.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Abandoning this is safe, and that is what the cancel is for.</b> Stopping early
+    /// leaves the current page's remaining rows unread on a socket that carries every
+    /// stream, so the next query would read this one's tail. Disposing the enumerator —
+    /// which <c>foreach</c>, <c>Take</c> and LINQ all do — sends a cancel on the open
+    /// stream and then reads to its <c>Complete</c>, so the connection is handed back
+    /// clean whether the caller finished or not. What that drain costs is bounded by
+    /// <paramref name="pageSize"/> and never by the size of the result.
+    /// </para>
+    /// <para>
+    /// <b>One at a time per connection.</b> This client reads frames in arrival order
+    /// without demultiplexing on the stream id, so two open results would each decode the
+    /// other's rows. A second enumeration while one is open is refused here rather than
+    /// left to produce garbage.
+    /// </para>
+    /// </remarks>
+    /// <param name="sigla">The query.</param>
+    /// <param name="pageSize">Rows per round trip. Larger trades memory for round trips.</param>
+    public IEnumerable<FjordValue> Rows(string sigla, int pageSize = DefaultPageSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageSize);
+
+        return Paging(sigla, pageSize);
+    }
+
+    private IEnumerable<FjordValue> Paging(string sigla, int pageSize)
+    {
+        if (_streaming)
+        {
+            throw new InvalidOperationException(
+                "a streaming result is already open on this connection; finish or dispose "
+                + "it before starting another, because rows are read in arrival order");
+        }
+
+        _streaming = true;
+
+        // The stream a page is on while its rows are being handed out, and null between
+        // pages. A caller that stops mid-page leaves this set, which is what the cleanup
+        // below reads to know there is something to cancel.
+        uint? open = null;
+
+        try
+        {
+            byte[]? cursor = null;
+
+            while (true)
+            {
+                var stream = _nextStream++;
+                FrameIo.Write(
+                    _stream, FrameKind.QueryPage, stream, EncodePage((ulong)pageSize, cursor, sigla));
+
+                var shape = ReadRowDescription();
+                byte[]? resume = null;
+                open = stream;
+
+                while (true)
+                {
+                    var frame = FrameIo.Read(_stream);
+                    ThrowIfError(frame);
+
+                    if (frame.Kind == FrameKind.Complete)
+                    {
+                        break;
+                    }
+
+                    if (frame.Kind == FrameKind.Resume)
+                    {
+                        resume = frame.Payload;
+                        continue;
+                    }
+
+                    if (frame.Kind != FrameKind.DataRow)
+                    {
+                        throw new FjordProtocolException(
+                            $"expected a data row, got `{(char)frame.Kind}`");
+                    }
+
+                    var at = 0;
+                    yield return ValueCodec.ReadValue(frame.Payload, _schema, shape, ref at);
+                }
+
+                open = null;
+
+                // The token is the terminator, not the row count: a full page that happened
+                // to land on the last row still sends none, and a caller that paged until a
+                // page came back short would ask once more and be told nothing.
+                if (resume is null)
+                {
+                    yield break;
+                }
+
+                cursor = resume;
+            }
+        }
+        finally
+        {
+            if (open is { } stream)
+            {
+                Abandon(stream);
+            }
+
+            _streaming = false;
+        }
+    }
+
+    /// <summary>Stop an open stream and read to its end, so the socket is usable again.</summary>
+    /// <remarks>
+    /// <b>Failures here are swallowed on purpose.</b> This runs from a <c>finally</c>,
+    /// including one unwinding an exception, and a throw would replace the fault the caller
+    /// is being told about with one about the tidying. A connection this could not drain is
+    /// broken anyway, and the next use of it says so.
+    /// </remarks>
+    private void Abandon(uint stream)
+    {
+        try
+        {
+            FrameIo.Write(_stream, FrameKind.Cancel, stream, []);
+
+            while (FrameIo.Read(_stream).Kind != FrameKind.Complete)
+            {
+                // A cancel is an early end rather than a failure, so the stream still
+                // completes — after however many rows were already on their way.
+            }
+        }
+        catch (FjordProtocolException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+        catch (SocketException)
+        {
+        }
+    }
+
+    private FjordType ReadRowDescription()
+    {
+        var described = FrameIo.Read(_stream);
+        ThrowIfError(described);
+
+        if (described.Kind != FrameKind.RowDescription)
+        {
+            throw new FjordProtocolException(
+                $"expected a row description, got `{(char)described.Kind}`");
+        }
+
+        var at = 0;
+        return RowDescriptor.Read(described.Payload, ref at);
+    }
+
+    /// <summary>
+    /// A page request: <c>[limit u64][cursor length u32][cursor][query utf8]</c>, all
+    /// little-endian, the query running to the end of the frame.
+    /// </summary>
+    private static byte[] EncodePage(ulong limit, byte[]? cursor, string sigla)
+    {
+        var query = Encoding.UTF8.GetBytes(sigla);
+        var token = cursor ?? [];
+        var payload = new byte[8 + 4 + token.Length + query.Length];
+
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, limit);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(8), (uint)token.Length);
+        token.CopyTo(payload, 12);
+        query.CopyTo(payload, 12 + token.Length);
+
+        return payload;
     }
 
     private static void ThrowIfError(Frame frame)

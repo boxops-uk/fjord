@@ -176,9 +176,21 @@ no script can find them. Rehearse it end to end on a branch first.
 
 The client mirrors the server, so it stops where the server does. Streams are issued
 sequentially — the ids are real and the server tags every reply with one, but this
-client sends a stream's frames and reads its replies before starting the next. There is
-no cancellation and no flow control. All three are named as deferred in
-[operations](../../website/content/operations.md).
+client sends a stream's frames and reads its replies before starting the next, so one
+result is open at a time and `FjordConnection.Rows` refuses a second while one is. There
+is no per-stream flow control, which is
+[deferred](../../website/content/operations.md) on the server too.
+
+**Paging, counting and cancellation are implemented, and they travel together.**
+`FjordConnection.Rows` pulls a page at a time and yields rows, so `Take(n)` costs one
+page rather than the whole result; `Page` is the single exchange under it, and
+`CountRows` asks for the total without a row being encoded. Cancellation is what makes
+the first of those safe rather than a hazard: a caller that stops mid-page leaves that
+page's remaining rows on a socket every stream shares, so disposing the enumerator sends
+`CANCEL` on the open stream and reads to its `Complete` before handing the connection
+back. `Query` still collects the whole result and still cannot be stopped — it is the
+right thing for a result whose size the caller already knows, and the wrong thing for
+one it does not.
 
 There is no test project: the console program *is* the test, and it is a better one
 than a unit suite would be, because it runs against the real server over a real socket.
