@@ -188,3 +188,20 @@ fn read(file: &Path, roots: &[PathBuf]) -> Result<resolve::Resolved, CliError> {
 pub fn resolve_for_create(file: &Path, roots: &[PathBuf]) -> Result<Schema, CliError> {
     Ok(read(file, roots)?.schema)
 }
+
+/// One schema, its imports followed and inlined, as source.
+///
+/// **The same two steps `create` takes**, named so that a caller who is not `create`
+/// can take them: resolve where the files are, then print the union. What comes back
+/// carries no `import`, so it needs no search path to be read again — which is what
+/// lets a client that ships a known schema hand it to a server it cannot share a
+/// filesystem with.
+///
+/// # Errors
+///
+/// [`CliError::Schema`] if `file` does not resolve.
+pub fn compose(file: &Path, roots: &[PathBuf]) -> Result<String, CliError> {
+    let resolved = resolve_for_create(file, roots)?;
+
+    Ok(fjord_schema::syntax::print::print(&resolved))
+}

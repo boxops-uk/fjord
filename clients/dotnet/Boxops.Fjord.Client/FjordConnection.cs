@@ -136,6 +136,22 @@ public sealed class FjordConnection : IDisposable
         bool assertSchema = true)
         => Connect(address, address.Database, schema, mode, assertSchema);
 
+    /// <summary>
+    /// Connect where <paramref name="address"/> points, bound to no database.
+    /// </summary>
+    /// <remarks>
+    /// <b>For the lifecycle requests, which name their database in the frame.</b> Creating
+    /// one cannot bind to it first — it is not there — and binding to some other database
+    /// to ask would make the caller's choice of a bystander part of whether the create
+    /// works. A session with no database is what <c>CONTROL</c> is shaped for, and it
+    /// asserts no schema because there is none to assert.
+    /// </remarks>
+    public static FjordConnection ConnectUnbound(
+        FjordAddress address,
+        FjordSchema schema,
+        SessionMode mode = SessionMode.ReadWrite)
+        => Connect(address, string.Empty, schema, mode, assertSchema: false);
+
     private static FjordConnection Connect(
         FjordAddress address,
         string database,
@@ -299,6 +315,84 @@ public sealed class FjordConnection : IDisposable
             var rowAt = 0;
             rows.Add(ValueCodec.ReadValue(frame.Payload, _schema, shape, ref rowAt));
         }
+    }
+
+    /// <summary>
+    /// This database's schema, as sigla source.
+    /// </summary>
+    /// <remarks>
+    /// <b>A real question rather than a formality.</b> A database carries the schema it was
+    /// created against, so a store root holds artifacts of different shapes and a client's
+    /// built-in idea of one is nobody's answer but its own. It is also the only way this
+    /// client can obtain schema *source*: it states its schema as predicates and has no
+    /// sigla parser, so it cannot compose one from files the way the CLI does.
+    /// </remarks>
+    public string SchemaSource()
+    {
+        var stream = _nextStream++;
+        FrameIo.Write(_stream, FrameKind.Schema, stream, []);
+
+        var reply = FrameIo.Read(_stream);
+        ThrowIfError(reply);
+
+        if (reply.Kind != FrameKind.SchemaReply)
+        {
+            throw new FjordProtocolException(
+                $"expected a schema, got `{(char)reply.Kind}`");
+        }
+
+        return Encoding.UTF8.GetString(reply.Payload);
+    }
+
+    /// <summary>
+    /// Create a database from sigla <paramref name="schemaSource"/>, and answer the instance
+    /// it was published as.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The source must be import-free.</b> The server lowers exactly what it is sent and
+    /// cannot resolve an <c>import</c> against paths on this machine — the CLI composes
+    /// first and sends the printed union. <see cref="SchemaSource"/> answers in that form,
+    /// which is what makes "create a sibling like this one" expressible here.
+    /// </para>
+    /// <para>
+    /// <b>Requires a read-write session</b>, the same rule a write stream follows: creating
+    /// a database is a change to the store root, not a question about one.
+    /// </para>
+    /// </remarks>
+    public string CreateDatabase(string name, string schemaSource)
+    {
+        var payload = new ByteBuffer();
+        payload.WriteByte(ControlOp.Create);
+        WriteString(payload, name);
+
+        // `allowZeroFacts` is `finish`'s question, not `create`'s; the field is in every
+        // control frame because one shape carries all three ops.
+        payload.WriteByte(0);
+        WriteString(payload, schemaSource);
+
+        var stream = _nextStream++;
+        FrameIo.Write(_stream, FrameKind.Control, stream, payload.Span);
+
+        var reply = FrameIo.Read(_stream);
+        ThrowIfError(reply);
+
+        if (reply.Kind != FrameKind.ControlReply)
+        {
+            throw new FjordProtocolException(
+                $"expected a control reply, got `{(char)reply.Kind}`");
+        }
+
+        if (reply.Payload.Length < 1 || reply.Payload[0] != ControlOp.Create)
+        {
+            throw new FjordProtocolException(
+                "a control reply that is not the create this asked for");
+        }
+
+        var at = 1;
+        var length = Varint.Read(reply.Payload, ref at);
+
+        return Encoding.UTF8.GetString(reply.Payload, at, (int)length);
     }
 
     /// <summary>How many rows a query has, without encoding one of them.</summary>

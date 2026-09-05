@@ -269,6 +269,20 @@ pub enum SchemaCommand {
         canonical: bool,
     },
 
+    /// Print a schema resolved into one source, with its imports followed and inlined.
+    ///
+    /// **What `create` sends over the wire**, and the reason this is a command rather
+    /// than an internal step: a client that ships a known schema cannot resolve one.
+    /// Resolution reads files, an import is a namespace mapped to a relative path under
+    /// a search root, and asking a *server* to do it would be asking it to have the
+    /// caller's filesystem — so the composed form has to be produced somewhere the
+    /// files are. Baking it here means the only resolver is this one.
+    Compose {
+        /// The entry file. Its imports are resolved from its own directory, then
+        /// `--schema-path`.
+        file: PathBuf,
+    },
+
     /// Compare two schemas: `Identical`, `Compatible (n added)`, or `Breaking`.
     ///
     /// Each side is a schema file or the name of a database in the store root, in any

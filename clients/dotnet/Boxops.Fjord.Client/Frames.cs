@@ -54,6 +54,35 @@ public static class FrameKind
     /// before the connection is its own again.
     /// </remarks>
     public const byte Cancel = (byte)'X';
+
+    /// <summary>Client → server: a lifecycle request — create, finish, remove.</summary>
+    /// <remarks>
+    /// <b>The database is named in the frame rather than taken from the session</b>, so one
+    /// connection can create a database it is not bound to — which is what lets a producer
+    /// make the databases it is about to write to instead of being handed them.
+    /// </remarks>
+    public const byte Control = (byte)'L';
+
+    /// <summary>Server → client: what the lifecycle request came to.</summary>
+    public const byte ControlReply = (byte)'M';
+
+    /// <summary>Client → server: what can I ask you? No payload.</summary>
+    public const byte Schema = (byte)'H';
+
+    /// <summary>Server → client: this database's schema, as source. The whole payload.</summary>
+    public const byte SchemaReply = (byte)'h';
+}
+
+/// <summary>A lifecycle operation, by the byte the wire assigns it.</summary>
+/// <remarks>
+/// <b>The discriminants are a wire contract: append only, never renumber.</b> A reply
+/// carries the same byte, so an answer is decoded without remembering what was asked.
+/// </remarks>
+public static class ControlOp
+{
+    public const byte Create = 1;
+    public const byte Finish = 2;
+    public const byte Remove = 3;
 }
 
 /// <summary>A frame as it arrived.</summary>
