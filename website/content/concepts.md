@@ -43,12 +43,13 @@ read but not search.
 
 ### The types you can use
 
-Four building blocks, and that is all of them:
+Six building blocks, and that is all of them:
 
 | Type | Written | What it is |
 |---|---|---|
 | `Int` | `int` | A signed 64-bit integer |
 | `Str` | `string` | UTF-8 text |
+| `Bytes` | `bytes` | Uninterpreted bytes — not validated, ordered by `memcmp` over the payload |
 | `Fact(p)` | the predicate's name | A reference to a fact of predicate `p` |
 | `Record` | `{ a : t, b : u }` | An **ordered** list of named fields; records may nest |
 | `Union` | `{ a : t = 0 \| b : u = 1 }` | One of several alternatives, each tagged with a number |

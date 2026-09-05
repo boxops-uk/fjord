@@ -1,6 +1,6 @@
 """Mutation controls for the drift gate.
 
-`check-docs.py` is a required check with six checks in it, and every one of them exists
+`check-docs.py` is a required check with seven checks in it, and every one of them exists
 because the documentation went stale in that exact way once. A gate like that has two
 failure modes and only one of them is loud: it can stop firing on drift it used to catch,
 and nothing says so. These controls plant one violation per check and assert it is caught,
@@ -292,6 +292,112 @@ class DriftGate(unittest.TestCase):
             "# The plan\n\n**2 acceptance criteria across 1 items**\n",
         )
         self.assert_caught("not 1..n")
+
+
+    # ---- 7. the book's type tables against the type model ------------------------
+
+    # Four families, one of which the printer does not spell: enough for a table to be
+    # short of one without the fixture having to restate the real type model.
+    MODEL = """pub enum PredicateTyNamed<N> {
+    Int,
+    /// Uninterpreted.
+    Bytes,
+    Fact(PredicateId),
+    Record(Arc<[(N, PredicateTyNamed<N>)]>),
+}
+"""
+
+    PRINTER = """fn ty(out: &mut String, shape: &PredicateTy) {
+    match shape {
+        PredicateTy::Int => out.push_str("int"),
+        PredicateTy::Bytes => out.push_str("bytes"),
+    }
+}
+"""
+
+    CONCEPTS_ROWS = (
+        "| `Int` | `int` | A number |\n"
+        "| `Bytes` | `bytes` | A run |\n"
+        "| `Fact(p)` | the predicate's name | A reference |\n"
+        "| `Record` | `{ a : t }` | Named fields |\n"
+    )
+
+    WRITTEN_ROWS = "| `int` | A number |\n| `bytes` | A run |\n"
+
+    def model(self) -> None:
+        self.tree.write("crates/fjord-schema/src/schema.rs", self.MODEL)
+        self.tree.write("crates/fjord-schema/src/syntax/print.rs", self.PRINTER)
+
+    def concepts(self, rows: str, lead: str = "Four") -> None:
+        self.tree.write(
+            "website/content/concepts.md",
+            f"{PAGE}\n{lead} building blocks, and that is all of them:\n\n"
+            f"| Type | Written | What it is |\n|---|---|---|\n{rows}",
+        )
+
+    def schema_language(self, rows: str) -> None:
+        self.tree.write(
+            "website/content/schema-language.md",
+            f"{PAGE}\n| Written | Means |\n|---|---|\n{rows}",
+        )
+
+    def test_a_family_the_concepts_table_does_not_list_is_caught(self) -> None:
+        self.model()
+        self.concepts(self.CONCEPTS_ROWS.replace("| `Bytes` | `bytes` | A run |\n", ""), "Three")
+        self.assert_caught("does not list `Bytes`")
+
+    def test_the_table_that_lists_every_family_is_left_alone(self) -> None:
+        self.model()
+        self.concepts(self.CONCEPTS_ROWS)
+        self.schema_language(self.WRITTEN_ROWS)
+        self.assert_clean()
+
+    def test_a_family_the_written_table_does_not_list_is_caught(self) -> None:
+        """The two tables are tied to different sources on purpose: the concepts page names
+        the model's families, and this one names how each is *written*, which only the
+        printer says."""
+        self.model()
+        self.schema_language("| `int` | A number |\n")
+        stderr = self.assert_caught("does not list `bytes`")
+        self.assertIn("PredicateTy::Bytes", stderr)
+
+    def test_a_lead_in_count_the_table_does_not_have_rows_for_is_caught(self) -> None:
+        """The sentence introducing the table is the count, and it said "four" over five
+        rows from the day the page was written — a row can be added without touching it."""
+        self.model()
+        self.concepts(self.CONCEPTS_ROWS, "Five")
+        self.assert_caught("does not carry the count its type table has rows for")
+
+    def test_a_renamed_table_header_is_caught_rather_than_read_as_empty(self) -> None:
+        """A gate that finds no table has stopped checking, and a page with the header
+        reworded looks exactly like a page with nothing wrong."""
+        self.model()
+        self.concepts(self.CONCEPTS_ROWS)
+        page = self.tree.root / "website/content/concepts.md"
+        page.write_text(
+            page.read_text(encoding="utf-8").replace(
+                "| Type | Written | What it is |", "| Type | Written | Notes |"
+            ),
+            encoding="utf-8",
+        )
+        self.assert_caught("no longer opens its type table")
+
+    def test_a_builtin_the_printer_does_not_spell_is_caught(self) -> None:
+        """The written table is only as long as the arms this gate can read out of the
+        printer. A pattern that stops matching one leaves a short list behind, and a short
+        list checks the page against fewer families every release without saying so."""
+        self.model()
+        self.tree.write(
+            "crates/fjord-schema/src/syntax/print.rs",
+            self.PRINTER.replace('        PredicateTy::Bytes => out.push_str("bytes"),\n', ""),
+        )
+        self.schema_language(self.WRITTEN_ROWS)
+        self.assert_caught("must agree, or the types table is checked against")
+
+    def test_a_missing_type_model_is_a_finding_rather_than_a_traceback(self) -> None:
+        self.concepts(self.CONCEPTS_ROWS)
+        stderr = self.assert_caught("nothing checks it")
+        self.assertNotIn("Traceback", stderr)
 
 
 if __name__ == "__main__":

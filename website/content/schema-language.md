@@ -97,6 +97,7 @@ wrote is unavailable. See [what is not available yet](#what-is-not-available-yet
 |---|---|
 | `int` | A signed 64-bit integer. Negative values sort correctly — the codec gives them their own marker band |
 | `string` | UTF-8. Order-preserving, so a prefix is a range |
+| `bytes` | Uninterpreted bytes. Ordered by `memcmp` over the payload, so a prefix is a range; written in a query as `0x…` |
 | `Predicate` / `ns.Predicate` | A **reference** to a fact of that predicate. Stored as a `FactId`; type-checked against the predicate it names |
 | `{ a : int, b : string }` | A record. Ordered fields, nesting allowed |
 | `{ a : int = 0 \| b : string = 1 }` | A **union**. One of the alternatives, tagged by an explicit discriminant — see [unions](#unions) |

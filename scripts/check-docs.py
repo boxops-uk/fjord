@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The drift gate: the checks that would have caught the documentation going stale.
 
-Six checks, each of which failed silently once:
+Seven checks, each of which failed silently once:
   1. every relative link and anchor in website/content/ resolves;
   2. every `invariants.md#iN`-style citation in crates/, docs/ and clients/ resolves
      to an anchor the registry actually declares;
@@ -17,6 +17,9 @@ Six checks, each of which failed silently once:
   6. a number the docs print is a number the tree computes — the protocol version and
      the plan's acceptance-criteria total. Both went stale inside one release, and a
      headline figure no gate computes is a claim that rots on the next edit.
+  7. the two tables that enumerate the type model list the families the type model has.
+     A scalar family reached the book by somebody remembering which pages tabulate it,
+     and both tables were missed for a whole release.
 
 Standard library only, like the site generator. Exit 1 on any finding.
 """
@@ -355,6 +358,110 @@ if criteria and headline not in index:
         f"docs/unified-plan/README.md does not carry the count the items add up to — "
         f"expected {headline!r} ({', '.join(f'{k}:{v}' for k, v in sorted(criteria.items()))})"
     )
+
+# ---- 7. the book's type tables carry every family the type model declares ---------
+#
+# **A new family reaches the book by somebody remembering which pages tabulate the type
+# model.** `bytes` landed with a plan item naming the two pages its author had in mind, and
+# the two *tables* that enumerate the model were not among them: both listed five types for
+# a model that had six, for a whole release. The concepts page's lead-in said "four" of the
+# five it did list, and had since the page was written. Neither table is a list to maintain
+# here — `PredicateTyNamed` is the population and `print::ty` is how each builtin is
+# written, so the next family fails this until both tables carry it.
+
+CONCEPTS_TABLE = "| Type | Written | What it is |"
+WRITTEN_TABLE = "| Written | Means |"
+NUMBER_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+def tabulated(text: str, header: str) -> list[str] | None:
+    """The first cell of every row of the table `header` opens, or `None` if there is no
+    such table — which is the gate being read out from under itself, not a clean page."""
+    lines = text.splitlines()
+    for start, line in enumerate(lines):
+        if line.strip() != header:
+            continue
+        cells = []
+        for row in lines[start + 2 :]:  # +2 steps over the `|---|` separator
+            if not row.startswith("|"):
+                break
+            cells.append(row.split("|")[1].strip().strip("`").strip())
+        return cells
+    return None
+
+
+TYPE_MODEL = ROOT / "crates/fjord-schema/src/schema.rs"
+PRINTER = ROOT / "crates/fjord-schema/src/syntax/print.rs"
+
+model = TYPE_MODEL.read_text(encoding="utf-8") if TYPE_MODEL.exists() else ""
+declared = re.search(r"pub enum PredicateTyNamed<N> \{\n(.*?)\n\}", model, re.S)
+families = re.findall(r"^    ([A-Z][A-Za-z0-9_]*)", declared.group(1), re.M) if declared else []
+
+printer = PRINTER.read_text(encoding="utf-8") if PRINTER.exists() else ""
+# The printer is the direction the "Written" column means: a family the source spells.
+spelled = dict(re.findall(r'PredicateTy::([A-Za-z]+) => out\.push_str\("([a-z]+)"\)', printer))
+
+# A builtin is a family with no payload, and the printer owes every one of them a keyword.
+# Read that way round because an arm this pattern stops matching leaves the written table
+# checked against a short list, which is a gate going quiet rather than a page going stale.
+builtins = re.findall(r"^    ([A-Z][A-Za-z0-9_]*),$", declared.group(1), re.M) if declared else []
+if declared and printer and set(builtins) != set(spelled):
+    fail(
+        f"`print::ty` spells {sorted(spelled)} and `PredicateTyNamed`'s payload-free families "
+        f"are {sorted(builtins)}: the two must agree, or the types table is checked against "
+        f"a list shorter than the type model"
+    )
+
+if "concepts" in pages:
+    listed = tabulated(pages["concepts"], CONCEPTS_TABLE)
+    if not families:
+        fail(
+            "the concepts page tabulates the type model and `PredicateTyNamed` cannot be read "
+            "out of crates/fjord-schema/src/schema.rs, so nothing checks it"
+        )
+    elif listed is None:
+        fail(
+            f"website/content/concepts.md no longer opens its type table with {CONCEPTS_TABLE!r}, "
+            f"so the check that keeps it in step with `PredicateTyNamed` reads an empty table"
+        )
+    else:
+        # `Fact(p)` names the `Fact` family; the parameter is the page's, not the model's.
+        named = {cell.split("(")[0] for cell in listed}
+        for family in families:
+            if family not in named:
+                fail(
+                    f"website/content/concepts.md's type table does not list `{family}`, "
+                    f"which `PredicateTyNamed` declares"
+                )
+        word = NUMBER_WORDS[len(families)] if len(families) < len(NUMBER_WORDS) else ""
+        headline = f"{word.capitalize()} building blocks, and that is all of them:"
+        if word and headline not in pages["concepts"]:
+            fail(
+                f"website/content/concepts.md does not carry the count its type table has rows "
+                f"for — expected {headline!r} for the {len(families)} `PredicateTyNamed` declares"
+            )
+
+if "schema-language" in pages:
+    listed = tabulated(pages["schema-language"], WRITTEN_TABLE)
+    if not spelled:
+        fail(
+            "the schema-language page tabulates how a type is written and `print::ty`'s builtin "
+            "arms cannot be read out of crates/fjord-schema/src/syntax/print.rs, so nothing "
+            "checks it"
+        )
+    elif listed is None:
+        fail(
+            f"website/content/schema-language.md no longer opens its types table with "
+            f"{WRITTEN_TABLE!r}, so the check that keeps it in step with `print::ty` reads an "
+            f"empty table"
+        )
+    else:
+        for family, written in sorted(spelled.items()):
+            if written not in listed:
+                fail(
+                    f"website/content/schema-language.md's types table does not list "
+                    f"`{written}`, which `print::ty` writes `PredicateTy::{family}` as"
+                )
 
 if findings:
     print(f"{len(findings)} finding(s):", file=sys.stderr)
