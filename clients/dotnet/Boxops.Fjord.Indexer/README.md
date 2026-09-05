@@ -11,11 +11,11 @@ database needs shown: that it holds up when the facts were not chosen to be conv
 
 ```sh
 # a fresh database, a server, and a checkout indexed into it
-./clients/dotnet/index-repo.sh ~/src/OrchardCore
+./clients/dotnet/index-repo.sh ~/src/OrchardCore/OrchardCore.sln
 
 # or by hand, against a server already running
 dotnet run --project clients/dotnet/Boxops.Fjord.Indexer -- \
-    --source ~/src/OrchardCore --socket /tmp/fj-index/db/fjord.sock --database code
+    --sln ~/src/OrchardCore/OrchardCore.sln --socket /tmp/fj-index/db/fjord.sock --database code
 ```
 
 ## What it is for
@@ -255,17 +255,21 @@ from a predicate that is always written, so the table's `Conditional` entries ar
 twice: rows after a run over `Census.slnx`, and none after a run over one of the same
 fixture's `.csproj` files.
 
-**The solution facts belong to the run that resolved a solution, and to no other.**
-`--source` may name a `.slnx` or a `.sln`, or a directory the loader picks one out of — that
-run has a solution and gets `msbuild.Solution` with both edges to every project the solution
-lists. Point it at a `.csproj`, or at a directory with no solution in it, and the three are
-**empty**: MSBuild's containment is one-way, so a project file names no solution, there is
-nothing to resolve from one, and searching the disk for a solution that happens to list it
-would put a claim in the database that the build system does not make. So the predicate reads
-*the solution this index was built from*, which is a question a consumer can act on — and
-"empty for a project-only run" is the answer rather than a gap. What decides it is what the
-run **resolved**, not what was typed: `--source ~/src/repo` and `--source ~/src/repo/Repo.slnx`
-are the same run and write the same facts.
+**The solution facts belong to the solutions that were named, and to no others.**
+`--sln` is repeatable, so a run gets `msbuild.Solution` and both edges for each one, and a
+project two of them list is named by both — "which solution is this project in" has two
+answers when that is the truth, and it is walked once regardless because the union
+deduplicates by path. A run of `--project` only writes none of the three: MSBuild's
+containment is one-way, so a project file names no solution, there is nothing to resolve from
+one, and searching the disk for a solution that happens to list it would put a claim in the
+database that the build system does not make. So the predicate reads *the solutions this
+index was built from*, and "empty for a project-only run" is the answer rather than a gap.
+
+**Nothing is discovered.** There is no directory form: a repository with two solutions in it
+gave whichever sorted first, silently — `ShareX.ImageEditor.sln` beside `ShareX.sln` indexed
+three of thirteen projects and reported the index complete under `--strict`, because complete
+could only ever mean "complete for the entry point I chose". Naming what to index is the
+caller's, and it is what makes `--strict`'s claim true.
 
 **The solution file is interned as a path and gets none of the per-file source facts** — no
 `src.FileLanguage`, no `src.FileDigest`, no `src.FileInfo`, no line table — which is exactly
@@ -482,6 +486,40 @@ the same decision `--max-files` already made.
 `ReferenceAssemblyTests` and [`refimpl`](../tests/fixtures/refimpl/README.md) are the gate,
 and the exit code is the assertion.
 
+### The databases a run needs, it makes
+
+A checkout compiling for several frameworks is several databases — `code#net10.0` beside
+`code#net8.0` — and **their names are not known until the design-time build has run**. So a
+caller creating them ahead of time had to discover them first with `--list-frameworks`,
+which is a full load of the whole solution: a 213-project repository spent 482 seconds on
+that and then failed with `UnknownDatabase`, having computed the very names it needed a
+moment earlier.
+
+Pass `--schema` and the run creates what it does not find:
+
+```sh
+fjord --schema-path ./schemas schema compose ./schemas/dotnet.sigla > /tmp/dotnet.sigla
+
+dotnet run --project clients/dotnet/Boxops.Fjord.Indexer -- \
+    --sln ~/src/Repo/Repo.slnx --schema /tmp/dotnet.sigla --at /run/fjord.sock//code
+```
+
+**Composed first, because composing is resolution.** An import is a namespace mapped to a
+relative path under a search root, and following one is sigla's job — not this program's,
+which has no parser and should not grow a bad one, and not the server's, which would need
+this machine's filesystem and is on another host the moment the address is TCP. So
+`fjord schema compose` inlines the imports where the files are, and what crosses the wire
+is one source carrying none.
+
+**Never checked in.** A composed schema is derived from the files beside it, so a copy in
+the repository is a second thing to keep in step — and the one that goes stale quietly,
+because nothing reads it until a database is created against it. Bake it in CI, bake it in
+the script, bake it per test run; there is nothing to drift because there is no copy.
+
+**Optional, and additive.** Without `--schema` a missing database is the error it always
+was: creating one changes the store root, so it happens because a caller asked and not
+because a write found nothing there.
+
 ### And when neither of them is a restatement, one is left out by name
 
 `src/coreclr/System.Private.CoreLib` and `src/mono/System.Private.CoreLib` are the same
@@ -543,7 +581,11 @@ collision nobody would have predicted.
 ## The flags
 
 ```
---source <path>       a .sln, .slnx, .csproj, or a directory holding one (required)
+--sln <path>          a .sln or .slnx to index; repeatable
+--project <path>      a .csproj to index; repeatable
+                      (name at least one of --sln or --project)
+--schema <path>       a composed schema (`fjord schema compose`) to create any
+                      database this run needs and does not find
 --root <path>         paths are reported relative to this (default: the solution's directory)
 --dotnet <path>       the dotnet host to build with (default: <root>/.dotnet/dotnet if present)
 --at <address>        where to write: [where//]name[@instance] (default: code, on
@@ -591,7 +633,7 @@ none. A connected run hands its facts to the client, which encodes them on the w
 so the byte count is reported only when this program does the encoding itself.
 
 **There is no degraded mode, and the numbers are why.** A walk that skipped MSBuild —
-every `.cs` file under `--source`, parsed against the framework this program runs on, no
+every `.cs` file the named inputs compile, parsed against the framework this program runs on, no
 project graph and no NuGet — finds every declaration, because declarations are in the
 syntax. It loses
 references into a package's types, because the type is an error type and the member on it
@@ -610,7 +652,7 @@ payload, byte for byte what the wire carries. That is the fact-file format Phase
 ingests, so a large index can be captured once and replayed without Roslyn in the loop.
 
 **A checkout too big for one machine is indexed per project, not per slice.** Holding
-every tree of a large `--source` at once costs roughly 1.4 GB per ten thousand files
+every tree of a large input at once costs roughly 1.4 GB per ten thousand files
 parsed, plus another 0.23 GB per thousand files *walked* as the symbol tables fill —
 dotnet/runtime's `src/` is 32,710 files, which is more than most machines will give. The
 answer is `--max-projects`, because a project is a compilation and a compilation is what

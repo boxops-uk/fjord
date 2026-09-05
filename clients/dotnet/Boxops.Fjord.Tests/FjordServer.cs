@@ -71,6 +71,28 @@ public sealed class FjordServer : IDisposable
 
     public static string Schema(string name) => Path.Combine(RepositoryRoot, "schemas", name);
 
+    /// <summary>
+    /// A schema composed into one import-free source, written to a temporary file.
+    /// </summary>
+    /// <remarks>
+    /// <b>Baked by the tool, never checked in.</b> A composed schema is derived from the
+    /// files beside it, so a copy in the repository is a second thing to keep in step with
+    /// the first — and the one that goes stale silently, because nothing reads it until a
+    /// database is created against it. Producing it per run means there is no copy to
+    /// drift: what a test creates from is what `schemas/` says today.
+    /// </remarks>
+    public static string Composed(string name)
+    {
+        var baked = Path.Combine(Path.GetTempPath(), $"fjt-schema-{Guid.NewGuid():N}"[..24] + ".sigla");
+
+        File.WriteAllText(
+            baked,
+            Run(Path.GetTempPath(), "--schema-path", Path.Combine(RepositoryRoot, "schemas"),
+                "schema", "compose", Schema(name)));
+
+        return baked;
+    }
+
     /// <summary>Run `fjord` to completion and return its stdout, or throw with its stderr.</summary>
     public static string Run(string root, params string[] args)
     {

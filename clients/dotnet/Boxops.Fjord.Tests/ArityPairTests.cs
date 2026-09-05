@@ -54,7 +54,7 @@ public sealed class ArityPairTests
         using var server = FjordServer.Serving("arity", "dotnet.sigla");
 
         var code = Program.Main([
-            "--source", fixture.Path("Arity.slnx"),
+            "--sln", fixture.Path("Arity.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//arity",
             "--no-smoke",
@@ -109,7 +109,7 @@ public sealed class ArityPairTests
         using var server = FjordServer.Serving("arity", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("Arity.slnx"),
+            "--sln", fixture.Path("Arity.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//arity",
             "--no-smoke",
@@ -167,7 +167,7 @@ public sealed class ArityPairTests
         using var server = FjordServer.Serving("arity", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("Arity.slnx"),
+            "--sln", fixture.Path("Arity.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//arity",
             "--no-smoke",

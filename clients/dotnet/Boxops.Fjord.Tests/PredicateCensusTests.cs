@@ -253,7 +253,7 @@ public sealed class PredicateCensusTests
         using var server = FjordServer.Serving("census", "dotnet.sigla");
 
         var code = Program.Main([
-            "--source", fixture.Path("Census.slnx"),
+            "--sln", fixture.Path("Census.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//census",
             "--repo", "github.com/boxops-uk/fjord",
@@ -320,7 +320,7 @@ public sealed class PredicateCensusTests
         using var server = FjordServer.Serving("project-only", "dotnet.sigla");
 
         var code = Program.Main([
-            "--source", fixture.Path("Core", "Core.csproj"),
+            "--project", fixture.Path("Core", "Core.csproj"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//project-only",
             "--no-smoke",

@@ -119,9 +119,9 @@ public sealed class ConcurrentWalkTests
                 trees.Add(CSharpSyntaxTree.ParseText(sources[n], path: path));
             }
 
-            var options = new Options { Source = directory.FullName, Jobs = jobs };
+            var options = new Options { Solutions = [directory.FullName], Jobs = jobs };
             var projects = ProjectIndex.Build(
-                directory.FullName, directory.FullName, [], solution: null, TextWriter.Null);
+                directory.FullName, directory.FullName, [], solutions: [], TextWriter.Null);
             var recorder = new SourceWalkTests.Recorder();
 
             var compilation = CSharpCompilation.Create(

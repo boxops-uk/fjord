@@ -40,7 +40,7 @@ public sealed class WriterTests
         long[] Index(string database, int writers)
         {
             var code = Program.Main([
-                "--source", fixture.Path("Ledger.slnx"),
+                "--sln", fixture.Path("Ledger.slnx"),
                 "--root", fixture.Root,
                 "--at", $"{server.Socket}//{database}",
                 "--writers", writers.ToString(),
@@ -88,7 +88,7 @@ public sealed class WriterTests
             var path = fixture.Path($"{name}.bin");
 
             Assert.Equal(0, Program.Main([
-                "--source", fixture.Path("Ledger.slnx"),
+                "--sln", fixture.Path("Ledger.slnx"),
                 "--root", fixture.Root,
                 "--dry-run", "--no-smoke",
                 "--jobs", jobs.ToString(),

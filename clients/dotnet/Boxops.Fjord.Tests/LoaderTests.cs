@@ -26,7 +26,7 @@ public sealed class LoaderTests
 {
     private static Options Over(Fixture fixture, string solution = "Graph.slnx") => new()
     {
-        Source = fixture.Path(solution),
+        Solutions = [fixture.Path(solution)],
         Jobs = 2,
     };
 
@@ -375,7 +375,7 @@ public sealed class LoaderTests
         using var fixture = Fixture.Copy("rescue");
 
         var solution = Loader.Load(
-            new Options { Source = fixture.Path("app", "App.slnx"), Jobs = 2 },
+            new Options { Solutions = [fixture.Path("app", "App.slnx")], Jobs = 2 },
             fixture.Root,
             TextWriter.Null);
 
@@ -410,7 +410,7 @@ public sealed class LoaderTests
         using var fixture = Fixture.Copy(name);
 
         var solution = Loader.Load(
-            new Options { Source = fixture.Path(solutionFile.Split('/')), Jobs = 2 },
+            new Options { Solutions = [fixture.Path(solutionFile.Split('/'))], Jobs = 2 },
             fixture.Root,
             TextWriter.Null);
 
@@ -493,36 +493,58 @@ public sealed class LoaderTests
     }
 
     /// <summary>
-    /// <b>A directory that resolves a solution is a solution run.</b>
+    /// <b>Two solutions named are two solutions written, and a project in both is named by
+    /// both.</b>
     /// </summary>
     /// <remarks>
-    /// The discriminator is what the run <i>resolved</i>, not what was typed:
-    /// <c>ResolveEntryPoint</c> picks the <c>.slnx</c> out of a directory and enumerates
-    /// its projects, so that run has a solution and the facts belong to it. A producer
-    /// keyed on the spelling of <c>--source</c> would write them for one of these two
-    /// runs over one checkout and not the other.
+    /// <para>
+    /// <c>--sln</c> is repeatable and unions into one index, so membership has to stay a
+    /// fact about a *solution* rather than about the run: <c>A</c> is listed by both, and
+    /// an index that recorded one membership would answer "which solution is this project
+    /// in" with whichever was named first.
+    /// </para>
+    /// <para>
+    /// <b>And <c>A</c> is walked once.</b> The union deduplicates by project path, so a
+    /// project two solutions share is built and walked a single time — writing it twice
+    /// into one database is what the deduplication exists to prevent.
+    /// </para>
     /// </remarks>
     [Fact]
-    public void A_directory_holding_a_solution_writes_the_solution_facts_naming_it_writes()
+    public void Two_solutions_naming_one_project_both_name_it()
     {
         using var fixture = Fixture.Copy("graph");
 
-        var named = Emitted(Only(Loader.Load(Over(fixture), fixture.Root, TextWriter.Null)));
-        var found = Emitted(Only(Loader.Load(
-            new Options { Source = fixture.Root, Jobs = 2 }, fixture.Root, TextWriter.Null)));
+        var options = new Options
+        {
+            Solutions = [fixture.Path("Graph.slnx"), fixture.Path("Tools.slnx")],
+            Jobs = 2,
+        };
 
-        // Non-empty first, or "the same as the other run" is two runs writing nothing.
-        Assert.Equal("Graph.slnx", Keyed(Assert.Single(found[DotnetIndex.Solution])));
+        var solution = Loader.Load(options, fixture.Root, TextWriter.Null);
+        var emitted = Emitted(Only(solution));
 
         Assert.Equal(
-            named[DotnetIndex.Solution].Select(Keyed),
-            found[DotnetIndex.Solution].Select(Keyed));
+            ["Graph.slnx", "Tools.slnx"],
+            emitted[DotnetIndex.Solution].Select(Keyed).Order());
+
+        // `A` is in both; `B` only in Graph; `C` only in Tools.
         Assert.Equal(
-            named[DotnetIndex.SolutionToProject].Select(Ends).Order(),
-            found[DotnetIndex.SolutionToProject].Select(Ends).Order());
+            [
+                ("Graph.slnx", "src/A/A.csproj"),
+                ("Graph.slnx", "src/B/B.csproj"),
+                ("Tools.slnx", "external/C/C.csproj"),
+                ("Tools.slnx", "src/A/A.csproj"),
+            ],
+            emitted[DotnetIndex.SolutionToProject].Select(Ends).Order());
+
         Assert.Equal(
-            named[DotnetIndex.ProjectToSolution].Select(Ends).Order(),
-            found[DotnetIndex.ProjectToSolution].Select(Ends).Order());
+            [
+                ("external/C/C.csproj", "Tools.slnx"),
+                ("src/A/A.csproj", "Graph.slnx"),
+                ("src/A/A.csproj", "Tools.slnx"),
+                ("src/B/B.csproj", "Graph.slnx"),
+            ],
+            emitted[DotnetIndex.ProjectToSolution].Select(Ends).Order());
     }
 
     /// <summary>
@@ -541,7 +563,7 @@ public sealed class LoaderTests
         using var fixture = Fixture.Copy("graph");
 
         var solution = Loader.Load(
-            new Options { Source = fixture.Path("src", "A", "A.csproj"), Jobs = 2 },
+            new Options { Projects = [fixture.Path("src", "A", "A.csproj")], Jobs = 2 },
             fixture.Root,
             TextWriter.Null);
 
@@ -582,7 +604,7 @@ public sealed class LoaderTests
         var log = new StringWriter();
 
         var solution = Loader.Load(
-            new Options { Source = fixture.Path("app", "App.slnx"), Jobs = 2 },
+            new Options { Solutions = [fixture.Path("app", "App.slnx")], Jobs = 2 },
             fixture.Path("app"),
             log);
 

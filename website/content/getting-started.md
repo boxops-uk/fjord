@@ -366,7 +366,7 @@ multi-targets and without it the run would fan out into one database per framewo
 
 ```bash
 dotnet run --project clients/dotnet/Boxops.Fjord.Indexer --configuration Release -- \
-  --source clients/dotnet --root clients/dotnet \
+  --sln clients/dotnet/Boxops.Fjord.slnx --root clients/dotnet \
   --framework net10.0 --at ./db2/fjord.sock//dotnet
 ```
 

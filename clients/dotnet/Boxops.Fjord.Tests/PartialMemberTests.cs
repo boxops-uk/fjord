@@ -254,7 +254,7 @@ public sealed class PartialMemberTests
         var server = FjordServer.Serving("partial", "dotnet.sigla");
 
         var code = Program.Main([
-            "--source", fixture.Path("Split.slnx"),
+            "--sln", fixture.Path("Split.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//partial",
             "--no-smoke",

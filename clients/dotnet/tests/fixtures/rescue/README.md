@@ -1,6 +1,6 @@
 # `rescue` — a project the solution lists and the glob cannot see
 
-The build layer reads every `.csproj` under `--source`. The solution is under `--source`
+The build layer reads every `.csproj` under the index root. The solution is under it
 too, and it is free to list a project that is not: `app/App.slnx` names `../lib/Lib.csproj`,
 which sits beside `app/` rather than inside it.
 

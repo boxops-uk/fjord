@@ -103,13 +103,13 @@ public sealed class SourceWalkTests
 
             var options = new Options
             {
-                Source = directory.FullName,
+                Solutions = [directory.FullName],
                 Lines = lines,
                 Repo = repo,
                 Revision = revision,
             };
             var projects = ProjectIndex.Build(
-                directory.FullName, directory.FullName, [], solution: null, TextWriter.Null);
+                directory.FullName, directory.FullName, [], solutions: [], TextWriter.Null);
             var recorder = new Recorder();
 
             var tree = CSharpSyntaxTree.ParseText(
@@ -726,8 +726,8 @@ public sealed class SourceWalkTests
             File.WriteAllText(here, "namespace N;\n\npublic class Here { }\n");
             File.WriteAllText(elsewhere, "namespace N;\n\npublic class Elsewhere { }\n");
 
-            var options = new Options { Source = inside };
-            var projects = ProjectIndex.Build(inside, inside, [], solution: null, TextWriter.Null);
+            var options = new Options { Projects = [] };
+            var projects = ProjectIndex.Build(inside, inside, [], solutions: [], TextWriter.Null);
             var recorder = new Recorder();
 
             var compilation = CSharpCompilation.Create(

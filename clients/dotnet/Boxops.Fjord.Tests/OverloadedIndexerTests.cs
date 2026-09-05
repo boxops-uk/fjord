@@ -66,7 +66,7 @@ public sealed class OverloadedIndexerTests
         using var server = FjordServer.Serving("indexer", "dotnet.sigla");
 
         var code = Program.Main([
-            "--source", fixture.Path("Indexer.slnx"),
+            "--sln", fixture.Path("Indexer.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//indexer",
             "--no-smoke",
@@ -117,7 +117,7 @@ public sealed class OverloadedIndexerTests
         using var server = FjordServer.Serving("indexer", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("Indexer.slnx"),
+            "--sln", fixture.Path("Indexer.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//indexer",
             "--no-smoke",

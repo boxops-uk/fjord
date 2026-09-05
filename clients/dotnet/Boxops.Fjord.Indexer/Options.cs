@@ -10,8 +10,52 @@ namespace Boxops.Fjord.Indexer;
 /// </remarks>
 internal sealed record Options
 {
-    /// <summary>A <c>.sln</c>, <c>.slnx</c>, <c>.csproj</c>, or a directory holding one.</summary>
-    public required string Source { get; init; }
+    /// <summary>The solutions to index — <c>.sln</c> or <c>.slnx</c>, repeatable.</summary>
+    /// <remarks>
+    /// <b>Named rather than discovered, because discovery has no right answer.</b> A
+    /// directory holding two solutions gave whichever sorted first, silently: a repository
+    /// with <c>ShareX.ImageEditor.sln</c> beside <c>ShareX.sln</c> indexed three of its
+    /// thirteen projects and reported the index complete under <c>--strict</c>, because
+    /// "complete" could only ever mean "complete for the entry point I chose". Choosing is
+    /// the caller's, and saying so is what makes <c>--strict</c>'s claim true.
+    /// </remarks>
+    public string[] Solutions { get; init; } = [];
+
+    /// <summary>Individual projects to index — <c>.csproj</c>, repeatable.</summary>
+    public string[] Projects { get; init; } = [];
+
+    /// <summary>
+    /// A composed schema to create missing databases from — the output of
+    /// <c>fjord schema compose</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Composed, because this program cannot compose one.</b> A schema's imports are
+    /// namespaces mapped to relative paths under a search root, and following them is
+    /// resolution — sigla's, not something to reimplement here badly. Asking the *server*
+    /// to read the files instead would be asking it to have this machine's filesystem,
+    /// which is false the moment the address is a TCP one. So the composing is done by
+    /// the one resolver there is, ahead of the run, and what arrives here is a single file
+    /// carrying no <c>import</c> at all.
+    /// </para>
+    /// <para>
+    /// <b>Optional, and only for the databases this run would otherwise fail on.</b>
+    /// Without it a missing database is the error it always was; with it a run that
+    /// compiles for three frameworks makes its own three rather than requiring a caller to
+    /// discover the framework names first — which cost a full design-time load of the
+    /// whole solution to learn names this program computes for itself a moment later.
+    /// </para>
+    /// </remarks>
+    public string? Schema { get; init; }
+
+    /// <summary>Everything named, in the order it was named.</summary>
+    /// <remarks>
+    /// <b>One index, however many were named.</b> Solutions and projects union into one
+    /// database per target framework: a caller naming two solutions means "index both into
+    /// this", and a project appearing in two of them is walked once because the walk
+    /// deduplicates by path.
+    /// </remarks>
+    public IEnumerable<string> Entries => Solutions.Concat(Projects);
 
     /// <summary>
     /// The directory paths are reported relative to. Defaults to the solution's own
@@ -219,8 +263,13 @@ internal sealed record Options
     public const string Usage = """
         fjord-indexer — index a .NET solution into a Fjord database
 
-          --source <path>       a .sln, .slnx, .csproj, or a directory holding one (required)
-          --root <path>         paths are reported relative to this (default: the solution's directory)
+          --sln <path>          a .sln or .slnx to index; repeatable
+          --project <path>      a .csproj to index; repeatable
+                                (name at least one of --sln or --project)
+          --root <path>         paths are reported relative to this (default: the single
+                                input's own directory; required if more than one is named)
+          --schema <path>       a composed schema (`fjord schema compose`) to create any
+                                database this run needs and does not find
           --dotnet <path>       the dotnet host to build with (default: <root>/.dotnet/dotnet if present)
           --at <address>        where to write: [where//]name[@instance]
                                 (default: code, on /tmp/fjord.sock — a bare name means
@@ -273,7 +322,9 @@ internal sealed record Options
         options = null!;
         error = null;
 
-        string? source = null, root = null, emit = null, dotnet = null;
+        string? root = null, emit = null, dotnet = null, schema = null;
+        var solutions = new List<string>();
+        var projects = new List<string>();
         var at = $"{DefaultSocket}{FjordAddress.Separator}code";
         int batch = 4096, maxFiles = 0, maxProjects = 0;
         var excludes = new List<string>();
@@ -313,8 +364,10 @@ internal sealed record Options
             {
                 switch (flag)
                 {
-                    case "--source": source = Value(); break;
+                    case "--sln": solutions.Add(Value()); break;
+                    case "--project": projects.Add(Value()); break;
                     case "--root": root = Value(); break;
+                    case "--schema": schema = Value(); break;
                     case "--dotnet": dotnet = Value(); break;
                     case "--at": at = Value(); break;
 
@@ -360,9 +413,21 @@ internal sealed record Options
             }
         }
 
-        if (source is null)
+        if (solutions.Count + projects.Count == 0)
         {
-            error = $"--source is required\n\n{Usage}";
+            error = $"name what to index: --sln <path> or --project <path>\n\n{Usage}";
+            return false;
+        }
+
+        // **One root, and it is what every `src.File` path is relative to** — the schema
+        // says so, as `config.Setting {dimension = "index-root"}`. With one input it can be
+        // inferred; with several there is no answer that is not a guess, and a wrong one
+        // makes every path in the index depend on where a checkout happens to sit. Two
+        // roots mean two databases, which is a second run.
+        if (root is null && solutions.Count + projects.Count > 1)
+        {
+            error = "--root is required when more than one --sln or --project is named: "
+                + "every file path in the index is relative to it";
             return false;
         }
 
@@ -395,9 +460,13 @@ internal sealed record Options
         options = new Options
         {
             Address = address,
-            Source = Path.GetFullPath(source),
+            Solutions = [.. solutions.Select(Path.GetFullPath)],
+            Projects = [.. projects.Select(Path.GetFullPath)],
             Root = root is null ? null : Path.GetFullPath(root),
-            Dotnet = dotnet is null ? Bootstrapped(source, root) : Path.GetFullPath(dotnet),
+            Schema = schema is null ? null : Path.GetFullPath(schema),
+            Dotnet = dotnet is null
+                ? Bootstrapped(solutions.Concat(projects).First(), root)
+                : Path.GetFullPath(dotnet),
             Emit = emit is null ? null : Path.GetFullPath(emit),
             Batch = batch,
             MaxFiles = maxFiles,
@@ -441,9 +510,9 @@ internal sealed record Options
     /// is being looked for is a checkout that pinned one, and the pin is the file.
     /// </para>
     /// </remarks>
-    private static string? Bootstrapped(string source, string? root)
+    private static string? Bootstrapped(string named, string? root)
     {
-        var checkout = root ?? (Directory.Exists(source) ? source : Path.GetDirectoryName(source));
+        var checkout = root ?? Path.GetDirectoryName(Path.GetFullPath(named));
 
         while (checkout is not null)
         {

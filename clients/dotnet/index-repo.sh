@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
 # Index a .NET checkout into a fresh Fjord database, and leave it there to query.
 #
-#   ./clients/dotnet/index-repo.sh /path/to/some/checkout [database]
+#   ./clients/dotnet/index-repo.sh /path/to/Some.slnx [database]
 #
 # The readiness file is the synchronisation, as in run-demo.sh: it appears only once the
 # listener is accepting, so waiting on it is a signal rather than a race (operations §5).
 #
 # Everything the indexer takes is passed through, so the knobs are its own:
 #
-#   ./clients/dotnet/index-repo.sh ~/src/OrchardCore code --max-files 5000
+#   ./clients/dotnet/index-repo.sh ~/src/OrchardCore/OrchardCore.sln code --max-files 5000
 #
 # The server is left running until this script exits and the database survives it — the
 # last lines say how to open a shell on it.
 set -euo pipefail
 
 if [ $# -lt 1 ]; then
-    echo "usage: $0 <path-to-checkout-or-solution> [database] [indexer flags...]" >&2
+    echo "usage: $0 <path-to-solution-or-project> [database] [indexer flags...]" >&2
     exit 2
 fi
 
 source_path="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+
+# **Named, not discovered.** The indexer takes a solution or a project and no longer
+# guesses one out of a directory: a repository with two solutions in it gave whichever
+# sorted first, silently, and reported the index complete under `--strict`.
+case "$source_path" in
+    *.sln|*.slnx) input=(--sln "$source_path") ;;
+    *.csproj)     input=(--project "$source_path") ;;
+    *) echo "name a .sln, .slnx or .csproj — not $source_path" >&2; exit 2 ;;
+esac
 shift
 
 database="code"
@@ -43,39 +52,18 @@ fjord="$root/target/release/fjord"
 rm -rf "$scratch"
 mkdir -p "$scratch"
 
-# **One database per target framework, so they have to be known before anything is
-# created.** A checkout that compiles for two frameworks is two programs, and the indexer
-# writes `<database>#<tfm>` for each; creating a database is a server operation the
-# producer cannot do for itself. Asking costs a second load, which is why a large checkout
-# is better off pinning `--framework` — pass it and this asks for that one.
-frameworks=()
-while IFS= read -r line; do
-    [ -n "$line" ] && frameworks+=("$line")
-done < <(dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Indexer" --configuration Release -- \
-    --source "$source_path" --list-frameworks "$@" 2>/dev/null)
+# **The schema, composed once by the tool that owns resolution.** `dotnet.sigla` reaches
+# five files by import, and following an import is sigla's job — so it is baked here and
+# the indexer sends the result. Never checked in: a composed schema is derived from the
+# files beside it, and a copy in the repository is one that goes stale silently.
+baked="$scratch/dotnet.composed.sigla"
+"$fjord" --schema-path "$root/schemas" schema compose "$root/schemas/dotnet.sigla" > "$baked"
 
-if [ ${#frameworks[@]} -eq 0 ]; then
-    echo "nothing in $source_path compiles, so there is nothing to index" >&2
-    exit 1
-fi
-
-# The flavour is only added when there is one to add, exactly as the indexer adds it.
-databases=("$database")
-if [ ${#frameworks[@]} -gt 1 ]; then
-    databases=()
-    for framework in "${frameworks[@]}"; do
-        databases+=("$database#$framework")
-    done
-fi
-
-echo "target framework(s): ${frameworks[*]}"
-
-# `--schema` is required, and this is the file `DotnetIndex.cs` states independently.
-# `--schema-path` because `dotnet.sigla` composes five files by import.
-for name in "${databases[@]}"; do
-    "$fjord" --data-dir "$scratch/db" --schema-path "$root/schemas" create "$name" \
-        --schema "$root/schemas/dotnet.sigla"
-done
+# **No database is created here, and the framework list is not asked for.** A checkout
+# compiling for two frameworks is two databases named `<database>#<tfm>`, and their names
+# are not known until the design-time build has run — so discovering them ahead of time
+# cost a second full load of the whole solution. The indexer creates what it needs from
+# `--schema` as it reaches each target.
 
 "$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/ready" &
 server=$!
@@ -89,14 +77,19 @@ done
 [ -e "$scratch/ready" ] || { echo "the server never became ready" >&2; exit 1; }
 
 dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Indexer" --configuration Release -- \
-    --source "$source_path" \
+    "${input[@]}" \
+    --schema "$baked" \
     --at "$socket//$database" \
     "$@"
 
 echo
 echo "the database(s) are at $scratch/db, and the server is about to stop. To ask them things:"
 echo "  $fjord --data-dir $scratch/db serve &"
-for name in "${databases[@]}"; do
+echo "  $fjord --data-dir $scratch/db list"
+
+# **Listed rather than predicted.** Which databases exist is now the run's answer — it
+# creates one per target framework as it reaches them — so naming them here would be this
+# script guessing at what it deliberately stopped computing.
+for name in $("$fjord" --data-dir "$scratch/db" list 2>/dev/null | awk 'NR>1 {print $1}'); do
     echo "  $fjord --data-dir $scratch/db query '$name' 'F where src.File F' --limit 20 --timing"
-    echo "  $fjord --data-dir $scratch/db query '$name' 'D where codemarkup.SearchEntry {name = \"Parse\", target = D}' --profile"
 done

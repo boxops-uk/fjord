@@ -325,7 +325,7 @@ public sealed class SourceLayerDatabaseTests
     {
         var options = new Options
         {
-            Source = root,
+            Solutions = [root],
             Styles = true,
             Repo = "github.com/boxops-uk/fixture",
             Revision = "3fa4961",
@@ -358,7 +358,7 @@ public sealed class SourceLayerDatabaseTests
 
         var compilation = document.Project.GetCompilationAsync().GetAwaiter().GetResult()!;
 
-        var projects = ProjectIndex.Build(root, root, [], solution: null, TextWriter.Null);
+        var projects = ProjectIndex.Build(root, root, [], solutions: [], TextWriter.Null);
 
         using var writing = FjordConnection.Connect(socket, "dotnet", DotnetIndex.Schema);
         using var sink = new FactSink(DotnetIndex.Schema, [new FjordTarget(writing)]);

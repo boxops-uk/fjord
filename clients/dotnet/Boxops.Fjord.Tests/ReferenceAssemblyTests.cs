@@ -55,7 +55,7 @@ public sealed class ReferenceAssemblyTests
         using var server = FjordServer.Serving("refimpl", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("RefImpl.slnx"),
+            "--sln", fixture.Path("RefImpl.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//refimpl",
             "--no-smoke",
@@ -88,7 +88,7 @@ public sealed class ReferenceAssemblyTests
         using var server = FjordServer.Serving("refimpl", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("RefImpl.slnx"),
+            "--sln", fixture.Path("RefImpl.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//refimpl",
             "--no-smoke",
@@ -128,7 +128,7 @@ public sealed class ReferenceAssemblyTests
         using var server = FjordServer.Serving("refimpl", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("RefImpl.slnx"),
+            "--sln", fixture.Path("RefImpl.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//refimpl",
             "--no-smoke",
@@ -171,7 +171,7 @@ public sealed class ReferenceAssemblyTests
         using var server = FjordServer.Serving("refimpl", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("RefImpl.slnx"),
+            "--sln", fixture.Path("RefImpl.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//refimpl",
             "--no-smoke",
@@ -259,9 +259,9 @@ public sealed class ReferenceAssemblyTests
             var path = System.IO.Path.Combine(directory.FullName, "Widgets.cs");
             File.WriteAllText(path, source);
 
-            var options = new Options { Source = directory.FullName };
+            var options = new Options { Projects = [] };
             var projects = ProjectIndex.Build(
-                directory.FullName, directory.FullName, [], solution: null, TextWriter.Null);
+                directory.FullName, directory.FullName, [], solutions: [], TextWriter.Null);
 
             // **No metadata references**, so nothing in the source binds — the state a
             // design-time build over an unbuilt checkout hands this walk.

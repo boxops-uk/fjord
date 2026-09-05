@@ -36,14 +36,18 @@ internal static class Program
             return ReferenceEquals(error, Options.Usage) ? 0 : 2;
         }
 
+        // One root for the whole index, because `src.File` is a path relative to it and
+        // `config.Setting {dimension = "index-root"}` records the one it was. With a single
+        // input it is that input's directory; with several, `Options` has already refused
+        // the run rather than pick one.
         var root = options.Root
-            ?? (Directory.Exists(options.Source) ? options.Source : Path.GetDirectoryName(options.Source)!);
+            ?? Path.GetDirectoryName(Path.GetFullPath(options.Entries.First()))!;
 
         // **`--list-frameworks` answers on stdout and says everything else on stderr**, so
         // a caller can read the list with `$(...)` rather than by filtering a log.
         var say = options.ListFrameworks ? Console.Error : Console.Out;
 
-        say.WriteLine($"indexing {options.Source}");
+        say.WriteLine($"indexing {string.Join(", ", options.Entries)}");
         say.WriteLine($"  paths relative to {root}");
         say.WriteLine($"  schema fingerprint {DotnetIndex.Schema.Fingerprint:x16}");
 
@@ -56,7 +60,8 @@ internal static class Program
         }
         catch (Exception failure) when (failure is IOException or InvalidOperationException or ArgumentException)
         {
-            Console.Error.WriteLine($"could not load {options.Source}: {failure.Message}");
+            Console.Error.WriteLine(
+                $"could not load {string.Join(", ", options.Entries)}: {failure.Message}");
             return 1;
         }
 
@@ -327,6 +332,61 @@ internal static class Program
     /// for byte gets one writer, whatever <c>--writers</c> says.
     /// </para>
     /// </remarks>
+    /// <summary>Create the database this run writes to, if <c>--schema</c> was given and it
+    /// is not there.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Before the connection, because the connection is what fails.</b> A session binds
+    /// to a database at the handshake, so a missing one is <c>UnknownDatabase</c> at the
+    /// first frame — and for a checkout compiling to several frameworks that arrived after
+    /// the whole design-time load, since the names are not known until then. A
+    /// 213-project repository spent 482 seconds reaching that error.
+    /// </para>
+    /// <para>
+    /// <b>Asking is a connection of its own, on no database.</b> There is no "does this
+    /// exist" frame; the way to find out is to bind to it, so this tries and reads the
+    /// refusal. A create that loses a race with another writer is refused the same way and
+    /// is equally fine — both mean the database is there now, which is all this needs.
+    /// </para>
+    /// </remarks>
+    private static void Ensure(Options options)
+    {
+        if (options.Schema is not { } schema)
+        {
+            return;
+        }
+
+        try
+        {
+            using var probe = FjordConnection.Connect(
+                options.Address, DotnetIndex.Schema, SessionMode.ReadOnly);
+            return;
+        }
+        catch (FjordServerException)
+        {
+            // Not there, or not answerable — either way the create below is what decides.
+        }
+
+        var source = File.ReadAllText(schema);
+
+        // A session that names no database, because the one being created cannot be bound
+        // to yet: `CONTROL` carries the name in the frame for exactly this.
+        using var control = FjordConnection.ConnectUnbound(
+            options.Address, DotnetIndex.Schema, SessionMode.ReadWrite);
+
+        try
+        {
+            var instance = control.CreateDatabase(options.Address.Database, source);
+            Console.WriteLine($"  created {options.Address.Database} ({instance})");
+        }
+        catch (FjordServerException refused)
+        {
+            // Lost a race, or cannot be created at all. The connection below reports the
+            // second case properly; the first is not a failure.
+            Console.WriteLine($"  {options.Address.Database}: {refused.ServerMessage.Split('\n')[0]}");
+        }
+    }
+
     private static List<FjordConnection> Connect(Options options)
     {
         if (options.DryRun)
@@ -342,6 +402,8 @@ internal static class Program
             Console.WriteLine(
                 "  --emit: one writer and one walker, so the file is a deterministic run of blocks");
         }
+
+        Ensure(options);
 
         Console.WriteLine($"connecting to {options.Address}, {writers} writer(s)");
 

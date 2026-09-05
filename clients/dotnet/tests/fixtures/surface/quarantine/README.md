@@ -10,7 +10,7 @@ fact after the refusal in that walk is lost.
 not add `quarantine/*/*.csproj` to `Surface.slnx`, and a whole-corpus run must not be given
 this directory — one arity pair anywhere in the walk would take the other twenty-one
 projects down with it, and every mechanism behind the refusal would become unmeasurable.
-They are indexed **one at a time**, each on its own (`--source quarantine/Arity/Arity.csproj`
+They are indexed **one at a time**, each on its own (`--project quarantine/Arity/Arity.csproj`
 and so on), so that the conflict each provokes **names itself** instead of being masked by
 whichever killer the walk happened to reach first.
 

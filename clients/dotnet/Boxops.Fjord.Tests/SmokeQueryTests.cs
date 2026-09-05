@@ -42,7 +42,7 @@ public sealed class SmokeQueryTests
         using var server = FjordServer.Serving("smoke", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("Arity.slnx"),
+            "--sln", fixture.Path("Arity.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//smoke",
             "--no-smoke",

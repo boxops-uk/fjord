@@ -1,0 +1,6 @@
+<Solution>
+  <!-- Overlaps `Graph.slnx` on `A`, which is what makes "which solution is this project
+       in" a question with two answers rather than one. -->
+  <Project Path="src/A/A.csproj" />
+  <Project Path="external/C/C.csproj" />
+</Solution>

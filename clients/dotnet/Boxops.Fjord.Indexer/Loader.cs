@@ -130,11 +130,26 @@ internal static class Loader
         var build = design ?? ((analyzer, environment) => analyzer.Build(environment));
         var retried = 0;
 
-        var entry = ResolveEntryPoint(options.Source);
-        log.WriteLine($"  entry point {entry}");
+        foreach (var entry in options.Entries)
+        {
+            if (!File.Exists(entry))
+            {
+                throw new FileNotFoundException($"nothing to index at {entry}");
+            }
+
+            log.WriteLine($"  entry point {entry}");
+        }
 
         var workspace = new AdhocWorkspace();
-        var analyzers = Analyzers(entry, options, log);
+
+        // **Unioned, and deduplicated by project path.** Two solutions naming one project
+        // is ordinary — a `Directory.Build.props` tree with a core solution and a tools one
+        // over the same code — and it must be walked once, not twice into one database.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var analyzers = options.Entries
+            .SelectMany(entry => Analyzers(entry, options, log))
+            .Where(analyzer => seen.Add(Path.GetFullPath(analyzer.ProjectFile.Path.ToString())))
+            .ToList();
 
         // **Captured before `--max-projects` narrows anything.** What a solution lists is a
         // fact about the repository, the same rule the build layer already follows for
@@ -147,12 +162,14 @@ internal static class Loader
         // cannot key that project" with "this producer does not read that language", which
         // are different facts with different fixes. The narrowing is said out loud one line
         // above, as `N C# project(s) in the solution`.
-        var resolved = IsSolution(entry)
-            ? new ResolvedSolution(
-                entry,
-                [.. analyzers.Select(analyzer =>
-                    Path.GetFullPath(analyzer.ProjectFile.Path.ToString()))])
-            : null;
+        // **One per solution named**, so membership stays a fact about a solution rather
+        // than about the run: a project in two of them gets an edge from each.
+        var resolved = options.Solutions
+            .Select(solution => new ResolvedSolution(
+                solution,
+                [.. Analyzers(solution, options, log)
+                    .Select(analyzer => Path.GetFullPath(analyzer.ProjectFile.Path.ToString()))]))
+            .ToList();
 
         if (options.MaxProjects > 0 && analyzers.Count > options.MaxProjects)
         {
@@ -270,7 +287,7 @@ internal static class Loader
         IReadOnlyList<IAnalyzerResult> results,
         Options options,
         string root,
-        ResolvedSolution? solution,
+        IReadOnlyList<ResolvedSolution> solutions,
         TextWriter log)
     {
         var workspace = new AdhocWorkspace();
@@ -327,7 +344,7 @@ internal static class Loader
         // the ones that built: a project MSBuild refused is still a project, its
         // references are still in its XML, and the files under it still have somewhere
         // to belong. The results that did succeed then overwrite what they know better.
-        var layer = ProjectIndex.Build(root, options.Source, results, solution, log);
+        var layer = ProjectIndex.Build(root, root, results, solutions, log);
 
         return new LoadedTarget(framework, walking, layer);
     }
@@ -786,36 +803,6 @@ internal static class Loader
     }
 
     /// <summary>A solution, a project, or the directory one lives in.</summary>
-    private static string ResolveEntryPoint(string source)
-    {
-        if (File.Exists(source))
-        {
-            return source;
-        }
-
-        if (!Directory.Exists(source))
-        {
-            throw new FileNotFoundException($"nothing to index at {source}");
-        }
-
-        // `.slnx` first: a repository carrying both is mid-migration, and the XML one is
-        // the one being kept.
-        foreach (var pattern in (string[])["*.slnx", "*.sln", "*.csproj"])
-        {
-            var found = Directory
-                .EnumerateFiles(source, pattern, SearchOption.TopDirectoryOnly)
-                .OrderBy(path => path, StringComparer.Ordinal)
-                .FirstOrDefault();
-
-            if (found is not null)
-            {
-                return found;
-            }
-        }
-
-        throw new FileNotFoundException(
-            $"no .slnx, .sln or .csproj directly under {source} — name one with --source");
-    }
 
     /// <summary>Whether the entry point this run resolved is a solution.</summary>
     /// <remarks>

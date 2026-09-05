@@ -63,7 +63,7 @@ public sealed class LedgerTests
             var database = Name(jobs, writers);
 
             var code = Program.Main([
-                "--source", fixture.Path("Ledger.slnx"),
+                "--sln", fixture.Path("Ledger.slnx"),
                 "--root", fixture.Root,
                 "--at", $"{server.Socket}//{database}",
                 "--jobs", jobs.ToString(),
@@ -135,13 +135,13 @@ public sealed class LedgerTests
         using var fixture = Fixture.Copy("ledger");
 
         var solution = Loader.Load(
-            new Options { Source = fixture.Path("Ledger.slnx"), Jobs = 2 },
+            new Options { Solutions = [fixture.Path("Ledger.slnx")], Jobs = 2 },
             fixture.Root,
             TextWriter.Null);
 
         var target = Assert.Single(solution.Targets);
         var recorder = new SourceWalkTests.Recorder();
-        var options = new Options { Source = fixture.Path("Ledger.slnx") };
+        var options = new Options { Solutions = [fixture.Path("Ledger.slnx")] };
 
         // Fully qualified: from `Boxops.Fjord.Tests`, the bare name resolves to the
         // sibling *namespace* rather than the type in it.
@@ -230,12 +230,12 @@ public sealed class LedgerTests
         using var server = FjordServer.Serving("interning", "dotnet.sigla");
 
         var solution = Loader.Load(
-            new Options { Source = fixture.Path("Ledger.slnx"), Jobs = 2 },
+            new Options { Solutions = [fixture.Path("Ledger.slnx")], Jobs = 2 },
             fixture.Root,
             TextWriter.Null);
 
         var target = Assert.Single(solution.Targets);
-        var options = new Options { Source = fixture.Path("Ledger.slnx") };
+        var options = new Options { Solutions = [fixture.Path("Ledger.slnx")] };
 
         using var connection = FjordConnection.Connect(
             server.Socket, "interning", DotnetIndex.Schema);

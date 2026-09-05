@@ -104,7 +104,7 @@ too many for a tour.
 
 ```bash
 dotnet run --project $FJ/clients/dotnet/Boxops.Fjord.Indexer --configuration Release -- \
-  --source $FJ/clients/dotnet --root $FJ/clients/dotnet \
+  --sln $FJ/clients/dotnet/Boxops.Fjord.slnx --root $FJ/clients/dotnet \
   --framework net10.0 --at ./db/fjord.sock//code
 ```
 

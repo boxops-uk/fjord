@@ -41,7 +41,7 @@ public sealed class SharedAssemblyTests
         using var server = FjordServer.Serving("identity", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("Identity.slnx"),
+            "--sln", fixture.Path("Identity.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//identity",
             "--no-smoke",
@@ -73,7 +73,7 @@ public sealed class SharedAssemblyTests
         using var server = FjordServer.Serving("identity", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("Identity.slnx"),
+            "--sln", fixture.Path("Identity.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//identity",
             "--no-smoke",
@@ -115,7 +115,7 @@ public sealed class SharedAssemblyTests
         using var server = FjordServer.Serving("identity", "dotnet.sigla");
 
         Assert.Equal(1, Program.Main([
-            "--source", fixture.Path("Identity.slnx"),
+            "--sln", fixture.Path("Identity.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//identity",
             "--strict",
@@ -141,7 +141,7 @@ public sealed class SharedAssemblyTests
         using var server = FjordServer.Serving("refimpl", "dotnet.sigla");
 
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("RefImpl.slnx"),
+            "--sln", fixture.Path("RefImpl.slnx"),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//refimpl",
             "--no-smoke",

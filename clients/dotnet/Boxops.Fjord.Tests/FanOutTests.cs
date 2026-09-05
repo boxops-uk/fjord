@@ -22,7 +22,7 @@ public sealed class FanOutTests
 {
     private static Options Over(Fixture fixture) => new()
     {
-        Source = fixture.Path("Targets.slnx"),
+        Solutions = [fixture.Path("Targets.slnx")],
         Jobs = 2,
     };
 
@@ -172,7 +172,7 @@ public sealed class FanOutTests
     {
         var options = new Options
         {
-            Source = "/checkout/App.slnx",
+            Solutions = ["/checkout/App.slnx"],
             Configuration = "Release",
             Repo = "github.com/boxops-uk/fjord",
             Revision = "29636a3",
@@ -204,7 +204,7 @@ public sealed class FanOutTests
     public void A_run_that_states_no_repository_writes_no_repository()
     {
         var settings = Provenance.Of(
-            new Options { Source = "/checkout" }, "/checkout", "net10.0", "0.2.0");
+            new Options { Solutions = ["/checkout"]}, "/checkout", "net10.0", "0.2.0");
 
         Assert.DoesNotContain(settings, setting => Dimension(setting) == "repo");
         Assert.DoesNotContain(settings, setting => Dimension(setting) == "revision");
@@ -235,7 +235,7 @@ public sealed class FanOutTests
         var emit = Path.Combine(fixture.Root, "blocks.bin");
 
         var code = Program.Main([
-            "--source", fixture.Path("Targets.slnx"),
+            "--sln", fixture.Path("Targets.slnx"),
             "--root", fixture.Root,
             "--dry-run", "--no-smoke", "--emit", emit,
         ]);
@@ -267,7 +267,7 @@ public sealed class FanOutTests
 
         string[] Run(params string[] extra) =>
         [
-            "--source", fixture.Path("Targets.slnx"),
+            "--sln", fixture.Path("Targets.slnx"),
             "--root", fixture.Root,
             "--dry-run", "--no-smoke", "--framework", "net10.0",
             .. extra,
@@ -279,7 +279,7 @@ public sealed class FanOutTests
 
         // And a run that leaves nothing out is not refused by `--strict`.
         Assert.Equal(0, Program.Main([
-            "--source", fixture.Path("Targets.slnx"),
+            "--sln", fixture.Path("Targets.slnx"),
             "--root", fixture.Root,
             "--dry-run", "--no-smoke", "--strict",
         ]));

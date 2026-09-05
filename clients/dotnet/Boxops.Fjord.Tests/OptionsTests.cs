@@ -33,7 +33,7 @@ public sealed class OptionsTests
     [Fact]
     public void Provenance_is_absent_unless_a_run_states_it()
     {
-        var options = Parse("--source", "/tmp/x.sln");
+        var options = Parse("--sln", "/tmp/x.sln");
 
         Assert.Null(options.Repo);
         Assert.Null(options.Revision);
@@ -43,7 +43,7 @@ public sealed class OptionsTests
     public void A_run_can_state_the_repository_and_the_revision_it_indexed()
     {
         var options = Parse(
-            "--source", "/tmp/x.sln",
+            "--sln", "/tmp/x.sln",
             "--repo", "github.com/boxops-uk/fjord",
             "--revision", "3fa4961");
 
@@ -61,7 +61,7 @@ public sealed class OptionsTests
     [InlineData("--revision", "3fa4961")]
     public void One_half_of_the_provenance_pair_is_refused(string flag, string value)
     {
-        var error = Refused("--source", "/tmp/x.sln", flag, value);
+        var error = Refused("--sln", "/tmp/x.sln", flag, value);
 
         Assert.Contains("--repo", error, System.StringComparison.Ordinal);
         Assert.Contains("--revision", error, System.StringComparison.Ordinal);
@@ -70,9 +70,9 @@ public sealed class OptionsTests
     [Fact]
     public void Both_provenance_flags_want_a_value()
     {
-        Assert.Contains("wants a value", Refused("--source", "/tmp/x.sln", "--repo"),
+        Assert.Contains("wants a value", Refused("--sln", "/tmp/x.sln", "--repo"),
             System.StringComparison.Ordinal);
-        Assert.Contains("wants a value", Refused("--source", "/tmp/x.sln", "--revision"),
+        Assert.Contains("wants a value", Refused("--sln", "/tmp/x.sln", "--revision"),
             System.StringComparison.Ordinal);
     }
 
@@ -87,7 +87,7 @@ public sealed class OptionsTests
     [InlineData("--skip-files")]
     public void The_syntax_only_mode_and_its_slicing_flag_are_refused_by_name(string flag)
     {
-        var error = Refused("--source", "/tmp/x.sln", flag, "0");
+        var error = Refused("--sln", "/tmp/x.sln", flag, "0");
 
         Assert.Contains(flag, error, System.StringComparison.Ordinal);
         Assert.Contains("unknown flag", error, System.StringComparison.Ordinal);

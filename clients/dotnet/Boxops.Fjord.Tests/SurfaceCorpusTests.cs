@@ -86,7 +86,10 @@ public sealed class SurfaceCorpusTests(SurfaceIndex indexed) : IClassFixture<Sur
     /// </remarks>
     internal static int Run(Fixture fixture, FjordServer server, string database, string source) =>
         Program.Main([
-            "--source", fixture.Path(source.Split('/')),
+            // The corpus names a solution for the whole surface and a project for a
+            // quarantined one, so the flag follows the extension.
+            source.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ? "--project" : "--sln",
+            fixture.Path(source.Split('/')),
             "--root", fixture.Root,
             "--at", $"{server.Socket}//{database}",
             "--repo", "github.com/boxops-uk/fjord",

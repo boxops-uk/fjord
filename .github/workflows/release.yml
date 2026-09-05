@@ -155,6 +155,32 @@ jobs:
       # wait on it. Built with `--bin fjord` only: nothing here needs the rest.
       - name: Build the server the .NET tests drive
         run: cargo build --release --locked --bin fjord
+      # **Every shipped schema composes, and what comes out creates a database.**
+      # `schema compose` inlines a schema's imports where the files are, which is what a
+      # client that ships a known schema sends to `create`: it has no sigla parser, and a
+      # server asked to read the caller's paths would be a server asked to have the
+      # caller's filesystem — false the moment the address is a TCP one. So the composed
+      # form is what crosses the wire, and this is what says it still resolves.
+      #
+      # **Baked here and never committed.** A composed schema is derived from the files
+      # beside it, so a copy in the repository is a second thing to keep in step — and the
+      # one that goes stale quietly, because nothing reads it until a database is created
+      # against it. Re-baked every run, there is nothing to drift.
+      - name: Schemas compose, and what composes creates
+        run: |
+          set -euo pipefail
+          baked="${RUNNER_TEMP}/baked"
+          mkdir -p "$baked"
+          for schema in schemas/*.sigla; do
+            name="$(basename "$schema" .sigla)"
+            ./target/release/fjord --schema-path schemas \
+              schema compose "$schema" > "$baked/$name.sigla"
+            # The composed form carries no import, so it needs no search path to be read
+            # again — which is the property that lets it be sent rather than resolved.
+            ! grep -qE '^\s*import ' "$baked/$name.sigla"
+            ./target/release/fjord --data-dir "$baked/db" \
+              create "$name" --schema "$baked/$name.sigla" > /dev/null
+          done
       - name: The .NET client and indexer
         run: dotnet test --nologo clients/dotnet/Boxops.Fjord.slnx
       # The coverage ledger (AGENTS.md, testing): guards written up front and not

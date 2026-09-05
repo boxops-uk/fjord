@@ -120,11 +120,15 @@ internal sealed class ProjectIndex
     /// </remarks>
     private readonly Dictionary<string, List<ProjectInfo>> _byDirectory = new(StringComparer.Ordinal);
 
-    /// <summary>The solution this index was built from, index-relative, or none.</summary>
-    private string? _solution;
+    /// <summary>The solutions this index was built from, index-relative, and what each lists.</summary>
+    /// <remarks>
+    /// <b>Several, because a caller may name several.</b> Membership is per solution — two
+    /// solutions sharing a project both get an edge to it, which is what "which solution is
+    /// this project in" has to answer when the honest answer is "both".
+    /// </remarks>
+    private readonly List<(string Path, List<string> Listed)> _solutions = [];
 
     /// <summary>The listed projects an edge can point at, index-relative.</summary>
-    private readonly List<string> _listed = [];
 
     private readonly List<string> _unlinked = [];
 
@@ -157,7 +161,7 @@ internal sealed class ProjectIndex
         string root,
         string source,
         IReadOnlyList<IAnalyzerResult> results,
-        ResolvedSolution? solution,
+        IReadOnlyList<ResolvedSolution> solutions,
         TextWriter log)
     {
         var index = new ProjectIndex();
@@ -199,7 +203,7 @@ internal sealed class ProjectIndex
         // Last, because it needs every project fact this layer will have: a project the
         // glob missed and a build rescued is one an edge can point at, and asking before
         // `Refine` would have counted it as lost.
-        if (solution is not null)
+        foreach (var solution in solutions)
         {
             index.Link(root, solution, log);
         }
@@ -241,27 +245,27 @@ internal sealed class ProjectIndex
             return;
         }
 
-        _solution = path;
+        var listed = new List<string>();
 
         foreach (var project in solution.Projects)
         {
-            if (Paths.Relative(root, project) is { } listed && _byPath.ContainsKey(listed))
+            if (Paths.Relative(root, project) is { } member && _byPath.ContainsKey(member))
             {
-                _listed.Add(listed);
+                listed.Add(member);
                 continue;
             }
 
-            _unlinked.Add(System.IO.Path.GetFileName(project));
-        }
+            var name = System.IO.Path.GetFileName(project);
+            _unlinked.Add(name);
 
-        log.WriteLine($"  solution {path}: {_listed.Count} of {solution.Projects.Count} "
-            + "listed project(s) have a project fact to be an edge to");
-
-        foreach (var name in _unlinked)
-        {
             log.WriteLine($"  ! {name}: listed by {path} and has no `msbuild.Project` fact "
                 + "in this index, so neither solution edge names it");
         }
+
+        _solutions.Add((path, listed));
+
+        log.WriteLine($"  solution {path}: {listed.Count} of {solution.Projects.Count} "
+            + "listed project(s) have a project fact to be an edge to");
     }
 
     /// <summary>The projects that compile <paramref name="file"/>, which may be none.</summary>
@@ -424,22 +428,20 @@ internal sealed class ProjectIndex
     /// </remarks>
     private void EmitSolution(Action<uint, FjordFact> emit)
     {
-        if (_solution is not { } path)
+        foreach (var (path, listed) in _solutions)
         {
-            return;
-        }
+            var solution = DotnetIndex.SolutionFact(DotnetIndex.FileFact(path));
+            emit(DotnetIndex.Solution, solution);
 
-        var solution = DotnetIndex.SolutionFact(DotnetIndex.FileFact(path));
-        emit(DotnetIndex.Solution, solution);
+            foreach (var member in listed)
+            {
+                // Only the paths `Link` found a project for are here, so the lookup cannot
+                // fail — the ones it could not are in `Unlinked` and are reported.
+                var project = _byPath[member].Fact;
 
-        foreach (var listed in _listed)
-        {
-            // `_listed` holds only the paths `Link` found a project for, so the lookup
-            // cannot fail — the ones it could not are in `Unlinked` and are reported.
-            var project = _byPath[listed].Fact;
-
-            emit(DotnetIndex.SolutionToProject, DotnetIndex.SolutionToProjectFact(solution, project));
-            emit(DotnetIndex.ProjectToSolution, DotnetIndex.ProjectToSolutionFact(project, solution));
+                emit(DotnetIndex.SolutionToProject, DotnetIndex.SolutionToProjectFact(solution, project));
+                emit(DotnetIndex.ProjectToSolution, DotnetIndex.ProjectToSolutionFact(project, solution));
+            }
         }
     }
 
