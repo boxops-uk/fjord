@@ -417,8 +417,7 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
                         canonical,
                     } => commands::schema::print_fingerprint(file, &roots, *format, *canonical)?,
 
-                    SchemaCommand::Compose { file } =>
-                        commands::schema::compose(file, &roots)?,
+                    SchemaCommand::Compose { file } => commands::schema::compose(file, &roots)?,
 
                     SchemaCommand::Diff { before, after } =>
                         commands::schema::diff(before, after, root, &roots)?,
