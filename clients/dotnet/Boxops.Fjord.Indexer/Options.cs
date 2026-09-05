@@ -183,11 +183,19 @@ internal sealed record Options
     /// not a measurement, and a default should not be an argument.
     /// </para>
     /// <para>
-    /// <b>The number that says to raise it is <c>queueing</c></b>: time the walk spent
-    /// blocked on a full queue. While it is near zero the writers are keeping up and this
-    /// should stay at one. When it is a real share of the run, raise it — that is the
-    /// case this exists for, and the one nobody has measured yet, because measuring it
-    /// costs a re-index of something the size of <c>dotnet/runtime</c>.
+    /// <b>Measured at scale now, and the default still stands.</b> Over 5.8M facts from
+    /// 111 projects of <c>dotnet/runtime</c>'s shared framework: 55,652 facts/s at one
+    /// writer, 54,443 at four, 51,020 at eight — more writers never paid, and the curve
+    /// is monotonic. <c>queueing</c> was 12.8% of a walker's time at one writer and four
+    /// writers cut it to 9.5% without moving throughput, because the writers were never
+    /// the ceiling.
+    /// <para>
+    /// <b>What is</b>: <c>contended</c>, at ~48% of a walker's time. Producers wait on a
+    /// predicate's batch lock, and <see cref="Boxops.Fjord.Client.FactSink"/> holds that
+    /// lock across the flush — whose enqueue blocks — so <c>queueing</c> accrues *under*
+    /// it and amplifies into <c>contended</c> about fourfold. Raising this cuts the
+    /// smaller term and pays for it in connections and server-side exclusion.
+    /// </para>
     /// </para>
     /// </remarks>
     public int Writers { get; init; } = 1;

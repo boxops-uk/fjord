@@ -7,6 +7,92 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### The indexer is told what to index · **change your invocations**
+
+`--source` is deleted. Name what to index with `--sln` and `--project`, both repeatable and
+unioned into one index:
+
+    fjord-indexer --sln ~/src/Repo/Repo.slnx --project ~/src/Repo/tools/Gen.csproj \
+        --root ~/src/Repo --at /run/fjord.sock//code
+
+**It used to guess.** A directory was searched for the first `.slnx`, then `.sln`, then
+`.csproj` by ordinal sort, and a repository with two solutions got whichever sorted first
+without saying so: `ShareX.ImageEditor.sln` beside `ShareX.sln` indexed **three of thirteen
+projects and exited 0 under `--strict`**, because "the index is complete" could only ever
+mean "complete for the entry point I chose". Two of twelve repositories in a compatibility
+sweep also kept their solution below the top directory and could not be indexed at all.
+
+`--root` is one value — every `src.File` is a path relative to it, and
+`config.Setting {dimension = "index-root"}` records which — so with more than one input it
+must be given rather than guessed. Two roots mean two databases, which is a second run.
+Solution membership is per solution, so a project two of them list is named by both.
+
+### The indexer creates the databases it writes to · `--schema`
+
+A checkout compiling for several frameworks is several databases, `<name>#<tfm>`, and the
+names are not known until the design-time build has run. Discovering them ahead of time
+meant `--list-frameworks` — a full load of the whole solution — and a 213-project
+repository spent **482 seconds** on it before failing with `UnknownDatabase`, having
+computed the very names it needed a moment earlier.
+
+Pass `--schema` a composed schema and the run creates what it does not find:
+
+    fjord --schema-path ./schemas schema compose ./schemas/dotnet.sigla > /tmp/dotnet.sigla
+    fjord-indexer --sln ~/src/Repo/Repo.slnx --schema /tmp/dotnet.sigla --at …//code
+
+Optional and additive: without it a missing database is the error it always was. Bake the
+schema per run and never commit it — it is derived from the files beside it, so a copy in a
+repository is the one that goes stale quietly.
+
+### `fjord schema compose` prints a schema with its imports inlined
+
+The two steps `create` already took, named so a caller who is not `create` can take them.
+What comes back carries no `import`, so it needs no search path to be read again — which is
+what lets a client that ships a known schema hand it to a server it cannot share a
+filesystem with. Following an import is resolution, and neither a client without a parser
+nor a server without the caller's filesystem can do it.
+
+### `create` refuses a schema that declares what a server answers
+
+A database declaring `fjord.db.List` composed to two of them when served and could not be
+opened — and `create` wrote the artifact first and discovered that second, leaving a
+database no listing could explain. The check now runs before anything is written, beside
+the schema round-trip check already there, and names the predicate.
+
+Reachable from outside: `SCHEMA` answers with the schema being *served*, virtuals included,
+so a client that asked a database what it held and handed the answer back walked into it.
+
+### The .NET client reads a page at a time, counts without rows, and manages databases
+
+`Rows(sigla, pageSize)` is a lazy `IEnumerable`, so `Take(n)` costs one page rather than the
+whole result; `Page` is the exchange under it and `CountRows` asks for a total with no row
+encoded. Disposing an enumerator early sends `CANCEL` and drains to `Complete`, which is
+what makes stopping early safe on a socket every stream shares. `CreateDatabase`,
+`SchemaSource` and `ConnectUnbound` cover the lifecycle frames the protocol has always
+carried and this client did not implement.
+
+**The defect behind it**: an indexer was OOM-killed at 20.6 GB after its walk had finished,
+while printing five rows. One smoke query asked for the whole line table of every file a
+definition was in — **109,720,432 rows** — and `Query` collects every row before its caller
+sees the first. That query is fixed (46,820 rows, one per declaration) and every smoke query
+now runs against a real server in the suite, which nothing did before.
+
+### A reference assembly is not walked, and a second implementation of one assembly is named
+
+`dotnet/runtime` could not be indexed at all. Every library ships a `ref/` project beside its
+`src/` one, restating the whole public API under the same assembly identity, so both minted
+one `src.Symbol` per member while `codemarkup.SymbolInfo` — keyed `{symbol}`, with the
+documentation on the value side — wanted one key with two values. Ingest refused it
+(`ops-I4`) and the write stream died part-way through. A compilation carrying
+`ReferenceAssemblyAttribute` is now left unwalked and counted; the project stays in the build
+graph.
+
+`src/coreclr/System.Private.CoreLib` beside `src/mono/System.Private.CoreLib` is the same
+collision without the same answer — two real programs, one identity — so the second is left
+out **by name** and `--strict` fails the run over it. Which is kept is the solution's order:
+arbitrary between the two and stable across runs, because nothing in a build graph says which
+implementation a reader meant.
+
 ### `csharp.FullName` carries an arity, so `Result` and `Result<T>` are two entities · **rebuild your clients, recreate your databases**
 
 C# holds a type name at two arities in one declaration space, and `class Result` beside

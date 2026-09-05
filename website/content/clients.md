@@ -125,7 +125,16 @@ could stand behind.
 
 It mirrors the server, so it stops where the server does. Streams are issued sequentially — the
 ids are real and the server tags every reply — but it sends a stream's frames and reads its
-replies before starting the next. There is no cancellation and no flow control on that side.
+replies before starting the next, so one result is open at a time and a second is refused rather
+than left to decode the first's rows. There is no per-stream flow control on that side.
+
+Cancellation it does have, and it is what makes a lazy read safe: `Rows` pulls a page at a time
+and yields, so `Take(n)` costs one page, and disposing the enumerator sends `CANCEL` on the open
+stream and reads to its `Complete` before handing the connection back. Without that, stopping
+early would leave a page's remaining rows on a socket every stream shares, and the *next* query
+would read them as its own — a wrong answer rather than an error. `Query` still collects the whole
+result and still cannot be stopped: the right thing for a result whose size the caller knows, and
+the wrong thing for one it does not.
 
 The test project is `Boxops.Fjord.Tests`, and what it does *not* contain is a unit test of this
 codec against constants copied from the Rust — that would only prove the constants were copied.
