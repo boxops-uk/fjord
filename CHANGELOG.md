@@ -7,6 +7,22 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### `--exclude` is deleted, having done nothing since `--syntax-only` went
+
+The flag was parsed and never read. Its implementation lived inside the syntax-only
+file-discovery walk and went with it when that was deleted, leaving the option, its parse
+arm and a doc paragraph describing behaviour the tool no longer had — so
+`--exclude src/tests` silently indexed `src/tests`.
+
+**It is not coming back in that form.** The walk indexes what a design-time build says a
+project compiles; dropping a subtree from that would index a program different from the one
+that builds, which is the thing this indexer refuses to do everywhere else. A corpus
+decision belongs in what you point it at — name the solutions or projects you want with
+`--sln` and `--project`.
+
+`bench/FINDINGS.md` §16 and §17 record measurements taken with it while it worked; those
+figures stand as history, and the register is closed until a 1.0 pass either way.
+
 ### The indexer is told what to index · **change your invocations**
 
 `--source` is deleted. Name what to index with `--sln` and `--project`, both repeatable and

@@ -130,32 +130,6 @@ internal sealed record Options
     /// <summary>Stop after this many source files. 0 means all of them.</summary>
     public int MaxFiles { get; init; }
 
-    /// <summary>
-    /// Paths, relative to <see cref="Root"/>, whose files are not walked.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>A corpus decision, made explicit.</b> `bench/FINDINGS.md` §15b found that 45% of
-    /// the wall clock of a whole-`dotnet/runtime` index was one 24 MB generated file in
-    /// `src/tests` whose reference pass resolves nothing — so every facts/s figure ever
-    /// quoted for that corpus was measuring one pathological file as much as the database.
-    /// This is how that file leaves the corpus without leaving a subset of it to a script.
-    /// </para>
-    /// <para>
-    /// <b>A path prefix, matched relative to the root</b> — <c>--exclude src/tests</c> —
-    /// rather than a glob, because the thing being excluded is a *tree* and a prefix says
-    /// so without a pattern language. Repeat the flag for more than one.
-    /// </para>
-    /// <para>
-    /// <b>The build layer is still whole</b>, which is the same decision <c>--max-files</c>
-    /// already made: what projects a repository has and what they reference is a fact about
-    /// the repository, not about which files this run reached. So an excluded tree's
-    /// projects still appear, and `msbuild.SourceFileToProject` still names its files —
-    /// interning creates as `src.File` facts with nothing else said about them.
-    /// </para>
-    /// </remarks>
-    public string[] Excludes { get; init; } = [];
-
     /// <summary>Stop after this many projects. 0 means all of them.</summary>
     public int MaxProjects { get; init; }
 
@@ -285,7 +259,6 @@ internal sealed record Options
                                 `/run/fjord.sock//code` names a socket)
           --batch <n>           facts per block (default: 4096)
           --max-files <n>       stop after n source files
-          --exclude <path>      do not walk this tree, relative to --root (repeatable)
           --max-projects <n>    stop after n projects
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
           --writers <n>         concurrent write streams, one connection each (default: 1;
@@ -335,7 +308,6 @@ internal sealed record Options
         var projects = new List<string>();
         var at = $"{DefaultSocket}{FjordAddress.Separator}code";
         int batch = 4096, maxFiles = 0, maxProjects = 0;
-        var excludes = new List<string>();
         var jobs = Math.Min(4, Environment.ProcessorCount);
         int? writers = null;
         bool references = true, restore = true;
@@ -386,7 +358,6 @@ internal sealed record Options
                     case "--emit": emit = Value(); break;
                     case "--batch": batch = Number(); break;
                     case "--max-files": maxFiles = Number(); break;
-                    case "--exclude": excludes.Add(Value().Replace('\\', '/').Trim('/')); break;
                     case "--max-projects": maxProjects = Number(); break;
                     case "--jobs": jobs = Math.Max(1, Number()); break;
                     case "--writers": writers = Math.Max(1, Number()); break;
@@ -478,7 +449,6 @@ internal sealed record Options
             Emit = emit is null ? null : Path.GetFullPath(emit),
             Batch = batch,
             MaxFiles = maxFiles,
-            Excludes = [.. excludes],
             MaxProjects = maxProjects,
             Jobs = jobs,
             Writers = writers ?? 1,
