@@ -495,39 +495,55 @@ internal static class Program
     /// <summary>Rows each smoke query prints, and therefore the most any of them reads.</summary>
     private const int Sample = 5;
 
-    private static void Smoke(FjordConnection connection, Indexer indexer)
+    /// <summary>
+    /// What a smoke run demonstrates: a description and the sigla behind it, for a
+    /// repository whose walk found <paramref name="sample"/> to ask about.
+    /// </summary>
+    /// <remarks>
+    /// <b>Separate from the printing so that something can run them.</b> A query here is
+    /// only ever executed after an index run, and a refusal only ever reaches a person
+    /// reading the tail of one — which is how a query with a type error in it shipped, was
+    /// printed as `refused (BadQuery)` on every run for a release, and was noticed by
+    /// somebody reading output rather than by a red suite.
+    /// </remarks>
+    internal static IEnumerable<(string What, string Sigla)> SmokeQueries(string? sample)
     {
-        var sample = indexer.SampleName;
-
-        Console.WriteLine();
-        Console.WriteLine("querying it back");
-
-        Run("every namespace, which is a scan",
+        yield return ("every namespace, which is a scan",
             "N where csharp.Namespace {name = M, containingNamespace = _}; csharp.Name N; M = csharp.Name N");
 
-        Run("every assembly the repository builds, which is the build layer",
+        yield return ("every assembly the repository builds, which is the build layer",
             "A where msbuild.Assembly {name = A}");
 
-        Run("what a project compiles, which is a seek keyed by the project file",
+        yield return ("what a project compiles, which is a seek keyed by the project file",
             "{project = P, src = S} where "
             + "F = src.File P; Q = msbuild.Project {file = F}; "
             + "msbuild.ProjectToSourceFile {project = Q, src = G}; G = src.File S");
 
         if (sample is not null)
         {
-            Run($"the definitions named `{sample}`, which is a seek into the search index",
+            yield return ($"the definitions named `{sample}`, which is a seek into the search index",
                 $"{{name = L}} where csharp.NameLowerCase {{nameLowercase = L, name = N}}; "
                 + $"N = csharp.Name \"{sample}\"");
 
             // **The join that reaches through a reference**, and the one this schema
             // changes the cost of: `EntityRef` leads with the target, so every use of a
             // definition is a seek rather than a read of the whole cross-reference table
-            // — which a cross-reference keyed by its own position cannot do.
-            Run($"every use of `{sample}`, which is a seek because the target leads",
+            // — which a cross-reference keyed by its own position cannot do. Both steps
+            // that reach the definition lead with what is bound, so the whole chain is
+            // seeks: over `dotnet/runtime`'s CoreLib this examines two rows to find the
+            // symbol, two to reach the definition, and one per answer thereafter.
+            //
+            // **A `src.Symbol` field holds a reference to the symbol fact and not the
+            // string in it**, so `src.Symbol S` against an `S` already bound by
+            // `SymbolOf` asks for a fact whose *string key* is a fact — which the
+            // typechecker refuses, and refuses at the point the smoke output prints
+            // rather than anywhere a test would see. `SymbolByName` is the way in from a
+            // name, because the name is the thing this query is given.
+            yield return ($"every use of `{sample}`, which is a seek because the target leads",
                 $"{{file = P, at = X.use.start}} where "
-                + $"X = csharp.EntityRef {{target = D, file = F}}; F = src.File P; "
-                + $"csharp.SymbolOf {{definition = D, symbol = S}}; "
-                + $"Y = src.Symbol S; S = src.Symbol _");
+                + $"codemarkup.SymbolByName {{name = \"{sample}\", symbol = S}}; "
+                + $"csharp.DefinitionBySymbol {{symbol = S, definition = D}}; "
+                + $"X = csharp.EntityRef {{target = D, file = F}}; F = src.File P");
 
             // A declaration, the line it is written on, and the text of that line: the
             // search index carries the line number in its key, so the line table is
@@ -541,10 +557,22 @@ internal static class Program
             // would need the greatest `src.FileLineAt.start` at or below a definition's
             // byte offset, and sigla has no descending seek: the line number in this key
             // is what makes it a seek at all.
-            Run($"the line declaring a definition, which is a seek keyed by file and line",
+            yield return ($"the line declaring a definition, which is a seek keyed by file and line",
                 "{name = N, line = Ln, text = L.value} where "
                 + "codemarkup.SearchEntry {name = N, file = F, line = Ln}; "
                 + "L = src.FileLine {file = F, line = Ln}");
+        }
+
+    }
+
+    private static void Smoke(FjordConnection connection, Indexer indexer)
+    {
+        Console.WriteLine();
+        Console.WriteLine("querying it back");
+
+        foreach (var (what, sigla) in SmokeQueries(indexer.SampleName))
+        {
+            Run(what, sigla);
         }
 
         // **Five rows and a total, and neither reads the result.** A smoke query is a
