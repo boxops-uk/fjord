@@ -68,10 +68,13 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     // the classic lost update, and a fact count that is quietly low is a measurement
     // nobody can tell from a smaller repository.
     private int _files_, _declarations, _references, _external, _unresolved, _unattributed;
-    private int _unspellable;
+    private int _unspellable, _referenceAssemblies;
     private long _lines, _styled;
 
     public int Files => Volatile.Read(ref _files_);
+
+    /// <summary>Compilations left unwalked because they are reference assemblies.</summary>
+    public int ReferenceAssemblies => Volatile.Read(ref _referenceAssemblies);
 
     public int Declarations => Volatile.Read(ref _declarations);
 
@@ -193,6 +196,15 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// </remarks>
     public void Index(Compilation compilation, Project? project, Action<string>? onFile = null)
     {
+        // Before anything is claimed: an unwalked compilation must not consume the
+        // `--max-files` budget, or which files a run reaches would depend on how many
+        // reference assemblies happened to precede them.
+        if (IsReferenceAssembly(compilation))
+        {
+            Interlocked.Increment(ref _referenceAssemblies);
+            return;
+        }
+
         // **Rebuilt per project, and that is deliberate.** The entity facts two projects
         // produce for one symbol are identical, so throwing the memo away costs a rebuild
         // and the duplicates dedup on the way in — where keeping it would hold every
@@ -234,6 +246,63 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 onFile?.Invoke(item.Path);
             });
     }
+
+    /// <summary>What an assembly carries to say it is a reference assembly.</summary>
+    private const string ReferenceAssemblyMarker =
+        "System.Runtime.CompilerServices.ReferenceAssemblyAttribute";
+
+    /// <summary>
+    /// Whether this compilation is a <b>reference assembly</b> — an API surface restated
+    /// for the compiler rather than source anybody navigates to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Walking one kills the run.</b> A reference assembly restates the whole public API
+    /// of the assembly it stands for, under that assembly's own identity, so every
+    /// declaration in it mints the symbol its implementation already minted — correctly:
+    /// they are one symbol. But it carries no documentation comments and spells its members
+    /// <c>partial</c>, and <c>codemarkup.SymbolInfo</c> is keyed <c>{symbol}</c> with
+    /// <c>{signature, doc, modifiers}</c> on the value side. Two facts then want one key
+    /// with two values, ingest refuses it (<c>ops-I4</c>), <c>FactSink</c> latches the
+    /// refusal and the write stream dies part-way through. Every library in
+    /// <c>dotnet/runtime</c>'s shared framework ships such a pair.
+    /// </para>
+    /// <para>
+    /// <b>Skipping is the answer rather than choosing a winner</b>, because a winner cannot
+    /// be chosen without deciding it per run: projects are walked in solution order, so
+    /// "first one wins" would answer every documentation query with whichever half the
+    /// solution happened to list first. The implementation is the one with the docs, the
+    /// bodies and the spans a reader wants, and it is the one that is kept.
+    /// </para>
+    /// <para>
+    /// <b>The attribute rather than a path.</b> <c>ReferenceAssemblyAttribute</c> is what
+    /// makes an assembly a reference assembly — the runtime refuses to load one carrying it
+    /// — so it is the fact rather than a spelling of it; <c>ref/</c> as a directory name is
+    /// <c>dotnet/runtime</c>'s convention and would say nothing about anybody else's tree.
+    /// </para>
+    /// <para>
+    /// <b>Matched by its written name, because the type usually does not bind.</b> A
+    /// design-time build resolves no metadata reference it did not need, so on a checkout
+    /// that has not been built this attribute is an <c>IErrorTypeSymbol</c>: its
+    /// <c>ContainingNamespace</c> is <c>System</c> — the deepest part that did resolve — and
+    /// <c>GetTypeByMetadataName</c> answers <see langword="null"/>. A symbol comparison and
+    /// a namespace check both therefore find *no* reference assembly on the very corpus this
+    /// exists for, silently, while indexing every one of them. What survives not binding is
+    /// <c>ToDisplayString</c>, the name as written — and the build writes it qualified,
+    /// because it generates the attribute from an MSBuild <c>AssemblyAttribute</c> item.
+    /// </para>
+    /// <para>
+    /// <b>Only the walk is skipped.</b> The build layer is emitted whole before any of
+    /// this, so the project keeps its <c>msbuild.Project</c> and its compilation — the
+    /// same decision <c>--max-files</c> already made, for the same reason: what projects a
+    /// repository has is a fact about the repository and not about which files this run
+    /// reached. Its *files* get no <c>src.File</c> fact unless something else names one,
+    /// because that interning is what the walk does.
+    /// </para>
+    /// </remarks>
+    private static bool IsReferenceAssembly(Compilation compilation) =>
+        compilation.Assembly.GetAttributes().Any(
+            attribute => attribute.AttributeClass?.ToDisplayString() == ReferenceAssemblyMarker);
 
     private void IndexTree(SemanticModel model, SyntaxTree tree, string path, Document? document)
     {

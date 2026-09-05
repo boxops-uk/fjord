@@ -403,6 +403,16 @@ internal static class Program
             + $"{Count(indexer.External)} to declarations outside the index, "
             + $"{Count(indexer.Unresolved)} unresolved");
 
+        if (indexer.ReferenceAssemblies > 0)
+        {
+            // Said out loud because it is a decision about the corpus and not a detail:
+            // a reader comparing file counts between two runs, or wondering why a `ref/`
+            // tree has no definitions in it, is owed the reason here rather than in a
+            // doc comment.
+            Console.WriteLine($"  {Count(indexer.ReferenceAssemblies)} reference assembly(s) "
+                + "left unwalked: the implementation beside each one declares the same API");
+        }
+
         if (indexer.Unattributed > 0)
         {
             // Shared source, or a checkout with no project files under `--source`. Said

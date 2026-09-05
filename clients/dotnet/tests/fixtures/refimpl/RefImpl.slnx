@@ -1,0 +1,10 @@
+<Solution>
+  <!-- Two projects of one name, in two solution folders — the layout `sfx.slnx` uses,
+       and the reason the pair reaches one assembly identity. -->
+  <Folder Name="/ref/">
+    <Project Path="Widgets/ref/Widgets.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="Widgets/src/Widgets.csproj" />
+  </Folder>
+</Solution>

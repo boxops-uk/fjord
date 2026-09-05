@@ -449,6 +449,39 @@ The fix is a further key field and therefore another flag day;
 `docs/unified-plan/15-retire-code-sigla.md` §S3 carries it as the open item, and
 `Assemblies.Left/README.md` is the fixture's own account of the mechanism.
 
+### Two assemblies of *one* identity is the sharper case, and it is not walked
+
+The table above holds while the two assemblies have **different** identities: `Package` puts
+the identity in the symbol string, so `codemarkup`'s half stays correct — two of each,
+keyed apart. When the two identities are the *same*, that stops being true, and it is not a
+hypothetical: every library in `dotnet/runtime`'s shared framework ships a `ref/` project
+beside its `src/` one, restating the whole public API under the same assembly name.
+
+Both halves then mint one `src.Symbol` per member — correctly, since they are one symbol.
+But `codemarkup.SymbolInfo` is keyed `{symbol}` with `{signature, doc, modifiers}` on the
+value side, and a reference assembly carries no documentation comments and spells its
+members `partial`. Two facts want one key with two values, ingest refuses it (`ops-I4`),
+`FactSink` latches the refusal and the run dies part-way through a write. **No checkout
+shipping a reference pack could be indexed at all.**
+
+So a compilation whose assembly carries `ReferenceAssemblyAttribute` is not walked, and the
+run says how many it left:
+
+```
+  1 reference assembly(s) left unwalked: the implementation beside each one declares the same API
+```
+
+**The attribute rather than a `ref/` path**, because the attribute is what makes an assembly
+a reference assembly — the runtime refuses to load one carrying it — while the directory
+name is one repository's convention. **Skipped rather than resolved to a winner**, because a
+winner would be decided by solution order: "first one wins" would answer every documentation
+query with the empty string whenever the `ref/` half were listed first, and exit 0 doing it.
+**Only the walk is skipped** — the project keeps its `msbuild.Project` and its compilation,
+the same decision `--max-files` already made.
+
+`ReferenceAssemblyTests` and [`refimpl`](../tests/fixtures/refimpl/README.md) are the gate,
+and the exit code is the assertion.
+
 ## Two things that had to be got right
 
 **`Compile`, not `Build`.** Buildalyzer's default targets are `Clean;Build`, and both
