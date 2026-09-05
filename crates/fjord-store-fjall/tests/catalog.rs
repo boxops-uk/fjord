@@ -868,3 +868,57 @@ fn a_schema_that_cannot_be_written_back_is_refused_at_create() {
         "a schema that does not round-trip must be refused before anything exists on disk"
     );
 }
+
+/// **`create` refuses a schema that declares into the reserved namespace, and leaves
+/// nothing behind.**
+///
+/// A server appends its virtual predicates to every database's own schema when it opens
+/// one, so a database that already declares `fjord.db.List` composes to two of them and
+/// cannot be opened at all:
+///
+/// ```text
+/// `second` was created and this server could not then open it:
+///   error[reject/redeclaration]: `fjord.db.List` is already declared in this schema
+/// ```
+///
+/// **Created, and only then unopenable** — the artifact was on disk before anything
+/// noticed, which is the shape this check exists to prevent. It sits beside the
+/// round-trip check for the same stated reason: one parse before anything is written
+/// turns a silent corruption into a refusal with nothing left behind.
+///
+/// Reachable from outside: `SCHEMA` answers with the schema being *served*, virtuals
+/// included, so a client that asks a database what it holds and hands the answer to
+/// `create` walks straight into it.
+#[test]
+fn a_schema_declaring_into_the_reserved_namespace_is_refused() {
+    let mut rodeo = Rodeo::new();
+    let name = rodeo.get_or_intern("fjord.db.List");
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Str,
+            value: None,
+        }]),
+    );
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let catalog = Catalog::open(dir.path()).expect("a catalog");
+
+    let err = catalog
+        .create("reserved", &schema)
+        .expect_err("a schema declaring a predicate the server answers must be refused");
+
+    assert!(
+        matches!(err, CatalogError::ReservedNamespace { .. }),
+        "expected a reserved-namespace refusal, got {err:?}"
+    );
+
+    // **Nothing left behind is half the claim.** A refusal that still published an
+    // instance directory would leave a database no server can open and no listing can
+    // explain, which is the state this replaces.
+    assert!(
+        catalog.list().expect("a listing").entries.is_empty(),
+        "a refused create must publish nothing"
+    );
+}

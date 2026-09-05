@@ -860,26 +860,25 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
-/// **A `create` this server then cannot open does not answer "no such database".**
+/// **A schema declaring into the reserved namespace is refused, and publishes nothing.**
 ///
-/// `create` opens what it published through the same path a bind takes, so the refusal
-/// it gets back is the one a bind gets: [`ServerError::Unservable`], which answers code
-/// 2. Code 2 in reply to a `create` says the database does not exist, about a name the
-/// client has just been told was taken and an instance directory that is sitting under
-/// the root — and it sends whoever reads it looking for a database rather than at the
-/// server's log, where the reason is. `Internal` is what the same failure answered
-/// before `create`'s open went through `attach`, and what it answers again.
+/// Serving a database composes its own schema with the server's catalogue and marks every
+/// reserved predicate virtual, so a database that already declares `fjord.db.List`
+/// composes to two of them and cannot be opened at all. `create` used to accept such a
+/// schema, publish the instance, and *then* fail to open it — answering
+/// [`ServerError::Internal`] about an artifact sitting under the root that no listing
+/// could explain and nothing could repair.
 ///
-/// Provoked the way a client can: a schema declaring a predicate in the **reserved
-/// namespace**. `Catalog::create` sees only the database's own schema and writes a valid
-/// artifact from it; serving one means composing that schema with the server's catalogue
-/// and marking every reserved predicate virtual, which the copy the sidecar's
-/// fingerprint was taken over is not — so the open refuses the database the `create`
-/// beside it has just published. That `create` accepts such a schema at all is a wart of
-/// its own, recorded in `PLAN.md`; what is asserted here is what a client is told when an
-/// open fails after a publish, whichever way the open failed.
+/// **`Catalog::create` now refuses it before anything is written**, which is what this
+/// asserts: the refusal names the predicate, and the root is left as it was found.
+///
+/// The claim that replaced it — an open that fails after a publish answers `Internal`
+/// rather than "no such database" — is
+/// [`a_database_that_will_not_open_says_which_instance_and_why`], which provokes it with a
+/// genuinely broken artifact rather than through `create`. That is the better provocation
+/// anyway: it does not depend on a wart to reach the state it is about.
 #[test]
-fn a_create_this_server_cannot_open_is_not_an_unknown_database() {
+fn a_schema_in_the_reserved_namespace_is_refused_and_publishes_nothing() {
     let serving = start();
     let mut control = Client::control_session(&serving, Mode::ReadWrite);
 
@@ -894,29 +893,21 @@ fn a_create_this_server_cannot_open_is_not_an_unknown_database() {
     let (header, payload) = control.recv();
     assert_eq!(header.kind, FrameKind::ERROR);
 
-    let (code, message) = error_of(&payload);
-    assert_eq!(
-        code,
-        ErrorCode::Internal,
-        "a create that published and could not open is not an absent database: {message}"
-    );
+    let (_, message) = error_of(&payload);
     assert!(
-        message.contains("collides"),
-        "the refusal names the database: {message}"
-    );
-    assert!(
-        !message.contains("no database named"),
-        "and does not say the name is unknown: {message}"
+        message.contains("fjord.db.List"),
+        "the refusal names the predicate that cannot be declared: {message}"
     );
 
-    // Which is the whole of why code 2 was wrong: the database it would have called
-    // absent is on the disk, under the root, where `fjord.db.List` will report it.
+    // **Nothing published is the half that used to fail.** A refusal that still left an
+    // instance under the root would leave a database no server can open and no listing
+    // can explain, which is the state this check exists to prevent.
     assert!(
         serving
             .catalog()
             .find("collides")
             .expect("the root reads")
-            .is_some(),
-        "the instance `create` published is still there"
+            .is_none(),
+        "a refused create must publish nothing"
     );
 }

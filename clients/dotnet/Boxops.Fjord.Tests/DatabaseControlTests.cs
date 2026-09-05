@@ -27,20 +27,20 @@ public sealed class DatabaseControlTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>So this source cannot create a sibling database, and that is the finding rather
-    /// than the intent.</b> A session is served the database's own predicates plus the
-    /// server's virtual <c>fjord.db.*</c> catalogue, and <c>SCHEMA</c> prints what is being
-    /// served so that a query compiled against the answer matches what the server will run.
-    /// Feeding it back to <c>create</c> declares the reserved namespace as stored
-    /// predicates; the artifact is created and the server then cannot open it —
-    /// <c>error[reject/redeclaration]: `fjord.db.List` is already declared</c> — leaving a
-    /// broken database behind. <c>create</c> validating the reserved namespace before it
-    /// writes anything is the fix, and it is not this client's to make.
+    /// <b>So this source cannot create a sibling database, and the refusal is the
+    /// contract.</b> A session is served the database's own predicates plus the server's
+    /// virtual <c>fjord.db.*</c> catalogue, and <c>SCHEMA</c> prints what is being served
+    /// so that a query compiled against the answer matches what the server will run.
+    /// Handing that back to <c>create</c> would declare the reserved namespace as stored
+    /// predicates — and serving a database appends the virtuals to its own schema, so the
+    /// result composes to two of each and cannot be opened at all.
     /// </para>
     /// <para>
-    /// Pinned as a characterisation rather than left to be rediscovered: a producer that
-    /// wants to create the databases it writes to needs the <i>embedded</i> schema, and no
-    /// frame answers with that today.
+    /// It once <i>succeeded</i>: the artifact was written and only the next open failed,
+    /// with <c>error[reject/redeclaration]: `fjord.db.List` is already declared</c>,
+    /// leaving a database no listing could explain. Now the create is refused and nothing
+    /// is written, which is what makes "ask a database what it holds" a safe thing to do
+    /// with the answer.
     /// </para>
     /// </remarks>
     [Fact]
@@ -59,6 +59,18 @@ public sealed class DatabaseControlTests
 
         // And wider than what was created: the reserved catalogue namespace is in it.
         Assert.Contains("fjord.db", source, StringComparison.Ordinal);
+
+        // Which is exactly why it cannot come back the other way.
+        var refused = Assert.Throws<FjordServerException>(
+            () => connection.CreateDatabase("sibling", source));
+
+        Assert.Contains("fjord.db", refused.ServerMessage, StringComparison.Ordinal);
+
+        // **Nothing written is half the claim**, and the half that used to fail: the
+        // refusal has to leave the store root as it found it.
+        Assert.Throws<FjordServerException>(
+            () => FjordConnection.Connect(
+                server.Socket, "sibling", DotnetIndex.Schema, SessionMode.ReadOnly));
     }
 
     /// <summary>

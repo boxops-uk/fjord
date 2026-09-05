@@ -167,6 +167,19 @@ pub enum CatalogError {
     #[error("the schema for `{name}` cannot be embedded: {detail}")]
     UnwritableSchema { name: String, detail: String },
 
+    /// A schema declaring a predicate in the namespace a **server** answers.
+    ///
+    /// A server appends its virtual predicates to every database's own schema when it
+    /// opens one, so a database that already declares one composes to two and cannot be
+    /// opened at all. Refused before anything is written, for the reason the round-trip
+    /// check above is: the alternative is an artifact that exists and cannot be served,
+    /// which no listing can explain and nothing can repair.
+    #[error(
+        "the schema for `{name}` declares `{predicate}`, which is in the namespace a \
+         server answers rather than stores — a database cannot hold one"
+    )]
+    ReservedNamespace { name: String, predicate: String },
+
     /// A write asked of a database that is not [`Writable`](crate::meta::Status::Writable).
     ///
     /// `ops-I2`: once Complete, immutability is structural — no writable handle

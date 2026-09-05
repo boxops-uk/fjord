@@ -53,6 +53,7 @@ use std::{
 use fjord_schema::{
     fingerprint,
     schema::{PredicateId, Schema},
+    syntax::lower::RESERVED_NAMESPACE,
 };
 
 use crate::{
@@ -565,6 +566,23 @@ impl Catalog {
             name: name.to_owned(),
             detail,
         })?;
+
+        // **And nothing in the namespace a server answers.** Serving a database appends
+        // the virtual predicates to its own schema, so one that already declares
+        // `fjord.db.List` composes to two of them and refuses to open — after the
+        // artifact exists, which is exactly the state the check above is placed early to
+        // avoid. Reachable from outside: a client can ask a session what schema it is
+        // served, and the answer includes the virtuals.
+        if let Some(predicate) = (0..schema.len())
+            .filter_map(|index| schema.get(PredicateId(index as u32)))
+            .filter_map(|predicate| predicate.name())
+            .find(|name| name.starts_with(RESERVED_NAMESPACE))
+        {
+            return Err(CatalogError::ReservedNamespace {
+                name: name.to_owned(),
+                predicate: predicate.to_owned(),
+            });
+        }
 
         let instance = ulid::new();
         let scratch = Scratch::new(self.root.join(format!("{SCRATCH_PREFIX}{instance}")));
