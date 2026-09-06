@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "codespan-reporting",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "fjord-schema",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fjord-client",
  "fjord-schema",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-encoding"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fjord-schema",
  "lasso",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "byteview",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-ingest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fjord-encoding",
  "fjord-schema",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-inspect"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "codespan-reporting",
  "fjord-encoding",
@@ -665,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-schema"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "codespan-reporting",
  "lasso",
@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "byteview",
  "fjord-encoding",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "byteview",
  "fjord-encoding",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-store-fjall"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "byteview",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-store-mem"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "byteview",
  "fjord-encoding",
@@ -743,7 +743,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-wire"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fjord-encoding",
  "fjord-schema",

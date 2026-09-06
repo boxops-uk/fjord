@@ -5,7 +5,19 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
-## Unreleased
+## 0.2.0 — 2026-09-06
+
+**Breaking on both sides of the wire, and on disk.** The protocol is 4, the shipped schemas
+are a new set, and several entity identities moved — so a client built against 0.1.0 is
+refused at the handshake, and a database written by 0.1.0 is not one this reads. Rebuild the
+clients and recreate the indexes; there is no migration and the series does not promise one.
+
+The round's shape: `schemas/code.sigla` is replaced by a composable set — a shared source
+layer, a UI surface, the project graph, the package layer, two language layers and the
+composite that imports them — and the indexer that writes it is told what to index rather
+than guessing, and creates the databases it writes to. Four query defects are fixed, two of
+which answered *wrong rows* rather than failing. `fjord-viewer` and the Glean comparison are
+retired.
 
 ### `--exclude` is deleted, having done nothing since `--syntax-only` went
 
