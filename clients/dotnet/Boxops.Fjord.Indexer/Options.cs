@@ -157,18 +157,27 @@ internal sealed record Options
     /// not a measurement, and a default should not be an argument.
     /// </para>
     /// <para>
-    /// <b>Measured at scale now, and the default still stands.</b> Over 5.8M facts from
-    /// 111 projects of <c>dotnet/runtime</c>'s shared framework: 55,652 facts/s at one
-    /// writer, 54,443 at four, 51,020 at eight — more writers never paid, and the curve
-    /// is monotonic. <c>queueing</c> was 12.8% of a walker's time at one writer and four
-    /// writers cut it to 9.5% without moving throughput, because the writers were never
-    /// the ceiling.
+    /// <b>Measured, and the answer is the corpus rather than a number.</b> Over 5.8M facts
+    /// from 111 src-only projects of <c>dotnet/runtime</c>'s shared framework: 55,652
+    /// facts/s at one writer, 54,443 at four, 51,020 at eight — worse each time. Over 6.1M
+    /// facts from 40 of them: 51,013 at one writer and 64,849 at four — <b>1.27× better</b>.
+    /// Same flag, same machine, opposite sign. So one is the right default for a caller who
+    /// has measured nothing, and it is not the right answer everywhere.
     /// <para>
-    /// <b>What is</b>: <c>contended</c>, at ~48% of a walker's time. Producers wait on a
-    /// predicate's batch lock, and <see cref="Boxops.Fjord.Client.FactSink"/> holds that
-    /// lock across the flush — whose enqueue blocks — so <c>queueing</c> accrues *under*
-    /// it and amplifies into <c>contended</c> about fourfold. Raising this cuts the
-    /// smaller term and pays for it in connections and server-side exclusion.
+    /// <b>The writers are the ceiling on both.</b> At one writer, the writer is inside
+    /// <c>Write</c> for 116.5s of a 122.0s walk; at four, each is busy 93% of a shorter
+    /// one, and four of them buy 1.31× rather than anything near four — so what they wait
+    /// on is shared, and it is the server. 6.1M facts sent are 54.7M interning attempts
+    /// (5,431,545 created, 49,289,453 deduped), which is a <c>keys</c> probe apiece plus
+    /// staging, commit and wire decode.
+    /// </para>
+    /// <para>
+    /// <b><c>contended</c> is no longer the number to read here, and used to be
+    /// misleading.</b> It stood at ~48% of a walker's time because
+    /// <see cref="Boxops.Fjord.Client.FactSink"/> held a predicate's batch lock across an
+    /// enqueue that blocks — so a writer's backpressure was counted as producer
+    /// serialisation. It is ~0 now, and the wait it was hiding is in <c>queueing</c>,
+    /// where it belongs.
     /// </para>
     /// </para>
     /// </remarks>

@@ -712,11 +712,19 @@ symbol's file nested inside it. Of those, 1,488,644 were already in the database
 133,860 were new. That number is interning working, and producing it is the whole point of the
 exercise; `--dry-run` is the honest way to measure this side without one.
 
-**`contended` is what the walk pays for sharing.** Several threads produce facts into
-sixty-five per-predicate batches, and three hundred and sixty-four of a hundred and
-fifty-two thousand found one already held — for a tenth of a second in total. It replaced a
-single lock around the whole of fact production, and the number is here so the replacement
-can be compared with what it replaced rather than assumed better.
+**`contended` is what the walk pays for sharing, and `queueing` is what it pays for the
+writers.** Several threads produce facts into sixty-five per-predicate batches, and three
+hundred and sixty-four of a hundred and fifty-two thousand found one already held — for a
+tenth of a second in total. `contended` replaced a single lock around the whole of fact
+production, and the number is here so the replacement can be compared with what it replaced
+rather than assumed better.
+
+**Read `queueing` for the write path, not `contended`.** The batch lock used to be held
+across the handover, whose enqueue blocks when the writers are behind — so a writer's
+backpressure was counted as producer serialisation, and read as such: over 6.1M facts it
+stood at 320–523s while the writers were in fact busy 93–95% of the walk. The lock is
+released before the queue is waited on now, `contended` is ~0 on the same corpus, and the
+wait it was hiding sits in `queueing` where its cause can be acted on.
 
 **`5,483 to declarations outside the index` is the honest part.** Real code points at the
 BCL and at packages; those references resolve to entities with no source location, and the
