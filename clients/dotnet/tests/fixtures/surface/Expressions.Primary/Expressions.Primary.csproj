@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Expressions.Primary</RootNamespace>
+    <!-- 12.8.19 (sizeof) and 12.8.22 (stackalloc, pointer form) are primary expressions
+         that only exist in an unsafe context. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

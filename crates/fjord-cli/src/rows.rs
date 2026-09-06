@@ -266,6 +266,7 @@ pub fn render(value: &WireValue) -> String {
     match value {
         WireValue::Int(n) => n.to_string(),
         WireValue::Str(text) => text.clone(),
+        WireValue::Bytes(payload) => fjord_inspect_hex(payload),
 
         WireValue::Ref(fjord_client::WireRef::Id(id)) => {
             format!("#{}:{}", id.predicate().0, id.sequence())
@@ -307,6 +308,14 @@ fn json(value: &WireValue, desc: &Desc, schema: Option<&Schema>, colour: bool) -
     match (value, desc) {
         (WireValue::Int(n), _) => paint(NUMBER, &n.to_string(), colour),
         (WireValue::Str(text), _) => paint(STRING, &json_string(text), colour),
+
+        // **A bare lowercase hex string, untagged** — the same shape
+        // `fjord_inspect::value::json` emits, asserted equal by
+        // `the_two_json_renderers_agree_on_every_family`. Painted as a string because
+        // that is what it is on the wire once rendered.
+        (WireValue::Bytes(payload), _) => {
+            paint(STRING, &json_string(&fjord_inspect_hex(payload)), colour)
+        }
 
         (WireValue::Ref(fjord_client::WireRef::Id(id)), _) => paint(
             REFERENCE,
@@ -401,6 +410,21 @@ fn key_desc(schema: &Schema, predicate: PredicateId) -> Option<Desc> {
     Desc::of(schema, key).ok()
 }
 
+/// Lowercase hex, two digits a byte.
+///
+/// Restated rather than imported: `fjord-inspect` is a dev-dependency here, not a real
+/// one, and the *shape* the two produce is asserted equal by a test rather than made
+/// equal by a shared function.
+fn fjord_inspect_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
 /// jq's `JQ_COLORS` defaults, and one addition of our own.
 const STRING: &str = "0;32";
 const NUMBER: &str = "0;39";
@@ -457,6 +481,134 @@ mod tests {
         WireValue::Record(fields.into())
     }
 
+    /// **The two live JSON renderers agree on the shape of every family.**
+    ///
+    /// This one takes a [`WireValue`] and a [`Desc`]; `fjord_inspect::value::json`
+    /// takes a storage `Value` and a `Schema`. They are written independently and
+    /// both chose `{"alt": payload}` for a union with nothing saying they had to — a
+    /// family that one tagged and the other left bare would make the shape of a row
+    /// depend on which endpoint served it.
+    ///
+    /// **Shapes, not bytes.** A reference is a string in both and deliberately a
+    /// *different* string: this renderer holds a descriptor and names the snowflake,
+    /// that one holds the schema and names the fact.
+    #[test]
+    fn the_two_json_renderers_agree_on_every_family() {
+        use fjord_encoding::tuple::Value;
+        use fjord_schema::{
+            id::FactId,
+            lasso::Rodeo,
+            schema::{Alternative, Predicate, PredicateId, PredicateTy, Schema},
+        };
+        use std::sync::Arc;
+
+        /// A JSON tree with its leaves replaced by the name of their kind, so two
+        /// renderings can be compared for shape without comparing content.
+        fn shape(value: &serde_json::Value) -> String {
+            match value {
+                serde_json::Value::Null => "null".to_owned(),
+                serde_json::Value::Bool(_) => "bool".to_owned(),
+                serde_json::Value::Number(_) => "number".to_owned(),
+                serde_json::Value::String(_) => "string".to_owned(),
+                serde_json::Value::Array(items) => format!(
+                    "[{}]",
+                    items.iter().map(shape).collect::<Vec<_>>().join(", ")
+                ),
+                serde_json::Value::Object(fields) => format!(
+                    "{{{}}}",
+                    fields
+                        .iter()
+                        .map(|(name, field)| format!("{name}: {}", shape(field)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        }
+
+        let mut rodeo = Rodeo::new();
+        let name = rodeo.get_or_intern("gen.P");
+        let field = rodeo.get_or_intern("f");
+        let alt = rodeo.get_or_intern("a");
+        let schema = Schema::new(
+            rodeo.into_reader(),
+            Arc::from(vec![Predicate {
+                name,
+                key: PredicateTy::Str,
+                value: None,
+            }]),
+        );
+        let id = FactId::new(PredicateId(0), 7).expect("a fact id");
+
+        let cases: Vec<(&str, PredicateTy, WireValue, Value)> = vec![
+            ("int", PredicateTy::Int, WireValue::Int(1), Value::Int(1)),
+            (
+                "string",
+                PredicateTy::Str,
+                WireValue::Str("x".to_owned()),
+                Value::Str("x".to_owned()),
+            ),
+            (
+                "a reference",
+                PredicateTy::Fact(PredicateId(0)),
+                WireValue::Ref(fjord_client::WireRef::Id(id)),
+                Value::FactRef(id),
+            ),
+            (
+                "a record",
+                PredicateTy::Record(Arc::from([(field, PredicateTy::Int)])),
+                WireValue::Record(vec![WireValue::Int(1)].into()),
+                Value::Record(Box::from([("f".to_owned(), Value::Int(1))])),
+            ),
+            (
+                "bytes",
+                PredicateTy::Bytes,
+                WireValue::Bytes(vec![0x00, 0xff, 0xff, 0x00, 0x80, 0xc0]),
+                Value::Bytes(vec![0x00, 0xff, 0xff, 0x00, 0x80, 0xc0]),
+            ),
+            (
+                "a union",
+                PredicateTy::Union(Arc::from([Alternative {
+                    name: alt,
+                    disc: 5,
+                    ty: PredicateTy::Int,
+                }])),
+                WireValue::Union {
+                    disc: 5,
+                    value: Box::new(WireValue::Int(1)),
+                },
+                Value::Union {
+                    disc: 5,
+                    alt: "a".to_owned(),
+                    value: Box::new(Value::Int(1)),
+                },
+            ),
+        ];
+
+        for (what, ty, wire, stored) in cases {
+            let desc = Desc::of(&schema, &ty).expect("a descriptor");
+            let rendered = json(&wire, &desc, Some(&schema), false);
+            let theirs = fjord_inspect::value::json(&stored, &schema);
+
+            let ours: serde_json::Value = serde_json::from_str(&rendered)
+                .unwrap_or_else(|err| panic!("{what}: {rendered} is not JSON: {err}"));
+
+            assert_eq!(
+                shape(&ours),
+                shape(&theirs),
+                "{what}: {rendered} against {theirs}"
+            );
+
+            // **`bytes` is a bare string in both, and the decision is pinned here
+            // rather than in a paragraph.** A tagged form — `{"$bytes": …}` — would
+            // make the shape of a row depend on which endpoint served it the moment
+            // one renderer adopted it and the other did not.
+            if what == "bytes" {
+                assert_eq!(ours, serde_json::Value::from("00ffff0080c0"));
+                assert_eq!(theirs, serde_json::Value::from("00ffff0080c0"));
+            }
+        }
+    }
+
     #[test]
     fn a_reference_prints_as_the_snowflake_it_is() {
         // Predicate 3, sequence 7 — the two halves an id is made of, and the reason a
@@ -474,40 +626,41 @@ mod tests {
     ///
     /// A descriptor says `Fact(p)` — which is what the row carried — so the fields of the
     /// fact underneath it have no names in it at all. Rendering them positionally was the
-    /// easy half of this job and would have made `{"module": ["f.py", "store"]}` out of
-    /// the interesting rows, which is the same mistake nesting a *record* by position
+    /// easy half of this job and would have made `{"decl": ["f.py", "encode", 12]}` out
+    /// of the interesting rows, which is the same mistake nesting a *record* by position
     /// was. The schema is the only thing that knows the shape, so it renders against the
     /// target predicate's key.
     ///
-    /// The chain is the sample schema's: a declaration's `module` is a `src.Module`, whose
-    /// own `file` is a `src.File` — one hop expanded, one left as an id, which is also
-    /// what a bounded `:expand 1` produces.
+    /// The chain is the sample schema's: a `code.Decl`'s own `file` is a `code.File` —
+    /// one hop expanded, one left as an id, which is also what a bounded `:expand 1`
+    /// produces.
     #[test]
     fn an_expanded_reference_is_named_by_the_schema() {
         use fjord_client::{WireFact, WireRef};
 
         let schema = Arc::new(crate::sample_schema::schema());
-        let file = fjord_schema::id::FactId::new(crate::sample_schema::id("src.File"), 4)
+        let file = fjord_schema::id::FactId::new(crate::sample_schema::id("code.File"), 4)
             .expect("a fact id");
 
         let desc = Desc::Record(Box::from([
-            ("name".to_owned(), Desc::Str),
+            ("at".to_owned(), Desc::Int),
             (
-                "module".to_owned(),
-                Desc::Fact(crate::sample_schema::id("src.Module")),
+                "decl".to_owned(),
+                Desc::Fact(crate::sample_schema::id("code.Decl")),
             ),
         ]));
 
-        let module = WireValue::Ref(WireRef::Nested(Box::new(WireFact {
-            predicate: crate::sample_schema::id("src.Module"),
+        let decl = WireValue::Ref(WireRef::Nested(Box::new(WireFact {
+            predicate: crate::sample_schema::id("code.Decl"),
             key: record(vec![
                 WireValue::Ref(WireRef::Id(file)),
-                WireValue::Str("store".to_owned()),
+                WireValue::Str("encode".to_owned()),
+                WireValue::Int(12),
             ]),
             value: None,
         })));
 
-        let row = record(vec![WireValue::Str("encode".to_owned()), module.clone()]);
+        let row = record(vec![WireValue::Int(3), decl.clone()]);
 
         let mut out = vec![];
         let mut sink =
@@ -518,10 +671,10 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&String::from_utf8(out).unwrap()).expect("valid JSON");
 
-        assert_eq!(parsed["module"]["name"], "store", "{parsed}");
+        assert_eq!(parsed["decl"]["name"], "encode", "{parsed}");
         assert_eq!(
-            parsed["module"]["file"],
-            format!("#{}:4", crate::sample_schema::id("src.File").0),
+            parsed["decl"]["file"],
+            format!("#{}:4", crate::sample_schema::id("code.File").0),
             "the hop that was not taken is still an id: {parsed}"
         );
 
@@ -535,13 +688,16 @@ mod tests {
 
         let parsed: serde_json::Value =
             serde_json::from_str(&String::from_utf8(bare).unwrap()).expect("valid JSON");
-        assert_eq!(parsed["module"][1], "store", "{parsed}");
+        assert_eq!(parsed["decl"][1], "encode", "{parsed}");
 
         // And in a table it is the target's key, with nothing marking it as having been
         // a reference — which is what somebody turned expansion on to see.
         assert_eq!(
-            render(&module),
-            format!("{{#{}:4, store}}", crate::sample_schema::id("src.File").0)
+            render(&decl),
+            format!(
+                "{{#{}:4, encode, 12}}",
+                crate::sample_schema::id("code.File").0
+            )
         );
     }
 

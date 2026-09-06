@@ -23,6 +23,7 @@ var address = FjordAddress
 // EmitGolden below for why that file exists.
 var goldenPath = Args("--golden");
 var unionGoldenPath = Args("--golden-unions");
+var bytesGoldenPath = Args("--golden-bytes");
 
 string? Args(string flag)
 {
@@ -51,159 +52,103 @@ string? Args(string flag)
 // purpose — that is the whole point of the fingerprint.
 
 const uint File = 0;
-const uint Module = 1;
-const uint Decl = 2;
-const uint Reference = 4;
+const uint Decl = 1;
+const uint Reference = 2;
+const uint Span = 3;
+const uint Extent = 4;
+const uint Kind = 5;
+const uint KindOf = 6;
+const uint Resolves = 7;
+const uint Digest = 8;
+const uint Extends = 9;
+const uint Note = 10;
 
-// The build layer and the declaration graph. This program writes none of them — it is
-// six declarations somebody typed out, and they are answered by a compiler — but the
-// fingerprint is over the *whole* schema, so a client that omits them is a client the
-// handshake refuses. `Fjord.Indexer` is what fills them.
-const uint Project = 6;
-const uint Assembly = 7;
-const uint Package = 11;
-const uint Param = 17;
-const uint Doc = 19;
+// `schemas/demo.sigla`'s fingerprint, as `fjord schema check` prints it. Carried, not
+// computed: a second implementation of the canonical form in every client is a port
+// every future client pays for and a drift every one of them can cause.
+const ulong SchemaFingerprint = 0x03678fcd1e7924e3;
 
-// The schema fingerprint, as `fjord schema fingerprint` prints it — carried rather
-// than computed (see FjordSchema), so this client states the shapes independently
-// and the number only says which schema it was written against.
-const ulong SchemaFingerprint = 0xb08eea634e866a75;
+// `{ line : int, col : int }`, which the schema names `Position` — a named type is
+// structural, so the name does not enter the canonical form and this side need not have
+// one for it.
+var position = FjordType.Rec(("line", FjordType.Integer), ("col", FjordType.Integer));
+
+// `{ data : string = 5 | func : int = 2 }`. **The tags are written down, not inferred
+// from position**: a client numbering alternatives 0 and 1 would write `data` where the
+// schema says `func`, and nothing on the wire would object.
+var what = FjordType.OneOf(
+    ("data", 5u, FjordType.String),
+    ("func", 2u, FjordType.Integer));
+
+// A union whose alternatives carry a payload of every kind: none, a reference, a
+// reference to a *different* predicate, and a record.
+var target = FjordType.OneOf(
+    ("unresolved", 0u, FjordType.Rec()),
+    ("decl", 1u, FjordType.Reference(Decl)),
+    ("file", 2u, FjordType.Reference(File)),
+    ("external", 3u, FjordType.Rec(
+        ("name", FjordType.String),
+        ("assembly", FjordType.String))));
+
+// A single-alternative union, which needs the trailing `|` in the schema to be one at
+// all — here it is just a union with one arm.
+var rendered = FjordType.OneOf(("html", 0u, FjordType.String));
 
 var schema = new FjordSchema([
-    new FjordPredicate("src.File", FjordType.String, null),
+    new FjordPredicate("code.File", FjordType.String, null),
 
-    new FjordPredicate("src.Module", FjordType.Rec(
-        ("file", FjordType.Reference(File)),
-        ("name", FjordType.String)), null),
+    new FjordPredicate("code.Decl", FjordType.Rec(
+            ("file", FjordType.Reference(File)),
+            ("name", FjordType.String),
+            ("line", FjordType.Integer)),
+        FjordType.String),
 
-    // A value side: the declaration's kind. A value cannot be matched on (I6), which
-    // is what makes it the right home for something a query wants to *read* but never
-    // to filter by.
-    new FjordPredicate("src.Decl", FjordType.Rec(
-        ("module", FjordType.Reference(Module)),
-        ("name", FjordType.String),
-        ("line", FjordType.Integer)), FjordType.String),
-
-    new FjordPredicate("src.SearchByName", FjordType.Rec(
-        ("name", FjordType.String),
+    new FjordPredicate("code.Ref", FjordType.Rec(
+        ("from", FjordType.Reference(Decl)),
         ("to", FjordType.Reference(Decl))), null),
 
-    // A nested record inside a key, and two references to two different predicates.
-    new FjordPredicate("src.Ref", FjordType.Rec(
-        ("to", FjordType.Reference(Decl)),
-        ("file", FjordType.Reference(File)),
-        ("at", FjordType.Rec(
-            ("line", FjordType.Integer),
-            ("col", FjordType.Integer),
-            ("length", FjordType.Integer)))), null),
-
-    new FjordPredicate("src.Import", FjordType.Rec(
-        ("from", FjordType.Reference(Module)),
-        ("to", FjordType.Reference(Module))), null),
-
-    // ---- the build layer: what compiled a file, and into what ---------------------
-
-    new FjordPredicate("src.Project", FjordType.String, null),
-
-    new FjordPredicate("src.Assembly", FjordType.String, null),
-
-    new FjordPredicate("src.Compilation", FjordType.Rec(
-        ("assembly", FjordType.Reference(Assembly)),
-        ("framework", FjordType.String),
-        ("project", FjordType.Reference(Project))), null),
-
-    new FjordPredicate("src.ProjectSource", FjordType.Rec(
-        ("file", FjordType.Reference(File)),
-        ("project", FjordType.Reference(Project))), null),
-
-    new FjordPredicate("src.ProjectRef", FjordType.Rec(
-        ("from", FjordType.Reference(Project)),
-        ("to", FjordType.Reference(Project))), null),
-
-    new FjordPredicate("src.Package", FjordType.Rec(
-        ("name", FjordType.String),
-        ("version", FjordType.String)), null),
-
-    new FjordPredicate("src.PackageRef", FjordType.Rec(
-        ("package", FjordType.Reference(Package)),
-        ("project", FjordType.Reference(Project))), null),
-
-    // ---- the declaration graph ----------------------------------------------------
-
-    new FjordPredicate("src.Member", FjordType.Rec(
-        ("container", FjordType.Reference(Decl)),
-        ("member", FjordType.Reference(Decl))), null),
-
-    new FjordPredicate("src.Extends", FjordType.Rec(
-        ("base", FjordType.Reference(Decl)),
-        ("type", FjordType.Reference(Decl))), null),
-
-    new FjordPredicate("src.Implements", FjordType.Rec(
-        ("iface", FjordType.Reference(Decl)),
-        ("type", FjordType.Reference(Decl))), null),
-
-    new FjordPredicate("src.Override", FjordType.Rec(
-        ("base", FjordType.Reference(Decl)),
-        ("member", FjordType.Reference(Decl))), null),
-
-    new FjordPredicate("src.Param", FjordType.Rec(
+    new FjordPredicate("code.Span", FjordType.Rec(
         ("decl", FjordType.Reference(Decl)),
-        ("index", FjordType.Integer),
-        ("name", FjordType.String)), FjordType.String),
+        ("at", position)), null),
 
-    // A key of one field, which encodes as the bare reference does.
-    new FjordPredicate("src.TypeOf", FjordType.Rec(
-        ("decl", FjordType.Reference(Decl))), FjordType.String),
+    new FjordPredicate("code.Extent",
+        FjordType.Rec(("decl", FjordType.Reference(Decl))),
+        FjordType.Rec(("from", position), ("to", position))),
 
-    new FjordPredicate("src.Doc", FjordType.Rec(
-        ("decl", FjordType.Reference(Decl))), FjordType.String),
-
-    new FjordPredicate("src.Attribute", FjordType.Rec(
-        ("attribute", FjordType.String),
-        ("target", FjordType.Reference(Decl))), null),
-
-    new FjordPredicate("src.Line", FjordType.Rec(
-        ("file", FjordType.Reference(File)),
-        ("line", FjordType.Integer)), FjordType.String),
-
-    // ---- what a code-search viewer needs -----------------------------------------
-    //
-    // Three of these are a *second key order* over data already declared above: a
-    // predicate leads with one field, and find-references and a file view want
-    // different ones. Declaring a derived predicate is Phase 8b; until then the
-    // producer states the second order.
-
-    new FjordPredicate("src.DeclSpan", FjordType.Rec(
+    new FjordPredicate("code.Kind", FjordType.Rec(
         ("decl", FjordType.Reference(Decl)),
-        ("col", FjordType.Integer),
-        ("endLine", FjordType.Integer),
-        ("endCol", FjordType.Integer)), null),
+        ("what", what)), null),
 
-    new FjordPredicate("src.SearchByLowerName", FjordType.Rec(
-        ("name", FjordType.String),
-        ("to", FjordType.Reference(Decl))), null),
+    new FjordPredicate("code.KindOf", FjordType.Rec(
+        ("what", what),
+        ("decl", FjordType.Reference(Decl))), null),
 
-    new FjordPredicate("src.FileXRef", FjordType.Rec(
-        ("file", FjordType.Reference(File)),
-        ("at", FjordType.Rec(
-            ("line", FjordType.Integer),
-            ("col", FjordType.Integer),
-            ("length", FjordType.Integer))),
-        ("to", FjordType.Reference(Decl))), null),
+    new FjordPredicate("code.Resolves", FjordType.Rec(
+        ("at", FjordType.Integer),
+        ("to", target)), null),
 
-    new FjordPredicate("src.DerivesFrom", FjordType.Rec(
+    new FjordPredicate("code.Digest",
+        FjordType.Rec(("file", FjordType.Reference(File))),
+        FjordType.Rec(("sha256", FjordType.Blob))),
+
+    new FjordPredicate("code.Extends", FjordType.Rec(
         ("type", FjordType.Reference(Decl)),
         ("base", FjordType.Reference(Decl))), null),
 
-    new FjordPredicate("src.AttributeOf", FjordType.Rec(
-        ("target", FjordType.Reference(Decl)),
-        ("attribute", FjordType.String)), null),
+    new FjordPredicate("code.Note", FjordType.Rec(
+        ("decl", FjordType.Reference(Decl)),
+        ("text", rendered)), null),
 ], SchemaFingerprint);
 
 if (goldenPath is not null)
 {
     EmitGolden(goldenPath);
+    return;
+}
+
+if (bytesGoldenPath is not null)
+{
+    EmitBytesGolden(bytesGoldenPath);
     return;
 }
 
@@ -230,33 +175,31 @@ Console.WriteLine();
 
 // ---- writing facts that hold no ids -------------------------------------------
 
-// A declaration names its module, which names its file. Two levels of nesting, and
-// this program never learns what any of them were called.
+// A declaration names its file, and a reference names two declarations — so a
+// reference is two levels of nesting, and this program never learns what any of them
+// were called.
 FjordFact FileFact(string path) =>
     new(File, FjordValue.Of(path));
 
-FjordFact ModuleFact(string path, string name) =>
-    new(Module, FjordValue.Rec(
-        FjordValue.Of(FjordRef.To(FileFact(path))),
-        FjordValue.Of(name)));
-
-// Fields in the schema's order — line, module, name — and the kind on the value side.
-FjordFact DeclFact(string path, string module, string kind, long line, string name) =>
+// Fields in the schema's order — file, name, line — with the signature on the value
+// side. **The order is the schema's, not alphabetical**: it is part of the encoding, so
+// a client that sorted them would produce bytes the server reads as a different fact.
+FjordFact DeclFact(string path, string name, long line, string signature) =>
     new(Decl,
         FjordValue.Rec(
-            FjordValue.Of(FjordRef.To(ModuleFact(path, module))),
+            FjordValue.Of(FjordRef.To(FileFact(path))),
             FjordValue.Of(name),
             FjordValue.Of(line)),
-        FjordValue.Of(kind));
+        FjordValue.Of(signature));
 
 var declarations = new List<FjordFact>
 {
-    DeclFact("store/keys.py", "keys", "def", 12, "key_of"),
-    DeclFact("store/keys.py", "keys", "def", 48, "key_prefix"),
-    DeclFact("store/keys.py", "keys", "def", 77, "key_successor"),
-    DeclFact("store/codec.py", "codec", "def", 7, "encode_key"),
-    DeclFact("store/codec.py", "codec", "class", 31, "CodecError"),
-    DeclFact("query/plan.py", "plan", "class", 5, "Plan"),
+    DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"),
+    DeclFact("store/keys.py", "key_prefix", 48, "def key_prefix(row)"),
+    DeclFact("store/keys.py", "key_successor", 77, "def key_successor(row)"),
+    DeclFact("store/codec.py", "encode_key", 7, "def encode_key(k)"),
+    DeclFact("store/codec.py", "CodecError", 31, "class CodecError"),
+    DeclFact("query/plan.py", "Plan", 5, "class Plan"),
 };
 
 Console.WriteLine($"writing {declarations.Count} declarations, every reference nested");
@@ -265,27 +208,37 @@ var summary = connection.Write(Decl, declarations);
 
 Console.WriteLine($"  created {summary.Created}, deduped {summary.Deduped} "
     + $"(of {summary.Seen} facts touched)");
-Console.WriteLine($"  {declarations.Count} declarations + 3 modules + 3 files = 12 distinct facts");
+Console.WriteLine($"  {declarations.Count} declarations + 3 files = 9 distinct facts");
 Console.WriteLine();
 
-// A reference: a nested record in the key, plus two references to two predicates —
-// and the declaration it names is one already written, so it dedups rather than
-// creating a second copy.
+// A reference: two references to one predicate, and both declarations it names are
+// already written, so it dedups rather than creating a second copy.
 var references = new List<FjordFact>
 {
     new(Reference, FjordValue.Rec(
         FjordValue.Of(FjordRef.To(
-            DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
-        FjordValue.Of(FjordRef.To(FileFact("query/plan.py"))),
-        FjordValue.Rec(
-            FjordValue.Of(19L),
-            FjordValue.Of(4L),
-            FjordValue.Of(6L)))),
+            DeclFact("query/plan.py", "Plan", 5, "class Plan"))),
+        FjordValue.Of(FjordRef.To(
+            DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"))))),
+};
+
+// A nested *record* in a key, which is a different shape from a nested fact: the span
+// is spliced into the key rather than interned as a fact of its own.
+var spans = new List<FjordFact>
+{
+    new(Span, FjordValue.Rec(
+        FjordValue.Of(FjordRef.To(
+            DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"))),
+        FjordValue.Rec(FjordValue.Of(12L), FjordValue.Of(4L)))),
 };
 
 var refs = connection.Write(Reference, references);
-Console.WriteLine($"a reference with a nested-record key: created {refs.Created}, "
-    + $"deduped {refs.Deduped} (its file and declaration were already there)");
+Console.WriteLine($"a reference between two declarations: created {refs.Created}, "
+    + $"deduped {refs.Deduped} (both declarations were already there)");
+
+var spanned = connection.Write(Span, spans);
+Console.WriteLine($"a span, whose nested record is spliced into the key rather than "
+    + $"interned: created {spanned.Created}, deduped {spanned.Deduped}");
 Console.WriteLine();
 
 // Writing the same block again writes nothing: interning is idempotent, which is what
@@ -312,20 +265,19 @@ void Run(string sigla)
     Console.WriteLine();
 }
 
-Run("F where src.File F");
-Run("N where src.Module {name = N}");
-Run("{at = D.line, what = D.name} where D = src.Decl _");
+Run("F where code.File F");
+Run("{at = D.line, what = D.name} where D = code.Decl _");
 // The value side, which a query can read but never match on (I6).
-Run("D.value where D = src.Decl _");
+Run("D.value where D = code.Decl _");
 
 // The denial: declarations whose name does not start with `key`.
-Run("N where src.Decl {name = N}; N != \"key\"..");
+Run("N where code.Decl {name = N}; N != \"key\"..");
 
 // Reaching through a reference — the join that makes a fact database worth having.
-Run("{decl = D.name, file = D.module.file} where D = src.Decl _");
+Run("{from = R.from.name, to = R.to.name} where R = code.Ref _");
 
-// The reference's nested-record key, read back.
-Run("{line = R.at.line, col = R.at.col} where R = src.Ref _");
+// The span's nested-record key, read back.
+Run("{line = S.at.line, col = S.at.col} where S = code.Span _");
 
 try
 {
@@ -340,7 +292,7 @@ catch (FjordServerException error)
 
 // ...and the connection is still usable afterwards, which is the point of failing a
 // stream rather than a connection.
-Run("F where src.File F");
+Run("F where code.File F");
 
 Console.WriteLine("done");
 
@@ -364,61 +316,129 @@ void EmitGolden(string path)
 {
     (string Name, uint Predicate, IReadOnlyList<FjordFact> Facts)[] blocks =
     [
-        ("src.File", File, [FileFact("store/keys.py"), FileFact("query/plan.py")]),
+        ("code.File", File, [FileFact("store/keys.py"), FileFact("query/plan.py")]),
 
-        ("src.Decl", Decl,
+        ("code.Decl", Decl,
         [
-            DeclFact("store/keys.py", "keys", "def", 12, "key_of"),
+            DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"),
             // Zero, and a value past a single varint byte: zigzag is where a codec
             // that agrees on small numbers can still disagree.
-            DeclFact("store/keys.py", "keys", "def", 0, "zero"),
-            DeclFact("query/plan.py", "plan", "class", 2147483648, "Plan"),
+            DeclFact("store/keys.py", "zero", 0, "def zero()"),
+            DeclFact("query/plan.py", "Plan", 2147483648, "class Plan"),
+            // A negative, for the other half of zigzag. A declaration is never on line
+            // -1; this corpus is chosen for what it reaches, not for what it means.
+            DeclFact("store/keys.py", "before", -1, "def before()"),
         ]),
 
-        ("src.Ref", Reference,
+        // **Two levels of nesting**: a reference names two declarations, and each names
+        // its file.
+        ("code.Ref", Reference,
         [
             new(Reference, FjordValue.Rec(
                 FjordValue.Of(FjordRef.To(
-                    DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
-                FjordValue.Of(FjordRef.To(FileFact("query/plan.py"))),
-                FjordValue.Rec(
-                    FjordValue.Of(19L),
-                    FjordValue.Of(4L),
-                    FjordValue.Of(6L)))),
+                    DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"))),
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("query/plan.py", "Plan", 5, "class Plan"))))),
         ]),
 
-        // A reference in the *middle* of a key, an integer after it, and a value side
-        // behind all three — none of which the three blocks above put together.
-        ("src.Param", Param,
+        // A reference followed by a **nested record** in the same key — spliced in
+        // rather than framed, and neither client may quietly start framing it.
+        ("code.Span", Span,
         [
-            new(Param,
-                FjordValue.Rec(
-                    FjordValue.Of(FjordRef.To(
-                        DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
-                    FjordValue.Of(0L),
-                    FjordValue.Of("key")),
-                FjordValue.Of("bytes")),
-
-            // A negative, because zigzag is where two codecs that agree about every
-            // positive integer can still disagree. A parameter is never at index -1;
-            // this corpus is chosen for what it reaches, not for what it means.
-            new(Param,
-                FjordValue.Rec(
-                    FjordValue.Of(FjordRef.To(
-                        DeclFact("store/keys.py", "keys", "def", 12, "key_of"))),
-                    FjordValue.Of(-1L),
-                    FjordValue.Of("rest")),
-                FjordValue.Of("int")),
+            new(Span, FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"))),
+                FjordValue.Rec(FjordValue.Of(12L), FjordValue.Of(4L)))),
         ]),
 
-        // A key of one field, which encodes as the bare reference does — and would go
-        // on doing so if either client quietly started framing records.
-        ("src.Doc", Doc,
+        // **A union leading a key**, with a tag that is neither 0 nor 1 and a payload
+        // that differs per alternative. A client numbering alternatives by position
+        // writes `data` where this says `func`.
+        ("code.KindOf", KindOf,
         [
-            new(Doc,
+            new(KindOf, FjordValue.Rec(
+                FjordValue.Alt(2u, FjordValue.Of(1L)),
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"))))),
+            new(KindOf, FjordValue.Rec(
+                FjordValue.Alt(5u, FjordValue.Of("class")),
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("query/plan.py", "Plan", 5, "class Plan"))))),
+        ]),
+
+        // **A union with an empty payload, and one carrying a record** — the two shapes
+        // an alternative can take that a scalar payload does not reach.
+        ("code.Resolves", Resolves,
+        [
+            new(Resolves, FjordValue.Rec(
+                FjordValue.Of(7L),
+                FjordValue.Alt(0u, FjordValue.Rec()))),
+            new(Resolves, FjordValue.Rec(
+                FjordValue.Of(19L),
+                FjordValue.Alt(3u, FjordValue.Rec(
+                    FjordValue.Of("Deserialize"),
+                    FjordValue.Of("serde"))))),
+        ]),
+
+        // **`bytes`, in a value side.** On this wire it costs its length and nothing
+        // else — the storage codec's escaping is storage's business — so a client that
+        // reused its string path would produce the same bytes here and the wrong ones on
+        // disk. The payload holds a NUL and two UTF-8 continuation bytes, which no
+        // `string` could carry.
+        ("code.Digest", Digest,
+        [
+            new(Digest,
+                FjordValue.Rec(FjordValue.Of(FjordRef.To(FileFact("store/keys.py")))),
+                FjordValue.Rec(FjordValue.Of(
+                    new byte[] { 0x00, 0x53, 0x80, 0xBF, 0xFF }.AsMemory()))),
+        ]),
+
+        // A **record value side**, which a scalar one does not reach: two nested records
+        // behind the `->`.
+        ("code.Extent", Extent,
+        [
+            new(Extent,
                 FjordValue.Rec(FjordValue.Of(FjordRef.To(
-                    DeclFact("query/plan.py", "plan", "class", 5, "Plan")))),
-                FjordValue.Of("A plan is an ordered list of steps.")),
+                    DeclFact("query/plan.py", "Plan", 5, "class Plan")))),
+                FjordValue.Rec(
+                    FjordValue.Rec(FjordValue.Of(5L), FjordValue.Of(1L)),
+                    FjordValue.Rec(FjordValue.Of(41L), FjordValue.Of(2L)))),
+        ]),
+
+        // **The same union after a reference rather than before it.** `code.Kind` and
+        // `code.KindOf` hold the same pair in the two orders, so this pins that a tag
+        // encodes the same wherever it sits in a key — which is not obvious, and is the
+        // kind of thing one client could get right in one position and wrong in the
+        // other.
+        ("code.Kind", Kind,
+        [
+            new(Kind, FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("store/keys.py", "key_of", 12, "def key_of(row)"))),
+                FjordValue.Alt(2u, FjordValue.Of(1L)))),
+        ]),
+
+        // **`type` as a field name**, which the grammar allows and no other block here
+        // reaches: a client that treated the schema's keywords as reserved would refuse
+        // to state this predicate at all.
+        ("code.Extends", Extends,
+        [
+            new(Extends, FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("store/codec.py", "CodecError", 31, "class CodecError"))),
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("query/plan.py", "Plan", 5, "class Plan"))))),
+        ]),
+
+        // **A single-alternative union**, whose tag is still written rather than elided:
+        // one arm is not no arms, and a client that skipped the discriminant here would
+        // produce a shorter run that decodes as something else.
+        ("code.Note", Note,
+        [
+            new(Note, FjordValue.Rec(
+                FjordValue.Of(FjordRef.To(
+                    DeclFact("query/plan.py", "Plan", 5, "class Plan"))),
+                FjordValue.Alt(0u, FjordValue.Of("<p>An ordered list of steps.</p>")))),
         ]),
     ];
 
@@ -446,10 +466,12 @@ void EmitGolden(string path)
 
 // ---- the union golden (8.6) ------------------------------------------------------
 //
-// A **second** corpus, over a schema of its own. `schemas/code.sigla` has no union and
-// putting one there would move its fingerprint, the two constants this client and the
-// indexer carry, and every block in the golden above — a flag day with nothing to do
-// with whether the two codecs agree about a tag.
+// A **second** corpus, over a schema of its own. The shared fixture carries unions now
+// and the golden above exercises them, so this is no longer the only place a tag is
+// pinned — what it still does that the fixture cannot is push the *tag space*: 3, 0,
+// 40000 and 7, declared in that order, where the fixture's tags are small and tidy. A
+// client numbering alternatives by position, or truncating a varint, fails here and
+// nowhere else.
 //
 // The schema is written down here and again in `fjord-client`'s test, and neither
 // statement is derived from the other. That is the point: a shared statement would make
@@ -529,7 +551,8 @@ void EmitUnionGolden(string path)
         "# Union blocks produced by the .NET client, as hex — Phase 8.6's half of 9e's",
         "# criterion. `fjord-client` encodes the same facts and must produce the same bytes.",
         "#",
-        "# A schema of its own, so a union costs `schemas/code.sigla` no flag day.",
+        "# A schema of its own, so a tag past a varint byte costs the shared fixture",
+        "# no flag day.",
         "# Regenerate with ./clients/dotnet/emit-golden.sh.",
         $"schema-fingerprint {unionSchema.Fingerprint:x16}",
     ];
@@ -544,10 +567,79 @@ void EmitUnionGolden(string path)
     Console.WriteLine($"wrote {blocks.Length} golden union blocks to {path}");
 }
 
+void EmitBytesGolden(string path)
+{
+    const uint Digest = 0;
+    const uint Blob = 1;
+
+    // **Payloads no `string` could hold**, which is the whole reason the type exists:
+    // a NUL, the storage codec's escape byte, and two UTF-8 continuation bytes. On
+    // this wire they cost their own length and nothing else — the escaping is
+    // storage's business — so a client that reused its string path would produce the
+    // same bytes here and the wrong ones on disk. What this golden pins is that both
+    // clients agree on the *length prefix and the run*, and that neither validates it.
+    var bytesSchema = new FjordSchema(
+        [
+            new FjordPredicate("blob.Digest", FjordType.Rec(
+                ("digest", FjordType.Blob),
+                ("path", FjordType.String)), null),
+            // A `bytes` value side as well as a key field, so the same run goes through
+            // both paths.
+            new FjordPredicate("blob.Blob",
+                FjordType.Rec(("id", FjordType.Integer)),
+                FjordType.Blob),
+        ],
+        // Carried, not computed — `print_the_bytes_schema_fingerprint`'s job on the
+        // Rust side.
+        0x7cf603845973ed44UL);
+
+    FjordFact Digest_(byte[] digest, string path) =>
+        new(Digest, FjordValue.Rec(FjordValue.Of(digest), FjordValue.Of(path)));
+
+    (string Name, uint Predicate, IReadOnlyList<FjordFact> Facts)[] blocks =
+    [
+        ("blob.Digest", Digest,
+        [
+            // The empty run, which a length prefix of zero is the whole encoding of.
+            Digest_([], "empty"),
+            Digest_([0x00], "nul"),
+            Digest_([0x00, 0xFF, 0xFF, 0x00, 0x80, 0xC0], "everything a string cannot"),
+            Digest_([0xFF, 0xFF, 0xFF], "escape bytes"),
+        ]),
+
+        ("blob.Blob", Blob,
+        [
+            new(Blob, FjordValue.Rec(FjordValue.Of(1L)), FjordValue.Of(new byte[] { 0xED, 0xA0, 0x80 })),
+            new(Blob, FjordValue.Rec(FjordValue.Of(2L)), FjordValue.Of(Array.Empty<byte>())),
+        ]),
+    ];
+
+    List<string> lines =
+    [
+        "# `bytes` blocks produced by the .NET client, as hex. `fjord-client` encodes the",
+        "# same facts and must produce the same bytes.",
+        "#",
+        "# A schema of its own, so a payload no `string` could hold costs the shared",
+        "# fixture no flag day.",
+        "# Regenerate with ./clients/dotnet/emit-golden.sh.",
+        $"schema-fingerprint {bytesSchema.Fingerprint:x16}",
+    ];
+
+    foreach (var (name, predicate, facts) in blocks)
+    {
+        var bytes = Block.Encode(bytesSchema, predicate, facts);
+        lines.Add($"block {name} {predicate} {Convert.ToHexString(bytes).ToLowerInvariant()}");
+    }
+
+    System.IO.File.WriteAllLines(path, lines);
+    Console.WriteLine($"wrote {blocks.Length} golden bytes blocks to {path}");
+}
+
 static string Describe(FjordType type) => type switch
 {
     FjordType.Int => "int",
     FjordType.Str => "string",
+    FjordType.Bytes => "bytes",
     FjordType.Fact fact => $"fact({fact.Predicate})",
     FjordType.Record record =>
         "{" + string.Join(", ", record.Fields.Select(f => $"{f.Name} : {Describe(f.Type)}")) + "}",
@@ -561,6 +653,7 @@ static string Render(FjordValue value) => value switch
 {
     FjordValue.Int n => n.Value.ToString(),
     FjordValue.Str s => $"\"{s.Value}\"",
+    FjordValue.Bytes b => "0x" + Convert.ToHexString(b.Value.Span).ToLowerInvariant(),
     FjordValue.Ref { Value: FjordRef.Id id } => $"#{id.FactId >> 40}:{id.FactId & 0xFFFFFFFFFF}",
     FjordValue.Ref { Value: FjordRef.Nested nested } => $"<{Render(nested.Fact.Key)}>",
     FjordValue.Record record => "{" + string.Join(", ", record.Fields.Select(Render)) + "}",

@@ -82,7 +82,9 @@ use crate::{
         ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, NodeSpan, Query, QueryStmt,
     },
 };
-use fjord_encoding::tuple::{MARK_RECORD, MARK_TERM, UnionTag, Value, get_str, put_i64, put_str};
+use fjord_encoding::tuple::{
+    MARK_RECORD, MARK_TERM, UnionTag, Value, get_str, put_bytes, put_i64, put_str,
+};
 use fjord_schema::schema::{LocalInterner, PredicateId, PredicateTy, Schema, Symbol};
 
 /// Where a pattern's value lives when the plan runs.
@@ -218,8 +220,8 @@ struct Alias {
     span: NodeSpan,
 }
 
-/// A **pattern the value at a place has to match** — `X = "a".."` — or, for a
-/// denial, one it has to *not* match: `X != "a".."`.
+/// A **pattern the value at a place has to match** — `X = "a"..` — or, for a
+/// denial, one it has to *not* match: `X != "a"..`.
 ///
 /// One statement for both polarities, because everything this type carries is the
 /// same for either: a denial reads exactly one variable and claims nothing, which
@@ -536,15 +538,21 @@ struct SeekBuilder {
     /// At most one: a second fuzzy pattern on the same field filters instead, which
     /// is what "both hold" means when only one of them can drive the walk.
     guide: Option<Guide>,
-    /// The field a **prefix range** closed the seek prefix on, if one did.
+    /// The **prefix range** that closed the seek prefix, if one did: the field it
+    /// landed on and the partial field encoding it opens.
     ///
-    /// This is what makes `X = "pa"..; X = "parse"~2` one guided seek over the
-    /// `"pa"` bucket rather than a bucket scan with a filter. A prefix closes the
+    /// The path is what makes `X = "pa"..; X = "parse"~2` one guided seek over the
+    /// `"pa"` range rather than a bucket scan with a filter. A prefix closes the
     /// seek because nothing may follow it *in the key*, but a guide does not follow
     /// it — it narrows the same field further, inside the range the prefix chose.
     /// Any other field closing the seek leaves nothing for a guide to attach to,
     /// which is why this remembers the path rather than a flag.
-    range_at: Option<FieldPath>,
+    ///
+    /// The bytes ride with it rather than joining `parts`, because a partial field
+    /// encoding is not a part: merged into the run of complete ones it would be the
+    /// same byte string as an equality and the seek would end at the wrong place
+    /// ([`SeekKey::PrefixRange`]).
+    range: Option<(FieldPath, Vec<u8>)>,
     /// The bounds an order comparison folded onto the field that ended the prefix.
     ///
     /// At most one edge per sense, and both of them on **one** field: a second
@@ -570,7 +578,7 @@ impl SeekBuilder {
             residuals: vec![],
             building: true,
             guide: None,
-            range_at: None,
+            range: None,
             lo: None,
             hi: None,
             folded: vec![],
@@ -603,14 +611,33 @@ impl SeekBuilder {
     /// The finished seek: a plain byte prefix where every part is constant — which
     /// is the common case and needs no per-row work — and a composite where a
     /// register's bytes have to be spliced in each time the level is opened.
+    ///
+    /// A range comes first either way, because a range is the last thing in a seek
+    /// and no byte string says so — which is why each is a variant rather than a
+    /// longer prefix.
     fn seek_key(&self) -> SeekKey {
-        // A bound is the last thing in a seek and there is no byte string that says
-        // so, which is why it is a variant rather than a longer prefix.
+        // Both would be a seek narrowed twice on one field, and the two ways a
+        // level reaches them are exclusive: `bound` folds only where a bare capture
+        // would have closed the prefix, and a prefix pattern has closed it already.
+        debug_assert!(
+            self.range.is_none() || (self.lo.is_none() && self.hi.is_none()),
+            "a level is narrowed by a prefix range or by a bound, never both"
+        );
+
         if self.lo.is_some() || self.hi.is_some() {
             return SeekKey::Bounded {
                 parts: self.parts.clone().into(),
                 lo: self.lo.clone(),
                 hi: self.hi.clone(),
+            };
+        }
+
+        // A partial field encoding, so the range ends above every value it starts
+        // rather than between two of them ([`SeekKey::PrefixRange`]).
+        if let Some((_, prefix)) = &self.range {
+            return SeekKey::PrefixRange {
+                parts: self.parts.clone().into(),
+                prefix: prefix.clone().into(),
             };
         }
 
@@ -863,7 +890,7 @@ struct Flattener<'a> {
     /// The variables whose constraints a **capture** has already applied, so the
     /// pass over what is left does not apply them twice.
     constrained: Vec<Symbol>,
-    /// Variable → a **pattern its value must not match**, from `X != "a".."`.
+    /// Variable → a **pattern its value must not match**, from `X != "a"..`.
     ///
     /// Collected from the whole body like [`constraints`](Self::constraints), and
     /// for the same reason — where the statement is written says nothing about
@@ -1209,7 +1236,7 @@ impl Flattener<'_> {
 
                 // A constraint claims nothing — it does not say what a variable
                 // *is*, so the key that mentions it still captures it. That is the
-                // whole difference between `X = "a".."` and `X = "a"`.
+                // whole difference between `X = "a"..` and `X = "a"`.
                 //
                 // Nor does a negation, and for a stronger reason: it binds nothing
                 // at all, so every variable it names belongs to whatever else in
@@ -1560,9 +1587,8 @@ impl Flattener<'_> {
 
     /// **Lookup-chasing**: mark the row binds that may be lowered as a fetch.
     ///
-    /// Glean's `Opt` pass calls this lookup-chasing, and
-    /// [the comparison](../../../docs/glean.md) listed it as the one part of
-    /// that pass genuinely absent here. This is it.
+    /// Glean's `Opt` pass calls this lookup-chasing, and it was the one part of that
+    /// pass genuinely absent here. This is it.
     ///
     /// # What it is for
     ///
@@ -1728,7 +1754,7 @@ impl Flattener<'_> {
 
     /// Whether a pattern fixes **every byte** of its field.
     ///
-    /// A literal does; a prefix does not, and that is the case worth stating — `"a".."`
+    /// A literal does; a prefix does not, and that is the case worth stating — `"a"..`
     /// narrows a seek but does not close the field, so nothing after it can extend the
     /// prefix. It is why `src.SearchByLowerName {name = "x".., to = D}` is chasable and
     /// `test.Ref {of = P}` is not.
@@ -2803,14 +2829,17 @@ impl Flattener<'_> {
 
         let head = self.project(*self.query.head());
 
-        // **Last, and prepended.** A select in the head is not resolved until
-        // `project` above has run, so this cannot come earlier; and because a tag
-        // check has to precede every read through the payload it guards, the checks
-        // go to the *front* of each source's residuals rather than the back. Front
-        // rather than "before whatever else this pass added" makes the ordering a
-        // property of the residual list instead of a property of which pass ran when
-        // — which is the difference between an invariant and a coincidence.
+        // **Last.** A select in the head is not resolved until `project` above has
+        // run, so this cannot come earlier.
         self.apply_selects(&mut body);
+
+        // ...and the order the executor is owed is settled here, after the last pass
+        // that can add a residual. A pass placing its own checks can only place them
+        // against the residuals it can see: a select's check at the front of the list
+        // is still ahead of the check that guards *it* when the key walk emitted that
+        // one, which is a plan asking for a payload read against an alternative it
+        // has not established.
+        Self::order_tag_checks(&mut body);
 
         if self.diagnostics.len() != mark {
             return None;
@@ -2832,9 +2861,12 @@ impl Flattener<'_> {
     /// reads; the level holding the row is the only place a filter over that row
     /// belongs.
     ///
-    /// Prepended, in discovery order, and to **every** source: a level's branches all
-    /// bind a variable at the same path (`reconcile` is what makes that true), so one
-    /// path is right for all of them.
+    /// Added to **every** source of that level: its branches all bind a variable at
+    /// the same path (`reconcile` is what makes that true), so one path is right for
+    /// all of them. Where in the list they land is
+    /// [`order_tag_checks`](Self::order_tag_checks)'s, not this pass's — a select on
+    /// an inner union has to sit behind the check for the payload it is read through,
+    /// and that check may be one this pass never sees.
     ///
     /// Deduplicated, because two reads of one alternative — `X.what.num?` twice, or
     /// once in a bind and once in the head — are one check, and a repeat would filter
@@ -2857,11 +2889,50 @@ impl Flattener<'_> {
             };
 
             for source in level.sources.iter_mut() {
-                let mut residuals = vec![Residual {
+                let mut residuals = source.residuals().to_vec();
+                residuals.push(Residual {
                     path: path.clone(),
                     op: ResidualOp::DiscriminantEq(disc),
-                }];
-                residuals.extend(source.residuals().iter().cloned());
+                });
+                *source.residuals_mut() = residuals.into();
+            }
+        }
+    }
+
+    /// Order every source's residuals **outside-in**: a tag check sorts ahead of
+    /// every residual reading through the payload it names, whichever pass emitted
+    /// either of them.
+    ///
+    /// The trap is that a payload read is not a filter that merely answers `false` on
+    /// the wrong alternative. `field_span` walks the tag and *refuses* — a
+    /// `DiscriminantMismatch` — so a check the executor reaches after the read it
+    /// guards does not answer a row too many, it fails the query. Two passes emit
+    /// these checks: the key walk, where the seek prefix has already closed
+    /// ([`narrow_by_tag`](Self::narrow_by_tag)), and
+    /// [`apply_selects`](Self::apply_selects). Neither can see the other's, and a
+    /// union under a union puts both on one row.
+    ///
+    /// A tag check's path is a **prefix** of every path that reads through it, so
+    /// ordering the checks by depth nests them correctly however many layers deep
+    /// they go. Everything else keeps the order it was emitted in — a residual that
+    /// is not a tag check guards nothing — which is what the sort being a stable one
+    /// says.
+    fn order_tag_checks(body: &mut Body) {
+        for step in body.steps.iter_mut() {
+            let sources = match step {
+                Step::Level(level) => level.sources.iter_mut(),
+                Step::Test(Test::Absent(sources)) => sources.iter_mut(),
+                Step::Derive(_) | Step::Test(_) => continue,
+            };
+
+            for source in sources {
+                let mut residuals = source.residuals().to_vec();
+
+                residuals.sort_by_key(|residual| match residual.op {
+                    ResidualOp::DiscriminantEq(_) => (0, residual.path.steps().len()),
+                    _ => (1, 0),
+                });
+
                 *source.residuals_mut() = residuals.into();
             }
         }
@@ -3206,7 +3277,7 @@ impl Flattener<'_> {
             }
 
             // A **range**, and so the one narrowing that is not a slot: there is no
-            // single value for `"a".."` to be, which is also why a variable cannot be
+            // single value for `"a"..` to be, which is also why a variable cannot be
             // bound to one.
             ExprKind::Prefix(_) | ExprKind::Fuzzy(..) => match self.constant(node, ty) {
                 Some(constant) => Self::narrow_by(constant, path, level),
@@ -3552,6 +3623,11 @@ impl Flattener<'_> {
     /// string prefix it does not have to end the seek — what follows it in the key is
     /// the payload, and the payload's own walk decides whether the prefix can carry
     /// on.
+    ///
+    /// Where a residual lands in the list is not this walk's to decide: a select adds
+    /// checks after every level is built, so the order is
+    /// [`order_tag_checks`](Self::order_tag_checks)'s and emission order settles
+    /// nothing.
     fn narrow_by_tag(disc: u32, path: &FieldPath, level: &mut SeekBuilder) {
         if level.building {
             level
@@ -3585,12 +3661,15 @@ impl Flattener<'_> {
             }
 
             // A prefix narrows to a *range*, so it can end a seek but nothing may
-            // follow it in one: the bytes after it are not the field's.
+            // follow it in one: the bytes after it are not the field's. Held apart
+            // from the parts for that reason — as bytes among them it would be
+            // indistinguishable from the complete encoding it is a prefix of, and
+            // the range would end at the separator between two values instead of
+            // above every value the prefix starts.
             Const::Prefix(bytes) => {
                 if level.building {
-                    level.parts.push(SeekKeyPart::Bytes(bytes.into()));
                     level.building = false;
-                    level.range_at = Some(path.clone());
+                    level.range = Some((path.clone(), bytes));
                 } else {
                     level.residuals.push(Residual {
                         path: path.clone(),
@@ -3613,7 +3692,8 @@ impl Flattener<'_> {
                 distance,
                 anchor,
             } => {
-                let attachable = level.building || level.range_at.as_ref() == Some(path);
+                let attachable =
+                    level.building || level.range.as_ref().map(|(at, _)| at) == Some(path);
 
                 if attachable && level.guide.is_none() {
                     level.guide = Some(Guide {
@@ -3668,7 +3748,7 @@ impl Flattener<'_> {
         // Only one constraint can end the seek prefix, so which one gets to is
         // decided here — an exact constant first (it extends the prefix and costs
         // nothing), then a byte prefix, then a guide. Without this,
-        // `N = "parse"~2; N = "pa".."` and `N = "pa"..; N = "parse"~2` would
+        // `N = "parse"~2; N = "pa"..` and `N = "pa"..; N = "parse"~2` would
         // compile to different plans, and two spellings of one query must not:
         // the same rule that makes `Z = 1; test.Bar {id = Z}` narrow exactly as
         // `test.Bar {id = 1}` does.
@@ -3754,7 +3834,7 @@ impl Flattener<'_> {
                 continue;
             };
 
-            // **A constant, and nothing else.** `X < "a".."` compares against a set
+            // **A constant, and nothing else.** `X < "a"..` compares against a set
             // rather than a value and `X < "ann"~1` against a neighbourhood; neither
             // has an edge, and both are refused by name — by the residual pass,
             // which owns that diagnostic. Declining quietly here is what leaves it
@@ -3851,7 +3931,7 @@ impl Flattener<'_> {
                 }
 
                 // **A constant against a pattern**, both known now: `X = "abc"; X =
-                // "a".."`. Nothing to check per row, so the answer is the whole
+                // "a"..`. Nothing to check per row, so the answer is the whole
                 // query — either the constraint holds and the statement is a
                 // tautology, or it does not and the query is the empty relation,
                 // which is a level with no source to open. That is `never`'s level,
@@ -3945,18 +4025,18 @@ impl Flattener<'_> {
     }
 
     /// Turn each recorded **denial** into a residual on the level that binds the
-    /// variable — `X != "a".."`.
+    /// variable — `X != "a"..`.
     ///
     /// The mirror of [`apply_constraints`](Self::apply_constraints), and it has no
     /// counterpart to that one's `constrained` skip because there is nothing for it
     /// to skip: a capture narrows itself by the constraints on the variable it
     /// binds, and a denial is never one of them. "Does not start with `a`" is the
-    /// key order either side of the range `"a".."` denotes — two ranges, and a seek
+    /// key order either side of the range `"a"..` denotes — two ranges, and a seek
     /// walks one — so a denial reads the rows and drops them however it is written,
     /// and applying it here is not a fallback but the only place it goes.
     ///
     /// That is the asymmetry worth keeping in view when reading a `:plan`:
-    /// `test.Name X; X = "a".."` seeks, and `test.Name X; X != "a".."` scans the
+    /// `test.Name X; X = "a"..` seeks, and `test.Name X; X != "a"..` scans the
     /// predicate. The cost is negation's, not this design's.
     /// Turn each **order comparison** into a residual on whichever side runs later.
     ///
@@ -4001,7 +4081,7 @@ impl Flattener<'_> {
         } = comparison;
 
         // `resolve` answers `None` without reporting — the caller says what it
-        // wanted. A **prefix** is the one worth naming: `N < "a".."` reads as if a
+        // wanted. A **prefix** is the one worth naming: `N < "a"..` reads as if a
         // range had an order, and silently dropping the comparison would answer the
         // unfiltered rows, which is the worst of the three outcomes available.
         let (Some(lhs), Some(rhs)) = (self.resolve(*left), self.resolve(*right)) else {
@@ -4236,7 +4316,7 @@ impl Flattener<'_> {
     /// The constant bytes for one side of a comparison, or the fault of it not
     /// being a value at all.
     ///
-    /// A **prefix** is turned away by name: `X < "a".."` reads as if a range had an
+    /// A **prefix** is turned away by name: `X < "a"..` reads as if a range had an
     /// order, and the answer is that a range is a set of values rather than one.
     fn compare_constant(
         &mut self,
@@ -4344,7 +4424,7 @@ impl Flattener<'_> {
                 }
 
                 // **A constant against a pattern**, both known now: `X = "abc"; X !=
-                // "a".."`. Decided here rather than per row, and the two outcomes are
+                // "a"..`. Decided here rather than per row, and the two outcomes are
                 // the constraint arm's swapped — a denial the constant *meets* is the
                 // empty relation, and one it escapes is a tautology that emits
                 // nothing.
@@ -4438,6 +4518,7 @@ impl Flattener<'_> {
         match self.ast.store().kind(node) {
             ExprKind::Lit(Literal::Int(_)) => Some(PredicateTy::Int),
             ExprKind::Lit(Literal::Str(_)) | ExprKind::Prefix(_) => Some(PredicateTy::Str),
+            ExprKind::Lit(Literal::Bytes(_)) => Some(PredicateTy::Bytes),
             _ => None,
         }
     }
@@ -4500,6 +4581,12 @@ impl Flattener<'_> {
             (ExprKind::Lit(Literal::Str(text)), PredicateTy::Str) => {
                 let mut out = vec![];
                 put_str(&mut out, self.interner.try_resolve(*text)?);
+                Some(Const::Bytes(out))
+            }
+
+            (ExprKind::Lit(Literal::Bytes(payload)), PredicateTy::Bytes) => {
+                let mut out = vec![];
+                put_bytes(&mut out, payload);
                 Some(Const::Bytes(out))
             }
 
@@ -4841,6 +4928,9 @@ impl Flattener<'_> {
         match self.ast.store().kind(node) {
             ExprKind::Lit(Literal::Int(value)) => Some(Project::Lit(Value::Int(*value))),
 
+            ExprKind::Lit(Literal::Bytes(payload)) => {
+                Some(Project::Lit(Value::Bytes(payload.to_vec())))
+            }
             ExprKind::Lit(Literal::Str(text)) => Some(Project::Lit(Value::Str(
                 self.interner.try_resolve(*text)?.to_owned(),
             ))),
@@ -5127,6 +5217,14 @@ mod tests {
                                 "seek[{}]",
                                 parts.iter().map(part_shape).collect::<Vec<_>>().join(" ")
                             ),
+                            // `k..` — a range over one field rather than a pin on
+                            // it, which is the distinction the two forms of the
+                            // same bytes turn on.
+                            SeekKey::PrefixRange { parts, .. } => {
+                                let mut shape: Vec<String> = parts.iter().map(part_shape).collect();
+                                shape.push("k..".to_owned());
+                                format!("seek[{}]", shape.join(" "))
+                            }
                             // The bound reads as the relation it folded: `seek[>=k
                             // <k]` over a scalar key, `seek[r0.0 >=k]` behind a
                             // splice. Which field it is on is the one the parts
@@ -5159,6 +5257,7 @@ mod tests {
                             SeekKey::Prefix(bytes) if bytes.is_empty() => {
                                 format!("seek~[{}]", guide.path)
                             }
+                            SeekKey::PrefixRange { .. } => format!("seek~[k.. {}]", guide.path),
                             _ => format!("seek~[k {}]", guide.path),
                         },
                     };
@@ -5251,6 +5350,7 @@ mod tests {
         match ty {
             PredicateTy::Int => "int".to_owned(),
             PredicateTy::Str => "str".to_owned(),
+            PredicateTy::Bytes => "bytes".to_owned(),
             PredicateTy::Fact(p) => format!("fact({})", p.0),
             PredicateTy::Record(fields) => format!("{{{} fields}}", fields.len()),
             PredicateTy::Union(alts) => format!("{{{} alternatives}}", alts.len()),
@@ -5432,6 +5532,11 @@ mod tests {
     /// string is a byte prefix of every string that starts with it, so the range
     /// scan is exactly the match ([I1]). The terminator is what it drops — a
     /// terminated string would be the equality, not the prefix.
+    ///
+    /// **And the plan says which of the two it holds**, because the bytes cannot:
+    /// dropping the terminator is what makes these the bytes an equality on a
+    /// *shorter* value would seek, and the two want different ends of the range
+    /// ([`SeekKey::PrefixRange`]).
     #[test]
     fn a_string_prefix_narrows_the_scan() {
         let flattened = compile("X where X = test.Name \"abc\"..");
@@ -5439,7 +5544,7 @@ mod tests {
 
         assert_eq!(
             describe(plan, &flattened.interner),
-            lines(&["r0 <- test.Name seek[k]", "head r0"])
+            lines(&["r0 <- test.Name seek[k..]", "head r0"])
         );
 
         let mut expected = str_field("abc");
@@ -5452,8 +5557,11 @@ mod tests {
             .seek_key()
             .expect("a seek")
         {
-            SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
-            other => panic!("expected a prefix seek, got {other:?}"),
+            SeekKey::PrefixRange { parts, prefix } => {
+                assert!(parts.is_empty(), "the range is the whole seek");
+                assert_eq!(prefix.as_ref(), expected.as_slice());
+            }
+            other => panic!("expected a prefix range, got {other:?}"),
         }
     }
 
@@ -5505,11 +5613,12 @@ mod tests {
 
         assert_eq!(
             describe(plan, &flattened.interner),
-            lines(&["r0 <- test.Name seek[k]", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..]", "head r0.0:str"])
         );
 
         // The same bytes the prefix written at the field seeks — `put_str` without
-        // its terminator, which is what every string starting with it begins with.
+        // its terminator, which is what every string starting with it begins with —
+        // and in the same variant, so the range ends in the same place.
         let mut expected = str_field("a");
         expected.pop().expect("a terminated string");
         match &plan
@@ -5520,8 +5629,11 @@ mod tests {
             .seek_key()
             .expect("a seek")
         {
-            SeekKey::Prefix(bytes) => assert_eq!(bytes.as_ref(), expected.as_slice()),
-            other => panic!("expected a prefix seek, got {other:?}"),
+            SeekKey::PrefixRange { parts, prefix } => {
+                assert!(parts.is_empty(), "the range is the whole seek");
+                assert_eq!(prefix.as_ref(), expected.as_slice());
+            }
+            other => panic!("expected a prefix range, got {other:?}"),
         }
 
         assert_eq!(rows("X where test.Name X; X = \"a\"..").len(), 4);
@@ -5534,7 +5646,7 @@ mod tests {
     fn a_constraint_extends_a_seek_that_is_still_building() {
         assert_eq!(
             shape("X where test.Foo {id = 1, name = X}; X = \"a\".."),
-            lines(&["r0 <- test.Foo seek[k]", "head r0.1:str"])
+            lines(&["r0 <- test.Foo seek[k k..]", "head r0.1:str"])
         );
 
         // ...and behind an open field there is no seek left to extend, so it
@@ -5554,9 +5666,9 @@ mod tests {
     /// where every other property would pass either way.
     ///
     /// Written in exactly the position the constraint above narrows from — the
-    /// capture of a scalar-keyed predicate, where `X = "a".."` produces
+    /// capture of a scalar-keyed predicate, where `X = "a"..` produces
     /// `seek[k]` — so the two shapes differ in nothing but the polarity of the
-    /// statement. `X != "a".."` is `scan` plus a residual, because "does not start
+    /// statement. `X != "a"..` is `scan` plus a residual, because "does not start
     /// with `a`" is the key order either side of one range and a seek walks one.
     ///
     /// The failure this guards against is the plausible optimisation: noticing that
@@ -5572,7 +5684,7 @@ mod tests {
         // The constraint, for contrast, at the same field of the same predicate.
         assert_eq!(
             shape("X where test.Name X; X = \"a\".."),
-            lines(&["r0 <- test.Name seek[k]", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..]", "head r0.0:str"])
         );
 
         assert_eq!(rows("X where test.Name X; X != \"a\"..").len(), 1);
@@ -5609,7 +5721,7 @@ mod tests {
     fn a_constraint_and_a_denial_on_one_variable_both_hold() {
         assert_eq!(
             shape("X where test.Name X; X = \"a\"..; X != \"an\".."),
-            lines(&["r0 <- test.Name seek[k] where 0 !^= k", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..] where 0 !^= k", "head r0.0:str"])
         );
 
         assert_eq!(
@@ -5838,7 +5950,7 @@ mod tests {
     fn two_constraints_on_one_variable_both_hold() {
         assert_eq!(
             shape("X where test.Name X; X = \"a\"..; X = \"an\".."),
-            lines(&["r0 <- test.Name seek[k] where 0 ^= k", "head r0.0:str"])
+            lines(&["r0 <- test.Name seek[k..] where 0 ^= k", "head r0.0:str"])
         );
 
         assert_eq!(
@@ -5940,7 +6052,7 @@ mod tests {
     /// two spellings of one query must compile to one plan.
     #[test]
     fn a_range_pattern_takes_the_seek_and_the_bound_filters() {
-        let expected = lines(&["r0 <- test.Name seek[k] where 0 < k", "head r0.0:str"]);
+        let expected = lines(&["r0 <- test.Name seek[k..] where 0 < k", "head r0.0:str"]);
 
         assert_eq!(
             shape("N where test.Name N; N = \"an\"..; N < \"anno\""),
@@ -6064,7 +6176,7 @@ mod tests {
         assert_eq!(
             shape("X where test.Name X | test.Name X; X = \"a\".."),
             lines(&[
-                "r0 <- test.Name seek[k] | test.Name seek[k]",
+                "r0 <- test.Name seek[k..] | test.Name seek[k..]",
                 "head r0.0:str"
             ])
         );
@@ -7243,7 +7355,9 @@ mod tests {
             .expect("a seek")
         {
             SeekKey::Prefix(bytes) => assert!(!bytes.is_empty(), "a constant prefix"),
-            SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => assert!(
+            SeekKey::Composite(parts)
+            | SeekKey::Bounded { parts, .. }
+            | SeekKey::PrefixRange { parts, .. } => assert!(
                 matches!(parts.first(), Some(SeekKeyPart::Bytes(_))),
                 "the fold must reach the seek prefix, got {parts:?}",
             ),
@@ -8088,7 +8202,8 @@ mod tests {
 /// |---|---|
 /// | a constant in the leading key field | `SeekKey::Prefix(non-empty)` |
 /// | a bound variable, then anything determined | a composite seek of several parts |
-/// | a string prefix (`"a"..`) behind an open field | `ResidualOp::Prefix` |
+/// | a string prefix (`"a"..`) on a field the seek reached | `SeekKey::PrefixRange` |
+/// | the same prefix behind an open field | `ResidualOp::Prefix` |
 /// | a **record-typed** key field given sub-field by sub-field | nested `FieldPath`s |
 /// | three-field keys | more than one residual on a level |
 /// | a **row bind** (`R0 = gen.P0 {…}`) | `Project::FactRef`, and a register a head reads through |
@@ -8174,9 +8289,9 @@ pub mod proptest {
     /// [`holds`]: Match::holds
     #[derive(Debug, Clone, Copy)]
     enum Match {
-        /// `V{v} = "p".."` — sargeable: the level capturing `v` narrows to a range.
+        /// `V{v} = "p"..` — sargeable: the level capturing `v` narrows to a range.
         Prefix(&'static str),
-        /// `V{v} != "p".."` — a filter, and never anything else.
+        /// `V{v} != "p"..` — a filter, and never anything else.
         NotPrefix(&'static str),
         /// `V{v} != "p"` — a filter comparing whole values.
         NotEqual(&'static str),
@@ -8276,10 +8391,10 @@ pub mod proptest {
     /// each filters, because these run on a quarter of the population and the rows
     /// they leave are what every other property here measures:
     ///
-    /// - `= "".."` and `= "a".."` keep all three and two of three. `= "b".."` is
+    /// - `= ""..` and `= "a"..` keep all three and two of three. `= "b"..` is
     ///   left to the key-field prefix table: it keeps one of three, and a filter
     ///   that severe applied this often thins the whole battery.
-    /// - `!= "a".."` keeps one of three, and is the *only* denied prefix drawn:
+    /// - `!= "a"..` keeps one of three, and is the *only* denied prefix drawn:
     ///   `""` prefixes every string, so denying it would keep no row at all.
     /// - `!= "a"` and `!= "b"` each remove exactly one string, which is the mildest
     ///   filter the domain allows.
@@ -8287,7 +8402,7 @@ pub mod proptest {
     ///   `"a"`) and `= "ac"~1` keeps `"a"` and `"ab"` but not `"b"` — the same
     ///   all-three/two-of-three pair the prefixes above are chosen for. A term
     ///   severe enough to keep one of three is deliberately absent for the reason
-    ///   `= "b".."` is: applied this often it thins the whole battery.
+    ///   `= "b"..` is: applied this often it thins the whole battery.
     /// - `= "a"~<1` and `= "ac"~<1` keep the same three and the same two. The
     ///   anchored question is more permissive in general, but not over a domain
     ///   whose longest string is two characters — so the pair carries the budget
@@ -8532,7 +8647,7 @@ pub mod proptest {
         /// `facts[p]` — predicate `p`'s facts, deduplicated and sorted by key.
         facts: Vec<Vec<Fact>>,
         stmts: Vec<StmtSpec>,
-        /// `V{var} = "prefix".."`, or its denials — a **constraint** on a variable
+        /// `V{var} = "prefix"..`, or its denials — a **constraint** on a variable
         /// some statement captures. At most one, because it is a statement like any
         /// other and the order properties run every permutation of the body.
         ///
@@ -9064,8 +9179,8 @@ pub mod proptest {
                 {
                     FieldVal::Str(text) => matcher.holds(text),
                     // Only `Str` positions are drawn a constraint — and this generator
-                    // draws no unions at all (`FieldTy::of`).
-                    FieldVal::Int(_) | FieldVal::Union(..) => {
+                    // draws neither `bytes` nor unions at all (`FieldTy::of`).
+                    FieldVal::Int(_) | FieldVal::Bytes(_) | FieldVal::Union(..) => {
                         unreachable!("a string pattern constrains a string")
                     }
                 }
@@ -9367,7 +9482,10 @@ pub mod proptest {
             // otherwise become a second constant draw.
             3 => match ty {
                 FieldTy::Str => Leaf::Prefix(PREFIXES[draw.prefix as usize % PREFIXES.len()]),
-                FieldTy::Int | FieldTy::Union => Leaf::Wildcard,
+                // `Bytes` and `Union` are not drawn here at all (`FieldTy::of`);
+                // spelled with the integer so a new family is a compile error
+                // rather than a silent wildcard.
+                FieldTy::Int | FieldTy::Bytes | FieldTy::Union => Leaf::Wildcard,
             },
 
             // A variable, if one of this type is free in this statement. Variables
@@ -10373,6 +10491,7 @@ mod battery {
     #[derive(Debug, Default)]
     struct Shapes {
         constant_seek: bool,
+        prefix_range_seek: bool,
         multi_part_seek: bool,
         constant_in_composite: bool,
         prefix_residual: bool,
@@ -10413,6 +10532,7 @@ mod battery {
 
             for (present, what) in [
                 (self.constant_seek, "a constant seek prefix"),
+                (self.prefix_range_seek, "a `SeekKey::PrefixRange`"),
                 (self.multi_part_seek, "a composite seek of several parts"),
                 (
                     self.constant_in_composite,
@@ -10564,6 +10684,10 @@ mod battery {
                             match &access.seek_key {
                                 SeekKey::Prefix(bytes) => self.constant_seek |= !bytes.is_empty(),
                                 SeekKey::Composite(parts) => self.observe_parts(parts),
+                                SeekKey::PrefixRange { parts, .. } => {
+                                    self.prefix_range_seek = true;
+                                    self.observe_parts(parts);
+                                }
                                 SeekKey::Bounded { parts, lo, hi } => {
                                     self.bounded_seek = true;
                                     self.bounded_below |= lo.is_some();
@@ -11021,7 +11145,10 @@ mod battery {
 /// The fixture is what makes them non-vacuous: `test.Tagged` and `test.Label` hold the
 /// same union in the leading key field and behind an `int`, so each law is checked
 /// once where matching an alternative is a **seek** and once where it is a
-/// **residual** — two different pieces of machinery for one meaning.
+/// **residual** — two different pieces of machinery for one meaning. `test.Pad` adds
+/// the third: a union under a union, where one row carries a tag the key walk checks
+/// and a tag a select checks, and the two spellings differ in the *order* of two
+/// checks rather than in which machinery runs.
 #[cfg(test)]
 mod union_laws {
     use crate::{compile::Compilation, iter::Profile, plan::Plan};
@@ -11200,9 +11327,30 @@ mod union_laws {
                 "X where test.Label {id = _, what = {text = X}}",
                 "X.what.text? where test.Label X",
             ),
+            // **A union under a union**, where the two spellings put the outer tag's
+            // check in different passes: the key walk's, against the select's. A
+            // payload read against the wrong alternative is a refusal rather than a
+            // miss, so this pair fails as an error and not as a row.
+            (
+                "X where test.Pad {pad = _, u = {a = {r = {p = X}}}}",
+                "Y where test.Pad {pad = _, u = {a = {r = X}}}; Y = X.p?",
+            ),
+            // ...and with both checks from the select pass, which owes the order to
+            // itself as much as to the walk.
+            (
+                "X where test.Pad {pad = _, u = {a = {r = {p = X}}}}",
+                "X.u.a?.r.p? where test.Pad X",
+            ),
         ] {
+            let injected = bag(&db, &schema, injection);
+
+            // An equality between two empty answers is an equality about nothing, and
+            // a fixture that stopped holding the alternative would leave every pair
+            // here green.
+            assert!(!injected.is_empty(), "{injection:?} answers nothing");
+
             assert_eq!(
-                bag(&db, &schema, injection),
+                injected,
                 bag(&db, &schema, select),
                 "{injection:?} and {select:?} disagree"
             );
@@ -11369,6 +11517,64 @@ mod union_laws {
         );
     }
 
+    /// Every residual that reads through a payload, against the tag check guarding
+    /// it: `Err` naming the first read that runs before its check, `Ok` with how many
+    /// guarded pairs the plan held.
+    ///
+    /// Stated over **prefixes** of a path rather than over its last step. A
+    /// `DiscriminantEq`'s path names a union field, so every path extending it reads
+    /// that union's payload however many layers further in it goes — which is what a
+    /// rule written against the last step alone misses, and a union under a union is
+    /// where it misses it.
+    ///
+    /// The count is what keeps a row of the table from passing vacuously: a plan with
+    /// no guarded pair in it satisfies the order by having nothing to order.
+    fn tag_checks_precede_payload_reads(plan: &Plan) -> Result<usize, String> {
+        use crate::plan::{FieldPath, ResidualOp, Source, Step, Test};
+
+        fn reads_through(read: &FieldPath, guard: &FieldPath) -> bool {
+            read.field_idx() == guard.field_idx()
+                && read.steps().len() > guard.steps().len()
+                && read.steps().starts_with(guard.steps())
+        }
+
+        let mut guarded = 0;
+
+        for step in plan.body.iter() {
+            let sources: &[Source] = match step {
+                Step::Level(level) => &level.sources,
+                Step::Test(Test::Absent(sources)) => sources,
+                Step::Derive(_) | Step::Test(_) => continue,
+            };
+
+            for source in sources {
+                let residuals = source.residuals();
+
+                for (at, read) in residuals.iter().enumerate() {
+                    for (checked_at, check) in residuals.iter().enumerate() {
+                        if !matches!(check.op, ResidualOp::DiscriminantEq(_))
+                            || !reads_through(&read.path, &check.path)
+                        {
+                            continue;
+                        }
+
+                        if checked_at > at {
+                            return Err(format!(
+                                "{} is read at residual {at}, before the tag at {} is \
+                                 checked at {checked_at}",
+                                read.path, check.path,
+                            ));
+                        }
+
+                        guarded += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(guarded)
+    }
+
     /// **The tag check comes first.** A payload path is only meaningful once the
     /// alternative is known, so flatten owes the executor a residual list whose tag
     /// check precedes every residual reading through that payload — an obligation the
@@ -11377,63 +11583,186 @@ mod union_laws {
     /// Checked over the plans, not the rows: a violation would answer correctly
     /// whenever the alternatives happen to line up and fail as a decode error when
     /// they do not.
+    ///
+    /// The flag is which spellings are expected to *have* a guarded pair, because the
+    /// order is only tested where two residuals stand in that relation — and the
+    /// spellings that do are the ones where the two checks come from different
+    /// passes, which is the case a table of pure selects cannot reach.
+    ///
+    /// The last three are the ones **emission order gets wrong**, and the reason the
+    /// pass is not a tidy-up over a list that was already right: every other spelling
+    /// here happens to emit its checks ahead of the reads that need them, so a
+    /// flattener that merely appended would answer them all.
     #[test]
     fn a_tag_is_checked_before_its_payload_is_read() {
-        use crate::plan::{ResidualOp, Step};
-
         let schema = fixture::schema();
 
-        // Whether any of these plans actually put a payload read behind a tag check —
-        // the law is about an order, so it says nothing until one exists.
-        let mut ordered_pair = false;
-
-        for source in [
+        for (source, guarded) in [
             // The payload compared against a bound register, behind the tag.
-            "X where test.Foo {id = X, name = _}; test.Label {id = _, what = {num = X}}",
+            (
+                "X where test.Foo {id = X, name = _}; test.Label {id = _, what = {num = X}}",
+                true,
+            ),
             // The same where the union leads, so the tag is in the seek and the
             // payload compare is the level's only residual.
-            "X where test.Foo {id = X, name = _}; test.Tagged {what = {num = X}, id = _}",
+            (
+                "X where test.Foo {id = X, name = _}; test.Tagged {what = {num = X}, id = _}",
+                false,
+            ),
             // And a select, whose check is applied by a pass of its own.
-            "X.what.num? where test.Label X",
+            ("X.what.num? where test.Label X", false),
+            // **The mixed spelling**: the outer tag checked by the key walk, the
+            // inner by a select. The select's check reads through the payload the
+            // walk's check guards, so either the two passes produce one ordered list
+            // or the plan asks the executor to read a payload it has not identified.
+            (
+                "Y where test.Pad {pad = _, u = {a = {r = X}}}; Y = X.p?",
+                true,
+            ),
+            // ...and both checks from the select pass, which owes the order to itself.
+            ("X.u.a?.r.p? where test.Pad X", true),
+            // **A comparison through a selected payload.** `apply_comparisons` runs
+            // before `apply_selects`, so the deep read is emitted first and the check
+            // that guards it is appended *behind* it. Nothing about the plan records
+            // which pass emitted what, so this is equally the shape a future pass
+            // placing a check late would produce.
+            ("X where test.Label {id = X, what = W}; W.num? > 1", true),
+            // The same with a union under a union, where the read is emitted ahead of
+            // **both** checks, which have then to nest outside-in behind it.
+            ("X where test.Pad {pad = X, u = U}; U.a?.r.p? > 5", true),
+            // ...and mixed: the outer tag from the key walk, the comparison, then the
+            // inner tag from a select — three passes, one list, one right order.
+            (
+                "X where test.Pad {pad = X, u = {a = {r = R}}}; R.p? > 5",
+                true,
+            ),
         ] {
-            let plan = plan_of(&schema, source);
+            let found = tag_checks_precede_payload_reads(&plan_of(&schema, source))
+                .unwrap_or_else(|why| panic!("{source:?}: {why}"));
 
-            for step in plan.body.iter() {
-                let Step::Level(level) = step else { continue };
+            assert_eq!(
+                found > 0,
+                guarded,
+                "{source:?}: {found} residuals read through a checked payload",
+            );
+        }
+    }
 
-                for source_of in level.sources.iter() {
-                    let mut tagged: Vec<u32> = vec![];
+    /// **The ordering pass is load-bearing for an answer, not for a plan's tidiness.**
+    ///
+    /// A comparison written through a selected payload is emitted ahead of the tag
+    /// check that guards it, and [`field_span`](crate::iter) *refuses* rather than
+    /// answering false — so a plan left in emission order does not answer a row too
+    /// many, it fails the whole query with a `DiscriminantMismatch`. These are the
+    /// rows that says it, over source a user can write.
+    ///
+    /// Beside [`a_tag_is_checked_before_its_payload_is_read`], which states the order
+    /// over the plan: this states what the order buys, so the pass cannot be
+    /// neutralised behind a green suite.
+    #[test]
+    fn a_comparison_through_a_selected_payload_answers_its_rows() {
+        let (_dir, db, schema) = seeded();
 
-                    for residual in source_of.residuals().iter() {
-                        if let ResidualOp::DiscriminantEq(disc) = residual.op {
-                            tagged.push(disc);
-                            continue;
-                        }
+        for (source, expected) in [
+            (
+                "X where test.Label {id = X, what = W}; W.num? > 1",
+                ["Int(30)"],
+            ),
+            (
+                "X where test.Pad {pad = X, u = U}; U.a?.r.p? > 5",
+                ["Int(1)"],
+            ),
+            // The tag behind a select on the *outer* union's other alternative, so
+            // the payload read is one step deep rather than three.
+            ("X where test.Pad {pad = X, u = U}; U.b? > 3", ["Int(2)"]),
+            (
+                "X where test.Pad {pad = X, u = {a = {r = R}}}; R.p? > 5",
+                ["Int(1)"],
+            ),
+        ] {
+            assert_eq!(bag(&db, &schema, source), expected, "{source:?}");
+        }
+    }
 
-                        // Any other residual whose path steps *into* a union payload
-                        // must come after the check for that alternative.
-                        if let Some(&step) = residual.path.steps().last() {
-                            if tagged.contains(&(step as u32)) {
-                                ordered_pair = true;
-                                continue;
-                            }
+    /// **Checks nest outside-in whatever order they were emitted in** — the half of
+    /// the sort key no query reaches.
+    ///
+    /// Every spelling in the corpus emits its tag checks shallowest-first, so the
+    /// depth ordering among *checks* is satisfied by accident today and a pass that
+    /// only sorted checks ahead of reads would pass the table above. What would break
+    /// it is a pass emitting a check late — a second select pass, a rewrite hoisting
+    /// an inner union — and the plan it would hand over is this one.
+    ///
+    /// Stated over a real plan with its residual lists reversed rather than over a
+    /// hand-built `Body`, so the shape under test is one flatten actually emits, and
+    /// asserting the reversal broke the order first: a precondition that stopped
+    /// holding would otherwise leave the law green over an already-sorted list.
+    #[test]
+    fn tag_checks_nest_outside_in_whatever_order_they_were_emitted() {
+        use crate::plan::{ResidualOp, Step};
 
-                            assert!(
-                                tagged.is_empty(),
-                                "{source:?}: a residual reads a payload at {} before its \
-                                 tag was checked (checked: {tagged:?})",
-                                residual.path,
-                            );
-                        }
-                    }
-                }
+        /// The depth of each tag check, in list order, per source.
+        fn check_depths(body: &super::Body) -> Vec<Vec<usize>> {
+            body.steps
+                .iter()
+                .filter_map(|step| match step {
+                    Step::Level(level) => Some(level),
+                    Step::Derive(_) | Step::Test(_) => None,
+                })
+                .flat_map(|level| level.sources.iter())
+                .map(|source| {
+                    source
+                        .residuals()
+                        .iter()
+                        .filter(|residual| matches!(residual.op, ResidualOp::DiscriminantEq(_)))
+                        .map(|residual| residual.path.steps().len())
+                        .collect()
+                })
+                .collect()
+        }
+
+        let schema = fixture::schema();
+        let plan = plan_of(&schema, "X.u.a?.r.p? where test.Pad X");
+
+        let mut body = super::Body {
+            steps: plan.body.to_vec(),
+            levels: plan.levels(),
+            registers: plan.nvars,
+        };
+
+        for step in &mut body.steps {
+            let Step::Level(level) = step else { continue };
+
+            for source in level.sources.iter_mut() {
+                let mut residuals = source.residuals().to_vec();
+                residuals.reverse();
+                *source.residuals_mut() = residuals.into();
             }
         }
 
+        let reversed = check_depths(&body);
+
         assert!(
-            ordered_pair,
-            "no plan here put a payload read behind a tag check, so the order was \
-             never actually tested"
+            reversed.iter().any(|depths| depths.len() > 1),
+            "the query stopped carrying a source with two tag checks: {reversed:?}"
+        );
+        assert!(
+            reversed
+                .iter()
+                .any(|depths| depths.windows(2).any(|pair| pair[0] > pair[1])),
+            "reversing left the checks already outside-in, so the law below would \
+             hold over a list nothing had broken: {reversed:?}"
+        );
+
+        super::Flattener::order_tag_checks(&mut body);
+
+        let ordered = check_depths(&body);
+
+        assert!(
+            ordered
+                .iter()
+                .all(|depths| depths.windows(2).all(|pair| pair[0] <= pair[1])),
+            "a check sorts behind one nested inside it: {ordered:?}"
         );
     }
 }

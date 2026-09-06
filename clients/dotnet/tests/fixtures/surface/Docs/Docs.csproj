@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Docs</RootNamespace>
+
+    <!-- Annex D.4 is *processing the documentation file*, and that file is this project's
+         subject. Without it the compiler still parses every comment and resolves every
+         `cref`, then throws the result away — so D.4.2's ID strings would be written down in
+         these comments and produced by nothing. With it on, the compiler emits `Docs.xml`,
+         which is the annex's own output, and CS1591 makes "a public member with no
+         documentation comment" a warning — which is why every public member here has one. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- D.4.2 encodes a pointer parameter as `*` (`M:T.M(System.Int32*)`). Nothing else makes
+         the compiler emit that character, and one pointer parameter is the whole of the need;
+         pointer types themselves are clause 23's, and another project's. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Left unset on purpose: nullable is *disabled* here. D.5.1's worked example is
+         transliterated from the annex, which was written against `public override bool
+         Equals(object o)`; under an enabled context that signature warns about a mismatched
+         annotation, and the warning would be about the annex's age rather than about
+         documentation comments. `Nullable` is clause 8.9's fact and the `Types` project's. -->
+  </PropertyGroup>
+</Project>

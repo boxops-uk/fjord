@@ -4,7 +4,7 @@ description: Frames, streams, the handshake, the four query kinds, the write str
 ---
 
 One socket, framed and multiplexed. Everything talks it: the CLI, the shell, the viewer, and a
-C# client that shares no code with the server. Protocol version is **3**.
+C# client that shares no code with the server. Protocol version is **4**.
 
 The transport is a Unix socket by default. TCP is an explicit opt-in — `serve --listen-tcp
 host:port`, with no config-file entry and no environment variable, so a port can only appear
@@ -109,11 +109,33 @@ opinion. `h` is the answer, and it is what lets a client describe the right pred
 a query before sending it, and show a plan. **Virtual predicates are included**, because the
 question is what may be asked rather than what the database holds.
 
+### Where a predicate id comes from, and the one place it can bite a consumer
+
+Ids are assigned at `create`, by **sorted fully-qualified name with the reserved `fjord.*`
+namespace last**, and then embedded — not by declaration order and not by file position. The
+map is append-only for the life of the database ([I13](invariants.html#i13)), so an existing
+database's numbering never moves.
+
+Adding a predicate to a *schema* is another matter: because the rule is a sort, a name that
+sorts early **inserts** an id rather than appending one, and every predicate above it is
+numbered one higher in databases created after the change.
+
+That never leaves the database on this wire. A block header carries the predicate's **name**,
+and a row carries no predicate at all — so a client keeps no table that could fall out of step,
+and this is one of the reasons the header spends the bytes on a name.
+
+:::warn A `FactId`'s tag is the *database's* numbering
+The one place the numbering is visible to a consumer. A `FactId` packs its owning predicate's
+id in its high bits ([I11](invariants.html#i11)), so a consumer that decodes a returned
+reference's tag against a **hardcoded** table reads the wrong predicate the day the numbering
+moves. Ask the schema — `h` above — or treat an id as opaque and hand it back to `F`.
+:::
+
 ## A query stream
 
 ```text
-  →  Q   "{f = F, l = L} where src.Ref {…}"
-  ←  T   {f: src.File, l: int}
+  →  Q   "{f = F, at = S} where codemarkup.SymbolXRef {…}"
+  ←  T   {at: {start: int, length: int}, f: src.File}
   ←  D   one row
   ←  D   one row
   …
@@ -190,14 +212,14 @@ parsing English; the message exists because a person reads it.
 | Code | Means |
 |---|---|
 | 1 `Protocol` | Malformed or out-of-sequence frames |
-| 2 `UnknownDatabase` | No such database under this root |
+| 2 `UnknownDatabase` | No such database under this root, no such instance of one, no database named on this session at all — or one that is there and this server cannot open, and in that last case the message says which instance and why |
 | 3 `SchemaMismatch` | The claim disagrees with what this database holds |
 | 4 `ModeRefused` | A write session against a Complete database |
 | 5 `BadFacts` | A block that does not validate against the embedded schema |
 | 6 `Conflict` | Same key, different value |
 | 7 `BadQuery` | The query did not compile |
 | 8 `Internal` | Look at the server's logs |
-| 9 `InUse` | Something else holds this database — the one code worth **retrying** |
+| 9 `InUse` | The database is there and not usable **yet** — the root or the instance's store directory is held by something else, a session still has it, or a copy into the store root has not finished delivering it. The one code worth **retrying** |
 | 10 `Refused` | A well-formed request the server will not carry out — the answer is in the message |
 | 11 `Busy` | The server is at its connection cap and never read the request — **come back**, the other code worth retrying |
 
@@ -301,24 +323,48 @@ test rather than an intention.
   caught rather than used to skip to the wrong place.
 - Caps: 16.7 M facts, 64 MiB payload, 64 KiB name.
 
-### Sync markers cannot occur in a payload
+### A sync marker is a candidate, not an impossibility
 
-Ten `0xFF` bytes are unreachable **by the encoding**, not by luck:
+Ten `0xFF` bytes are *rare* in a payload by the encoding, but they are not unreachable — because
+`bytes` carries an arbitrary payload, written raw and unescaped, and not validating it is
+precisely what the family is for. **No fixed marker can be structurally impossible in a family
+that carries arbitrary bytes.** Escaping the payload would buy the impossibility back and cost
+the property this format exists for — the same bytes on the wire and on disk — so a marker is
+*only a candidate*.
+
+What the encoding does buy is that a *false* candidate is rare rather than routine:
 
 - a string is length-prefixed UTF-8, and UTF-8 never uses `0xF8`–`0xFF` at all;
 - a varint's continuation bytes are `0x80`–`0xFF` but its final byte is below `0x80`, so a run
   ends where the varint does — and the longest possible is nine bytes;
 - runs cannot join across values, for the same reason;
-- the header cannot contribute one either: `count` and `length` are capped to keep a zero top
-  byte, so only the checksum is free to be all-ones, and four is not ten.
+- the header cannot contribute one either: `name_len`, `count` and `length` are capped to keep a
+  zero top byte, so only the checksum is free to be all-ones, and four is not ten.
 
-So a marker appears exactly once per block, at its start, and a scan of a well-formed file finds
-boundaries and nothing else. Validation (magic, then CRC) stays load-bearing for the fault it is
-actually for: a torn write, a flipped bit, a file cut mid-block.
+So a marker inside a block came from a `bytes` field or from nothing. A splitter therefore calls
+`find_block`, not `find_sync`: it confirms the magic and then the header CRC, and on failure
+**resumes scanning past that candidate** rather than giving up. Magic plus CRC32 puts an
+accidental false boundary at roughly 2⁻³². It does not defeat a crafted one — a producer can
+write a correct CRC inside a blob, and a checksum is not a signature.
 
-That is what makes **one file splittable**: seek anywhere, scan to the next sync, hand blocks to
-workers. No reliance on per-predicate contiguity in the input, and no requirement that the
-producer chose the chunking.
+That is what makes **one file splittable**: seek anywhere, scan to the next validated boundary,
+hand blocks to workers. No reliance on per-predicate contiguity in the input, and no requirement
+that the producer chose the chunking.
+
+**Resuming past a failure costs a real block, and the scan reports it rather than hiding it.** A
+damaged block and a false candidate are indistinguishable to a scan — each is a marker whose
+header does not validate — so scanning past the one means scanning past the other. Flip a bit in
+the second of three blocks and a scan returns the *third*: a corruption that decoding would have
+reported as a checksum failure becomes a file that quietly holds fewer facts. `find_block`
+therefore returns both halves — the boundary it found and the candidate it skipped, with the
+failure — and a caller that reads only the boundary has chosen the silent answer. Guarded by
+`a_damaged_block_is_skipped_but_reported`.
+
+**A reader that can start at offset 0 should not scan at all.** The header is fixed-width and
+decoding a block returns the bytes it occupied, so walking that chain from the start gives exact
+boundaries with no scanning and no guessing — no payload byte is ever weighed as a boundary. That
+is what a parallel ingest should do to build its split points; the marker scan is for recovery,
+where the file is damaged or a worker was handed a range that begins mid-block.
 
 ## The value encoding
 
@@ -364,12 +410,15 @@ Two properties are load-bearing rather than incidental:
 ## What a client sends: the whole fact
 
 ```text
-    src.Decl {
-      module = src.Module {                    ← a whole fact, not an id
-        file = src.File "store/keys.py",       ← nested again
-        name = "keys"
+    code.Ref {
+      from = code.Decl {                       ← a whole fact, not an id
+        file = code.File "query/plan.py",      ← nested again
+        name = "Plan", line = 5
       },
-      name = "key_of", line = 12
+      to = code.Decl {
+        file = code.File "store/keys.py",
+        name = "key_of", line = 12
+      }
     }
 ```
 

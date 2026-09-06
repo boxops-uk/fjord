@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Quarantine.Partial</RootNamespace>
+
+    <!-- Partial properties and partial indexers are C# 13 and need nothing. Partial
+         constructors and partial events are C# 14 and are rejected (CS8703 / CS0246) by
+         any compiler whose `LanguageVersion.Default` still maps to C# 13, which is the
+         case for the Roslyn the indexer is pinned to. `preview` is stated so the fixture
+         parses the same way under the SDK compiler and under the indexer's own parse
+         options; `DeclarationCensusTests` is the precedent for parsing a fixture as
+         Preview. -->
+    <LangVersion>preview</LangVersion>
+
+    <!-- CS8826 ("partial method declarations ... have signature differences") is the
+         warning `PartialHandlerImplementing.cs` exists to provoke: clause 15.6.9 allows
+         the halves to name their parameters differently and asks for a warning when they
+         do. Left on, not suppressed, because a build log carrying it is the evidence that
+         the two halves really do disagree about their display string. -->
+  </PropertyGroup>
+</Project>

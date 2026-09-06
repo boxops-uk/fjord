@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Quarantine.Ordinal</RootNamespace>
+
+    <!-- No `LangVersion`. Partial methods are C# 2 and the `partial void` form used here
+         needs no newer compiler; the mechanism is about a member list, not a feature. -->
+
+    <!-- The `<Compile>` items below are STATED, not globbed, because the order the
+         compilation is given its syntax trees is part of what this project measures. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- STATED ORDER: A then B. `OrdinalPartA.cs` holds `Send(int)` and the DEFINING half
+         of `Send(string)`; `OrdinalPartB.cs` holds the IMPLEMENTING half and the second
+         `Take` overload. Reversing these two lines is the second index of this project:
+         the overload-to-symbol mapping must come out the same both times, because it is
+         supposed to be a property of the code and not of the item order. -->
+    <Compile Include="OrdinalPartA.cs" />
+    <Compile Include="OrdinalPartB.cs" />
+
+    <!-- Always last, in both orders, so that reversing A and B moves no use site. -->
+    <Compile Include="OrdinalUse.cs" />
+  </ItemGroup>
+</Project>

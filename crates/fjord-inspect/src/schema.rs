@@ -3,9 +3,13 @@
 //! A schema is what the phases after parsing resolve names against, so a page
 //! that wants to show typechecking has to hold one. It is *text* here, the same
 //! text a `.sigla` file holds, because that is the only form a browser can have
-//! one in: [`syntax::resolve`](fjord_schema::syntax::resolve) reads files for
-//! `import`, and nothing else in the schema front end touches a filesystem.
-//! So a browser schema is single-file until a virtual resolver exists.
+//! one in.
+//!
+//! **A schema may span files, and a browser can resolve one.** [`schema`] takes a
+//! single source, which is what a page editing one block wants;
+//! [`schema_set`] takes the whole set, the entry first, and follows the imports
+//! through it — `resolve_from` touches no filesystem, so there is nothing here a
+//! browser cannot do.
 //!
 //! **A predicate's type is rendered by the schema's own printer**
 //! ([`print::signature`](fjord_schema::syntax::print::signature)), not by
@@ -61,6 +65,57 @@ pub fn schema(source: &str) -> SchemaView {
 #[must_use]
 pub fn schema_json(source: &str) -> String {
     serde_json::to_string(&schema(source)).expect("a schema view serialises")
+}
+
+/// Read a **set** of sources as one schema, the entry first, following its imports
+/// through the rest.
+///
+/// The multi-file form of [`schema`]. Diagnostics come back rendered rather than
+/// structured, because resolution reports across sources and a span into one of them
+/// means nothing without saying which — which is what the rendered form carries.
+#[must_use]
+pub fn schema_set(sources: &[(&str, &str)]) -> SchemaView {
+    match fjord_schema::syntax::resolve::resolve_from(sources.iter().copied()) {
+        Ok(resolved) => SchemaView {
+            ok: true,
+            predicates: predicates(&resolved.schema),
+            diagnostics: vec![],
+        },
+        Err(rendered) => SchemaView {
+            ok: false,
+            predicates: vec![],
+            diagnostics: vec![DiagnosticView::rendered(&rendered)],
+        },
+    }
+}
+
+/// The same view, already JSON, from a JSON array of `[name, text]` pairs.
+///
+/// A string in and a string out, as every export in `wasm/` is: a browser has no
+/// filesystem to keep a set of schema files in, and an array of pairs is what it has
+/// instead.
+#[must_use]
+pub fn schema_set_json(sources: &str) -> String {
+    let parsed: Result<Vec<(String, String)>, _> = serde_json::from_str(sources);
+
+    let view = match parsed {
+        Ok(pairs) => {
+            let borrowed: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(name, text)| (name.as_str(), text.as_str()))
+                .collect();
+            schema_set(&borrowed)
+        }
+        Err(error) => SchemaView {
+            ok: false,
+            predicates: vec![],
+            diagnostics: vec![DiagnosticView::rendered(&format!(
+                "the schema set is not a JSON array of [name, text] pairs: {error}"
+            ))],
+        },
+    };
+
+    serde_json::to_string(&view).expect("a schema view serialises")
 }
 
 /// Parse and lower `source`, keeping the diagnostics **structured**.

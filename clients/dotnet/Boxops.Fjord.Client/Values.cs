@@ -14,6 +14,9 @@ public abstract record FjordValue
 
     public sealed record Str(string Value) : FjordValue;
 
+    /// <summary>Uninterpreted bytes.</summary>
+    public sealed record Bytes(ReadOnlyMemory<byte> Value) : FjordValue;
+
     public sealed record Ref(FjordRef Value) : FjordValue;
 
     public sealed record Record(IReadOnlyList<FjordValue> Fields) : FjordValue;
@@ -29,6 +32,8 @@ public abstract record FjordValue
     public static FjordValue Of(long value) => new Int(value);
 
     public static FjordValue Of(string value) => new Str(value);
+
+    public static FjordValue Of(ReadOnlyMemory<byte> value) => new Bytes(value);
 
     public static FjordValue Of(FjordRef value) => new Ref(value);
 
@@ -131,6 +136,14 @@ public static class ValueCodec
                 break;
             }
 
+            // The same blob, unvalidated.
+            case (FjordType.Bytes, FjordValue.Bytes payload):
+            {
+                Varint.Write(sink, (ulong)payload.Value.Length);
+                sink.Write(payload.Value.Span);
+                break;
+            }
+
             case (FjordType.Fact fact, FjordValue.Ref reference):
                 WriteRef(sink, schema, fact.Predicate, reference.Value);
                 break;
@@ -162,6 +175,14 @@ public static class ValueCodec
                 break;
             }
 
+            // **A new scalar family reaches this at run time, and there is no way to
+            // make it a compile error here.** The Rust side dispatches on the declared
+            // type exhaustively so the compiler names every site (`bench/FINDINGS.md`
+            // §19); C# `switch` over a tuple of two type hierarchies has no equivalent,
+            // and an analyser that could see it does not exist. So the mechanism on
+            // this side is the flag-day checklist — the schema fingerprint moves, this
+            // client is refused by name at the handshake until it is rebuilt, and the
+            // rebuild is where this arm is revisited.
             default:
                 throw new FjordProtocolException(
                     $"value {value.GetType().Name} does not fit type {type.GetType().Name}");
@@ -250,6 +271,19 @@ public static class ValueCodec
                 var text = Encoding.UTF8.GetString(bytes.Slice(at, (int)length));
                 at += (int)length;
                 return new FjordValue.Str(text);
+            }
+
+            case FjordType.Bytes:
+            {
+                var length = Varint.Read(bytes, ref at);
+                if (length > (ulong)(bytes.Length - at))
+                {
+                    throw new FjordProtocolException("bytes run past the end of the payload");
+                }
+
+                var payload = bytes.Slice(at, (int)length).ToArray();
+                at += (int)length;
+                return new FjordValue.Bytes(payload);
             }
 
             case FjordType.Fact fact:

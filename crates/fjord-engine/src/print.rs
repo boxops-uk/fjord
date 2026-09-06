@@ -402,7 +402,9 @@ fn seek(
             constants(&mut cursor, bytes, &mut pins);
             &[][..]
         }
-        SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => parts,
+        SeekKey::Composite(parts)
+        | SeekKey::Bounded { parts, .. }
+        | SeekKey::PrefixRange { parts, .. } => parts,
     };
 
     for part in parts.iter() {
@@ -419,6 +421,19 @@ fn seek(
                 cursor += 1;
             }
         }
+    }
+
+    // **A byte-prefix pattern reads as one because the plan says it is one**, not
+    // because the bytes failed to decode as a whole field. The two forms are the
+    // same bytes, and a rendering that inferred which it held would be guessing at
+    // the very thing the variant was added to record.
+    if let SeekKey::PrefixRange { prefix: bytes, .. } = seek_key {
+        let ty = key_field_ty(key_ty, cursor);
+        let rendered =
+            prefix(interner, ty, bytes).map_or_else(|| opaque(bytes), |text| format!("{text}.."));
+
+        pins.push((cursor, rendered));
+        cursor += 1;
     }
 
     // One entry of the rendered key: `name = pin` where the field is pinned, `name
@@ -474,10 +489,11 @@ fn seek(
 /// decoding one field at a time against the declared type — the same walk the
 /// executor makes, rather than a second reading of the layout.
 ///
-/// The last field may be a **string prefix**, which is a string's encoding with its
-/// terminator dropped and so decodes as a truncation rather than as a value: that is
-/// what a decode failing on the final field means, and it is the difference between
-/// a seek that is an equality and one that is a range.
+/// A decode failing on the final field means bytes that are not a whole field: a
+/// plan built by hand, or one built against another schema. Rendered as the
+/// truncation it is rather than dropped, because a seek nobody can read is a seek
+/// nobody can check. A **byte-prefix pattern** does not arrive here — it is
+/// [`SeekKey::PrefixRange`], which [`seek`] renders from the variant.
 fn constant_fields(
     schema: &Schema,
     interner: &LocalInterner,
@@ -505,14 +521,16 @@ fn constant_fields(
 
         match decode_typed_at(interner, &mut decoder, ty) {
             Ok(value) => pins.push((field, literal(schema, &value))),
+            // **Not a byte-prefix pattern, however much these bytes look like one.**
+            // They sit where the variant says a *whole* field is: `Prefix` is a run
+            // of complete encodings, a [`SeekKeyPart::Bytes`] is one field, and a
+            // byte prefix of a field lives in [`SeekKey::PrefixRange`]'s `prefix`
+            // beside the parts. A field encoding with its terminator dropped decodes
+            // as nothing here and *would* decode as a string one byte longer, so
+            // reading `v..` off the failure renders a bucket seek as the range it is
+            // not — the inference [`seek`] refuses to make from the same bytes.
             Err(_) => {
-                pins.push((
-                    field,
-                    match prefix(interner, Some(ty), rest) {
-                        Some(text) => format!("{text}.."),
-                        None => opaque(rest),
-                    },
-                ));
+                pins.push((field, opaque(rest)));
                 return pins;
             }
         }
@@ -553,6 +571,19 @@ fn prefix(interner: &LocalInterner, ty: Option<&PredicateTy>, bytes: &[u8]) -> O
     }
 }
 
+/// `0x…`, lowercase, two digits a byte — the one spelling both the printer and
+/// [`literal`] emit, and the one the lexer reads back.
+fn hex_literal(payload: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::with_capacity(2 + payload.len() * 2);
+    out.push_str("0x");
+    for byte in payload {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
 /// A decoded value as sigla text — the literal a reader would have written.
 ///
 /// A reference is named as the corpus and the shell name one, `test.Foo#1`: the
@@ -562,6 +593,9 @@ fn literal(schema: &Schema, value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Int(int) => int.to_string(),
         Value::Str(text) => escape(text),
+        // Without the `0x…` literal this would be the one place the printer emits
+        // text sigla cannot parse back.
+        Value::Bytes(payload) => hex_literal(payload),
         Value::FactRef(id) => {
             let name = schema
                 .get(id.predicate())
@@ -993,6 +1027,8 @@ impl Printer<'_> {
                 }
             }
             ExprKind::Lit(Literal::Str(symbol)) => out.push(&escape(self.name(*symbol))),
+            // `0x…`, lowercase, two digits a byte — what the lexer reads back.
+            ExprKind::Lit(Literal::Bytes(payload)) => out.push(&hex_literal(payload)),
             ExprKind::Prefix(symbol) => {
                 out.push(&escape(self.name(*symbol)));
                 out.push("..");
@@ -1163,6 +1199,9 @@ impl Printer<'_> {
             ExprKind::Lit(Literal::Int(value)) => write!(out, "(int {value})").expect(SINK),
             ExprKind::Lit(Literal::Str(symbol)) => {
                 write!(out, "(str {:?})", self.name(*symbol)).expect(SINK);
+            }
+            ExprKind::Lit(Literal::Bytes(payload)) => {
+                write!(out, "(bytes {})", hex_literal(payload)).expect(SINK);
             }
             ExprKind::Prefix(symbol) => {
                 write!(out, "(prefix {:?})", self.name(*symbol)).expect(SINK);
@@ -1594,6 +1633,64 @@ mod tests {
         assert!(
             plan.contains("seek[0x4901ff]") && plan.contains("== 0x4901"),
             "expected the bytes, got:\n{plan}"
+        );
+    }
+
+    /// **A truncated field encoding is shown as bytes, not as a byte-prefix
+    /// pattern.**
+    ///
+    /// These bytes are `enc("ab")` with its terminator dropped, which is exactly what
+    /// [`SeekKey::PrefixRange`] holds — sitting in a [`SeekKey::Prefix`], where the
+    /// variant says every byte belongs to a *complete* field encoding. Rendering them
+    /// `"ab"..` would show a bucket seek as a range: the two forms are the same bytes,
+    /// and which of them a plan holds is what the variant records and the bytes cannot
+    /// say.
+    ///
+    /// The sibling above covers bytes that decode as **nothing**; this covers the ones
+    /// that decode as **something one byte longer**, which is the case a renderer is
+    /// tempted to be clever about and the one a decode failure cannot tell from a
+    /// range.
+    #[test]
+    fn a_truncated_field_encoding_is_shown_as_bytes_not_as_a_prefix_pattern() {
+        use crate::fixtures::str_field;
+
+        let schema = corpus::schema();
+        let interner = LocalInterner::new(schema.interner().clone());
+
+        // `test.Name`'s key is a bare `string`, so field 0's declared type is the one
+        // a renderer reading a prefix off these bytes would decode against.
+        let mut truncated = str_field("ab");
+        assert_eq!(
+            truncated.pop(),
+            Some(MARK_TERM),
+            "a terminated field, or these bytes are not the interesting ones"
+        );
+
+        let compiled = Plan {
+            nvars: 1,
+            body: Step::levels([PlanLevel::seek(
+                Access {
+                    predicate_id: predicate_id(&schema, "test.Name"),
+                    seek_key: SeekKey::Prefix(truncated.clone().into()),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
+            head: Project::FactRef(Address::new(0)),
+        };
+
+        let rendered = plan(&compiled, &schema, &interner);
+
+        // Spelled out rather than built with `opaque`, which is the function under
+        // test here: sharing it would assert only that the renderer agrees with
+        // itself.
+        assert!(
+            rendered.contains("seek[0x216162]"),
+            "expected the bytes, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(".."),
+            "a complete-encoding position rendered as a range:\n{rendered}"
         );
     }
 

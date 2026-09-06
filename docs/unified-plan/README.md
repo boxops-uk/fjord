@@ -9,17 +9,20 @@ two are engine defects the schemas hit, and one is an unrelated storage observat
 [#28](https://github.com/boxops-uk/fjord/issues/28)–[#32](https://github.com/boxops-uk/fjord/issues/32)
 and review [#34](https://github.com/boxops-uk/fjord/issues/34).
 
-This directory is one route through all of it: **fourteen work items**, each with one falsifiable
+This directory is one route through all of it: **fifteen work items**, each with one falsifiable
 claim and acceptance criteria that are tests and commands rather than intentions.
 
 **What is authoritative.** Revision 2 remains the specification of Runs 0–9; **[W13](13-indexer-runs-amended.md)
 amends it**, and where the two disagree W13 wins. Everything else here is new and this directory is
 its specification.
 
-**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — ten put for review and all ten
-answered, with the consequence of each — plus ten corrections the plan makes to the issues and eight
-risks it carries. **One question is still open**: whether `fjord-viewer` is being retired, which
-would re-cut W11 and R9's gate.
+**[`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) carries the decisions** — fifteen now, all answered,
+with the consequence of each — plus ten corrections the plan makes to the issues and eight risks it
+carries. Four of them re-cut work already specified here: D11 retired `fjord-viewer`, which re-cut
+W11 and R9's gate and shrank W6's flag day; D12 retires `code.sigla`, which cancels R4 and adds
+[W15](15-retire-code-sigla.md); D13 makes the style payload opaque, which re-cuts W6's D3 and
+c7, W15's S1 and two rows of [W10](10-the-book.md); and D15 closes `bench/FINDINGS.md`, which
+re-cuts the gates of R0, R3.6, R6 and R7.
 
 ---
 
@@ -34,7 +37,7 @@ would re-cut W11 and R9's gate.
 | [#41](https://github.com/boxops-uk/fjord/issues/41) — embedded readers never `resolve` | `[06]` | **W4**, **W5** |
 | [#42](https://github.com/boxops-uk/fjord/issues/42) — revision 2 follow-ups | `[07]` | **W7** (items 2–3), **W13** (items 1, 4) |
 | [#43](https://github.com/boxops-uk/fjord/issues/43) — a sealed database keeps its journals | `[08]` | **W12** |
-| [#36](https://github.com/boxops-uk/fjord/issues/36) — the content schema and style layer | superseded by `[03]` | **W6** (the style layer is adopted whole), **W11** |
+| [#36](https://github.com/boxops-uk/fjord/issues/36) — the content schema and style layer | superseded by `[03]` | **W6** (the style layer is adopted, its payload opaque — D13), **W11** |
 | [#28](https://github.com/boxops-uk/fjord/issues/28)–[#32](https://github.com/boxops-uk/fjord/issues/32), [#34](https://github.com/boxops-uk/fjord/issues/34) | — | **W13** (Runs 0–9, amended), **W14** |
 
 Not in this plan: [#18](https://github.com/boxops-uk/fjord/issues/18) (cost-based reorder), which has
@@ -43,7 +46,7 @@ knowing is that W6/W8/W9 add predicates whose cardinalities a cost model would r
 
 ---
 
-## The fourteen work items
+## The fifteen work items
 
 | # | Item | Issue | Depends on | Moves a fingerprint? | Size |
 |---|---|---|---|---|---|
@@ -57,15 +60,27 @@ knowing is that W6/W8/W9 add predicates whose cardinalities a cost model would r
 | **W8** | [`codemarkup.sigla`](08-codemarkup-layer.md) | #40 | W6, W7 | new only | M |
 | **W9** | [The language layers and `index.sigla`](09-language-layers.md) | #40's comments | W1, W6, W8 | new only | **L** |
 | **W10** | [The book](10-the-book.md) | all | each item | no | S per item |
-| **W11** | [The viewer](11-viewer.md) | #36, #39, #42 | W6, W7, W8 | no | M |
+| **W11** | [The viewer is retired](11-viewer.md) | #36, #39, #42 | W7 | no | M |
 | **W12** | [A sealed database is its tables](12-sealed-database-journals.md) | #43 | — | no | M |
 | **W13** | [The indexer runs, amended](13-indexer-runs-amended.md) | #28–#34, #42 | W6, W7, W8, W11 | **yes — R4** | **XL** |
 | **W14** | [The flag-day inventory](14-flag-day-inventory.md) | R4e, #39 | — | it *is* the fingerprint move | S |
+| **W15** | [`code.sigla` retires](15-retire-code-sigla.md) | D12 | W6, W7, W8, W9 | **yes — the last one** | **XL** |
 
 **W13 is a tier of its own.** It is not one work item: it carries amendments to all ten of
 revision 2's runs, a new sub-run (R3.7), an edit to the required CI job, a 61-file migration, and one
-piece of work it explicitly declines to price (extracting an `IFactWriter` from a raw `Thread[]`).
-Its acceptance criteria are the runs' own gates, which is why it contributes none of the 106 below.
+piece of work it explicitly declines to price (extracting an `IFactWriter` from a raw `Thread[]` —
+**dropped**, with the reason recorded: it would be an abstraction over a `Thread[]` with one
+implementation and no second caller, and `IBlockTarget` is already the swappable thing). Its
+acceptance criteria are the runs' own gates, which is why it contributes none of the count below.
+
+**All fifteen items have landed**, with one criterion outstanding: W11's WebSocket listener was
+never built (criterion 4, and the battery that would cover it is ready for it). W15's four
+`csharp` location predicates were declared and empty rather than absent, so writing them moved no
+fingerprint and needed no flag day; they are written, and the completeness gate that would have
+caught them exists. W13's runs are done
+except R4, cancelled by D12, and R7,
+deferred to a 1.0 profiling pass by D15. What each run found — including six defects no issue had
+named — is recorded in [W13](13-indexer-runs-amended.md).
 
 **W1 has been spiked and reverted.** The arm was written, the shared-union query planned and ran
 against the existing fixture (`20; 40; 10; 30`), the alternative-narrowed form was unchanged, and
@@ -79,23 +94,23 @@ it needs no fixture change and no `flatten` work, and it unblocks the most — s
 Seven orderings are load-bearing. Everything else is preference.
 
 ```
-W12  sealed database is its tables ───────────┐  independent; before R7 re-measures anything
-W1   the union arm ───────────────────────────┤  smallest item, unblocks W9 and R4's descriptor
-                                              │
-W4   embedded resolution ──► W5 diagnostics   │  W4 is the gate on every schema being a *file*
-       │                                      │
-       ├──► W7 config (stands alone)          │
-       │                                      │
-       └──► W6 src ─┬─► W8 codemarkup ─► W9 language layers + index
-                    │                         │  W6 is a flag day: Breaking, `src.Line` goes
-                    └─► W11 viewer ───────────┼──► gates R9
-                                              │
-W2   exhaustiveness ──► W3 bytes ─────────────┘  parallel to the schema track throughout
+W12  sealed database is its tables            independent; before R7 re-measures anything
+W1   the union arm                            smallest item, unblocks W9 and R4's descriptor
+W11  retire fjord-viewer                      before W6, so the flag day is two sites smaller
+W2   exhaustiveness ──► W3 bytes              parallel to the schema track throughout
 
-R0   ledger                   R3.5 fan-out (needs W7)              R6  writer default
-R0.5 .NET test job            R3.6 delete Declared.First           R7  re-measure (reads W12)
+W4   embedded resolution ──► W5 diagnostics   W4 is the gate on every schema being a *file*
+       │
+       ├──► W7 config (stands alone)
+       │
+       └──► W6 src ──► W8 codemarkup ──┬──► W9 language layers + index
+                                       │       W6 is a flag day: Breaking, `src.Line` goes
+                                       └──► gates R9
+
+R0   ledger (gate re-cut)     R3.5 fan-out (needs W7)              R6  writer default (D15)
+R0.5 .NET test job            R3.6 already deleted; unproven        R7  the 1.0 pass (D15)
 R1   #28 workspace load       R3.7 delete --syntax-only            R8  the seam
-R2   #29 retry                R4.0 conflict census                 R9  SCIP (needs W11)
+R2   #29 retry                R4.0 conflict census                 R9  SCIP (needs W8)
 R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)
                               R5   de-gate
 ```
@@ -109,8 +124,9 @@ R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)
 3. **W6 before R4b**, because `src.sigla` owns `src.Symbol` and identical redeclaration rejects.
 4. **W8 before R4b** if `src.ExternalRef` is to be dropped in favour of `codemarkup.SymbolXRef`;
    otherwise R4b keeps `ExternalRef` **and owes it a file-keyed twin**.
-5. **W11 before R9**, since R9's gate is the viewer answering against a converted index and this plan
-   re-points it at `codemarkup` routes.
+5. **W8 before R9**, since R9's gate is now a set of `codemarkup` queries against a converted
+   index — re-cut from "the viewer answers `/symbol/{name}`", which no longer has a viewer to
+   answer it ([D11](OPEN-QUESTIONS.md)).
 6. **W1 before W2**, so W2's type-path experiment has a real arm to protect; and W2 before W3, which
    is the issue's own ordering and the reason Part 0 is worth doing even if `bytes` is refused.
 7. **The two flag days stay separate, W6 first** ([W14](14-flag-day-inventory.md)). Both are
@@ -122,7 +138,7 @@ R3   #32 project rescue       R4   semantic key (needs W6, W8, W14)
 
 ## What this adds up to
 
-**108 acceptance criteria across thirteen items** (W13 carries amendments to revision 2's own run
+**114 acceptance criteria across fourteen items** (W13 carries amendments to revision 2's own run
 gates rather than criteria of its own), plus revision 2's Runs 0–9.
 
 New on disk: **nine new schema files** — `src`, `config`, `codemarkup`, the five language schemas

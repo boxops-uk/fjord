@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Attributes</RootNamespace>
+
+    <!-- 23.5.7 (the code analysis attributes) is only observable in an enabled nullable
+         context: outside one the compiler parses `[NotNullWhen(true)]` and then checks
+         nothing with it, so the applications would be present and inert and a query
+         asserting what they annotate would be asserting nothing. -->
+    <Nullable>enable</Nullable>
+
+    <!-- 23.5.3.2/23.5.3.3/23.5.3.4 need one conditional symbol *defined* and one *not*, in
+         the same compilation: a [Conditional] application whose symbol is undefined is
+         omitted from metadata, and that difference between source and metadata is the fact
+         those rows exist to pin. SURFACE_TRACE is defined here; SURFACE_AUDIT never is. -->
+    <DefineConstants>$(DefineConstants);SURFACE_TRACE</DefineConstants>
+  </PropertyGroup>
+</Project>

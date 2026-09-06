@@ -123,6 +123,15 @@ impl ToValue for String {
     }
 }
 
+/// **`bytes` is a scalar too**, and a slice is not a string: `checked` refuses a
+/// `Str` against a `bytes` field, and the two encode under different markers — so a
+/// payload that happens to be UTF-8 must still arrive as this family.
+impl ToValue for [u8] {
+    fn to_value(&self) -> Value {
+        Value::Bytes(self.to_vec())
+    }
+}
+
 /// A reference to another fact — which is what the id a write returned *is*.
 impl ToValue for FactId {
     fn to_value(&self) -> Value {
@@ -187,6 +196,7 @@ pub fn encode<F: Fact>(
 /// here keeps one encoder: what comes back is what
 /// [`encode_typed`](fjord_encoding::tuple::encode_typed) already writes positionally,
 /// so the name resolution cannot drift from the bytes.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn checked(
     interner: &SchemaInterner,
     predicate: &str,
@@ -199,8 +209,35 @@ fn checked(
         got: shape(value),
     };
 
-    match (ty, value) {
-        (PredicateTy::Int, Value::Int(_)) | (PredicateTy::Str, Value::Str(_)) => Ok(value.clone()),
+    // Dispatched on the declared type exhaustively, then on the value: a joint match
+    // needs a wildcard for the genuine mismatch, and the same wildcard absorbs a new
+    // scalar family silently.
+    match ty {
+        // The scalars return the value as it stands, so there is nothing to bind and
+        // the check is a shape test rather than a destructuring.
+        PredicateTy::Int => {
+            if matches!(value, Value::Int(_)) {
+                Ok(value.clone())
+            } else {
+                Err(mismatch())
+            }
+        }
+
+        PredicateTy::Str => {
+            if matches!(value, Value::Str(_)) {
+                Ok(value.clone())
+            } else {
+                Err(mismatch())
+            }
+        }
+
+        PredicateTy::Bytes => {
+            if matches!(value, Value::Bytes(_)) {
+                Ok(value.clone())
+            } else {
+                Err(mismatch())
+            }
+        }
 
         // A reference has to name the predicate the field *declares*, and the id
         // carries its predicate in its own tag, so this is a compare rather than a
@@ -209,13 +246,23 @@ fn checked(
         // predicate is a fact that either errors when followed or answers with
         // another type's bytes — and neither is visible from the field itself.
         // Sequence 0 is no fact's id, here for the same reason.
-        (PredicateTy::Fact(predicate), Value::FactRef(id))
-            if id.predicate() == *predicate && id.sequence() != 0 =>
-        {
+        PredicateTy::Fact(target) => {
+            let Value::FactRef(id) = value else {
+                return Err(mismatch());
+            };
+
+            if id.predicate() != *target || id.sequence() == 0 {
+                return Err(mismatch());
+            }
+
             Ok(value.clone())
         }
 
-        (PredicateTy::Record(field_tys), Value::Record(given)) => {
+        PredicateTy::Record(field_tys) => {
+            let Value::Record(given) = value else {
+                return Err(mismatch());
+            };
+
             let mut out = Vec::with_capacity(field_tys.len());
             let mut used = vec![false; given.len()];
 
@@ -267,7 +314,11 @@ fn checked(
         // the number it is declared with is not something a caller should have to
         // restate. A tag written by hand and disagreeing with the name would be
         // silently authoritative once it reached the codec.
-        (PredicateTy::Union(alts), Value::Union { alt, value, .. }) => {
+        PredicateTy::Union(alts) => {
+            let Value::Union { alt, value, .. } = value else {
+                return Err(mismatch());
+            };
+
             let declared = alts
                 .iter()
                 .find(|declared| interner.resolve(declared.name) == Some(alt.as_str()))
@@ -282,8 +333,6 @@ fn checked(
                 value: Box::new(checked(interner, predicate, &declared.ty, value)?),
             })
         }
-
-        _ => Err(mismatch()),
     }
 }
 
@@ -292,6 +341,7 @@ fn describe(ty: &PredicateTy) -> String {
     match ty {
         PredicateTy::Int => "int".to_owned(),
         PredicateTy::Str => "string".to_owned(),
+        PredicateTy::Bytes => "bytes".to_owned(),
         PredicateTy::Fact(predicate) => format!("a reference to predicate {}", predicate.0),
         PredicateTy::Record(fields) => format!("a record of {} field(s)", fields.len()),
         PredicateTy::Union(alts) => format!("one of {} alternative(s)", alts.len()),
@@ -309,6 +359,7 @@ fn shape(value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Int(_) => "int".to_owned(),
         Value::Str(_) => "string".to_owned(),
+        Value::Bytes(payload) => format!("{} byte(s)", payload.len()),
         Value::FactRef(id) if id.sequence() == 0 => "the reserved fact id".to_owned(),
         Value::FactRef(id) => format!("a reference to predicate {}", id.predicate().0),
         Value::Record(fields) => format!("a record of {} field(s)", fields.len()),
@@ -320,7 +371,7 @@ fn shape(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::fixture;
-    use fjord_encoding::tuple::decode_key;
+    use fjord_encoding::tuple::{MARK_BYTES, decode_key};
 
     /// `test.Foo : { id : int, name : string } -> string` — a record key whose
     /// fields sort `id`, `name`, and a value side.
@@ -348,6 +399,19 @@ mod tests {
             id: 1,
             name: "ann",
             value: "one",
+        }
+    }
+
+    /// `test.Blob : { digest : bytes }` — a one-field key, and no value side.
+    struct Blob {
+        digest: &'static [u8],
+    }
+
+    impl Fact for Blob {
+        const PREDICATE: &'static str = "test.Blob";
+
+        fn key(&self) -> Value {
+            record([("digest", self.digest.to_value())])
         }
     }
 
@@ -395,6 +459,45 @@ mod tests {
             decode_key(&interner, &key, &ty).expect("decodes"),
             record([("id", 1.to_value()), ("name", "ann".to_value())]),
         );
+    }
+
+    /// **What `ToValue` for a byte slice produces, and what it encodes to.**
+    ///
+    /// A hand-written fact is the seam every backend test writes through, so which
+    /// `Value` family a `&[u8]` becomes is load-bearing rather than a matter of taste:
+    /// `checked` refuses a `Str` against a `bytes` field, and the two families carry
+    /// different markers, so a slice arriving as a string either fails to write or
+    /// writes under a marker no `bytes` reader walks.
+    ///
+    /// The payload carries a NUL **and** the escape byte, which is what the escape
+    /// scheme turns on: `0x00` becomes `0x00 0xFF` and a bare `0x00` terminates, so a
+    /// payload holding neither could not tell an escaped run from a raw one. It is
+    /// also not UTF-8, which is the whole reason the family exists.
+    #[test]
+    fn a_byte_slice_is_a_bytes_value_and_encodes_under_the_bytes_marker() {
+        let digest: &[u8] = &[0x00, 0xFF];
+
+        assert_eq!(digest.to_value(), Value::Bytes(vec![0x00, 0xFF]));
+
+        let (predicate, key, value) = encoded(&Blob { digest }).expect("a well-formed fact");
+
+        assert_eq!(predicate, PredicateId(16), "test.Blob's position");
+        assert_eq!(key, [MARK_BYTES, 0x00, 0xFF, 0xFF, 0x00]);
+        assert!(value.is_empty(), "test.Blob declares no value side");
+
+        // ...and byte for byte the fixture's own third `test.Blob`, which is the row
+        // the corpus answers as `0x00ff` — so the hand-written fact and the fixture
+        // cannot drift apart while both keep passing.
+        let expected = fixture::facts()
+            .into_iter()
+            .find(|fact| fact.predicate == PredicateId(16) && fact.sequence == 3)
+            .expect("the fixture's third test.Blob");
+        assert_eq!(key, expected.key);
+
+        // The empty run is a payload, not an absent field: the marker and the
+        // terminator, and nothing between them.
+        let (_, empty, _) = encoded(&Blob { digest: b"" }).expect("a well-formed fact");
+        assert_eq!(empty, [MARK_BYTES, 0x00]);
     }
 
     /// A predicate no schema declares. The name is resolved at write time precisely

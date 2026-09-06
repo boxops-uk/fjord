@@ -1,0 +1,91 @@
+# The JavaScript package layer: a repository's workspaces and its resolved dependency graph.
+#
+# The model is Yarn's, so the two agree by construction rather than by translation:
+#
+#   * a **Locator** (name + *reference*) is a resolved package instance —
+#     `react@npm:18.2.0`, `@internal/app@workspace:packages/app`. A node in the tree.
+#   * a **Descriptor** (name + *range*) is a dependency requirement — `react@^18`.
+#   * a **Resolution** maps a descriptor to the locator it resolved to. This is `yarn.lock`.
+#   * a **Workspace** is a package that lives in the repo; a **Project** is the tree that
+#     owns the lockfile. (`Project` is to `Workspace` as a solution is to a `.csproj`.)
+#
+# npm and pnpm fit the same model — their lockfiles carry the same requirement/resolution
+# split — which is why the namespace is named for the ecosystem and not the tool.
+#
+# Field order is key order: each predicate leads with the field a query seeks on, identity
+# in the key and attributes in the value.
+
+schema npm {
+
+  import src
+
+  # An interned package identifier (`@scope/pkg`). Not shared with the other layers' names:
+  # a package identifier and a bundler's chunk name are different string spaces.
+  predicate Name : string
+
+  # The lower-cased lookup index, written by the producer. Key-only, because
+  # `nameLowercase` is not unique. For a user-facing search box, prefer
+  # `codemarkup.SearchEntry`; this is the ecosystem-scoped lookup.
+  predicate NameLowerCase : { nameLowercase : string, name : Name }
+
+  # ---- closed vocabularies -------------------------------------------------------------
+
+  type DependencyKind = { prod = 0 | dev = 1 | peer = 2 | optional = 3 }
+  type PackageKind    = { workspace = 0 | dependency = 1 }
+
+  # ---- the graph -----------------------------------------------------------------------
+
+  # A resolved package instance. Both fields are identity, so the same name at two
+  # references is two packages — which is how versions fall out. `name` leads, so "every
+  # version of `react`" is a range.
+  predicate Locator : { name : Name, reference : string }
+
+  # A dependency requirement. Both fields identity; `name` leads.
+  predicate Descriptor : { name : Name, range : string }
+
+  # The lockfile's core mapping: a descriptor resolves to exactly one locator.
+  predicate Resolution : { descriptor : Descriptor } -> { locator : Locator }
+
+  # A package's manifest facts, keyed by its locator.
+  predicate Package : { locator : Locator } -> { kind : PackageKind, manifest : src.File, version : string, private_ : src.Bool }
+
+  # A dependency edge: `dependent` requires `descriptor`, in section `kind`. Joined through
+  # `Resolution` this is the resolved tree. `dependent` leads: "this package's dependencies".
+  predicate Dependency : { dependent : Locator, descriptor : Descriptor } -> { kind : DependencyKind }
+
+  # The reverse — "who depends on this" — keyed on the depended-on descriptor.
+  predicate Dependent : { descriptor : Descriptor, dependent : Locator }
+
+  # The project: the tree root that owns the lockfile.
+  predicate Project : { root : src.File } -> { lockfile : src.File }
+
+  # A package that lives in the repo. `project` leads, so "this project's workspaces" is a
+  # seek; `locator` is its identity and `root` its directory.
+  predicate Workspace : { project : Project, locator : Locator } -> { root : src.File }
+
+  # Which package owns a source file.
+  predicate FilePackage : { file : src.File } -> { locator : Locator }
+
+  # A manifest, and the package it declares — the reverse of `Package.manifest`.
+  #
+  # `Package` holds the manifest on the value side, and a value can be neither matched nor
+  # read field-wise, so without this there is no way back from a `package.json` to its
+  # package. It is also the bridge from `codemarkup`: a `src.Symbol` naming a package
+  # resolves through `codemarkup.Definition {symbol, file}`, whose `file` is the manifest.
+  predicate PackageManifest : { manifest : src.File, locator : Locator }
+
+  # A resolved workspace-to-workspace dependency — the JavaScript "inter-project reference".
+  #
+  # Stored rather than derived because it is the edge a UI draws: over a 200-workspace
+  # monorepo this is one seek per node, against two joins and a filter. Equivalent to:
+  #
+  #     npm.WorkspaceDependency {dependent = A, kind = K, dependency = B}
+  #       where npm.Dependency {dependent = A, descriptor = D} = {kind = K};
+  #             npm.Resolution {descriptor = D} = {locator = B};
+  #             npm.Package {locator = B} = {kind = {workspace = _}, ..}
+  predicate WorkspaceDependency : { dependent : Locator, kind : DependencyKind, dependency : Locator }
+
+  # The reverse — which workspaces depend on this one, the direction a refactor asks in.
+  predicate WorkspaceDependent : { dependency : Locator, dependent : Locator }
+
+}

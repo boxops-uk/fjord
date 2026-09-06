@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Unsafe</RootNamespace>
+
+    <!-- Clause 24.1: "unsafe code" is C# written in an unsafe context, and clause 24.2's
+         `unsafe` modifier is a compiler error without this property. Every file here is
+         about clause 24, so the whole project needs it rather than one file; a project
+         that reached clause 24 without it would be a project of comments. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

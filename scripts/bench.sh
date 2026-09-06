@@ -32,7 +32,7 @@ mkdir -p "$dir"
 
 # `--schema` is required: a database embeds the schema it was built against, and
 # there is no built-in one standing in for a caller who did not name it.
-"$fjord" --data-dir "$dir" create code --schema "$root/schemas/code.sigla"
+"$fjord" --data-dir "$dir" create code --schema "$root/schemas/demo.sigla"
 
 "$fjord" --data-dir "$dir" serve --ready-file "$dir/ready" >"$dir/server.log" 2>&1 &
 server=$!
@@ -44,7 +44,7 @@ cleanup() {
     else
         echo
         echo "server left running (pid $server) over $dir"
-        echo "  $fjord --data-dir $dir query code 'F where src.File F' --format count --timing"
+        echo "  $fjord --data-dir $dir query code 'F where code.File F' --format count --timing"
     fi
 }
 trap cleanup EXIT

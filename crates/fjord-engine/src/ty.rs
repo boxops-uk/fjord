@@ -26,6 +26,8 @@
 //!
 //! [chapter 7]: ../../../website/content/query-language.md
 
+use std::sync::Arc;
+
 use crate::{
     diag::{Code, Diagnostics},
     lower::VALUE_FIELD,
@@ -82,9 +84,55 @@ pub fn check(
 
 /// Why two types could not be made equal.
 enum TyError {
-    Mismatch { expected: Ty, got: Ty },
+    Mismatch {
+        expected: Ty,
+        got: Ty,
+    },
+    /// Two unions, and the alternative they first differ on. Separate from
+    /// [`TyError::Mismatch`] because two rendered unions differ in one alternative
+    /// out of however many they declare, and a reader has to be told which.
+    UnionMismatch {
+        alternative: UnionDiff,
+        expected: Ty,
+        got: Ty,
+    },
     UnknownField(Symbol),
     Infinite,
+}
+
+/// How two unions first differ, in discriminant order.
+enum UnionDiff {
+    /// A discriminant only one of the two declares.
+    Absent { name: Symbol, disc: u32 },
+    /// One discriminant, two spellings.
+    Renamed {
+        expected: Symbol,
+        got: Symbol,
+        disc: u32,
+    },
+    /// One alternative, two payloads.
+    Payload { name: Symbol, disc: u32 },
+}
+
+impl UnionDiff {
+    /// Every kind of difference, so a test can assert it exercises all of them.
+    ///
+    /// A census rather than a count: the tests below map each entry to a case, and a
+    /// variant added here without one fails that map rather than passing unnoticed.
+    /// This is [`crate::corpus`]'s argument for `Code::ALL`, at the scale of one enum.
+    #[cfg(test)]
+    const KINDS: [&'static str; 3] = ["absent", "renamed", "payload"];
+
+    /// Which kind this is, as the census spells it.
+    #[cfg(test)]
+    #[deny(clippy::wildcard_enum_match_arm)]
+    fn kind(&self) -> &'static str {
+        match self {
+            UnionDiff::Absent { .. } => "absent",
+            UnionDiff::Renamed { .. } => "renamed",
+            UnionDiff::Payload { .. } => "payload",
+        }
+    }
 }
 
 /// One reversible change, so a failed check leaves no residue.
@@ -192,13 +240,16 @@ impl Checker<'_> {
         let left = self.infer(ast, lhs);
         let right = self.infer(ast, rhs);
 
-        if let Err(err) = self.unify(&left, &right) {
+        if let Err(err) = self.unify(&right, &left) {
             self.report(ast, rhs, err);
             return;
         }
 
         match self.zonk(&left) {
-            Ty::Int | Ty::String | Ty::Var(_) | Ty::Error => {}
+            // `bytes` belongs here and a record and a union do not: the storage
+            // codec's escape scheme makes the encoded order `memcmp` over the
+            // payload, which is an order somebody can mean.
+            Ty::Int | Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error => {}
             other => {
                 let rendered = self.render(&other);
                 self.reject(
@@ -297,7 +348,7 @@ impl Checker<'_> {
                 self.annotate(lhs, Ty::Var(var));
 
                 let ty = self.infer(ast, rhs);
-                if let Err(err) = self.unify(&Ty::Var(var), &ty) {
+                if let Err(err) = self.unify(&ty, &Ty::Var(var)) {
                     self.report(ast, rhs, err);
                 }
             }
@@ -320,7 +371,7 @@ impl Checker<'_> {
                 // right side is inferred — the discipline the variable arm explains.
                 let pattern = self.infer(ast, lhs);
                 let value = self.infer(ast, rhs);
-                if let Err(err) = self.unify(&pattern, &value) {
+                if let Err(err) = self.unify(&value, &pattern) {
                     self.report(ast, rhs, err);
                 }
             }
@@ -364,8 +415,8 @@ impl Checker<'_> {
     /// whole values rather than pieces and is the unification the bind side defers
     /// too.
     ///
-    /// An access chain — `X.name != "a".."` — is deferred for the same reason and
-    /// with the same workaround the positive side has: `Y = X.name; Y != "a".."`
+    /// An access chain — `X.name != "a"..` — is deferred for the same reason and
+    /// with the same workaround the positive side has: `Y = X.name; Y != "a"..`
     /// is an alias plus a denial, and lands the residual on exactly the level
     /// `X.name` lives in.
     ///
@@ -392,7 +443,7 @@ impl Checker<'_> {
                 self.annotate(lhs, Ty::Var(var));
 
                 let ty = self.infer(ast, rhs);
-                if let Err(err) = self.unify(&Ty::Var(var), &ty) {
+                if let Err(err) = self.unify(&ty, &Ty::Var(var)) {
                     self.report(ast, rhs, err);
                 }
             }
@@ -428,6 +479,7 @@ impl Checker<'_> {
     fn infer(&mut self, ast: &Ast, id: NodeId) -> Ty {
         let ty = match ast.store().kind(id) {
             ExprKind::Lit(Literal::Int(_)) => Ty::Int,
+            ExprKind::Lit(Literal::Bytes(_)) => Ty::Bytes,
             ExprKind::Lit(Literal::Str(_)) | ExprKind::Prefix(_) => Ty::String,
 
             // A fuzzy pattern is a *string* pattern, so it types exactly as a
@@ -492,7 +544,7 @@ impl Checker<'_> {
                 let operands = operands.clone();
                 for operand in operands.iter() {
                     let ty = self.infer(ast, *operand);
-                    if let Err(err) = self.unify(&Ty::Int, &ty) {
+                    if let Err(err) = self.unify(&ty, &Ty::Int) {
                         self.report(ast, *operand, err);
                     }
                 }
@@ -585,7 +637,7 @@ impl Checker<'_> {
                 for branch in branches.iter() {
                     let branch_ty = self.infer(ast, *branch);
 
-                    if let Err(err) = self.unify(&result, &branch_ty) {
+                    if let Err(err) = self.unify(&branch_ty, &result) {
                         self.report(ast, *branch, err);
                     }
                 }
@@ -819,9 +871,16 @@ impl Checker<'_> {
 
     // ---- unification ----------------------------------------------------------
 
-    fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), TyError> {
-        let a = self.repr(a);
-        let b = self.repr(b);
+    /// **`got` is the type of the node the caller reports at.** Unification itself is
+    /// symmetric, so the two are interchangeable for the *answer* and not for the
+    /// message: handed over the other way round, `expected` and `found` come out
+    /// swapped — blaming a variable for the literal that would not fit it, or naming
+    /// the field the position has where the reader wrote another. The fault is still
+    /// reported, under the right code and at the right span, so only a test that reads
+    /// the sentence can see it.
+    fn unify(&mut self, got: &Ty, expected: &Ty) -> Result<(), TyError> {
+        let a = self.repr(got);
+        let b = self.repr(expected);
 
         // Poison unifies with anything, so one mistake reports once — and it has to
         // *propagate* into an unbound variable, not just stop here. `X = nosuch.Pred _`
@@ -846,20 +905,76 @@ impl Checker<'_> {
             return Ok(());
         }
 
+        // The variable cases are symmetric and stay above the structural ones: an
+        // arm that matched a *shape* first would compare a bound variable's type
+        // before the binding was resolved.
         match (a, b) {
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
             (Ty::Var(var), ty) | (ty, Ty::Var(var)) => self.bind_var(var, ty),
 
-            (Ty::Int, Ty::Int) | (Ty::String, Ty::String) => Ok(()),
-            (Ty::Fact(x), Ty::Fact(y)) if x == y => Ok(()),
+            (got, expected) => self.unify_shapes(&got, &expected),
+        }
+    }
 
-            (Ty::Record(xs), Ty::Record(ys)) => {
-                if xs.len() != ys.len() {
-                    return Err(TyError::Mismatch {
-                        expected: Ty::Record(ys),
-                        got: Ty::Record(xs),
-                    });
+    /// The structural half of [`unify`](Self::unify), once the symmetric variable
+    /// and poison cases are taken.
+    ///
+    /// Dispatched on one side **exhaustively** rather than on the pair. A joint
+    /// match needs a catch-all for the genuine mismatch, and the same catch-all
+    /// absorbs a *new* `Ty` variant — which then fails to compare equal with itself
+    /// and reports the two identical types it could not compare. That was the union
+    /// defect, and this is what stops the next one.
+    #[deny(clippy::wildcard_enum_match_arm)]
+    fn unify_shapes(&mut self, got: &Ty, expected: &Ty) -> Result<(), TyError> {
+        let mismatch = || {
+            Err(TyError::Mismatch {
+                expected: expected.clone(),
+                got: got.clone(),
+            })
+        };
+
+        match got {
+            Ty::Int => {
+                if matches!(expected, Ty::Int) {
+                    Ok(())
+                } else {
+                    mismatch()
                 }
+            }
+
+            Ty::String => {
+                if matches!(expected, Ty::String) {
+                    Ok(())
+                } else {
+                    mismatch()
+                }
+            }
+
+            Ty::Bytes => {
+                if matches!(expected, Ty::Bytes) {
+                    Ok(())
+                } else {
+                    mismatch()
+                }
+            }
+
+            Ty::Fact(ours) => {
+                if matches!(expected, Ty::Fact(theirs) if ours == theirs) {
+                    Ok(())
+                } else {
+                    mismatch()
+                }
+            }
+
+            Ty::Record(xs) => {
+                let Ty::Record(ys) = expected else {
+                    return mismatch();
+                };
+
+                if xs.len() != ys.len() {
+                    return mismatch();
+                }
+
                 // Looked up by name rather than zipped: both sides are sorted, but
                 // the schema's order is the schema loader's to guarantee, not this
                 // pass's to assume.
@@ -872,8 +987,79 @@ impl Checker<'_> {
                 Ok(())
             }
 
-            (got, expected) => Err(TyError::Mismatch { expected, got }),
+            Ty::Union(xs) => {
+                let Ty::Union(ys) = expected else {
+                    return mismatch();
+                };
+                self.unify_union(xs.clone(), ys.clone())
+            }
+
+            // Unreachable through [`unify`](Self::unify), which takes a variable by
+            // the arms above it and poison by the head check before them — but
+            // written out, because the whole point of this match is that it has no
+            // catch-all to hide the next variant in.
+            Ty::Var(_) | Ty::Error => mismatch(),
         }
+    }
+
+    /// Two unions are equal iff their alternatives are equal as **sets** of
+    /// `(name, discriminant, payload)`.
+    ///
+    /// Compared by discriminant, never zipped: alternatives are held in
+    /// declaration order and permuting a declaration moves no stored byte, so two
+    /// orderings are one type. The name is checked as well, because the
+    /// fingerprint's canonical form writes `name:type=disc` — two unions differing
+    /// only in an alternative's spelling are different types on disk and must be
+    /// different types here.
+    fn unify_union(
+        &mut self,
+        xs: Arc<[(Symbol, u32, Ty)]>,
+        ys: Arc<[(Symbol, u32, Ty)]>,
+    ) -> Result<(), TyError> {
+        let mismatch = |alternative| TyError::UnionMismatch {
+            alternative,
+            expected: Ty::Union(ys.clone()),
+            got: Ty::Union(xs.clone()),
+        };
+
+        // Every discriminant either side declares, in order, so the alternative
+        // reported is the first the two disagree on rather than the first whichever
+        // declaration order happens to reach. Each carries the name of the side
+        // that declared it, which is the witness the `Absent` case reports with.
+        let mut alternatives: Vec<(u32, Symbol)> = xs
+            .iter()
+            .chain(ys.iter())
+            .map(|(name, disc, _)| (*disc, *name))
+            .collect();
+        alternatives.sort_unstable_by_key(|(disc, _)| *disc);
+        alternatives.dedup_by_key(|(disc, _)| *disc);
+
+        for (disc, name) in alternatives {
+            let at = |alts: &Arc<[(Symbol, u32, Ty)]>| {
+                alts.iter()
+                    .find(|(_, d, _)| *d == disc)
+                    .map(|(name, _, ty)| (*name, ty.clone()))
+            };
+
+            match (at(&xs), at(&ys)) {
+                (Some((got, x)), Some((expected, y))) => {
+                    if got != expected {
+                        return Err(mismatch(UnionDiff::Renamed {
+                            expected,
+                            got,
+                            disc,
+                        }));
+                    }
+                    self.unify(&x, &y)
+                        .map_err(|_| mismatch(UnionDiff::Payload { name, disc }))?;
+                }
+                // `disc` came from one of the two sides, so what is left is the
+                // case where the other does not declare it.
+                _ => return Err(mismatch(UnionDiff::Absent { name, disc })),
+            }
+        }
+
+        Ok(())
     }
 
     fn bind_var(&mut self, var: TyVarId, ty: Ty) -> Result<(), TyError> {
@@ -924,7 +1110,7 @@ impl Checker<'_> {
     /// wanted. Everything during checking uses [`repr`](Self::repr).
     fn zonk(&self, ty: &Ty) -> Ty {
         match ty {
-            Ty::Error | Ty::Int | Ty::String | Ty::Fact(_) => ty.clone(),
+            Ty::Error | Ty::Int | Ty::String | Ty::Bytes | Ty::Fact(_) => ty.clone(),
 
             Ty::Var(var) => match self.var_ty(*var) {
                 Some(bound) => self.zonk(&bound),
@@ -952,7 +1138,7 @@ impl Checker<'_> {
 
     fn occurs(&self, var: TyVarId, ty: &Ty) -> bool {
         match self.repr(ty) {
-            Ty::Error | Ty::Int | Ty::String | Ty::Fact(_) => false,
+            Ty::Error | Ty::Int | Ty::String | Ty::Bytes | Ty::Fact(_) => false,
             Ty::Var(other) => other == var,
             Ty::Record(fields) => fields.iter().any(|(_, field)| self.occurs(var, field)),
             Ty::Union(alts) => alts.iter().any(|(_, _, alt)| self.occurs(var, alt)),
@@ -1062,6 +1248,38 @@ impl Checker<'_> {
                     format!("expected {expected}, found {got}"),
                 );
             }
+            TyError::UnionMismatch {
+                alternative,
+                expected,
+                got,
+            } => {
+                let alternative = match alternative {
+                    UnionDiff::Absent { name, disc } => format!(
+                        "only one of them declares `{}` = {disc}",
+                        self.name_of(name)
+                    ),
+                    UnionDiff::Renamed {
+                        expected,
+                        got,
+                        disc,
+                    } => format!(
+                        "discriminant {disc} is `{}`, not `{}`",
+                        self.name_of(expected),
+                        self.name_of(got)
+                    ),
+                    UnionDiff::Payload { name, disc } => format!(
+                        "alternative `{}` = {disc} carries a different payload",
+                        self.name_of(name)
+                    ),
+                };
+                let (expected, got) = (self.render(&expected), self.render(&got));
+                self.reject(
+                    ast,
+                    id,
+                    Code::RejectTypeMismatch,
+                    format!("expected {expected}, found {got}: {alternative}"),
+                );
+            }
             TyError::UnknownField(name) => {
                 let name = self.name_of(name).to_owned();
                 self.reject(
@@ -1107,6 +1325,7 @@ impl Checker<'_> {
         match ty {
             Ty::Int => "an integer".to_owned(),
             Ty::String => "a string".to_owned(),
+            Ty::Bytes => "bytes".to_owned(),
             // Only reachable nested inside another type: a bare poison never
             // reaches a message, because `unify` returns `Ok` on it. Named as
             // already-reported rather than as a type — "found an error" reads
@@ -1148,6 +1367,7 @@ fn schema_ty(ty: &PredicateTy) -> Ty {
     match ty {
         PredicateTy::Int => Ty::Int,
         PredicateTy::Str => Ty::String,
+        PredicateTy::Bytes => Ty::Bytes,
         PredicateTy::Fact(predicate) => Ty::Fact(*predicate),
         PredicateTy::Record(fields) => Ty::Record(
             fields
@@ -1177,9 +1397,8 @@ fn field_of(ty: &Ty, name: Symbol) -> Option<Ty> {
 mod tests {
     use super::*;
     use crate::{corpus, cst::CstNode, lower::lower, parse::parse};
-    use fjord_schema::schema::{Predicate, PredicateId};
+    use fjord_schema::schema::{Alternative, Predicate, PredicateId};
     use lasso::Rodeo;
-    use std::sync::Arc;
 
     struct Checked {
         typed: Typed,
@@ -1236,6 +1455,16 @@ mod tests {
         diagnostics.codes().map(str::to_owned).collect()
     }
 
+    /// Every diagnostic `source` draws from typecheck, as `(code, message)`.
+    fn messages(source: &str) -> Vec<(String, String)> {
+        let checked = compile(source);
+        checked
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.clone().unwrap_or_default(), d.message.clone()))
+            .collect()
+    }
+
     /// The head's type, rendered.
     fn head_ty(source: &str) -> String {
         let checked = compile(source);
@@ -1256,6 +1485,7 @@ mod tests {
         match ty {
             Ty::Int => "int".to_owned(),
             Ty::String => "str".to_owned(),
+            Ty::Bytes => "bytes".to_owned(),
             Ty::Error => "!error".to_owned(),
             Ty::Var(_) => "?".to_owned(),
             Ty::Fact(p) => format!("fact({})", p.0),
@@ -1408,6 +1638,476 @@ mod tests {
 
         let checked = compile("X where test.Tagged {what = {nosuch = X}, id = _}");
         assert_eq!(codes(&checked), ["reject/unknown-alternative"]);
+    }
+
+    // ---- unions --------------------------------------------------------------
+
+    /// A union type, built by hand. A schema *declares* a union and nothing in a
+    /// query constructs one, so a test is the only place a **pair** of them can be
+    /// stated.
+    fn union(interner: &mut LocalInterner, alts: &[(&str, u32, Ty)]) -> Ty {
+        Ty::Union(
+            alts.iter()
+                .map(|(name, disc, ty)| (interner.get_or_intern(name), *disc, ty.clone()))
+                .collect(),
+        )
+    }
+
+    /// A checker with no query behind it: `unify` reads the schema and the interner
+    /// and touches neither the annotation table nor the environment.
+    fn checker<'a>(
+        schema: &'a Schema,
+        interner: &'a LocalInterner,
+        diagnostics: &'a mut Diagnostics,
+    ) -> Checker<'a> {
+        Checker {
+            schema,
+            interner,
+            env: vec![],
+            subst: vec![],
+            tys: vec![],
+            undo: vec![],
+            diagnostics,
+        }
+    }
+
+    /// One predicate per way two unions can differ, each holding its union in the
+    /// same position, so a query joining two of them on that field is a
+    /// union/union unification and nothing else.
+    ///
+    /// `test.Base`'s tags are the shared fixture's — neither contiguous, nor
+    /// starting at zero, nor in declaration order — so nothing that read a
+    /// discriminant as a position could pass.
+    fn unions_schema() -> Schema {
+        let mut rodeo = Rodeo::new();
+        let mut sym = |s: &str| rodeo.get_or_intern(s);
+        let (u, id) = (sym("u"), sym("id"));
+        let (num, text, count) = (sym("num"), sym("text"), sym("count"));
+
+        let alt = |name, disc, ty| Alternative { name, disc, ty };
+        let predicate = |name, alts: Vec<Alternative>| Predicate {
+            name,
+            key: PredicateTy::Record(Arc::from([
+                (u, PredicateTy::Union(Arc::from(alts))),
+                (id, PredicateTy::Int),
+            ])),
+            value: None,
+        };
+
+        let predicates = Arc::from([
+            predicate(
+                sym("test.Base"),
+                vec![
+                    alt(num, 3, PredicateTy::Int),
+                    alt(text, 0, PredicateTy::Str),
+                ],
+            ),
+            predicate(
+                sym("test.Permuted"),
+                vec![
+                    alt(text, 0, PredicateTy::Str),
+                    alt(num, 3, PredicateTy::Int),
+                ],
+            ),
+            predicate(sym("test.Fewer"), vec![alt(num, 3, PredicateTy::Int)]),
+            predicate(
+                sym("test.Renamed"),
+                vec![
+                    alt(count, 3, PredicateTy::Int),
+                    alt(text, 0, PredicateTy::Str),
+                ],
+            ),
+            predicate(
+                sym("test.Renumbered"),
+                vec![
+                    alt(num, 4, PredicateTy::Int),
+                    alt(text, 0, PredicateTy::Str),
+                ],
+            ),
+            predicate(
+                sym("test.Payload"),
+                vec![
+                    alt(num, 3, PredicateTy::Str),
+                    alt(text, 0, PredicateTy::Str),
+                ],
+            ),
+        ]);
+
+        Schema::new(rodeo.into_reader(), predicates)
+    }
+
+    /// One case per way two unions differ: the predicate that declares it, the union a
+    /// hand-built pair puts on the other side of `unify`, the [`UnionDiff`] kind that
+    /// must fire, and **the whole clause** the reader must get.
+    ///
+    /// The clause rather than the alternative's name, because the name appears in all
+    /// three renderings — asserting on it alone passed whichever variant fired. The
+    /// kind as well as the clause, because the clause is a string a refactor can
+    /// reword; together they pin the mapping from a kind of difference to the sentence
+    /// it produces, which is the whole contribution of this diagnostic.
+    ///
+    /// `test.Renumbered` is the case that makes the point: one alternative, one
+    /// spelling, one payload, moved from discriminant 3 to 4. That is **not** a rename
+    /// — it is two absences, and the first in discriminant order is the one reported.
+    ///
+    /// Every [`UnionDiff::KINDS`] entry must appear here; `every_kind_of_union_difference_has_a_case`
+    /// is what says so.
+    fn differing(
+        interner: &mut LocalInterner,
+    ) -> Vec<(&'static str, Ty, &'static str, &'static str)> {
+        vec![
+            (
+                "test.Fewer",
+                union(interner, &[("num", 3, Ty::Int)]),
+                "absent",
+                "only one of them declares `text` = 0",
+            ),
+            (
+                "test.Renamed",
+                union(interner, &[("count", 3, Ty::Int), ("text", 0, Ty::String)]),
+                "renamed",
+                "discriminant 3 is `count`, not `num`",
+            ),
+            (
+                "test.Renumbered",
+                union(interner, &[("num", 4, Ty::Int), ("text", 0, Ty::String)]),
+                "absent",
+                "only one of them declares `num` = 3",
+            ),
+            (
+                "test.Payload",
+                union(interner, &[("num", 3, Ty::String), ("text", 0, Ty::String)]),
+                "payload",
+                "alternative `num` = 3 carries a different payload",
+            ),
+        ]
+    }
+
+    /// The base union every case above is compared against.
+    fn base_union(interner: &mut LocalInterner) -> Ty {
+        union(interner, &[("num", 3, Ty::Int), ("text", 0, Ty::String)])
+    }
+
+    /// `test.Base` joined to `predicate` on the union field, and every diagnostic
+    /// the front end drew for it.
+    fn joined_to(schema: &Schema, predicate: &str) -> Vec<(String, String)> {
+        joined(schema, "test.Base", predicate)
+    }
+
+    /// Two predicates joined on the union field, **in the order given**, and every
+    /// diagnostic the front end drew.
+    ///
+    /// The order is a parameter because it decides which side of `unify` each union
+    /// arrives on: the first statement binds `W`, the second compares against what it
+    /// bound.
+    fn joined(schema: &Schema, first: &str, second: &str) -> Vec<(String, String)> {
+        let source = format!("X where {first} {{u = W, id = X}}; {second} {{u = W, id = _}}");
+
+        let mut interner = LocalInterner::new(schema.interner().clone());
+        let mut diagnostics = Diagnostics::new();
+        let cst = parse(&source, &mut diagnostics).expect("a tree");
+        let root = CstNode::new(&cst);
+        let ast = lower(&root, schema, &mut interner, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{source:?} should lower cleanly");
+
+        let _typed = check(&ast, schema, &interner, &mut diagnostics);
+        diagnostics
+            .iter()
+            .map(|d| (d.code.clone().unwrap_or_default(), d.message.clone()))
+            .collect()
+    }
+
+    /// Alternatives are held in **declaration order**, and permuting a declaration
+    /// moves no stored byte — so two orderings of one union are one type, and a zip
+    /// over the two slices would answer otherwise.
+    #[test]
+    fn a_union_unifies_with_the_same_alternatives_declared_in_another_order() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+        let a = union(
+            &mut interner,
+            &[("num", 3, Ty::Int), ("text", 0, Ty::String)],
+        );
+        let b = union(
+            &mut interner,
+            &[("text", 0, Ty::String), ("num", 3, Ty::Int)],
+        );
+
+        let mut diagnostics = Diagnostics::new();
+        assert!(
+            checker(&schema, &interner, &mut diagnostics)
+                .unify(&a, &b)
+                .is_ok()
+        );
+
+        // And through the front end, where the two sides are two separately
+        // allocated `Arc`s rather than one the test shared.
+        let drawn = joined_to(&schema, "test.Permuted");
+        assert!(drawn.is_empty(), "{drawn:?}");
+    }
+
+    /// **A union and a strict superset of it disagree whichever side is named
+    /// first.** Unification is symmetric, and a subset relation is the one shape
+    /// where reading only one of the two alternative lists still answers *yes* in one
+    /// direction: every alternative the subset declares is in the superset, so
+    /// walking the subset's finds nothing wrong, while walking the superset's finds
+    /// the missing one and rejects. The reading a query reaches is decided by which
+    /// of the two predicates it mentions first, so a one-sided walk makes typing
+    /// depend on **statement order** — the one thing it must never depend on
+    /// ([`bind`](Checker::bind) says why for a variable; this is the same claim about
+    /// a type).
+    ///
+    /// Every non-empty strict subset of a three-alternative union, both ways round,
+    /// and the same alternative named both ways. The count is asserted because the
+    /// family is the test: over a base of one alternative there is no non-empty
+    /// strict subset at all, and the law would hold of nothing.
+    #[test]
+    fn a_union_and_a_strict_superset_disagree_whichever_side_is_named_first() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+
+        // Discriminants neither contiguous, nor ascending, nor starting at zero, as
+        // the fixture's are: the alternative reported is the lowest *missing*
+        // discriminant, which a tidy list could not tell from the first declared.
+        let alternatives = [
+            ("num", 3, Ty::Int),
+            ("text", 0, Ty::String),
+            ("flag", 7, Ty::Int),
+        ];
+        let whole = union(&mut interner, &alternatives);
+
+        let subsets: Vec<Vec<(&str, u32, Ty)>> = (1..(1u32 << alternatives.len()) - 1)
+            .map(|mask| {
+                alternatives
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask & (1 << i) != 0)
+                    .map(|(_, alt)| alt.clone())
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            subsets.len(),
+            6,
+            "every non-empty strict subset of three alternatives, and no fewer"
+        );
+
+        let absent_at = |err: TyError, order: &str| match err {
+            TyError::UnionMismatch {
+                alternative: UnionDiff::Absent { name, disc },
+                ..
+            } => (name, disc),
+            TyError::UnionMismatch { alternative, .. } => {
+                panic!("{order}: {} rather than an absence", alternative.kind())
+            }
+            _ => panic!("{order}: not a UnionMismatch"),
+        };
+
+        for subset in subsets {
+            let part = union(&mut interner, &subset);
+            let mut diagnostics = Diagnostics::new();
+            let mut checker = checker(&schema, &interner, &mut diagnostics);
+
+            let mut refused =
+                |got: &Ty, expected: &Ty, order: &'static str| match checker.unify(got, expected) {
+                    Ok(()) => panic!(
+                        "{order}: a union unified with a strict superset of itself, so \
+                         the same two predicates joined the other way round answer \
+                         rows this one rejects"
+                    ),
+                    Err(err) => absent_at(err, order),
+                };
+
+            let subset_first = refused(&part, &whole, "the subset first");
+            let superset_first = refused(&whole, &part, "the superset first");
+
+            assert_eq!(
+                subset_first, superset_first,
+                "the two orders name different alternatives"
+            );
+        }
+
+        // And through the front end, where the order is the order the two statements
+        // are written in and each union is the one its predicate declares.
+        for (first, second) in [("test.Base", "test.Fewer"), ("test.Fewer", "test.Base")] {
+            let drawn = joined(&schema, first, second);
+            let codes: Vec<&str> = drawn.iter().map(|(code, _)| code.as_str()).collect();
+            assert_eq!(codes, ["reject/type-mismatch"], "{first} then {second}");
+        }
+    }
+
+    /// Equal iff the alternative sets are equal as sets of
+    /// `(name, discriminant, payload)`. Each of these differs in exactly one way,
+    /// and each way is a different type **on disk** — the canonical form writes
+    /// `name:type=disc`.
+    #[test]
+    fn a_union_does_not_unify_with_a_union_that_differs() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+        let base = base_union(&mut interner);
+
+        let cases = differing(&mut interner);
+        assert_eq!(
+            cases.len(),
+            4,
+            "the table is the test — an empty one asserts nothing"
+        );
+
+        for (predicate, other, kind, _) in cases {
+            let mut diagnostics = Diagnostics::new();
+
+            // **The variant, not merely an error.** `is_err()` alone would pass on
+            // `Mismatch`, `UnknownField` or `Infinite`, none of which can name an
+            // alternative — so it would hold with `unify_union` deleted entirely.
+            let err = checker(&schema, &interner, &mut diagnostics)
+                .unify(&base, &other)
+                .expect_err(predicate);
+            let TyError::UnionMismatch { alternative, .. } = err else {
+                panic!("{predicate}: not a UnionMismatch")
+            };
+            assert_eq!(
+                alternative.kind(),
+                kind,
+                "{predicate}: wrong kind of difference"
+            );
+
+            let drawn = joined_to(&schema, predicate);
+            let codes: Vec<&str> = drawn.iter().map(|(code, _)| code.as_str()).collect();
+            assert_eq!(codes, ["reject/type-mismatch"], "{predicate}");
+        }
+    }
+
+    /// **Every way two unions can differ has a case above.**
+    ///
+    /// The census W2 makes for scalar families, at the scale of one enum: a fourth
+    /// [`UnionDiff`] variant added without a case in [`differing`] fails here, rather
+    /// than shipping a rendering nothing has ever drawn. `kind` is exhaustive and
+    /// `#[deny(clippy::wildcard_enum_match_arm)]`, so the variant cannot be absorbed
+    /// on the way past either.
+    #[test]
+    fn every_kind_of_union_difference_has_a_case() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+
+        let mut covered: Vec<&str> = differing(&mut interner)
+            .into_iter()
+            .map(|(_, _, kind, _)| kind)
+            .collect();
+        covered.sort_unstable();
+        covered.dedup();
+
+        let mut expected = UnionDiff::KINDS.to_vec();
+        expected.sort_unstable();
+
+        assert_eq!(covered, expected, "a kind of union difference has no case");
+    }
+
+    /// Before the union arm the message was `expected {…}, found {…}` with the two
+    /// renderings **identical** — the error was built from the two sides that had
+    /// just failed to compare, and they are equal.
+    #[test]
+    fn a_union_mismatch_names_the_alternative_that_differs() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+        let base = base_union(&mut interner);
+
+        let cases = differing(&mut interner);
+        assert_eq!(
+            cases.len(),
+            4,
+            "the table is the test — an empty one asserts nothing"
+        );
+
+        for (predicate, other, _, alternative) in cases {
+            let drawn = joined_to(&schema, predicate);
+            let [(code, message)] = &drawn[..] else {
+                panic!("{predicate}: one diagnostic, got {drawn:?}")
+            };
+            // A diagnostic with no code renders as `""` here, which would read as a
+            // clean lower. Assert it rather than discard it — that exact hole made
+            // W5's corpus gate vacuous.
+            assert_eq!(code, "reject/type-mismatch", "{predicate}");
+
+            let mut diagnostics = Diagnostics::new();
+            let rendering = checker(&schema, &interner, &mut diagnostics);
+            let (base, other) = (rendering.render(&base), rendering.render(&other));
+
+            assert_ne!(base, other, "{predicate}");
+            assert!(
+                message.contains(alternative),
+                "{predicate}: {message}\n  does not say: {alternative}"
+            );
+            assert!(
+                message.contains(&base) && message.contains(&other),
+                "{predicate}: {message} does not render both sides"
+            );
+        }
+    }
+
+    /// A poisoned payload is silenced where it is rather than reported as a union
+    /// mismatch, which would say one defect twice. Both heads are `Union`, so the
+    /// arm *is* reached — it is the payload's own poison check that stops there.
+    /// A name is still a fact about what was written, so it is still compared.
+    #[test]
+    fn a_poisoned_payload_does_not_make_two_unions_a_mismatch() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+        let poisoned = union(
+            &mut interner,
+            &[("num", 3, Ty::Error), ("text", 0, Ty::String)],
+        );
+        let sound = union(
+            &mut interner,
+            &[("num", 3, Ty::Int), ("text", 0, Ty::String)],
+        );
+        let renamed = union(
+            &mut interner,
+            &[("count", 3, Ty::Int), ("text", 0, Ty::String)],
+        );
+
+        let mut diagnostics = Diagnostics::new();
+        let mut checker = checker(&schema, &interner, &mut diagnostics);
+        assert!(checker.unify(&poisoned, &sound).is_ok());
+        assert!(checker.unify(&poisoned, &renamed).is_err());
+    }
+
+    /// A fact-typed payload compares by [`PredicateId`] without descending into the
+    /// predicate, which is the only cycle-breaker the type model has — so a union
+    /// that reaches itself through one is still a finite comparison.
+    #[test]
+    fn a_union_inside_a_record_inside_a_union_unifies() {
+        let schema = unions_schema();
+        let mut interner = LocalInterner::new(schema.interner().clone());
+
+        // Built twice rather than cloned: two independently allocated trees is the
+        // case the arm exists for.
+        let mut nested = || {
+            let inner = union(&mut interner, &[("n", 1, Ty::Int)]);
+            let record = Ty::Record(Arc::from([(interner.get_or_intern("f"), inner)]));
+            union(
+                &mut interner,
+                &[("wrap", 0, record), ("stop", 7, Ty::String)],
+            )
+        };
+        let (a, b) = (nested(), nested());
+
+        let mut cyclic = |predicate| {
+            union(
+                &mut interner,
+                &[
+                    ("self", 0, Ty::Fact(PredicateId(predicate))),
+                    ("stop", 1, Ty::Int),
+                ],
+            )
+        };
+        let (c, d, other) = (cyclic(0), cyclic(0), cyclic(1));
+
+        let mut diagnostics = Diagnostics::new();
+        let mut checker = checker(&schema, &interner, &mut diagnostics);
+        assert!(checker.unify(&a, &b).is_ok());
+        assert!(checker.unify(&c, &d).is_ok());
+        assert!(checker.unify(&c, &other).is_err());
     }
 
     /// **A negation is typechecked, and only its types are typecheck's business.**
@@ -1740,6 +2440,88 @@ mod tests {
 
         let checked = compile("X where X = test.Name 42");
         assert_eq!(codes(&checked), ["reject/type-mismatch"]);
+    }
+
+    /// **A mismatch names what the position requires, then what was written.**
+    ///
+    /// A diagnostic lands on one node, and [`unify`](Checker::unify) reads its
+    /// **first** argument as that node's type — so a site reporting at its second
+    /// argument renders the pair backwards and blames the variable for the literal
+    /// that would not fit it. Nothing else can catch that: the fault is reported,
+    /// with the right code, at the right span, and only the sentence is wrong —
+    /// which is why the corpus cannot see it either (it pins the code, never the
+    /// wording).
+    ///
+    /// One case per site, because the orientation is a property of each call rather
+    /// than of the pass. The last case is the **control**: a fact pattern's field is
+    /// the site that already read the right way round, so flipping the convention
+    /// instead of the callers fails here.
+    #[test]
+    fn a_mismatch_names_what_the_position_requires_before_what_was_written() {
+        for (source, code, message) in [
+            // A bind. `X` is a string, `1` is what cannot fit it.
+            (
+                "X where test.Name X; X = 1",
+                "reject/type-mismatch",
+                "expected a string, found an integer",
+            ),
+            // ...and the same through a record, where the pair reported is the one
+            // the recursion reached rather than the one the caller passed.
+            (
+                "X where test.Nested {outer = X}; X = {inner = \"s\"}",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // An unknown field is the same question about a name: the field named is
+            // the one *written*, not the one the position has.
+            (
+                "X where test.Nested {outer = X}; X = {nosuch = 1}",
+                "reject/unknown-field",
+                "`nosuch` is not a field here",
+            ),
+            // A destructuring, whose left side is the shape required.
+            (
+                "X where test.Count X; {a = Y} = X",
+                "reject/type-mismatch",
+                "expected {a = an unknown type}, found an integer",
+            ),
+            // A denial.
+            (
+                "X where test.Count X; X != \"a\"",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // Arithmetic, which requires integers of every operand.
+            (
+                "Y where test.Name N; Y = N + 1",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // An order comparison, reported at the right side.
+            (
+                "N where test.Name N; N < 3",
+                "reject/type-mismatch",
+                "expected a string, found an integer",
+            ),
+            // A disjunction, reported at the branch that disagrees with the rest.
+            (
+                "X where test.Foo {id = X, name = _}; X = (1 | \"a\")",
+                "reject/type-mismatch",
+                "expected an integer, found a string",
+            ),
+            // The control.
+            (
+                "X where test.Foo {name = 42}",
+                "reject/type-mismatch",
+                "expected a string, found an integer",
+            ),
+        ] {
+            assert_eq!(
+                messages(source),
+                [(code.to_owned(), message.to_owned())],
+                "{source:?}"
+            );
+        }
     }
 
     /// A record *pattern* may name a subset of the key's fields — an omitted field

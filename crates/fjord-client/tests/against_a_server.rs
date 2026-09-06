@@ -1979,7 +1979,7 @@ fn a_cancel_inside_a_chunk_completes_rather_than_fails() {
     // A thousand files joined against a thousand files, with every inner row denied:
     // a million rows examined, none produced, and all of it inside the first chunk.
     // **A denial rather than a constraint**, and that is the whole of why this is slow
-    // — `G = "zzzz".."` would be *captured* by the level that binds `G` and become a
+    // — `G = "zzzz"..` would be *captured* by the level that binds `G` and become a
     // seek that finds nothing immediately, where `!=` is never a seek and filters
     // however it is written (chapter 7). Every file the seed writes begins `f`, so this
     // rejects all thousand of them, a thousand times over.

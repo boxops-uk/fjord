@@ -1,11 +1,15 @@
 //! **The database the site queries** — the schema, the facts, and a `MemStore`
 //! holding them.
 //!
-//! Small on purpose, and *complete* on purpose: every shape sigla has appears
-//! exactly once in [`SCHEMA`], and the facts are sized so that the queries a
-//! reader tries answer **two or three rows** rather than one. A single-row
-//! answer shows nothing about backtracking, which is most of what there is to
-//! watch.
+//! Small on purpose, and *complete* on purpose: every construct the type model
+//! can hold appears in [`SCHEMA`] — the three scalars, records nested and flat,
+//! a scalar value side and a record one, references, a union with a payload of
+//! every kind, a single-alternative union, a keyword as a field name — and each
+//! has facts here, because a predicate with none is a shape nothing demonstrates.
+//!
+//! The facts are sized so that the queries a reader tries answer **two or three
+//! rows** rather than one. A single-row answer shows nothing about backtracking,
+//! which is most of what there is to watch.
 //!
 //! **The facts are written the way any fact is written**, through
 //! [`fjord_store::fact::encode`]: named fields, resolved and reordered against
@@ -177,6 +181,128 @@ impl Fact for KindOf {
     }
 }
 
+/// The two ends of a range, as the record `code.Extent`'s value side is.
+struct Extent {
+    decl: FactId,
+    from: (i64, i64),
+    to: (i64, i64),
+}
+
+impl Fact for Extent {
+    const PREDICATE: &'static str = "code.Extent";
+    fn key(&self) -> Value {
+        record([("decl", self.decl.to_value())])
+    }
+    /// A **record** value side, which is the shape a scalar one cannot hold.
+    fn value(&self) -> Option<Value> {
+        let position =
+            |(line, col): (i64, i64)| record([("line", line.to_value()), ("col", col.to_value())]);
+
+        Some(record([
+            ("from", position(self.from)),
+            ("to", position(self.to)),
+        ]))
+    }
+}
+
+/// What a reference resolved to — the union with a payload of every kind.
+#[derive(Clone, Copy)]
+enum Target {
+    Unresolved,
+    Decl(FactId),
+    File(FactId),
+    External {
+        name: &'static str,
+        assembly: &'static str,
+    },
+}
+
+impl ToValue for Target {
+    fn to_value(&self) -> Value {
+        let (alt, payload) = match self {
+            // **No payload written is the empty record**, and it is written here as one
+            // rather than as a null: that is what the schema declares it to be.
+            Target::Unresolved => ("unresolved", record([])),
+            Target::Decl(decl) => ("decl", decl.to_value()),
+            Target::File(file) => ("file", file.to_value()),
+            Target::External { name, assembly } => (
+                "external",
+                record([("name", name.to_value()), ("assembly", assembly.to_value())]),
+            ),
+        };
+
+        Value::Union {
+            disc: 0,
+            alt: alt.to_owned(),
+            value: Box::new(payload),
+        }
+    }
+}
+
+struct Resolves {
+    at: i64,
+    to: Target,
+}
+
+impl Fact for Resolves {
+    const PREDICATE: &'static str = "code.Resolves";
+    fn key(&self) -> Value {
+        record([("at", self.at.to_value()), ("to", self.to.to_value())])
+    }
+}
+
+/// A digest, which is the thing `bytes` is for.
+struct Digest {
+    file: FactId,
+    sha256: &'static [u8],
+}
+
+impl Fact for Digest {
+    const PREDICATE: &'static str = "code.Digest";
+    fn key(&self) -> Value {
+        record([("file", self.file.to_value())])
+    }
+    fn value(&self) -> Option<Value> {
+        Some(record([("sha256", self.sha256.to_value())]))
+    }
+}
+
+/// `type` as a field name, which the grammar allows and this asserts.
+struct Extends {
+    ty: FactId,
+    base: FactId,
+}
+
+impl Fact for Extends {
+    const PREDICATE: &'static str = "code.Extends";
+    fn key(&self) -> Value {
+        record([("type", self.ty.to_value()), ("base", self.base.to_value())])
+    }
+}
+
+/// A single-alternative union, which needs the trailing `|` to be one.
+struct Note {
+    decl: FactId,
+    html: &'static str,
+}
+
+impl Fact for Note {
+    const PREDICATE: &'static str = "code.Note";
+    fn key(&self) -> Value {
+        record([
+            ("decl", self.decl.to_value()),
+            (
+                "text",
+                Value::Union {
+                    disc: 0,
+                    alt: "html".to_owned(),
+                    value: Box::new(self.html.to_value()),
+                },
+            ),
+        ])
+    }
+}
+
 /// A store holding the demo database, built against `schema`.
 ///
 /// # Errors
@@ -330,6 +456,126 @@ pub fn store(schema: &Schema) -> Result<MemStore, FactError> {
                 &KindOf {
                     what: *what,
                     decl: decl(*decl_seq),
+                },
+            ),
+        )?;
+    }
+
+    // A record value side: two positions rather than one, which is what a scalar value
+    // could not hold.
+    for (sequence, (decl_seq, from, to)) in [
+        (at::MAIN, (1, 1), (3, 2)),
+        (at::RUN, (12, 1), (18, 2)),
+        (at::CONFIG, (3, 1), (7, 2)),
+    ]
+    .iter()
+    .enumerate()
+    {
+        write(
+            "code.Extent",
+            sequence as u64 + 1,
+            encode(
+                schema,
+                &Extent {
+                    decl: decl(*decl_seq),
+                    from: *from,
+                    to: *to,
+                },
+            ),
+        )?;
+    }
+
+    // **Every alternative of the union, including the one with no payload.** A query that
+    // names one alternative has to find rows and skip the others, which one row per
+    // alternative would not show.
+    for (sequence, (at, target)) in [
+        (14, Target::Decl(decl(at::CONFIG))),
+        (22, Target::Decl(decl(at::LOAD))),
+        (31, Target::File(file(at::UTIL_RS))),
+        (44, Target::Unresolved),
+        (58, Target::Unresolved),
+        (
+            67,
+            Target::External {
+                name: "serde::Deserialize",
+                assembly: "serde",
+            },
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        write(
+            "code.Resolves",
+            sequence as u64 + 1,
+            encode(
+                schema,
+                &Resolves {
+                    at: *at,
+                    to: *target,
+                },
+            ),
+        )?;
+    }
+
+    // `bytes`, ordered by `memcmp` — so the three digests are chosen to sort in an order a
+    // reader can check against a `0x…` range.
+    for (sequence, (file_seq, sha256)) in [
+        (at::MAIN_RS, &[0x10u8, 0x2f, 0x8c][..]),
+        (at::LIB_RS, &[0x4a, 0x00, 0xff][..]),
+        (at::UTIL_RS, &[0xb7, 0x91, 0x03][..]),
+    ]
+    .iter()
+    .enumerate()
+    {
+        write(
+            "code.Digest",
+            sequence as u64 + 1,
+            encode(
+                schema,
+                &Digest {
+                    file: file(*file_seq),
+                    sha256,
+                },
+            ),
+        )?;
+    }
+
+    // `type` as a field name, and a two-edge inheritance chain so the join has somewhere
+    // to go.
+    for (sequence, (ty, base)) in [(at::ERROR, at::CONFIG), (at::CONFIG, at::MAIN)]
+        .iter()
+        .enumerate()
+    {
+        write(
+            "code.Extends",
+            sequence as u64 + 1,
+            encode(
+                schema,
+                &Extends {
+                    ty: decl(*ty),
+                    base: decl(*base),
+                },
+            ),
+        )?;
+    }
+
+    // The single-alternative union.
+    for (sequence, (decl_seq, html)) in [
+        (at::MAIN, "<p>The entry point.</p>"),
+        (at::LOAD, "<p>Reads a <code>Config</code>.</p>"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        write(
+            "code.Note",
+            sequence as u64 + 1,
+            encode(
+                schema,
+                &Note {
+                    decl: decl(*decl_seq),
+                    html,
                 },
             ),
         )?;

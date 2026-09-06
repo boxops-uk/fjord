@@ -82,6 +82,28 @@ const KEYS_KEYSPACE_PREFIX: &str = "keys.";
 /// Prefix of the per-predicate identity keyspaces (`entities.7`).
 const ENTITIES_KEYSPACE_PREFIX: &str = "entities.";
 
+/// The marker file fjall writes when it **creates** a database.
+///
+/// **A coupling to fjall's on-disk layout, and it is one on purpose.** fjall decides
+/// between creating a database and recovering one on exactly this file's presence and
+/// does not export the name, so naming it here is the only way to ask "is there a
+/// store in this directory" without opening one — and opening one is what creates it.
+/// A rename upstream would turn every existing database into "there is no store here";
+/// `a_directory_fjall_never_created_holds_no_store` is what goes red if it does, and it
+/// is in this crate because this crate is the only one that may know. Named rather than
+/// linked because that test is behind `#[cfg(test)]` and rustdoc cannot see it — a link
+/// to it resolves nowhere and only `--document-private-items` says so, which no gate
+/// runs for this crate.
+///
+/// **It answers one level, and fjall recovers many.** This file's presence says fjall
+/// created a database at this top level; the create-or-recover decision then recurs per
+/// keyspace inside, and a recovery *deletes* a keyspace directory holding no `current`
+/// manifest of its own. So a copy that has delivered this file and not every keyspace
+/// manifest is past this guard, and what happens then is
+/// [`CatalogError::FactsDoNotMatch`](crate::error::CatalogError::FactsDoNotMatch)'s
+/// doc and [operations](../../../website/content/operations.md#publish-by-rename-required-for-a-live-root).
+const FJALL_VERSION_MARKER: &str = "version";
+
 /// One predicate's two trees. Cheap to clone — fjall handles are `Arc`-backed.
 #[derive(Clone)]
 struct Trees {
@@ -517,6 +539,38 @@ impl FjallDb {
         })
     }
 
+    /// Open the database at `path`, or answer `None` if there is no database there.
+    ///
+    /// **[`open`](FjallDb::open) creates what it does not find**, which is what makes
+    /// it the create path — and what makes it the wrong call for a caller that resolved
+    /// a database it expects to *already exist*. Handed a directory a copy is still
+    /// filling, it stamps a fresh empty keyspace into the copy's target and hands back
+    /// a handle that answers every query from it.
+    ///
+    /// This is the form for that caller: the question is asked of the disk before
+    /// anything is written to it, so a directory with no store in it comes back as
+    /// `None` and is the caller's to refuse by name. Nothing here is cached, so the
+    /// same call after the copy lands opens it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`open`](FjallDb::open) reports, and [`StoreError::Backend`] if the
+    /// probe of `path` fails for a reason other than absence — an unreadable parent
+    /// directory is not the same answer as an empty one.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Option<Self>, StoreError> {
+        let path = path.as_ref();
+
+        if !path
+            .join(FJALL_VERSION_MARKER)
+            .try_exists()
+            .map_err(StoreError::backend)?
+        {
+            return Ok(None);
+        }
+
+        Self::open(path).map(Some)
+    }
+
     /// This handle's incarnation — see the field's own doc comment.
     #[must_use]
     pub fn incarnation(&self) -> u64 {
@@ -636,6 +690,36 @@ impl FjallDb {
             .keys()
             .map(|id| PredicateId(*id))
             .collect()
+    }
+
+    /// How many facts this store holds — **one row per `keys` tree entry, counted**.
+    ///
+    /// The cheap half of [`identity::compute`](crate::identity::compute): the same
+    /// trees, the same rows, without the point read and reference expansion that turn
+    /// a count into a content hash. Measured over a sealed database of 100,000 facts
+    /// in a release build: 96 ms here against 445 ms for the full walk, on top of an
+    /// `open` of the same database that costs 784 ms by itself. That ratio is what
+    /// makes this affordable at a bind and the hash not.
+    ///
+    /// **Not `approximate_len`, and the difference is not approximation.** fjall's
+    /// `O(1)` count sums each table's recorded item count *plus* the memtables — and
+    /// every open of a sealed database replays a journal `finish` never truncates, so
+    /// the same facts are in both and it answers exactly double. Measured at 5/10,
+    /// 2000/4000, 20000/40000 and 100000/200000; a check built on it would refuse every
+    /// database in every root.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if a tree cannot be read.
+    pub fn count_facts(&self) -> Result<u64, StoreError> {
+        let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
+
+        let mut facts = 0;
+        for predicate in predicates.values() {
+            facts += predicate.trees.keys.len().map_err(StoreError::backend)? as u64;
+        }
+
+        Ok(facts)
     }
 
     /// Create the trees for `predicates` now rather than on first write.
@@ -1299,13 +1383,56 @@ impl FjallDb {
             .collect()
     }
 
+    /// How many journal files the backend is holding, and what they cost on disk.
+    ///
+    /// fjall's own numbers rather than a walk of the directory, so a guard about the
+    /// artifact's shape asserts on what the backend believes rather than on what a
+    /// `du` happened to catch. A journal is reclaimed inside fjall's flush worker and
+    /// only above a threshold of its own, so a residual here is expected and a *large*
+    /// one is the finding.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the backend cannot size its journals.
+    pub fn journal_bytes(&self) -> Result<u64, StoreError> {
+        self.db.journal_disk_space().map_err(StoreError::backend)
+    }
+
+    /// How many journal files there are.
+    #[must_use]
+    pub fn journal_count(&self) -> usize {
+        self.db.journal_count()
+    }
+
+    /// What the backend says the whole database costs on disk.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the backend cannot size itself.
+    pub fn disk_bytes(&self) -> Result<u64, StoreError> {
+        self.db.disk_space().map_err(StoreError::backend)
+    }
+
     /// Turn whatever is in memory into a table, per tree.
     ///
-    /// **A test fixture, and it exists to make a guard non-vacuous.** At the sizes a
-    /// test writes, every fact lives in one memtable and no tree ever has two tables
-    /// to merge — so a compaction guard would pass having compacted nothing. This is
-    /// how a test states "there were three tables here" as a fact rather than a hope.
-    #[cfg(any(test, feature = "proptest"))]
+    /// **What `finish` calls, and what it did not.** `persist` fsyncs the write-ahead
+    /// journal and `compact` merges already-flushed segments — neither touches a
+    /// memtable — so whatever was still resident when a database was sealed was never
+    /// written to a table at all. It stayed only in the journal: invisible to the
+    /// compaction that followed, replayed into memory at every open, and served from a
+    /// recovered memtable rather than the merged tables the seal was supposed to leave.
+    /// Measured before the fix: 208,000 facts came to 60 kB of tables and 29 MB of
+    /// journal.
+    ///
+    /// Also a test fixture, and it was one first. At the sizes a test writes every fact
+    /// lives in one memtable and no tree ever has two tables to merge, so a compaction
+    /// guard would pass having compacted nothing; a test calls this to state "there were
+    /// three tables here" as a fact rather than a hope. That the *production* path never
+    /// created the state those tests set up is exactly how this survived.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if a rotation fails.
     pub fn flush_to_tables(&self) -> Result<(), StoreError> {
         let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
 
@@ -2096,6 +2223,64 @@ mod tests {
                 Err(StoreError::Format(FormatError::Unstamped))
             ),
             "an unstamped database holding facts must be refused, not stamped",
+        );
+    }
+
+    /// **A directory fjall never created holds no store, and asking does not create
+    /// one** — which is the whole of what [`FjallDb::open_existing`] adds over
+    /// [`FjallDb::open`].
+    ///
+    /// The guard on [`FJALL_VERSION_MARKER`]: the name is fjall's and fjall does not
+    /// export it, so an upstream rename would answer `None` for every real database
+    /// and this is where that is caught. Both directions are asserted for that reason
+    /// — `Some` for a store fjall made, `None` for a directory holding everything
+    /// *but* what fjall writes, which is what a copy into a store root looks like
+    /// while it is still running.
+    #[test]
+    fn a_directory_fjall_never_created_holds_no_store() {
+        let dir = TempDir::new().expect("tempdir");
+        let mid_copy = dir.path().join("mid-copy");
+
+        // The tree an `rsync` creates before it fills the files in it, plus the
+        // sidecar and the schema copy a sync delivers first.
+        std::fs::create_dir_all(mid_copy.join("keyspaces")).expect("the keyspace tree");
+        std::fs::create_dir_all(mid_copy.join("schema")).expect("the schema copy");
+        std::fs::write(mid_copy.join("FJORD_META"), b"{}").expect("the sidecar");
+
+        assert!(
+            FjallDb::open_existing(&mid_copy)
+                .expect("the probe reads")
+                .is_none(),
+            "a directory with no store in it must not be opened as one"
+        );
+
+        let mut left: Vec<String> = std::fs::read_dir(&mid_copy)
+            .expect("it is still there")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            ["FJORD_META", "keyspaces", "schema"],
+            "and nothing was written into it"
+        );
+
+        // The other direction: a store fjall did create is found, or this check would
+        // refuse every database in the root.
+        let real = dir.path().join("real");
+        drop(FjallDb::open(&real).expect("a store"));
+
+        assert!(
+            FjallDb::open_existing(&real)
+                .expect("the probe reads")
+                .is_some(),
+            "a store fjall created must be found by the marker this asks for"
         );
     }
 

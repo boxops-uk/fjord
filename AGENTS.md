@@ -13,9 +13,9 @@ book, not here.
 | **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — the pages. What **publishes** at <https://boxops-uk.github.io/fjord/> on every push to main is the interactive site, [`web/`](web/README.md); `python3 website/serve.py` browses the generated copy, which needs no toolchain. The reading order is [`website/nav.json`](website/nav.json), read by both |
 | **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
-| Where we stand against Glean — read **before proposing a feature Glean has** | [`docs/glean.md`](docs/glean.md) |
 | What a code-intelligence product could ship on this — read **before claiming a question is or is not answerable** | [`docs/gitnexus.md`](docs/gitnexus.md) |
-| What has been measured, and the method | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](website/content/performance.md) |
+| What was measured, and the method — the register is **closed until a 1.0 pass**; cite it for a lesson, never for a current figure | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](website/content/performance.md) |
+| A plan too long to live in `PLAN.md` — one file per issue, tracked so that a plan under review is reviewable | [`scratchpad/`](scratchpad/) — **the current revision only**; a superseded one is deleted, not kept beside it |
 
 ## Module map — a workspace, bottom to top
 
@@ -36,7 +36,6 @@ their rustdoc is built with `-D warnings` in CI.
 | `fjord-inspect` | the **JSON view** of every construct: view models that derive `Serialize`, and the mapping from the engine's internals onto them. Never `Serialize` on the internals — a `Symbol` means nothing without the interner that minted it. The precedent is `fjord_wire::desc`, and a browser is one more peer with no interner |
 | `fjord-client` | the client: `address`, `connection` (Unix socket or TCP, one `Transport` enum), `rows` (a result as a bookmark), `expand`. Depends on `wire` and nothing else |
 | `fjord-server` | the protocol over a socket: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue` (the virtual `fjord.db.*` predicates — the reserved namespace is marked virtual so a stored predicate can never collide with it) |
-| `fjord-viewer` | the code-search site. Depends on `fjord-client` and nothing below it — the claim being that a viewer is an ordinary consumer of the protocol. Binary: `fjord-viewer` |
 | `fjord-cli` | the tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema` (a **fixture**, not a default), `workload`. Binary: `fjord` |
 | `fjord-db` | the published facade crate |
 
@@ -69,8 +68,10 @@ from outside — no shared constants, no shared enums — and is a checked-in go
 `byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes, with
 corpus and schema stated independently on each side *on purpose* (a shared statement would
 make the two agree by construction). `Boxops.Fjord.Indexer` is that client pointed at real
-source via Roslyn, and it also writes Glean's batch format so the two systems can be measured
-over one producer.
+source via Roslyn, and `Boxops.Fjord.Scip` is a second producer that reaches the same write
+seam without referencing the first — which is what keeps "the seam is published" a fact
+rather than a name. Its gates drive real MSBuild and a real server, because every defect they
+are about is a defect in what those two do with each other.
 
 ## How to work here
 
@@ -106,14 +107,52 @@ cargo test                          # the green suite — default-members is the
 cargo test -- --ignored --list      # the invariant coverage ledger
 python3 scripts/check-guards.py     # every pending guard names a claim and a live owner
 python3 -m unittest scripts/test_check_guards.py  # the ledger gate's mutation controls
+python3 -m unittest scripts/test_check_exhaustive.py  # the exhaustiveness probe's guards
+python3 -m unittest scripts/test_check_docs.py    # the drift gate's mutation controls
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 python3 website/build.py --strict   # the design book builds clean (CI runs this)
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps \
+  -p fjord-schema -p fjord-wire -p fjord-client -p fjord-db   # the published crates' rustdoc
 
 cargo check -p fjord-engine --target wasm32-unknown-unknown   # the browser build
+cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown  # no filesystem
 ./scripts/build-wasm.sh             # the module the interactive site imports
 (cd web && npm run smoke)           # that demo, driven in a real browser
+
+# The other implementation of the protocol, and where the indexer runs' gates live.
+cargo build --release --bin fjord   # the server the .NET tests drive — see below
+(cd clients/dotnet && dotnet build Boxops.Fjord.slnx -warnaserror)
+(cd clients/dotnet && dotnet test)  # drives real MSBuild and a real server; ~2 minutes
 ```
+
+**The .NET suite drives a `fjord` binary it does not build.** It takes `target/release/fjord`
+if there is one and `target/debug/fjord` otherwise, so a *stale* release binary is what it runs
+— which fails as a protocol or fingerprint mismatch, at the handshake, with nothing pointing at
+the build you forgot. CI builds it explicitly for this reason; so does the line above.
+
+The `--no-default-features` line is what makes "the embedded schema path touches no
+filesystem" mechanical: `fs` is a default-on feature, so without it `FsSources` is not
+compiled and a call to it from `resolve_from` is a compile error rather than a code review.
+
+**A schema move is a flag day, and the checklist is now tests rather than a script.** A
+client sends one whole-schema fingerprint and the server checks it for equality, so an edit
+to a shipped schema refuses every client until each is rebuilt. What used to be
+`scripts/flag-day.sh`'s nine ordered steps are the guards named in
+[`clients/dotnet/README.md`](clients/dotnet/README.md) — each client's constant checked
+against *its own* schema by name, the goldens pinned by
+`byte_identical_with_the_dotnet_client`, the fixture reader by `sample_schema`'s own tests.
+The order still matters to a person, and that file carries it.
+
+`scripts/check-exhaustive.sh {schema|engine}` is **not** in that list and must not be: it
+adds a throwaway variant to `PredicateTyNamed` or to `fjord_engine::syntax::Ty` and asserts
+the build *fails*, naming every site that must handle a new scalar family. Run it when
+adding one, or when changing a match that dispatches on a type — a shorter list than
+[`bench/FINDINGS.md`](bench/FINDINGS.md) §19's is a regression. It restores the file it
+edited on the way out, so run it on a clean tree — and it refuses a dirty one **without**
+touching it, which is what `scripts/test_check_exhaustive.py` holds: the restore is a
+`git checkout`, so a trap armed above that refusal would delete the edit it declined to
+touch. That script *is* in the gate list above, even though the probe it guards is not.
 
 **The `+1.97.1` is not decoration.** CI's lint gate runs on that pinned toolchain and the
 suite runs on `stable`, because a required check that can go red because an upstream released

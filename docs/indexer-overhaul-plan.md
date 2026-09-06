@@ -1,11 +1,19 @@
 # The indexer overhaul — write path, seam, discrimination, and symbol identity (revision 2)
 
-> **Amended.** Issues #36–#43 change several of the runs below — the descriptor's type, who
-> declares `src.Symbol`, what becomes of `src.ExternalRef`, what Run 3.5 records, what Run 9's
-> gate is written against, and the CI job Run 0.5 needs. The amendments are
+> **Amended, and read for the reasoning rather than the steps.** Issues #36–#43 change several
+> of the runs below — the descriptor's type, who declares `src.Symbol`, what becomes of
+> `src.ExternalRef`, what Run 3.5 records, what Run 9's gate is written against, and the CI job
+> Run 0.5 needs. The amendments are
 > [`docs/unified-plan/13-indexer-runs-amended.md`](unified-plan/13-indexer-runs-amended.md), and
-> **where that file and this one disagree, that file wins**. This document remains the body of
-> Runs 0–9. Start at [`docs/unified-plan/README.md`](unified-plan/README.md).
+> **where that file and this one disagree, that file wins**.
+>
+> **Six things this document names no longer exist**, so a step that mentions one is void where
+> the amendments do not already replace it: `schemas/code.sigla` and `CodeIndex.cs` (D12, W15),
+> `fjord-viewer` (D11), `--syntax-only` (R3.7), the Glean comparison with `--glean-out`,
+> `fjbench.angle` and the Glean transcription (D14), and every read figure in `bench/FINDINGS.md`, whose
+> register is closed until a 1.0 pass. What survives intact is the **analysis**: the couplings, the
+> conflict census, the seam's location, and the SCIP argument. Start at
+> [`docs/unified-plan/README.md`](unified-plan/README.md).
 
 ## What this plan is
 
@@ -27,7 +35,8 @@ corrections and are answered in *Decisions*.
 
 Read in full: issues #28–#32 and #34; `clients/dotnet/Boxops.Fjord.Indexer/` (3,653 LOC across
 nine files) and `Boxops.Fjord.Client/` (1,236 LOC); `schemas/code.sigla`; **`bench/FINDINGS.md`
-§§12, 14, 15, 15a–c, 16, 16a–b, 17, 17a–b**; `docs/glean.md` §1 and §2; `docs/gitnexus.md`
+§§12, 14, 15, 15a–c, 16, 16a–b, 17, 17a–b**; the Glean transcription's §1 and §2, retired since
+(D14); `docs/gitnexus.md`
 §§16–17; `website/content/schema-language.md`; `crates/fjord-store-fjall/src/catalog.rs`;
 `crates/fjord-client/src/address.rs`; `PLAN.md:3215-3240`; `.github/workflows/release.yml`.
 
@@ -37,7 +46,7 @@ nine files) and `Boxops.Fjord.Client/` (1,236 LOC); `schemas/code.sigla`; **`ben
 | C2 | **The gate contaminates the Fjord/Glean comparison, and `FINDINGS` §17b already measured it.** Not a new finding — a known one nothing has acted on. | Re-run §17, not §15 | `FINDINGS:1194-1207` |
 | C3 | **The conflict rule is the one thing de-gating can change observably** — and a semantic key removes the hazard rather than making it thread-safe. | The schema fix de-risks the concurrency fix | #30 footgun 2 |
 | C4 | **The five issues fall into four disjoint compartments** and none crosses the MSBuild ↔ fact-emission line. The seam is where the bugs already are. | Validates the seam's location | #28/#29 → `Loader`; #32 → `Projects`; #30 → `Indexer`; #31 → `FactSink` |
-| C5 | **`ops-I5` is Glean's own rule, adopted** — Glean disables it on its batch paths (`ignoreRedef`, *"silently picking one of the two facts… That's bad"*). Conflict care is not a Fjord tax; it is a requirement Fjord reports and Glean swallows. **`_kinds`/`Declared.First` is already our own `ignoreRedef`.** | Deletes the rule rather than relocating it | `glean.md:54-59`, `:115` |
+| C5 | **`ops-I4` is Glean's own rule, adopted** — Glean disables it on its batch paths (`ignoreRedef`, *"silently picking one of the two facts… That's bad"*). Conflict care is not a Fjord tax; it is a requirement Fjord reports and Glean swallows. **`_kinds`/`Declared.First` is already our own `ignoreRedef`.** | Deletes the rule rather than relocating it | Glean's `ignoreRedef`, transcribed — the source note is retired (D14) |
 | C6 | **The repo already specified SCIP without naming it** — "a content-derived string identity with the repo as its first token". **But a SCIP symbol leads with a package triple, not an origin**, so the quote asks for something SCIP does not give. | Adopt the standard; restate the claim | `gitnexus.md:242-244` |
 | C7 | **Schema imports exist, but two readers never call `resolve`.** `sample_schema.rs:53` parses and lowers `code.sigla` without following imports, as does the published `fjord-db` example. | `scip`/`config` are declared *in* `code.sigla` for now | `schema-language.md:185`, `sample_schema.rs:53` |
 | C8 | **A fact file is portable by predicate *name***, so file ingestion is a read side rather than a format negotiation. | Run 9 emits blocks | `PLAN.md:3225` |
@@ -641,7 +650,7 @@ not wrong), and generated sources are already filtered (`Indexer.cs:862-867`,
 removing the filter would silently make every future golden SDK-dependent.
 
 **And two of revision 1's own claims were wrong in the same direction**: it cited `ops-I5` for
-conflict rejection where `invariants.md:403-404` assigns order-independent rejection to **`ops-I4`**,
+conflict rejection where `invariants.md:408` assigns order-independent rejection to **`ops-I4`**,
 and `PLAN.md:3184` calls a winner-picking rule "the one thing `ops-I4` really forbids". Both
 citations are corrected above.
 

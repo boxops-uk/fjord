@@ -17,6 +17,72 @@ public static class FrameKind
     public const byte DataRow = (byte)'D';
     public const byte Complete = (byte)'C';
     public const byte Error = (byte)'E';
+
+    /// <summary>Client → server: run a query, stop after N rows, hand back a token.</summary>
+    /// <remarks>
+    /// <b>The same byte as <see cref="CopyInResponse"/>, and they do not collide: a frame
+    /// kind is read in a direction.</b> <c>G</c> server → client opens a copy-in; <c>G</c>
+    /// client → server asks for a page. Nothing on this connection ever has to decide which
+    /// one a byte is, because each is only ever written by one end and only ever read by
+    /// the other.
+    /// </remarks>
+    public const byte QueryPage = (byte)'G';
+
+    /// <summary>Client → server: run a query and report only how many rows it has.</summary>
+    public const byte QueryCount = (byte)'N';
+
+    /// <summary>Server → client: how many rows the query has, as <c>u64</c> little-endian.</summary>
+    public const byte Count = (byte)'n';
+
+    /// <summary>
+    /// Server → client: the token to carry on from, sent once just before
+    /// <see cref="Complete"/>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Only when the page was cut short and there is more.</b> A page that reached the
+    /// end of the result sends none, which is how a caller knows it has seen everything
+    /// without asking again to be told nothing — so "no resume frame" is the terminator
+    /// and an empty token is not one.
+    /// </remarks>
+    public const byte Resume = (byte)'r';
+
+    /// <summary>Client → server: stop this stream.</summary>
+    /// <remarks>
+    /// In band, on the stream it cancels, so it does not disturb the other streams sharing
+    /// the socket. The stream still ends with a <see cref="Complete"/>: a cancel is an early
+    /// end and not a failure, so a caller that sends one still has to read to that frame
+    /// before the connection is its own again.
+    /// </remarks>
+    public const byte Cancel = (byte)'X';
+
+    /// <summary>Client → server: a lifecycle request — create, finish, remove.</summary>
+    /// <remarks>
+    /// <b>The database is named in the frame rather than taken from the session</b>, so one
+    /// connection can create a database it is not bound to — which is what lets a producer
+    /// make the databases it is about to write to instead of being handed them.
+    /// </remarks>
+    public const byte Control = (byte)'L';
+
+    /// <summary>Server → client: what the lifecycle request came to.</summary>
+    public const byte ControlReply = (byte)'M';
+
+    /// <summary>Client → server: what can I ask you? No payload.</summary>
+    public const byte Schema = (byte)'H';
+
+    /// <summary>Server → client: this database's schema, as source. The whole payload.</summary>
+    public const byte SchemaReply = (byte)'h';
+}
+
+/// <summary>A lifecycle operation, by the byte the wire assigns it.</summary>
+/// <remarks>
+/// <b>The discriminants are a wire contract: append only, never renumber.</b> A reply
+/// carries the same byte, so an answer is decoded without remembering what was asked.
+/// </remarks>
+public static class ControlOp
+{
+    public const byte Create = 1;
+    public const byte Finish = 2;
+    public const byte Remove = 3;
 }
 
 /// <summary>A frame as it arrived.</summary>

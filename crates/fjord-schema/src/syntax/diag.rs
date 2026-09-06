@@ -66,6 +66,13 @@ pub enum Code {
     /// and may point anywhere, while a named type is substituted where it is used and a
     /// cycle among those has no base case.
     RejectTypeCycle,
+    /// `import ob`, where `ob.sigla` declares `schema base`.
+    ///
+    /// A file is located from the **import name alone** — resolution never inspects the
+    /// `schema <name>` head it finds there — so without this the two files resolve and
+    /// then every reference into the namespace fails `reject/unknown-name`. That reports
+    /// the symptom at every use site and the cause at none of them.
+    RejectNamespaceMismatch,
 }
 
 impl Code {
@@ -84,6 +91,7 @@ impl Code {
         Code::RejectRedeclaration,
         Code::RejectUnknownName,
         Code::RejectTypeCycle,
+        Code::RejectNamespaceMismatch,
     ];
 
     #[must_use]
@@ -102,6 +110,7 @@ impl Code {
             Code::RejectRedeclaration => "reject/redeclaration",
             Code::RejectUnknownName => "reject/unknown-name",
             Code::RejectTypeCycle => "reject/type-cycle",
+            Code::RejectNamespaceMismatch => "reject/namespace-mismatch",
         }
     }
 

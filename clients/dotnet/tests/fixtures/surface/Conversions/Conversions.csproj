@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Conversions</RootNamespace>
+
+    <!-- Clause 10.2.7 and 10.6 are about the null value, so the project is compiled with
+         nullable reference types on: a `string s = null;` that warns is the clause being
+         exercised, not a mistake. Warnings are the expected output of this project. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

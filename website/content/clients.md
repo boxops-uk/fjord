@@ -71,10 +71,10 @@ corpus and the schema are stated **independently on each side on purpose** — a
 would make the two agree by construction, which is the agreement being tested. The Rust test
 needs no `dotnet`; regenerating the golden does.
 
-There are two goldens: the code-index corpus, and `unions.txt` over a schema of its own — the
-union tag stated independently from outside, including a nested reference *inside* a payload and
-an empty-record payload. `schemas/code.sigla` is deliberately untouched by it, so no fingerprint
-moved when unions landed.
+There are three goldens: the sample corpus, `unions.txt` over a schema of its own, and
+`bytes.txt` over another. The separate ones exist to push what the shared fixture keeps tidy —
+a tag space of 3, 0, 40000 and 7, and a payload no `string` could hold — so pinning either
+costs the fixture no fingerprint move and no flag day.
 
 ## The real indexer
 
@@ -84,75 +84,90 @@ moved when unions landed.
 
 The demo's argument made at scale: the same library, the same nested references and the same
 handshake, driven by a design-time build per project and a compiler that answers what every name
-means. It is where a database large enough to be worth measuring comes from — and where twenty-one
-of the sample schema's predicates come from, because the build layer and the declaration graph
-cannot be answered by a syntax walk at all.
+means. It writes `schemas/dotnet.sigla` — sixty-five predicates across five composed schemas —
+and most of them cannot be answered by a syntax walk at all: the project graph is MSBuild's, the
+entity model is Roslyn's, and the surface a UI reads is both of those re-keyed.
+
+**A checkout that compiles for two frameworks is two indexes.** A project built for `net8.0` and
+one built for `net10.0` are different programs — different preprocessor symbols, different
+references, often different members — so the run fans out, writing `code#net8.0` and
+`code#net10.0`, and each database says which framework it holds through
+`config.Setting {dimension = "framework"}`.
 
 The run reports what interning cost:
 
 ```text
-  server                  18,176,899 created, 44,422,889 deduped
+  server                     105,126 created, 910,367 deduped
 ```
 
-Five million references naming nine hundred thousand declarations **is** that dedup count. A
-producer holding no fact ids is an elegance argument at six declarations; at eighteen million
-facts it is the only tractable option, because the alternative is a second pass over an index that
-no longer fits in memory, ordered so that every target is written before every reference to it.
+Sixteen thousand references naming nine hundred declarations **is** that dedup count: a factor of
+eight between facts sent and facts touched, because every reference carries its target nested
+inside it. A producer holding no fact ids is an elegance argument at six declarations; at a
+million it is the only tractable option, because the alternative is a second pass over an index
+that no longer fits in memory, ordered so that every target is written before every reference to
+it.
 
-It can also write the same facts into **Glean's** own JSON batch format
-(`--glean-out <dir>`, `./clients/dotnet/index-repo-glean.sh`) against a predicate-, field- and
-field-order-preserving translation of the sample schema. One walk, two sinks — so a comparison
-of the two systems is a comparison of the two systems and not of two indexers. Two honesty
-conditions are recorded with it: references stay nested on that path as well, and **emitting is
-not writing** — the load is a second phase with its own clock, so the honest total for Glean is
-emit plus load.
+### What it writes with, and what else uses that
+
+The batching, the bounded queue, the writer threads and the latched-failure rule are
+`Boxops.Fjord.Client`'s, not the indexer's: `FactSink` takes a schema and a list of targets and
+says nothing about Roslyn. That is what makes a second producer possible without a second
+implementation of any of it.
+
+`scip2fjord` is the second producer. It reads a [SCIP](https://sourcegraph.com/docs/code-search/code-navigation/writing_an_indexer)
+index — the format TypeScript, Java, Scala, Rust, Python, Go and Ruby indexers already emit — and
+writes the same `codemarkup` surface the C# indexer does, through that same seam, referencing no
+part of the indexer. What it does *not* write is a declaration layer or a type graph: a SCIP index
+contains neither, and inventing them per occurrence would put facts in a database that nothing
+could stand behind.
 
 ### What the .NET client does not do
 
 It mirrors the server, so it stops where the server does. Streams are issued sequentially — the
 ids are real and the server tags every reply — but it sends a stream's frames and reads its
-replies before starting the next. There is no cancellation and no flow control on that side.
+replies before starting the next, so one result is open at a time and a second is refused rather
+than left to decode the first's rows. There is no per-stream flow control on that side.
 
-There is no test project either, deliberately: the console program *is* the test, and a unit test
-of this codec against constants copied from the Rust would only prove the constants were copied.
+Cancellation it does have, and it is what makes a lazy read safe: `Rows` pulls a page at a time
+and yields, so `Take(n)` costs one page, and disposing the enumerator sends `CANCEL` on the open
+stream and reads to its `Complete` before handing the connection back. Without that, stopping
+early would leave a page's remaining rows on a socket every stream shares, and the *next* query
+would read them as its own — a wrong answer rather than an error. `Query` still collects the whole
+result and still cannot be stopped: the right thing for a result whose size the caller knows, and
+the wrong thing for one it does not.
+
+The test project is `Boxops.Fjord.Tests`, and what it does *not* contain is a unit test of this
+codec against constants copied from the Rust — that would only prove the constants were copied.
+What it does contain is the shapes written and read back through a real server, which is the only
+thing that proves a transcription.
 
 ## The viewer
 
-```bash
-fjord --data-dir ./db serve &
-fjord-viewer ./db/fjord.sock//code --bind 127.0.0.1:8088
-```
+**`fjord-viewer` is retired.** It was a code-search site over a database — server-rendered HTML,
+no assets, no framework — and it proved the thing it was built to prove: a viewer is an ordinary
+consumer of the protocol, needing no privileged access to a database. Building it is also what
+found the two predicates that had to be added, a file's cross-references keyed by file and a
+case-folded search index, because the questions a UI asks turned out not to be the questions the
+schema answered.
 
-A code-search site over a Fjord database: HTML written by hand, no assets, no framework.
+What replaces it is a browser application rather than a Rust binary, and the reason is the
+rendering rather than the taste. A source view is a **merge of two independent sets of ranges**
+over one line — syntax runs and cross-reference anchors — split at the union of both boundaries
+and emitted as one correct nesting. Server-rendered HTML can do that, and then a virtualised
+scroll over a 50,000-line file cannot reuse any of it.
 
-| Route | Page |
-|---|---|
-| `/` | Browse — the file tree |
-| `/file/{path}` | A file, with line-level cross-references |
-| `/search` | Prefix search over declaration names |
-| `/symbol/{name}` | A symbol: where it is declared, and where it is used |
-| `/health` | Liveness |
+The three things it will need from this side are already here or named:
 
-| Flag | Default | Means |
-|---|---|---|
-| *(positional)* | `code` | The address, in the usual grammar |
-| `--bind` | `127.0.0.1:8088` | Where to listen |
-| `--pool` | `8` | Idle connections to keep open to the server |
-
-Three things about it are the point rather than the implementation:
-
-- **It is an ordinary consumer of the protocol.** It depends on the client crate and nothing
-  below it, which is the claim: a viewer needs no privileged access to a database.
-- **Every question a page asks is in one place** (`query.rs`), and each says which key order
-  answers it. That is where the schema's index design becomes visible as product behaviour —
-  find-references is a seek because `src.Ref` leads with its target, and a file's cross-references
-  are a seek because `src.FileXRef` leads with the file.
-- **The pool exists because the client is blocking and a web server is not.** A recycled pool with
-  a floor rather than a ceiling: a burst opens more connections and closes them on return.
-
-Building the viewer is what found the two predicates that had to be added — a file's
-cross-references keyed by file, and a case-folded search index — because the questions a UI asks
-turned out not to be the questions the schema answered.
+- **The unit its columns count in.** `config.Setting {dimension = "position-encoding"}` declares
+  `utf8` or `utf16` once per database, and a database that does not state it is read as `utf16`.
+  The retired viewer got this wrong — it indexed by `str::chars()`, one unit per codepoint, where
+  the producer counted two for anything above the BMP.
+- **A transport a browser can open.** A browser cannot open a Unix socket or raw TCP, which is
+  the whole of the client crate's `Transport` today. The answer is a **WebSocket listener
+  carrying the same frames**, so there is one protocol, one codec and one set of goldens — not a
+  second, JSON-shaped surface. It is default-closed like TCP is (`ops-I10`).
+- **A language-independent route layer**, so an index the viewer can serve does not have to be
+  a C# one. That is `codemarkup`.
 
 ## Writing a client
 

@@ -7,7 +7,9 @@ sigla is a typed, Datalog-flavoured query language. A query is a **head pattern*
 `where`, and a list of **statements**:
 
 ```sigla
-{file = F, line = L} where src.Ref {to = src.Decl {name = "encode"}, file = F, at = {line = L}}
+{file = F, span = S} where
+  codemarkup.SymbolByName {name = "Crc32", symbol = T};
+  codemarkup.SymbolXRef {target = T, file = F, span = S}
 ```
 
 The head says what a row looks like. The statements say which rows there are. There is no
@@ -441,10 +443,25 @@ Three things the examples pin:
 - **A wildcard payload is still a seek** — the tag alone is the shortest prefix an
   alternative has.
 
+**A union-typed variable can be shared by two generators.** The first mention binds it and the
+second compares a union against a union, so a join *through* a union is written once rather
+than once per alternative:
+
+```sigla
+X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}  → 20; 40; 10; 30
+```
+
+Two unions are the same type iff their alternatives agree as a **set** of *(name, discriminant,
+payload)*. A permuted declaration order is one type — declaration order is what the schema
+stores, and permuting it moves no byte. A renamed alternative or a renumbered discriminant is
+not, because the canonical form the fingerprint hashes writes all three, so they are different
+types on disk too; the diagnostic names the alternative the two sides first differ on.
+
 A select against the wrong alternative is an **error**, never another type's bytes: the
-expected discriminant is checked before any read through the payload. And rows whose
-alternative the query never mentions pass untouched — an unmentioned union field is a
-wildcard.
+expected discriminant is checked before any read through the payload — at every layer, so a
+select on a union *inside* another union's payload is checked after the tag that says the outer
+payload is there at all, and never before it. And rows whose alternative the query never
+mentions pass untouched — an unmentioned union field is a wildcard.
 
 ### Literals
 
@@ -542,17 +559,17 @@ X where test.Foo {id = X, name = "ann"}      → 1; 3              (a scan, then
 `:plan` shows exactly which happened, and `--profile` shows what it cost:
 
 ```plan
-  r0 <- src.Decl scan
+  r0 <- codemarkup.SearchEntry scan
        where name == "Crc32"
-  r1 <- src.Ref seek[to = r0#, file = _, at = _]
-  head {f = r1.file, l = r1.at.line}
+  r1 <- codemarkup.SymbolXRef seek[target = r0.symbol, file = _, span = _]
+  head {at = r1.span, f = r1.file}
 ```
 
 ```text
-STEP      EXAMINED
-src.Decl  483       full scan
-src.Ref   5
-488 examined, 5 produced
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
 ```
 
 If a question you ask often reads far more rows than it produces, the answer is usually the

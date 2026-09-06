@@ -37,8 +37,8 @@ use fjord_wire::WireFact;
 fn corpus() -> Corpus {
     Corpus {
         files: 12,
-        modules_per_file: 2,
-        decls_per_module: 4,
+
+        decls_per_file: 8,
         refs_per_decl: 3,
     }
 }

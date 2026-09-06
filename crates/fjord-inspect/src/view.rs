@@ -42,6 +42,22 @@ pub struct DiagnosticView {
     pub labels: Vec<Label>,
 }
 
+impl DiagnosticView {
+    /// A diagnostic that arrived **already rendered**, with no spans to point at.
+    ///
+    /// Resolution reports across sources, and a span into one of them means nothing
+    /// without saying which — so what it hands back is the rendered block, and this is
+    /// the shape a page can still show.
+    #[must_use]
+    pub fn rendered(message: &str) -> DiagnosticView {
+        DiagnosticView {
+            code: None,
+            message: message.to_owned(),
+            labels: vec![],
+        }
+    }
+}
+
 /// One diagnostic, flattened.
 ///
 /// Labels keep the order the phase built them in rather than being sorted here:

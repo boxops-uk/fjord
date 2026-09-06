@@ -43,17 +43,17 @@ pub enum StoreCodecError {
     /// is declared to reference, caught at the typed codec boundary — the only one
     /// holding both the declared type and the id whose tag answers it.
     ///
-    /// The read-path counterpart is
-    /// [`FjordError::ReferenceCrossesPredicate`], raised when a query *follows*
-    /// such a reference. Both exist because they catch it at different moments: this
-    /// one before the bytes are written, that one for bytes some other writer
-    /// produced.
+    /// The read-path counterpart is `FjordError::ReferenceCrossesPredicate`, raised
+    /// when a query *follows* such a reference — named rather than linked, as any name
+    /// from a crate above this one must be. Both exist because they catch it at
+    /// different moments: this one before the bytes are written, that one for bytes
+    /// some other writer produced.
     #[error("a reference declared to name predicate {expected} names predicate {found}")]
     FactRefPredicate { expected: u32, found: u32 },
 
     /// A fact reference whose sequence is 0, which is reserved so that zeroed or
     /// truncated bytes are detectably not a fact ([I11]). The stored-row decoder
-    /// enforces the same rule as [`StoreError::FactIdSequence`]; this is it at the
+    /// enforces the same rule as `StoreError::FactIdSequence`; this is it at the
     /// tuple codec, which is what reads a reference embedded in a key.
     ///
     /// [I11]: ../../website/content/invariants.md#i11
@@ -72,6 +72,16 @@ pub enum StoreCodecError {
     /// alternative happened to sit at that tag.
     #[error("no alternative of this union is declared with discriminant {tag}")]
     UnknownDiscriminant { tag: u64 },
+
+    /// A value whose **family** is not the one the schema declares for it: an `int`
+    /// field handed a string, a record field handed a scalar.
+    ///
+    /// Distinct from [`BadRecord`](StoreCodecError::BadRecord), which is a record
+    /// whose *arity* is wrong or whose nesting is too deep. Reporting a family
+    /// mismatch as "bad record" is the one message here that misdirects — at a
+    /// scalar field there is no record to be bad.
+    #[error("a value does not fit the {declared} the schema declares for it")]
+    TypeMismatch { declared: &'static str },
 
     /// A union value whose payload does not match the alternative its discriminant
     /// names — the union's answer to [`BadRecord`](StoreCodecError::BadRecord).

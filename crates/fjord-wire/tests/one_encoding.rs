@@ -12,8 +12,8 @@ use fjord_schema::{
     schema::{Predicate, PredicateId, PredicateTy, Schema},
 };
 use fjord_wire::{
-    FrameKind, StreamId, WireFact, WireRef, WireValue, block, decode_block, decode_frame,
-    encode_block, encode_frame, find_sync,
+    FrameKind, StreamId, WireError, WireFact, WireRef, WireValue, block, decode_block,
+    decode_frame, encode_block, encode_frame, find_block, find_sync,
 };
 use lasso::Rodeo;
 use std::sync::Arc;
@@ -126,7 +126,7 @@ fn a_block_is_the_same_bytes_on_a_socket_and_in_a_file() {
     // In a file: the same block bytes, found by scanning rather than by being handed
     // a frame boundary.
     let file_bytes = block_bytes.clone();
-    let at = find_sync(&file_bytes, 0).expect("a block boundary");
+    let at = find_block(&file_bytes, 0).block.expect("a block boundary");
     let (from_file, _) = decode_block(&file_bytes[at..], &schema).expect("the block decodes");
 
     assert_eq!(from_wire, facts);
@@ -167,7 +167,7 @@ fn a_file_splits_at_an_arbitrary_offset() {
     // From every possible offset, the scan lands on the next real boundary — and the
     // block there reads whole. A worker handed a byte range does exactly this.
     for from in 0..file_bytes.len() {
-        let found = find_sync(&file_bytes, from);
+        let found = find_block(&file_bytes, from).block;
         let expected = boundaries.iter().copied().find(|b| *b >= from);
         assert_eq!(found, expected, "scanning from offset {from}");
 
@@ -179,6 +179,58 @@ fn a_file_splits_at_an_arbitrary_offset() {
             let (facts, _) = decode_block(&file_bytes[at..], &schema).expect("a block decodes");
             assert_eq!(facts, batches[which].1);
         }
+    }
+}
+
+/// **A blob that contains a marker does not split the file.** From outside the
+/// crate, which is the position a splitter is in: a `bytes` field is written raw, so
+/// a source file holding ten `0xFF` — a compiled artifact, a minified bundle, any
+/// content an indexer read off disk — puts a marker inside a block. `find_sync`
+/// reports it; `find_block` validates and scans on, and only the real boundaries
+/// survive.
+#[test]
+fn a_blob_holding_a_marker_is_not_a_boundary() {
+    let mut rodeo = Rodeo::new();
+    let name = rodeo.get_or_intern("src.Blob");
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Bytes,
+            value: None,
+        }]),
+    );
+
+    let blob = |payload: &[u8]| WireFact {
+        predicate: PredicateId(0),
+        key: WireValue::Bytes(payload.to_vec()),
+        value: None,
+    };
+
+    let mut content = b"#!/bin/sh\n".to_vec();
+    content.extend_from_slice(&[0xFF; 16]);
+    content.extend_from_slice(b"FJBK trailing junk");
+
+    let mut file_bytes = vec![];
+    let mut boundaries = vec![];
+    for facts in [vec![blob(&content)], vec![blob(b"plain text")]] {
+        boundaries.push(file_bytes.len());
+        encode_block(&mut file_bytes, &schema, PredicateId(0), &facts).expect("a block");
+    }
+
+    // The raw scan sees a boundary the file does not have.
+    assert!(
+        find_sync(&file_bytes, 1).is_some_and(|at| !boundaries.contains(&at)),
+        "the blob's marker should be a candidate the raw scan reports"
+    );
+
+    for from in 0..file_bytes.len() {
+        let expected = boundaries.iter().copied().find(|b| *b >= from);
+        assert_eq!(
+            find_block(&file_bytes, from).block,
+            expected,
+            "scanning from offset {from}"
+        );
     }
 }
 
@@ -205,6 +257,26 @@ fn a_file_cut_mid_block_is_reported_not_shortened() {
             decode_block(&truncated[used..], &schema).is_err(),
             "a block cut at {cut} decoded instead of reporting damage"
         );
+
+        // And a scan past the first block reports the cut tail rather than simply
+        // running out — the benign instance of `damaged`, and the one a worker
+        // handed a byte range meets whenever its range ends mid-block.
+        let scan = find_block(truncated, 1);
+        assert_eq!(
+            scan.block, None,
+            "a block cut at {cut} was scanned as whole"
+        );
+
+        if cut >= first + block::OVERHEAD {
+            assert!(
+                matches!(
+                    scan.damaged,
+                    Some((at, WireError::LengthOutOfRange { .. })) if at == first
+                ),
+                "a block cut at {cut} was skipped without report: {:?}",
+                scan.damaged
+            );
+        }
     }
 }
 

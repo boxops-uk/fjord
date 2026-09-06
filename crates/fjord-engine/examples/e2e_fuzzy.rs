@@ -202,9 +202,15 @@ fn anchored_key(anchor: &str) -> SeekKey {
     if anchor.is_empty() {
         return SeekKey::Prefix(Box::new([]));
     }
+
+    // `X = "pa"..` — a string's encoding without its terminator, which is a range
+    // over the field and not an equality on it.
     let mut bytes = str_field(anchor);
     bytes.pop();
-    SeekKey::Prefix(bytes.into())
+    SeekKey::PrefixRange {
+        parts: Box::new([]),
+        prefix: bytes.into(),
+    }
 }
 
 fn guided(term: &str, distance: u8, range: &str, anchor: FuzzyAnchor) -> Plan {

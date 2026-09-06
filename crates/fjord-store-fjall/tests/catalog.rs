@@ -16,6 +16,101 @@ use fjord_store_fjall::{
 };
 use lasso::Rodeo;
 
+/// **`create` refuses a schema it cannot write down and read back.**
+///
+/// The `recoverable()` → `equivalent` → `same_ty` path, which is `same_ty`'s only
+/// production caller and had no test at all. Worth the paranoia because `Schema` is
+/// public and the failure it prevents is silent: the copy under `schema/` is what the
+/// database is served with for the rest of its life.
+///
+/// This one provokes the half `recover` itself refuses — a name the language cannot
+/// spell. The other half, `equivalent` answering false over text that does lower, is
+/// [`a_built_schema_with_an_uncomparable_field_is_refused`].
+#[test]
+fn a_built_schema_create_cannot_recover_is_refused() {
+    let mut rodeo = Rodeo::new();
+    // No namespace, which the grammar has no way to write.
+    let name = rodeo.get_or_intern("P");
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Str,
+            value: None,
+        }]),
+    );
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let catalog = Catalog::open(dir.path()).expect("a catalog");
+
+    let err = catalog
+        .create("unspellable", &schema)
+        .expect_err("a schema that does not survive the round trip must be refused");
+
+    assert!(
+        matches!(err, CatalogError::UnwritableSchema { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        !dir.path().join("unspellable").exists(),
+        "refused, but a directory was left behind"
+    );
+}
+
+/// **`create` refuses a schema holding a field whose type comes back a different
+/// family**, through `recoverable()` → `equivalent` → `same_ty`.
+///
+/// A union of no alternatives is such a type: braces are shared with a record and the
+/// separator after the first alternative is what tells the two apart, so a union with
+/// nothing to separate prints as `{}` and lowers back as a **record**. The text is a
+/// schema — this is not the refusal `recover` makes — and `same_ty` is what catches it.
+/// Refused before anything exists, or the artifact embeds a schema that decodes every
+/// stored row of that field through the wrong family, silently.
+#[test]
+fn a_built_schema_with_an_uncomparable_field_is_refused() {
+    let mut rodeo = Rodeo::new();
+    let name = rodeo.get_or_intern("gen.P");
+    let field = rodeo.get_or_intern("choice");
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Record(Arc::from([(field, PredicateTy::Union(Arc::from([])))])),
+            value: None,
+        }]),
+    );
+
+    // **Which half is under test, asserted rather than assumed.** A test that only
+    // checked the refusal would pass on the parse error the sibling above provokes,
+    // and `same_ty` would stay unreached.
+    let text = fjord_schema::syntax::print::print(&schema);
+    let back = fjord_schema::syntax::recover(schema_doc::SCHEMA_FILE, &text)
+        .expect("the printed text lowers, so the refusal under test is `equivalent`'s");
+    assert!(
+        !fjord_schema::syntax::print::equivalent(&schema, &back),
+        "a union of no alternatives came back comparable:\n{text}"
+    );
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let catalog = Catalog::open(dir.path()).expect("a catalog");
+
+    let err = catalog
+        .create("uncomparable", &schema)
+        .expect_err("a field whose type does not survive the round trip must be refused");
+
+    let CatalogError::UnwritableSchema { detail, .. } = &err else {
+        panic!("got {err:?}")
+    };
+    assert!(
+        detail.contains("written back, it is a different schema"),
+        "refused, but for `recover`'s reason rather than `equivalent`'s: {detail}"
+    );
+    assert!(
+        !dir.path().join("uncomparable").exists(),
+        "refused, but a directory was left behind"
+    );
+}
+
 fn schema() -> Schema {
     let mut rodeo = Rodeo::new();
     let (file, decl) = (
@@ -771,5 +866,59 @@ fn a_schema_that_cannot_be_written_back_is_refused_at_create() {
             Err(CatalogError::UnwritableSchema { .. })
         ),
         "a schema that does not round-trip must be refused before anything exists on disk"
+    );
+}
+
+/// **`create` refuses a schema that declares into the reserved namespace, and leaves
+/// nothing behind.**
+///
+/// A server appends its virtual predicates to every database's own schema when it opens
+/// one, so a database that already declares `fjord.db.List` composes to two of them and
+/// cannot be opened at all:
+///
+/// ```text
+/// `second` was created and this server could not then open it:
+///   error[reject/redeclaration]: `fjord.db.List` is already declared in this schema
+/// ```
+///
+/// **Created, and only then unopenable** — the artifact was on disk before anything
+/// noticed, which is the shape this check exists to prevent. It sits beside the
+/// round-trip check for the same stated reason: one parse before anything is written
+/// turns a silent corruption into a refusal with nothing left behind.
+///
+/// Reachable from outside: `SCHEMA` answers with the schema being *served*, virtuals
+/// included, so a client that asks a database what it holds and hands the answer to
+/// `create` walks straight into it.
+#[test]
+fn a_schema_declaring_into_the_reserved_namespace_is_refused() {
+    let mut rodeo = Rodeo::new();
+    let name = rodeo.get_or_intern("fjord.db.List");
+    let schema = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Str,
+            value: None,
+        }]),
+    );
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let catalog = Catalog::open(dir.path()).expect("a catalog");
+
+    let err = catalog
+        .create("reserved", &schema)
+        .expect_err("a schema declaring a predicate the server answers must be refused");
+
+    assert!(
+        matches!(err, CatalogError::ReservedNamespace { .. }),
+        "expected a reserved-namespace refusal, got {err:?}"
+    );
+
+    // **Nothing left behind is half the claim.** A refusal that still published an
+    // instance directory would leave a database no server can open and no listing can
+    // explain, which is the state this replaces.
+    assert!(
+        catalog.list().expect("a listing").entries.is_empty(),
+        "a refused create must publish nothing"
     );
 }

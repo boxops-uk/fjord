@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-use serde::{Serialize, Serializer, ser::SerializeMap};
-
 use crate::error::StoreCodecError;
 use fjord_schema::{
     id::FactId,
@@ -41,6 +39,27 @@ pub const MARK_FACT_REF: u8 = 0x51;
 /// [I3]: ../../../website/content/invariants.md#i3
 /// [phase 8.6 D-a]: ../../../website/content/storage.md
 pub const MARK_UNION: u8 = 0x52;
+
+/// **Uninterpreted bytes** — the marker, then the same escaped run a string uses.
+///
+/// Appended after [`MARK_UNION`], for the reason `MARK_UNION` was appended after
+/// [`MARK_FACT_REF`]: [I3] freezes the table on disk and appending is the only thing
+/// it permits. The consequence is that `bytes` sorts *after* a union rather than
+/// beside a string, which reads oddly and is **unobservable**: a field has one
+/// declared type, a union discriminates by tag before any payload is compared, and a
+/// record's fields are positional — so no query can put a `bytes` and a `string` on
+/// the two sides of one comparison. Renumbering to make the table read better would
+/// be a `codec` version bump, and [I15] checks the stamp for *equality* at open, so
+/// every database written before it would become unopenable. Take the wart.
+///
+/// The escape scheme is what makes this sound over arbitrary bytes: a `0x00` in the
+/// payload becomes `0x00 0xFF` and a bare `0x00` terminates, so `memcmp` of two
+/// encoded runs agrees with `memcmp` of the payloads. A length prefix would sort by
+/// length first, which is not the order anybody means.
+///
+/// [I3]: ../../../website/content/invariants.md#i3
+/// [I15]: ../../../website/content/invariants.md#i15
+pub const MARK_BYTES: u8 = 0x53;
 
 /// The encoded width of a fact-typed field: the marker, then a fixed-width id.
 ///
@@ -501,6 +520,26 @@ pub fn get_str(bytes: &[u8]) -> Result<(Cow<'_, str>, usize), StoreCodecError> {
     }
 }
 
+/// The same run [`put_str`] writes, minus the validation — **and not performing that
+/// validation is precisely what the type is.**
+pub fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.push(MARK_BYTES);
+    put_escaped(out, bytes);
+}
+
+pub fn get_bytes(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, usize), StoreCodecError> {
+    let Some((&mark, contents)) = bytes.split_first() else {
+        return Err(StoreCodecError::UnexpectedEof);
+    };
+
+    if mark != MARK_BYTES {
+        return Err(StoreCodecError::UnexpectedMark(mark));
+    }
+
+    let (payload, consumed) = get_escaped(contents)?;
+    Ok((payload, consumed + 1))
+}
+
 #[inline]
 fn checked_advance(bytes: &[u8], start: usize, n: usize) -> Result<usize, StoreCodecError> {
     let end = start.checked_add(n).ok_or(StoreCodecError::UnexpectedEof)?;
@@ -578,7 +617,9 @@ pub fn skip(
                 }
             }
 
-            MARK_STRING => {
+            // One arm for both, because an escaped run is self-delimiting whatever
+            // is in it — which is [I2] for a family a reader may not understand.
+            MARK_STRING | MARK_BYTES => {
                 i = skip_terminated(bytes, after_mark)?;
 
                 if record_depth == 0 {
@@ -670,6 +711,37 @@ pub fn strinc(prefix: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The byte string that **separates one field value from the next**: strictly above
+/// every key whose bounded field is the value `key_through_field` ends with, and at
+/// or below every key whose is greater.
+///
+/// It is the bound both exclusive-at-the-value edges of a range want — the
+/// inclusive floor of `> v` and the exclusive ceiling of `<= v`.
+///
+/// **Not [`strinc`], which is wrong here.** A terminated field is
+/// `MARK ++ escaped(payload) ++ 0x00` with a payload NUL escaped to `0x00 0xFF`, so
+/// `enc(v)` is a byte prefix of `enc(w)` exactly when `w` is `v` with a NUL and more
+/// after it — the shorter value's terminator is the first byte of the longer one's
+/// escape pair — and every such `w` is strictly greater than `v`. `strinc` is the
+/// successor of *everything* sharing that byte prefix, so it sits above both runs
+/// and cuts those rows off: `> v` loses them, `<= v` keeps them, and a folded
+/// comparison is no longer in the residual list to catch either.
+///
+/// [`MARK_ESCAPE`] is the byte that lies between the two runs, and it is the only
+/// byte that can: a key at `v` continues past the field with a *mark* or a group
+/// terminator and every one of those is below it, while a key of a NUL-extension of
+/// `v` continues with `MARK_ESCAPE` itself. A **new marker** is what could break the
+/// first half, and `no_field_encoding_begins_at_the_separator_byte` is the guard.
+///
+/// Total, unlike `strinc` — there is no all-`0xFF` key this has no answer for.
+#[must_use]
+pub fn above_field(key_through_field: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(key_through_field.len() + 1);
+    out.extend_from_slice(key_through_field);
+    out.push(MARK_ESCAPE);
+    out
+}
+
 /// Encode `value` against its declared type, positionally: a record's fields are
 /// written in **declared order** — the schema's, which is what the read path walks —
 /// and the value's are taken in the order they are in.
@@ -755,29 +827,59 @@ fn checked_fact_ref(predicate: PredicateId, id: FactId) -> Result<(), StoreCodec
 }
 
 /// [`encode_typed`] into an encoder already in progress — a field of a record.
+///
+/// Dispatched on the **declared type**, exhaustively, and only then on the value.
+/// A joint `match (ty, value)` needs a wildcard for the genuine mismatch, and that
+/// wildcard also absorbs a *new* scalar family — which then fails here at run time,
+/// as a corrupt row, instead of at the compiler. The shape check is a `let … else`
+/// rather than an inner match so the wildcard is gone rather than moved.
+#[deny(clippy::wildcard_enum_match_arm)]
 pub fn encode_typed_at(
     enc: &mut TupleEncoder<'_>,
     ty: &PredicateTy,
     value: &Value,
 ) -> Result<(), StoreCodecError> {
-    match (ty, value) {
-        (PredicateTy::Int, Value::Int(i)) => {
+    match ty {
+        PredicateTy::Int => {
+            let Value::Int(i) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "int" });
+            };
             enc.put_i64(*i);
             Ok(())
         }
 
-        (PredicateTy::Str, Value::Str(s)) => {
+        PredicateTy::Str => {
+            let Value::Str(s) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "string" });
+            };
             enc.put_str(s);
             Ok(())
         }
 
-        (PredicateTy::Fact(predicate), Value::FactRef(id)) => {
+        PredicateTy::Bytes => {
+            let Value::Bytes(payload) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "bytes" });
+            };
+            enc.put_bytes(payload);
+            Ok(())
+        }
+
+        PredicateTy::Fact(predicate) => {
+            let Value::FactRef(id) = value else {
+                return Err(StoreCodecError::TypeMismatch {
+                    declared: "reference",
+                });
+            };
             checked_fact_ref(*predicate, *id)?;
             enc.put_fact_id(*id);
             Ok(())
         }
 
-        (PredicateTy::Record(field_tys), Value::Record(field_values)) => {
+        PredicateTy::Record(field_tys) => {
+            let Value::Record(field_values) = value else {
+                return Err(StoreCodecError::TypeMismatch { declared: "record" });
+            };
+
             if field_tys.len() != field_values.len() {
                 return Err(StoreCodecError::BadRecord);
             }
@@ -791,14 +893,16 @@ pub fn encode_typed_at(
             })
         }
 
-        (
-            PredicateTy::Union(alts),
-            Value::Union {
+        PredicateTy::Union(alts) => {
+            let Value::Union {
                 disc,
                 value: payload,
                 ..
-            },
-        ) => {
+            } = value
+            else {
+                return Err(StoreCodecError::TypeMismatch { declared: "union" });
+            };
+
             let tag = u64::from(*disc);
 
             // **By discriminant, never by name.** The tag is the identity — it is
@@ -812,16 +916,24 @@ pub fn encode_typed_at(
                 .ok_or(StoreCodecError::UnknownDiscriminant { tag })?;
 
             enc.union(*disc, |enc| encode_typed_at(enc, &alt.ty, payload))
-                .map_err(|err| match err {
+                .map_err(|err| {
                     // A shape mismatch under a payload *is* a payload that does not
                     // match the alternative, and the tag is the actionable half of
-                    // saying so. A deeper union's own refusal keeps its own tag.
-                    StoreCodecError::BadRecord => StoreCodecError::BadUnion { tag },
-                    other => other,
+                    // saying so. A deeper union's own refusal keeps its own tag, and
+                    // so does every error this cannot improve on — written as an
+                    // `if` because a `_ => err` arm is a wildcard this function
+                    // denies, and enumerating the pass-through set would have to be
+                    // edited every time an unrelated variant was added.
+                    if matches!(
+                        err,
+                        StoreCodecError::BadRecord | StoreCodecError::TypeMismatch { .. }
+                    ) {
+                        StoreCodecError::BadUnion { tag }
+                    } else {
+                        err
+                    }
                 })
         }
-
-        _ => Err(StoreCodecError::BadRecord),
     }
 }
 
@@ -869,7 +981,7 @@ impl<'a> TupleEncoder<'a> {
 
     /// Writing a scalar cannot fail — the sink is a `Vec` and every encoding is
     /// total — so these return nothing. [`record`](Self::record) is the one
-    /// fallible operation, because nesting past [`MAX_RECORD_DEPTH`] is a fault
+    /// fallible operation, because nesting past `MAX_RECORD_DEPTH` is a fault
     /// the encoding itself cannot express. A `Result` on the rest only put a `?`
     /// at every call site and left a reader wondering which of them could fail.
     pub fn put_null(&mut self) {
@@ -892,6 +1004,10 @@ impl<'a> TupleEncoder<'a> {
 
     pub fn put_str(&mut self, val: &str) {
         put_str(self.out, val);
+    }
+
+    pub fn put_bytes(&mut self, val: &[u8]) {
+        put_bytes(self.out, val);
     }
 
     pub fn put_fact_id(&mut self, id: FactId) {
@@ -1036,6 +1152,12 @@ impl<'a> TupleDecoder<'a> {
 
     pub fn take_str(&mut self) -> Result<Cow<'a, str>, StoreCodecError> {
         let (val, consumed) = get_str(&self.bytes[self.pos..])?;
+        self.pos += consumed;
+        Ok(val)
+    }
+
+    pub fn take_bytes(&mut self) -> Result<Cow<'a, [u8]>, StoreCodecError> {
+        let (val, consumed) = get_bytes(&self.bytes[self.pos..])?;
         self.pos += consumed;
         Ok(val)
     }
@@ -1398,6 +1520,11 @@ pub fn decode_typed_at<N: Copy + Into<Symbol>>(
             Ok(Value::Str(s.into_owned()))
         }
 
+        PredicateTyNamed::Bytes => {
+            let payload = dec.take_bytes()?;
+            Ok(Value::Bytes(payload.into_owned()))
+        }
+
         PredicateTyNamed::Fact(predicate) => {
             // A fact reference is encoded with its own marker (MARK_FACT_REF),
             // consistently with `skip` and the `FactId` codec — not the integer
@@ -1465,17 +1592,21 @@ pub enum Value {
     Null,
     Int(i64),
     Str(String),
+    /// Uninterpreted bytes. A `Vec` for the same reason [`Value::Str`] is a `String`:
+    /// a decoded value owns what it decoded.
+    Bytes(Vec<u8>),
     FactRef(FactId),
     Record(Box<[(String, Value)]>),
     /// One alternative of a union: its **discriminant**, its name, and its payload.
     ///
     /// The discriminant is the identity — it is what the bytes hold and what the
     /// order is taken over — and `alt` is the name that discriminant is declared
-    /// with, carried for the same reason a record's field names are: a `Value` is
-    /// serialised without its type ([`Serialize`]), so a union with no name in it
-    /// renders as a number. It is filled from the schema on decode and **not**
-    /// checked on encode, exactly as a record's names are not: the discriminant
-    /// locates the alternative, the name is what a reader sees.
+    /// with, carried for the same reason a record's field names are: a decoded `Value`
+    /// travels **without** its type, so a reader holding one has nothing else to name
+    /// an alternative with, and both a rendered row and a mismatch message fall back
+    /// to a number. It is filled from the schema on decode and **not** checked on
+    /// encode, exactly as a record's names are not: the discriminant locates the
+    /// alternative, the name is what a reader sees.
     Union {
         disc: u32,
         alt: String,
@@ -1505,6 +1636,7 @@ impl Ord for Value {
             match v {
                 Value::Null => MARK_NULL,
                 Value::Str(_) => MARK_STRING,
+                Value::Bytes(_) => MARK_BYTES,
                 Value::Record(_) => MARK_RECORD,
                 Value::Int(_) => MARK_INT_NEG_MIN,
                 Value::FactRef(_) => MARK_FACT_REF,
@@ -1522,6 +1654,7 @@ impl Ord for Value {
         match (self, other) {
             (Int(a), Int(b)) => a.cmp(b),
             (Str(a), Str(b)) => a.cmp(b),
+            (Bytes(a), Bytes(b)) => a.cmp(b),
             (FactRef(a), FactRef(b)) => a.raw().cmp(&b.raw()),
             (Record(a), Record(b)) => a.as_ref().cmp(b.as_ref()),
             // Discriminant then payload, which is the encoded order. The *name* is
@@ -1552,36 +1685,6 @@ impl Ord for Value {
     }
 }
 
-impl Serialize for Value {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Value::Null => serializer.serialize_none(),
-            Value::Int(n) => serializer.serialize_i64(*n),
-            Value::Str(s) => serializer.serialize_str(s),
-            Value::FactRef(id) => serializer.serialize_u64(id.raw()),
-            Value::Record(fields) => {
-                let mut map = serializer.serialize_map(Some(fields.len()))?;
-
-                for (key, value) in fields.iter() {
-                    map.serialize_entry(key, value)?;
-                }
-
-                map.end()
-            }
-            // `{"alt": payload}` — a union renders as the one-field object it is,
-            // which is also how it is written in a query and on the way in.
-            Value::Union { alt, value, .. } => {
-                let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry(alt, value)?;
-                map.end()
-            }
-        }
-    }
-}
-
 /// Composable `proptest` strategies and oracles for the tuple codec.
 ///
 /// Named `arb_*` strategies mirror the value/type tree so other domains'
@@ -1607,6 +1710,7 @@ pub mod proptest {
     pub enum TySpec {
         Int,
         Str,
+        Bytes,
         Fact(PredicateId),
         Record(Vec<(String, TySpec)>),
         /// Alternatives as `(name, discriminant, payload)`, in **declaration
@@ -1650,6 +1754,8 @@ pub mod proptest {
             TySpec::Int => PredicateTy::Int,
 
             TySpec::Str => PredicateTy::Str,
+
+            TySpec::Bytes => PredicateTy::Bytes,
 
             TySpec::Fact(id) => PredicateTy::Fact(*id),
 
@@ -1744,6 +1850,11 @@ pub mod proptest {
 
             (PredicateTy::Str, Value::Str(a), Value::Str(b)) => a.cmp(b),
 
+            // `memcmp` over the payload, stated here rather than derived from the
+            // encoder — which is the whole point of an independent oracle. A length
+            // prefix would sort by length first, and this is what would catch it.
+            (PredicateTy::Bytes, Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
+
             (PredicateTy::Fact(_), Value::FactRef(a), Value::FactRef(b)) => a.raw().cmp(&b.raw()),
 
             (PredicateTy::Record(field_tys), Value::Record(a_fields), Value::Record(b_fields)) => {
@@ -1821,6 +1932,21 @@ pub mod proptest {
         ]
     }
 
+    /// Byte runs a `String` could not hold, plus the edges the escape scheme is about.
+    fn arb_bytes() -> impl Strategy<Value = Vec<u8>> + Clone {
+        prop_oneof![
+            Just(vec![]),
+            Just(vec![0x00]),
+            Just(vec![0x00, 0x00]),
+            Just(vec![0xFF]),
+            Just(vec![0x00, 0xFF]),
+            Just(vec![0x80]),
+            Just(vec![0xC0]),
+            Just(vec![0x00, 0xFF, 0xFF, 0x00, 0x80, 0xC0]),
+            ::proptest::collection::vec(any::<u8>(), 0..12),
+        ]
+    }
+
     /// A pair of values sharing one schema, drawn together so ordering/round-trip
     /// properties can compare `a` against `b`. Injects the known integer/string
     /// edges explicitly rather than trusting random draws to hit them, and
@@ -1847,10 +1973,20 @@ pub mod proptest {
                 a: Value::Int(a),
                 b: Value::Int(b),
             }),
-            (arb_str.clone(), arb_str).prop_map(|(a, b)| TypedPairSpec {
+            (arb_str.clone(), arb_str.clone()).prop_map(|(a, b)| TypedPairSpec {
                 ty: TySpec::Str,
                 a: Value::Str(a),
                 b: Value::Str(b),
+            }),
+            // **Drawn from the same edges a string is, plus the ones it cannot
+            // hold.** `0x00` is what the escape scheme is about, `0xFF` is the escape
+            // byte itself, and `0x80`/`0xC0` are continuation bytes no `String` could
+            // carry — which is what makes the ordering law over this family say
+            // something a string's could not.
+            (arb_bytes(), arb_bytes()).prop_map(|(a, b)| TypedPairSpec {
+                ty: TySpec::Bytes,
+                a: Value::Bytes(a),
+                b: Value::Bytes(b),
             }),
             // Both halves of a pair share one type, so both references are tagged
             // for the *same* predicate — which is what the schema means and, since
@@ -2526,13 +2662,17 @@ pub(crate) mod tests {
         assert_eq!(MARK_INT_POS_MAX, 0x50);
         assert_eq!(MARK_FACT_REF, 0x51);
         assert_eq!(MARK_UNION, 0x52);
+        assert_eq!(MARK_BYTES, 0x53);
         assert_eq!(MARK_TERM, 0x00);
         assert_eq!(MARK_ESCAPE, 0xFF);
         assert_eq!(NULL, 0x00);
 
         // The ordering is semantic (memcmp of markers == sort order of the
         // families): null < string < record < negatives < zero < positives <
-        // fact-refs, with the negative/positive width bands contiguous.
+        // fact-refs < unions < bytes, with the negative/positive width bands
+        // contiguous. The last two sit at the end because appending is all I3
+        // permits: a family put where it would read best renumbers every marker
+        // above it, and every store already written with them.
         let ordered = [
             MARK_NULL,
             MARK_STRING,
@@ -2544,6 +2684,7 @@ pub(crate) mod tests {
             MARK_INT_POS_MAX,
             MARK_FACT_REF,
             MARK_UNION,
+            MARK_BYTES,
         ];
         assert!(
             ordered.windows(2).all(|w| w[0] < w[1]),
@@ -2579,6 +2720,19 @@ pub(crate) mod tests {
         assert_eq!(str_enc("A"), [0x21, 0x41, 0x00]);
         assert_eq!(str_enc("\0"), [0x21, 0x00, 0xFF, 0x00]);
         assert_eq!(str_enc("a\0b"), [0x21, 0x61, 0x00, 0xFF, 0x62, 0x00]);
+
+        // The same escaped run behind a marker of its own, and one payload that is
+        // not UTF-8 at all — the reason the family exists, and a run `put_str` could
+        // never have written.
+        let bytes_enc = |b: &[u8]| {
+            let mut out = Vec::new();
+            put_bytes(&mut out, b);
+            out
+        };
+        assert_eq!(bytes_enc(b""), [0x53, 0x00]);
+        assert_eq!(bytes_enc(b"A"), [0x53, 0x41, 0x00]);
+        assert_eq!(bytes_enc(b"\0"), [0x53, 0x00, 0xFF, 0x00]);
+        assert_eq!(bytes_enc(&[0x80, 0xC0]), [0x53, 0x80, 0xC0, 0x00]);
 
         // Records and fact-refs go through the encoder.
         let mut empty_rec = Vec::new();
@@ -3164,6 +3318,89 @@ pub(crate) mod tests {
             );
         }
 
+        /// **[`above_field`] lands between one field value's keys and the next
+        /// value's** — the claim a bounded seek's excluding edges rest on.
+        ///
+        /// A key is its fields back to back, so a key *at* `v` is `enc(v)` and
+        /// then whatever the key runs on with — another field, or nothing at all
+        /// when `v` ends it. Both are drawn, because the bound sitting above the
+        /// longer one and below the shorter is not the same assertion.
+        ///
+        /// The pair is ordered by [`cmp_typed`], the independent oracle, rather
+        /// than by the bytes: ordering it by the encoding would make the law say
+        /// only that `above_field` agrees with itself.
+        #[test]
+        fn a_separator_lies_between_one_field_value_and_the_next(
+            spec in arb_typed_pair(),
+            trailing in arb_typed_value(),
+        ) {
+            let fixture = materialize_pair_fixture(spec);
+            let order = cmp_typed(&fixture.ty, &fixture.a, &fixture.b);
+
+            let a = encode_typed_for_test(&fixture.ty, &fixture.a).unwrap();
+            let b = encode_typed_for_test(&fixture.ty, &fixture.b).unwrap();
+            let (lower, higher) = if order == Ordering::Greater { (b, a) } else { (a, b) };
+
+            let trailing = materialize_value_fixture(trailing);
+            let after = encode_typed_for_test(&trailing.ty, &trailing.value).unwrap();
+
+            let separator = above_field(&lower);
+
+            for tail in [[].as_slice(), after.as_slice()] {
+                let at = [lower.as_slice(), tail].concat();
+                prop_assert!(
+                    at < separator,
+                    "a key at the value is not below the separator\n\
+                     at:        {:02x?}\n\
+                     separator: {:02x?}",
+                    at,
+                    separator,
+                );
+
+                if order != Ordering::Equal {
+                    let above = [higher.as_slice(), tail].concat();
+                    prop_assert!(
+                        separator <= above,
+                        "the separator is not at or below a key of a greater value\n\
+                         separator: {:02x?}\n\
+                         above:     {:02x?}",
+                        separator,
+                        above,
+                    );
+                }
+            }
+        }
+
+        /// **The premise the separator rests on**: no field encoding begins at or
+        /// above [`MARK_ESCAPE`], so nothing a key runs on with after a complete
+        /// field can reach it.
+        ///
+        /// The half of the reasoning a *new marker* would break, and [I3] permits
+        /// exactly one change to the table — appending. Asserted over the whole
+        /// drawn population rather than over a list of constants, because a list is
+        /// something an appended marker can be left out of;
+        /// [`the_generator_draws_every_predicate_ty_family`] is what says the
+        /// population is every family.
+        ///
+        /// [I3]: ../../../website/content/invariants.md#i3
+        #[test]
+        fn no_field_encoding_begins_at_the_separator_byte(spec in arb_typed_value()) {
+            let fixture = materialize_value_fixture(spec);
+            let encoded = encode_typed_for_test(&fixture.ty, &fixture.value).unwrap();
+
+            // A group's terminator is the other byte that can follow a field, and
+            // it is `MARK_TERM`; asserted here so both live in one place.
+            prop_assert!(MARK_TERM < MARK_ESCAPE);
+
+            prop_assert!(
+                encoded[0] < MARK_ESCAPE,
+                "a field beginning {:#04x} would sort at or above the separator, \
+                 and a bounded seek would drop the rows behind it: {:#?}",
+                encoded[0],
+                fixture.ty,
+            );
+        }
+
         #[test]
         fn test_value_ord_matches_typed_order_for_same_schema(spec in arb_typed_pair()) {
             let fixture = materialize_pair_fixture(spec);
@@ -3439,6 +3676,245 @@ pub(crate) mod tests {
             matches!(err, StoreCodecError::UnknownDiscriminant { tag: 9 }),
             "expected UnknownDiscriminant, got {err:?}"
         );
+    }
+
+    /// The name of a `PredicateTy` family, by an **exhaustive** match.
+    ///
+    /// A new family is a compile error here first, which is the point: the census
+    /// below is only as good as its list of what to look for, and this is what forces
+    /// the list to be revisited. `FAMILIES` moves with it.
+    fn family(ty: &PredicateTy) -> &'static str {
+        match ty {
+            PredicateTy::Int => "int",
+            PredicateTy::Str => "string",
+            PredicateTy::Bytes => "bytes",
+            PredicateTy::Fact(_) => "a reference",
+            PredicateTy::Record(_) => "a record",
+            PredicateTy::Union(_) => "a union",
+        }
+    }
+
+    /// Every family [`family`] can name. Kept beside it because the two only mean
+    /// anything together.
+    const FAMILIES: &[&str] = &[
+        "int",
+        "string",
+        "bytes",
+        "a reference",
+        "a record",
+        "a union",
+    ];
+
+    /// **The census.** Every `PredicateTy` family is drawn by `arb_typed_pair`.
+    ///
+    /// [`TySpec`](proptest::TySpec) is a *parallel* enum with `PredicateTy`'s
+    /// constructors, and nothing keeps the two in step. A family added to
+    /// `PredicateTy` without a `TySpec` arm is never drawn — so every law over this
+    /// generator keeps passing **vacuously**: order against `cmp_typed`, the round
+    /// trip, `Value` ord agreement, and `skip_walks_any_typed_value`, which is I2 for
+    /// a field a reader may not understand. Adding a variant and forgetting the
+    /// strategy looks exactly like proving it correct.
+    #[test]
+    fn the_generator_draws_every_predicate_ty_family() {
+        use self::proptest::{arb_typed_pair, materialize_pair_fixture};
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+        use std::collections::BTreeSet;
+
+        const RUNS: usize = 400;
+
+        fn walk(ty: &PredicateTy, seen: &mut BTreeSet<&'static str>) {
+            seen.insert(family(ty));
+            match ty {
+                PredicateTy::Record(fields) => {
+                    for (_, field) in fields.iter() {
+                        walk(field, seen);
+                    }
+                }
+                PredicateTy::Union(alts) => {
+                    for alt in alts.iter() {
+                        walk(&alt.ty, seen);
+                    }
+                }
+                PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes | PredicateTy::Fact(_) => {
+                }
+            }
+        }
+
+        let mut runner = TestRunner::deterministic();
+        let mut seen = BTreeSet::new();
+
+        for _ in 0..RUNS {
+            let spec = arb_typed_pair().new_tree(&mut runner).unwrap().current();
+            walk(&materialize_pair_fixture(spec).ty, &mut seen);
+        }
+
+        let missing: Vec<&&str> = FAMILIES.iter().filter(|f| !seen.contains(*f)).collect();
+        assert!(
+            missing.is_empty(),
+            "{RUNS} draws never produced: {missing:?} — every law over this \
+             generator passes vacuously for each of them"
+        );
+    }
+
+    /// **The census, for this family in particular.** A leaf the generator never
+    /// reaches is a law that passes vacuously, and adding a variant while forgetting
+    /// the strategy looks identical to proving it correct.
+    ///
+    /// Non-UTF-8 specifically, because a `bytes` generator that only ever drew
+    /// text would leave the ordering law saying exactly what a string's already says.
+    #[test]
+    fn the_generator_draws_bytes_including_non_utf8() {
+        use self::proptest::{arb_typed_pair, materialize_pair_fixture};
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 400;
+
+        fn walk(value: &Value, seen: &mut (bool, bool, bool)) {
+            match value {
+                Value::Bytes(payload) => {
+                    seen.0 = true;
+                    seen.1 |= std::str::from_utf8(payload).is_err();
+                    seen.2 |= payload.contains(&0x00);
+                }
+                Value::Record(fields) => {
+                    for (_, field) in fields.iter() {
+                        walk(field, seen);
+                    }
+                }
+                Value::Union { value, .. } => walk(value, seen),
+                Value::Null | Value::Int(_) | Value::Str(_) | Value::FactRef(_) => {}
+            }
+        }
+
+        let mut runner = TestRunner::deterministic();
+        let mut seen = (false, false, false);
+
+        for _ in 0..RUNS {
+            let spec = arb_typed_pair().new_tree(&mut runner).unwrap().current();
+            let fixture = materialize_pair_fixture(spec);
+            walk(&fixture.a, &mut seen);
+            walk(&fixture.b, &mut seen);
+        }
+
+        assert!(seen.0, "{RUNS} draws produced no `bytes` value at all");
+        assert!(
+            seen.1,
+            "{RUNS} draws produced no `bytes` value a `String` could not have held"
+        );
+        assert!(
+            seen.2,
+            "{RUNS} draws produced no `bytes` value holding a NUL — the byte the \
+             escape scheme is about"
+        );
+    }
+
+    /// **The census for the pair
+    /// [`a_separator_lies_between_one_field_value_and_the_next`] is sharpest
+    /// about.** A pair whose encodings stand in a byte-prefix relationship is the
+    /// only draw where the separator and the successor part company; over a
+    /// prefix-free one the law holds of both and distinguishes nothing.
+    #[test]
+    fn the_generator_draws_a_pair_one_encoding_prefixing_the_other() {
+        use self::proptest::{arb_typed_pair, materialize_pair_fixture};
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        const RUNS: usize = 400;
+
+        let mut runner = TestRunner::deterministic();
+
+        let drawn = (0..RUNS).any(|_| {
+            let spec = arb_typed_pair().new_tree(&mut runner).unwrap().current();
+            let fixture = materialize_pair_fixture(spec);
+
+            let (Ok(a), Ok(b)) = (
+                encode_typed(&fixture.ty, &fixture.a),
+                encode_typed(&fixture.ty, &fixture.b),
+            ) else {
+                return false;
+            };
+
+            let (shorter, longer) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+
+            longer.len() > shorter.len() && longer.starts_with(&shorter)
+        });
+
+        assert!(
+            drawn,
+            "{RUNS} draws never produced a pair whose encodings stand in a \
+             byte-prefix relationship"
+        );
+    }
+
+    /// **Encoded `memcmp` order is payload `memcmp` order, at every pair** — over
+    /// payloads a `String` cannot hold.
+    ///
+    /// The escape scheme is what makes this true: a `0x00` becomes `0x00 0xFF` and a
+    /// bare `0x00` terminates. A length prefix would sort by length first, and the
+    /// empty-against-`0x00` and `0x00` -against-`0x0000` pairs below are what would
+    /// catch it.
+    #[test]
+    fn bytes_ordering_edges() {
+        let payloads: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0x00],
+            vec![0x00, 0x00],
+            vec![0x00, 0xFF],
+            vec![0x01],
+            vec![0x7F],
+            vec![0x80],
+            vec![0x80, 0x00],
+            vec![0xC0],
+            vec![0xED, 0xA0, 0x80], // the UTF-8 encoding of a lone surrogate
+            vec![0xFE],
+            vec![0xFF],
+            vec![0xFF, 0x00],
+            vec![0xFF, 0xFF],
+        ];
+
+        for a in &payloads {
+            for b in &payloads {
+                let (ea, eb) = (
+                    encode_typed(&PredicateTy::Bytes, &Value::Bytes(a.clone())).expect("encodes"),
+                    encode_typed(&PredicateTy::Bytes, &Value::Bytes(b.clone())).expect("encodes"),
+                );
+
+                assert_eq!(
+                    ea.cmp(&eb),
+                    a.cmp(b),
+                    "encoded order disagrees with payload order for {a:02x?} against {b:02x?}"
+                );
+            }
+        }
+    }
+
+    /// A value of the wrong **family** says so, rather than reporting as a bad
+    /// record — which at a scalar field misdirects, there being no record.
+    ///
+    /// The arm this reaches was the wildcard of a joint `(ty, value)` match, and a
+    /// wildcard there absorbs a *new* scalar family silently: the family would fail
+    /// here at run time, as a corrupt row, instead of at the compiler.
+    #[test]
+    fn a_value_of_the_wrong_family_is_not_a_bad_record() {
+        for (ty, value, declared) in [
+            (PredicateTy::Int, Value::Str("x".to_owned()), "int"),
+            (PredicateTy::Str, Value::Int(1), "string"),
+            (PredicateTy::Record(Arc::from([])), Value::Int(1), "record"),
+        ] {
+            let err = encode_typed(&ty, &value).unwrap_err();
+            assert!(
+                matches!(err, StoreCodecError::TypeMismatch { declared: got } if got == declared),
+                "expected TypeMismatch {declared:?}, got {err:?}"
+            );
+        }
     }
 
     /// Nesting past the depth bound is an error, not a panic or a stack overflow —

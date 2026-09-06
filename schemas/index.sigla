@@ -1,0 +1,40 @@
+# The whole set, resolved into one schema.
+#
+# This is not a layer — it declares nothing of its own. It is what you pass to `fjord create`
+# for a single database holding every layer:
+#
+#     fjord --schema-path ./schemas create index --schema ./schemas/index.sigla
+#
+# Composing lets a query join across layers, which separate databases cannot do: a `FactId`
+# does not leave the database that issued it ([I11](invariants.html#i11)). Both of these run
+# against a database created from this file —
+#
+#     # Every reference in one file, resolved to its definition, for any language present.
+#     {use = SP, target = S, defFile = DF, def = D.value} where
+#       F = src.File "packages/app/src/App.tsx";
+#       codemarkup.FileXRef {file = F, span = SP, target = S, role = R};
+#       D = codemarkup.Definition {symbol = S, file = DF}
+#
+#     # A symbol, its declaration site, and the project that compiled the file it sits in.
+#     {def = D.value, proj = P.value} where
+#       S = src.Symbol "scip-csharp-2 nuget Company.Domain 1.4.0 Company/Domain/Order#Total().";
+#       D = codemarkup.Definition {symbol = S, file = F};
+#       msbuild.SourceFileToProject {src = F, project = P}
+#
+# The trade is that one database is one write window and one failure domain: a producer that
+# dies half-way leaves a half-filled composite, and a completed database is immutable, so
+# every producer must finish before any of them is served. The usual shape is one composed
+# database per repository, with a fan-out across repositories joined on `src.Symbol`.
+
+schema index {
+
+  import src
+  import config
+  import codemarkup
+  import msbuild
+  import csharp
+  import npm
+  import bundle
+  import typescript
+
+}

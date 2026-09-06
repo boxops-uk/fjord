@@ -112,8 +112,7 @@ usage: cargo run --release --example ingest -- [options]
   --iterations N       timed runs per layer, best reported (default 3)
   --scratch PATH       where the throwaway databases go (default: a temp dir)
   --files N            files in the corpus (default 100)
-  --modules N          modules per file (default 2)
-  --decls N            declarations per module (default 20)
+  --decls N            declarations per file (default 40)
   --refs N             references per declaration (default 5)
   --per-block          commit once per block, as `serve --commit-per-block` does
 
@@ -185,8 +184,7 @@ fn parse() -> Result<Options, String> {
             }
             "--scratch" => options.scratch = PathBuf::from(value()?),
             "--files" => options.corpus.files = count("--files", value()?)?,
-            "--modules" => options.corpus.modules_per_file = count("--modules", value()?)?,
-            "--decls" => options.corpus.decls_per_module = count("--decls", value()?)?,
+            "--decls" => options.corpus.decls_per_file = count("--decls", value()?)?,
             "--refs" => options.corpus.refs_per_decl = count("--refs", value()?)?,
             "--per-block" => options.per_block = true,
             "--help" | "-h" => {
@@ -270,11 +268,11 @@ fn scratch(options: &Options, name: &str, schema: &Schema) -> (PathBuf, FjallDb)
 ///
 /// A different corpus by necessity — `put_fact` takes encoded bytes, and encoding a key
 /// that holds a reference presupposes the interning this layer is defined by not doing.
-/// So it writes `src.File` keys, one string apiece, as many as the corpus has facts. What
+/// So it writes `code.File` keys, one string apiece, as many as the corpus has facts. What
 /// it prices is the part every other row also pays: an id from the allocator, two tree
 /// inserts, one batch commit through fjall's journal.
 fn commit(options: &Options, schema: &Schema) -> Row {
-    let predicate = sample_schema::id("src.File");
+    let predicate = sample_schema::id("code.File");
     let facts = options.corpus.facts();
     let keys: Vec<Vec<u8>> = (0..facts)
         .map(|n| {

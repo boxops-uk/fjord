@@ -93,6 +93,9 @@ impl NodeId {
 pub enum Ty {
     Int,
     String,
+    /// Uninterpreted bytes. Ordered — the encoding is `memcmp` over the payload — so
+    /// unlike a record or a union it is accepted by `Checker::compare`.
+    Bytes,
     Fact(PredicateId),
     /// Fields sorted by name, as everywhere. `Arc` rather than `Box` because
     /// substitution genuinely shares: one inferred type ends up in the
@@ -113,10 +116,16 @@ pub enum Ty {
     Error,
 }
 
-#[derive(Clone, Copy)]
+/// Not `Copy`: a bytes literal owns its payload. Every site that matches one does so
+/// through a `&ExprKind`, which was never `Copy` either.
+#[derive(Clone)]
 pub enum Literal {
     Int(i64),
     Str(Symbol),
+    /// `0x…`. The decoded payload, **not** the text: the digits are a spelling and
+    /// two spellings of one value are one literal. `Arc` because a constant folds —
+    /// the value ends up in a `Project::Lit` and in the plan's fingerprint.
+    Bytes(std::sync::Arc<[u8]>),
 }
 
 #[derive(Clone, Copy)]
@@ -238,7 +247,7 @@ pub enum QueryStmt<T> {
     ///
     /// The negative of the constraint [`Bind`](Self::Bind) can mean, and a separate
     /// statement rather than a flag on it because the two are not symmetric where
-    /// it matters. A constraint is *sargeable* — `X = "a".."` narrows the level
+    /// it matters. A constraint is *sargeable* — `X = "a"..` narrows the level
     /// capturing `X` to a range — and a denial can never be: "does not start with
     /// `a`" is two ranges, so it filters rows a scan has already produced. Keeping
     /// them apart in the tree is what keeps that difference from having to be
@@ -316,7 +325,7 @@ impl Ast {
     #[must_use]
     pub fn is_constant(&self, node: NodeId) -> bool {
         match self.store.kind(node) {
-            ExprKind::Lit(Literal::Int(_) | Literal::Str(_)) => true,
+            ExprKind::Lit(Literal::Int(_) | Literal::Str(_) | Literal::Bytes(_)) => true,
             ExprKind::Record(fields) => {
                 fields.iter().all(|(_, pattern)| self.is_constant(*pattern))
             }
@@ -474,7 +483,7 @@ impl Recursive for ExprKind<NodeId> {
 
     fn map<R, F: FnMut(NodeId) -> R>(&self, mut f: F) -> Self::Base<R> {
         match self {
-            ExprKind::Lit(lit) => ExprKind::Lit(*lit),
+            ExprKind::Lit(lit) => ExprKind::Lit(lit.clone()),
             ExprKind::Var(symbol) => ExprKind::Var(*symbol),
             ExprKind::Wildcard => ExprKind::Wildcard,
             ExprKind::Prefix(symbol) => ExprKind::Prefix(*symbol),

@@ -300,6 +300,7 @@ fn type_form(
     match ty {
         PredicateTy::Int => out.push_str("int"),
         PredicateTy::Str => out.push_str("string"),
+        PredicateTy::Bytes => out.push_str("bytes"),
 
         // **Name and fingerprint, never the id.** A position would make identity depend
         // on declaration order; a bare name would not carry a change in the referent.
@@ -397,7 +398,7 @@ fn references(schema: &Schema, id: PredicateId) -> BTreeSet<PredicateId> {
                     walk(&alt.ty, into);
                 }
             }
-            PredicateTy::Int | PredicateTy::Str => {}
+            PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes => {}
         }
     }
 

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Classes</RootNamespace>
+
+    <!-- 15.2.5's constraint list includes `class?` and `T?`, and neither means anything in
+         a disabled nullable context — the compiler reports CS8632 and the annotation is
+         erased, so a corpus built with nullability off would exercise the *unannotated*
+         constraint twice and never the annotated one. -->
+    <Nullable>enable</Nullable>
+
+    <!-- 15.2.2.1 lists `unsafe` among the class modifiers. `ClsUnsafeMarked` wears it and
+         declares no pointer member: the modifier is the fact, and clause 23 owns the rest. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

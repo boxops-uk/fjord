@@ -60,7 +60,6 @@ any more — the compiler refuses the other direction, and there is no edge poin
 | `fjord-inspect` | The JSON view of every construct — what a page renders, and what a browser receives. Depends on the engine and the schema, and never on the fjall backend. |
 | `fjord-client` | The client: `address`, `connection`, `rows` (a result as a bookmark), `expand`. Depends on `fjord-wire` and nothing else. |
 | `fjord-server` | The protocol over a Unix socket or TCP: `session`, `registry`, `outbound` (the fair writer), `rows`, `blocking`, `server`, `stats`, `catalogue`. |
-| `fjord-viewer` | The code-search site: `query`, `render`, `pool`, and the routes. An ordinary consumer of the client. |
 | `fjord-cli` | The tool: `cli`, `config`, `commands/`, `output`, `prompt`, `sample_schema`, `workload`. The binary is `fjord`. |
 
 Test support spans three crates, and the split is load-bearing: `fjord_store::fixtures`
@@ -97,7 +96,6 @@ manifests and fails if that edge grows back.
 | Binary | Build | What it is |
 |---|---|---|
 | `fjord` | `cargo build --release --bin fjord` | The command line tool: create, serve, query, shell, schema, list, describe, finish, db rm |
-| `fjord-viewer` | `cargo build --release --bin fjord-viewer` | The code-search site over a database |
 
 ## Measuring instruments
 
@@ -122,9 +120,9 @@ cargo run --release --example loadgen -- --data-dir /tmp/fjbench --files 20000
 
 ## Where a database to work against comes from
 
-There is no bundled corpus. `schemas/code.sigla` describes three layers, and only the first —
-files, modules, declarations, references, their spans — is answerable by a syntax walk; the
-build layer and the declaration graph need a compiler and a build system, which is what the
+There is no bundled corpus. `schemas/dotnet.sigla` describes five layers, and only the
+source one — files, their lines, spans and digests — is answerable by a syntax walk; the
+project graph and the C# entity model need a build system and a compiler, which is what the
 .NET indexer has. So the way to get a database worth querying is to point that at a real
 checkout:
 
@@ -158,12 +156,12 @@ for the same corpus. The Rust test needs no `dotnet`; regenerating the golden do
 fjord/
 ├── crates/              the workspace, bottom to top (table above). `fjord-cli` is
 │                       the `fjord` binary; its examples/ are the instruments
-├── schemas/             code.sigla, the sample schema every client here builds
-│                       against, and demo.sigla, the interactive site's own — six
-│                       predicates chosen so every shape the language has appears once
-├── clients/dotnet/      the C# client, demo producer and real indexer
-├── docs/glean.md        where every idea stands against Glean
-├── bench/FINDINGS.md    what has actually been measured
+├── schemas/             demo.sigla, the sample schema and the interactive site's own —
+│                       eleven predicates, one per construct the language has; and
+│                       dotnet.sigla, the set a real producer writes
+├── clients/dotnet/      the C# client, demo producer, real indexer, and a SCIP
+│                       converter that reaches all of it through the same seam
+├── bench/FINDINGS.md    what was measured, and why each number is now superseded
 ├── AGENTS.md            the working contract for contributors
 ├── PLAN.md              the roadmap, and the record of settled decisions
 ├── wasm/                the WebAssembly shell — its own workspace, built by

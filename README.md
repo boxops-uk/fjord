@@ -25,8 +25,8 @@ nested-loop plan run by a suspendable virtual machine, so a page of results held
 costs what one held for a millisecond does.
 
 Underneath: facts in an LSM ([fjall](https://github.com/fjall-rs/fjall)) under an
-order-preserving codec, and a language that is a faithful subset of Glean's Angle at the core
-and its own thing past that ([what is inherited and what is not](docs/glean.md)).
+order-preserving codec, and a typed Datalog whose core is deliberately small — every
+construct it has, it has because a query needed it.
 
 ## Try it without installing anything
 
@@ -53,8 +53,7 @@ gh attestation verify ./fjord --repo boxops-uk/fjord   # optional, and worth it 
 
 `fjord` needs **glibc 2.34 or newer** — Ubuntu 22.04, Debian 12, RHEL 9 and later. The
 `fjord-x86_64-linux-musl` build beside it is the same code linked statically, with no floor at
-all, for an older distro, Alpine, or a `scratch` container. `fjord-viewer` — the code-search
-site, built on nothing but the client — ships both ways too.
+all, for an older distro, Alpine, or a `scratch` container.
 
 **Linux x86_64 only.** The store root's lock is POSIX `flock` and the default transport is a
 Unix socket, so Windows is out of scope rather than untested.
@@ -135,11 +134,10 @@ them page for page.
 
 ### Also worth knowing
 
-- [`docs/glean.md`](docs/glean.md) — where every idea came from, and what each system can be
-  asked to do, spends, and charges. **Read it before proposing a feature Glean has.**
-- [`docs/gitnexus.md`](docs/gitnexus.md) — the same engine measured against a code-intelligence
-  *product* rather than another database: seventeen features, one verdict each, and the three
-  gaps that account for almost all of the partial ones.
-- [`bench/FINDINGS.md`](bench/FINDINGS.md) — the measurement register, one entry per thing
-  measured; [`bench/glean-read-path.md`](bench/glean-read-path.md) is the comparison still to
-  run.
+- [`docs/gitnexus.md`](docs/gitnexus.md) — the engine measured against a code-intelligence
+  *product*: seventeen features, one verdict each, and the three gaps that account for almost
+  all of the partial ones.
+- [`bench/FINDINGS.md`](bench/FINDINGS.md) — the measurement register, **closed until a
+  1.0 pass**: read it for what was learned, not for what anything currently costs. The
+  schema its corpus was built over is gone, and cost-based reordering and recursion will
+  change how a query is planned.

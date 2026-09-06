@@ -1,11 +1,14 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 
 using Boxops.Fjord.Client;
 
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Classification;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 
 namespace Boxops.Fjord.Indexer;
 
@@ -23,11 +26,11 @@ namespace Boxops.Fjord.Indexer;
 /// would be needed.
 /// </para>
 /// <para>
-/// <b>One function decides what a declaration is.</b> <see cref="DeclFor"/> maps a
-/// symbol to the <c>src.Decl</c> fact that names it, and both paths go through it: the
-/// walk that emits declarations, and the reference that points at one. They cannot
-/// disagree, because there is nothing for them to disagree with — the reference nests
-/// the very fact the declaration emitted.
+/// <b>One function decides what a declaration is.</b> <see cref="CsharpEntities.Entity"/>
+/// maps a symbol to the entity fact that names it, and both paths go through it: the walk
+/// that emits declarations, and the reference that points at one. They cannot disagree,
+/// because there is nothing for them to disagree with — the reference nests the very fact
+/// the declaration emitted.
 /// </para>
 /// <para>
 /// <b>No fact ids anywhere.</b> A reference carries its target inline and the server
@@ -38,106 +41,16 @@ namespace Boxops.Fjord.Indexer;
 /// </remarks>
 internal sealed class Indexer(Options options, FactSink sink, string root, ProjectIndex projects)
 {
-    /// <summary>A module fact, and a small integer to key sets and maps by.</summary>
-    private sealed record Module(FjordFact Fact, int Id);
-
-    /// <summary>A declaration fact, the module it was declared in, and how often it was named.</summary>
-    /// <remarks>
-    /// <para>
-    /// <see cref="Uses"/> is counted for one reason only: to have a name worth
-    /// querying at the end of a run. Which declaration a repository leans on hardest is
-    /// not knowable in advance, and a smoke query against an arbitrary name can quietly
-    /// return nothing and look like it worked.
-    /// </para>
-    /// <para>
-    /// <see cref="First"/> says this run is the one that settled the declaration's key,
-    /// and it is what gates every fact carrying a <i>value</i> — the kind, the type, the
-    /// doc comment. See <see cref="_kinds"/>: two declarations agreeing on a key and
-    /// disagreeing on a value are a conflict the server is right to reject, and the
-    /// cheapest way not to send one is to describe a key once.
-    /// </para>
-    /// </remarks>
-    private sealed record Declared(FjordFact Fact, Module Module, string Name, string Kind, bool First)
-    {
-        public int Uses { get; set; }
-    }
-
-    private readonly Dictionary<string, FjordFact> _files = new(StringComparer.Ordinal);
-    private readonly Dictionary<(string Path, string Namespace), Module> _modules = [];
-
-    /// <summary>
-    /// The kind already settled for a declaration key — <c>ops-I5</c>'s conflict rule,
-    /// enforced on this side of the wire.
-    /// </summary>
-    /// <remarks>
-    /// A <c>src.Decl</c> key is (module, line, name) and its value is the kind, so two
-    /// declarations that agree on the key and differ on the kind are a same-key
-    /// different-value conflict — which the server rejects, deterministically and by
-    /// name, failing the stream carrying it. That is the right behaviour for a database
-    /// and the wrong way to lose an hour of indexing, so the first kind seen wins here
-    /// and the disagreement is counted and reported.
-    /// </remarks>
-    private readonly Dictionary<string, string> _kinds = new(StringComparer.Ordinal);
-
-    /// <summary>Module-to-module edges already emitted, keyed by the two ids packed together.</summary>
-    private readonly HashSet<long> _imports = [];
+    /// <summary>Path to its `src.File` fact, and whether this run has emitted it.</summary>
+    private readonly ConcurrentDictionary<string, FjordFact> _files = new(StringComparer.Ordinal);
 
     /// <summary>Files already walked — the same file is often in two projects.</summary>
+    /// <remarks>
+    /// Not concurrent, and it does not need to be: which files a project contributes is
+    /// decided in <see cref="Index"/> before any thread is started, which is what keeps
+    /// <c>--max-files 2000</c> the same two thousand files on every run.
+    /// </remarks>
     private readonly HashSet<string> _walked = new(StringComparer.Ordinal);
-
-    /// <summary>
-    /// The one lock: everything above, the counters, and the sink.
-    /// </summary>
-    /// <remarks>
-    /// One rather than several because the things it guards are reached through each
-    /// other — a reference wants a declaration, which wants a module, which wants a
-    /// file, and each may emit a fact. Several locks in that shape is an ordering
-    /// problem nobody needs for critical sections this short.
-    /// </remarks>
-    private readonly Lock _gate = new();
-
-    /// <summary>Ticks spent waiting to enter <see cref="_gate"/>, summed over all walkers.</summary>
-    /// <remarks>
-    /// The point of measuring it: the gate is the only thing eight walker threads share,
-    /// so it is the ceiling on how much of the walk is actually parallel. Both counters
-    /// are accumulated while the gate is *held*, so neither needs an interlocked add.
-    /// </remarks>
-    private long _gateWaitTicks;
-
-    /// <summary>Ticks the gate was held, summed over all walkers.</summary>
-    private long _gateHeldTicks;
-
-    /// <summary>Total time walkers spent blocked on the gate.</summary>
-    public TimeSpan GateWait => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _gateWaitTicks));
-
-    /// <summary>Total time the gate was held.</summary>
-    public TimeSpan GateHeld => Stopwatch.GetElapsedTime(0, Interlocked.Read(ref _gateHeldTicks));
-
-    /// <summary>Enter the gate, timing the wait and the hold.</summary>
-    private Guard Enter() => new(this);
-
-    /// <summary>A timed <see cref="_gate"/> acquisition; dispose to release.</summary>
-    private readonly struct Guard : IDisposable
-    {
-        private readonly Indexer _owner;
-        private readonly long _entered;
-
-        public Guard(Indexer owner)
-        {
-            _owner = owner;
-            var before = Stopwatch.GetTimestamp();
-            owner._gate.Enter();
-            _entered = Stopwatch.GetTimestamp();
-            // Safe unsynchronised: we hold the gate.
-            owner._gateWaitTicks += _entered - before;
-        }
-
-        public void Dispose()
-        {
-            _owner._gateHeldTicks += Stopwatch.GetTimestamp() - _entered;
-            _owner._gate.Exit();
-        }
-    }
 
     /// <summary>
     /// Symbol to declaration, for one compilation.
@@ -148,38 +61,134 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// produce are identical, which is what makes it safe to throw this away between
     /// projects and what makes the duplicates dedup on the way in.
     /// </remarks>
-    private Dictionary<ISymbol, Declared?> _declarations = new(SymbolEqualityComparer.Default);
+    private CsharpEntities _entities = new((_, _) => { });
 
-    public int Files { get; private set; }
+    // **Interlocked, and read as projections.** Every one of these is incremented from
+    // whichever walker thread reached the thing being counted; a `++` on a shared int is
+    // the classic lost update, and a fact count that is quietly low is a measurement
+    // nobody can tell from a smaller repository.
+    private int _files_, _declarations, _references, _external, _unresolved, _unattributed;
+    private int _unspellable, _referenceAssemblies;
+    private long _lines, _styled;
 
-    public int Declarations { get; private set; }
+    // **Not interlocked, unlike the counters above, because `Index` is not concurrent.**
+    // Files inside one project are walked in parallel; the projects themselves are handed
+    // over one at a time, which is what makes "the first one wins" a fact about the
+    // solution's order rather than about which thread got there first.
+    private readonly HashSet<string> _assemblies = [];
+    private readonly List<string> _duplicates = [];
 
-    public int References { get; private set; }
+    public int Files => Volatile.Read(ref _files_);
+
+    /// <summary>Compilations left unwalked because they are reference assemblies.</summary>
+    public int ReferenceAssemblies => Volatile.Read(ref _referenceAssemblies);
+
+    /// <summary>
+    /// Projects left unwalked because another project already produced their assembly,
+    /// by the path each was declared at.
+    /// </summary>
+    /// <remarks>
+    /// <b>Which one is kept is the order projects are walked in</b>, and that order is the
+    /// solution's — chosen sequentially, like the files inside one, so two runs over a
+    /// checkout leave out the same project. Arbitrary between the two and stable across
+    /// runs is the most a producer can offer here: nothing in a build graph says which
+    /// implementation of an assembly a reader meant.
+    /// </remarks>
+    public IReadOnlyList<string> DuplicateAssemblies => _duplicates;
+
+    public int Declarations => Volatile.Read(ref _declarations);
+
+    public int References => Volatile.Read(ref _references);
 
     /// <summary>References to something declared outside the index — the BCL, a package.</summary>
-    public int External { get; private set; }
+    public int External => Volatile.Read(ref _external);
 
     /// <summary>Names the compiler could not bind at all: missing references, broken code.</summary>
-    public int Unresolved { get; private set; }
+    public int Unresolved => Volatile.Read(ref _unresolved);
 
-    /// <summary>Declaration keys reached with two different kinds. See <see cref="_kinds"/>.</summary>
-    public int Conflicts { get; private set; }
+    /// <summary>
+    /// Symbols this producer could not spell a <c>src.Symbol</c> for, counted rather than
+    /// thrown on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Not the same thing as a symbol with no global name.</b> A local, a lambda and a
+    /// range variable have none by decision and there are as many of them as the checkout
+    /// has; this counts a shape <see cref="ScipSymbols"/> anticipated and could not place —
+    /// a member whose position among its type's same-named siblings it could not find, or
+    /// a kind it has no descriptor arm for.
+    /// </para>
+    /// <para>
+    /// <b>All three sites that ask for a spelling count, and they lose different
+    /// things.</b> A <i>declaration</i> keeps its <c>csharp</c> entity and its span and
+    /// loses the cross-database name. A <i>reference</i> keeps <c>EntityXRef</c> on the
+    /// <c>csharp</c> layer and loses the <c>codemarkup</c> occurrence find-references
+    /// reads — unless its target is declared in this same file, where <c>FileLocalXRef</c>
+    /// answers it span to span regardless. A <i>relation edge</i> is lost whole, because a
+    /// <c>Relation</c> row is a pair of symbols and half of one is no edge. So this is a
+    /// count of spellings attempted and not of distinct symbols: one unspellable
+    /// declaration referred to ten times reports eleven. None of the three throws, which
+    /// is what makes a run printing a number here one somebody can fix rather than one
+    /// that died.
+    /// </para>
+    /// <para>
+    /// <b>Nothing this walk reaches provokes it today, and that is the claim rather than
+    /// the excuse.</b> <c>LedgerTests</c> asserts the zero, and
+    /// <c>ScipSymbolsTests.A_symbol_this_producer_cannot_spell_is_no_symbol_rather_than_an_exception</c>
+    /// provokes the state itself with a built-in operator — a symbol a semantic model
+    /// hands out that no walk here collects. Two rounds of this change asserted the same
+    /// emptiness as an exception and were wrong about an everyday partial member, so the
+    /// zero is a counter and not a throw.
+    /// </para>
+    /// </remarks>
+    public int Unspellable => Volatile.Read(ref _unspellable);
 
-    /// <summary>Lines of source written as <c>src.Line</c> facts.</summary>
-    public long Lines { get; private set; }
+    /// <summary>
+    /// Types the layer cannot express — `dynamic`, a function pointer, an unresolved name.
+    /// </summary>
+    /// <remarks>
+    /// `csharp.AType` has no alternative for a `dynamic` or an error type, and a function
+    /// pointer's signature cannot be keyed as a `csharp.Method` — and the union sits in the
+    /// key of `Method`, `Field` and `Parameter`, so the declaration is dropped rather than
+    /// recorded under a fabricated type. Counted because a layer that silently loses
+    /// declarations is worse than one that says how many.
+    /// </remarks>
+    public int InexpressibleTypes => _entities.InexpressibleTypes;
+
+    /// <summary>Declarations of a kind with no `csharp` entity at all — an event.</summary>
+    public int InexpressibleKinds => _entities.InexpressibleKinds;
+
+    /// <summary>Declarations dropped for either reason.</summary>
+    /// <remarks>
+    /// The two causes are reported apart, because a run that says <c>dynamic</c> over a
+    /// checkout containing none costs somebody a search for it.
+    /// </remarks>
+    public int Inexpressible => _entities.Inexpressible;
+
+    /// <summary>Lines of source written as <c>src.FileLine</c> facts.</summary>
+    public long Lines => Interlocked.Read(ref _lines);
+
+    /// <summary>Lines carrying syntax highlighting, as <c>src.FileLineStyles</c> facts.</summary>
+    public long Styled => Interlocked.Read(ref _styled);
 
     /// <summary>Files no project compiles — shared source, or a checkout with no project files.</summary>
-    public int Unattributed { get; private set; }
+    public int Unattributed => Volatile.Read(ref _unattributed);
 
-    /// <summary>The most-referenced declaration's short name — something to query for.</summary>
+    /// <summary>
+    /// The most-referenced declaration's short name — something to query for.
+    /// </summary>
+    /// <remarks>
+    /// <b>Approximate, and deliberately not in the ledger.</b> Picking the maximum over a
+    /// concurrent count has no cheap deterministic form: two threads reading a count,
+    /// comparing, and writing back will disagree about which of two near-equal names won.
+    /// It appears in one console line and one smoke query, so first-past-the-post is the
+    /// right trade — no fact carries it, and nothing that is asserted depends on it.
+    /// </remarks>
     public string? SampleName { get; private set; }
-
-    /// <summary>The most-referenced *method*, which is what a query about parameters needs.</summary>
-    public string? SampleMethod { get; private set; }
 
     private int _sampleUses;
 
-    private int _sampleMethodUses;
+    private readonly ConcurrentDictionary<ISymbol, int> _uses = new(SymbolEqualityComparer.Default);
 
     public bool Exhausted => options.MaxFiles > 0 && _claimed >= options.MaxFiles;
 
@@ -205,9 +214,49 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// backpressure rather than a cost: a write stream is one at a time anyway.
     /// </para>
     /// </remarks>
-    public void Index(Compilation compilation, Action<string>? onFile = null)
+    public void Index(Compilation compilation, Project? project, Action<string>? onFile = null)
     {
-        _declarations = new Dictionary<ISymbol, Declared?>(SymbolEqualityComparer.Default);
+        // Before anything is claimed: an unwalked compilation must not consume the
+        // `--max-files` budget, or which files a run reaches would depend on how many
+        // reference assemblies happened to precede them.
+        if (IsReferenceAssembly(compilation))
+        {
+            Interlocked.Increment(ref _referenceAssemblies);
+            return;
+        }
+
+        // **A second project producing an assembly already walked is left out**, because
+        // one database cannot hold both. Every symbol they declare in common mints one
+        // `src.Symbol` — the package coordinate is the assembly identity, and theirs is
+        // the same string — so `codemarkup.SymbolInfo`, keyed `{symbol}` with
+        // `{signature, doc, modifiers}` on the value side, is one key wanted twice with
+        // two values. Ingest refuses that (`ops-I4`) and the write stream dies part-way
+        // through, which is what `src/coreclr/System.Private.CoreLib` beside
+        // `src/mono/System.Private.CoreLib` does to a run over `dotnet/runtime`.
+        //
+        // **Not the same defect as a reference assembly, and not the same answer.** That
+        // one is an API surface restated for the compiler and is dropped because nothing
+        // is lost. These are two real implementations for two runtimes, and what is
+        // dropped is source somebody wrote — so it is reported by name and `--strict`
+        // fails the run, the same reading a project that would not build gets. Indexing
+        // both means two databases, which is the decision `--framework` already makes for
+        // a checkout that compiles twice.
+        //
+        // The reference-assembly test above runs first for a reason: a `ref/` project
+        // never claims an identity, so the implementation beside it is still the one
+        // walked however the solution ordered the pair.
+        if (!_assemblies.Add(compilation.Assembly.Identity.GetDisplayName()))
+        {
+            _duplicates.Add(
+                Relative(project?.FilePath) ?? project?.Name ?? compilation.AssemblyName ?? "?");
+            return;
+        }
+
+        // **Rebuilt per project, and that is deliberate.** The entity facts two projects
+        // produce for one symbol are identical, so throwing the memo away costs a rebuild
+        // and the duplicates dedup on the way in — where keeping it would hold every
+        // symbol of every project for the length of the run.
+        _entities = new CsharpEntities((predicate, fact) => sink.Add(predicate, fact));
 
         var walking = new List<(SyntaxTree Tree, string Path)>();
 
@@ -234,34 +283,91 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             new ParallelOptions { MaxDegreeOfParallelism = options.Jobs },
             item =>
             {
-                IndexTree(compilation.GetSemanticModel(item.Tree), item.Tree, item.Path);
+                IndexTree(
+                    compilation.GetSemanticModel(item.Tree),
+                    item.Tree,
+                    item.Path,
+                    project?.GetDocument(item.Tree));
 
-                using (Enter())
-                {
-                    Files++;
-                    onFile?.Invoke(item.Path);
-                }
+                Interlocked.Increment(ref _files_);
+                onFile?.Invoke(item.Path);
             });
     }
 
-    private void IndexTree(SemanticModel model, SyntaxTree tree, string path)
+    /// <summary>What an assembly carries to say it is a reference assembly.</summary>
+    private const string ReferenceAssemblyMarker =
+        "System.Runtime.CompilerServices.ReferenceAssemblyAttribute";
+
+    /// <summary>
+    /// Whether this compilation is a <b>reference assembly</b> — an API surface restated
+    /// for the compiler rather than source anybody navigates to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Walking one kills the run.</b> A reference assembly restates the whole public API
+    /// of the assembly it stands for, under that assembly's own identity, so every
+    /// declaration in it mints the symbol its implementation already minted — correctly:
+    /// they are one symbol. But it carries no documentation comments and spells its members
+    /// <c>partial</c>, and <c>codemarkup.SymbolInfo</c> is keyed <c>{symbol}</c> with
+    /// <c>{signature, doc, modifiers}</c> on the value side. Two facts then want one key
+    /// with two values, ingest refuses it (<c>ops-I4</c>), <c>FactSink</c> latches the
+    /// refusal and the write stream dies part-way through. Every library in
+    /// <c>dotnet/runtime</c>'s shared framework ships such a pair.
+    /// </para>
+    /// <para>
+    /// <b>Skipping is the answer rather than choosing a winner</b>, because a winner cannot
+    /// be chosen without deciding it per run: projects are walked in solution order, so
+    /// "first one wins" would answer every documentation query with whichever half the
+    /// solution happened to list first. The implementation is the one with the docs, the
+    /// bodies and the spans a reader wants, and it is the one that is kept.
+    /// </para>
+    /// <para>
+    /// <b>The attribute rather than a path.</b> <c>ReferenceAssemblyAttribute</c> is what
+    /// makes an assembly a reference assembly — the runtime refuses to load one carrying it
+    /// — so it is the fact rather than a spelling of it; <c>ref/</c> as a directory name is
+    /// <c>dotnet/runtime</c>'s convention and would say nothing about anybody else's tree.
+    /// </para>
+    /// <para>
+    /// <b>Matched by its written name, because the type usually does not bind.</b> A
+    /// design-time build resolves no metadata reference it did not need, so on a checkout
+    /// that has not been built this attribute is an <c>IErrorTypeSymbol</c>: its
+    /// <c>ContainingNamespace</c> is <c>System</c> — the deepest part that did resolve — and
+    /// <c>GetTypeByMetadataName</c> answers <see langword="null"/>. A symbol comparison and
+    /// a namespace check both therefore find *no* reference assembly on the very corpus this
+    /// exists for, silently, while indexing every one of them. What survives not binding is
+    /// <c>ToDisplayString</c>, the name as written — and the build writes it qualified,
+    /// because it generates the attribute from an MSBuild <c>AssemblyAttribute</c> item.
+    /// </para>
+    /// <para>
+    /// <b>Only the walk is skipped.</b> The build layer is emitted whole before any of
+    /// this, so the project keeps its <c>msbuild.Project</c> and its compilation — the
+    /// same decision <c>--max-files</c> already made, for the same reason: what projects a
+    /// repository has is a fact about the repository and not about which files this run
+    /// reached. Its *files* get no <c>src.File</c> fact unless something else names one,
+    /// because that interning is what the walk does.
+    /// </para>
+    /// </remarks>
+    private static bool IsReferenceAssembly(Compilation compilation) =>
+        compilation.Assembly.GetAttributes().Any(
+            attribute => attribute.AttributeClass?.ToDisplayString() == ReferenceAssemblyMarker);
+
+    private void IndexTree(SemanticModel model, SyntaxTree tree, string path, Document? document)
     {
         var syntax = tree.GetRoot();
+        var text = tree.GetText();
+
+        // **The line table is built once per file and shared.** It is what the per-line
+        // facts are written from *and* what converts every span below from Roslyn's UTF-16
+        // positions into the UTF-8 offsets this schema counts in.
+        var (rows, info) = SourceLayer.LineTable(text);
+        var offsets = new SourceLayer.Offsets(text, rows, info);
+
         FjordFact file;
-        Module here;
 
-        using (Enter())
-        {
-            file = FileOf(path);
+        file = FileOf(path);
 
-            // The file's own module, for the dependency edges below. A file may declare
-            // more than one namespace — each declaration is filed under its own — but
-            // the edge "this file depends on that one" needs a single end, and the first
-            // namespace in the file is the one that names it.
-            here = ModuleFor(path, PrimaryNamespace(syntax));
-        }
-
-        IndexLines(tree, file);
+        IndexFile(tree, file);
+        IndexLines(text, rows, info, file, document);
 
         foreach (var node in syntax.DescendantNodes())
         {
@@ -275,33 +381,88 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 case BasePropertyDeclarationSyntax:
                 case EnumMemberDeclarationSyntax:
                 case LocalFunctionStatementSyntax:
-                    Declare(model, node);
+                    Declare(model, node, file, offsets);
                     break;
 
                 // `int a, b;` is one field declaration and two fields, and the symbol
                 // hangs off the declarator rather than the statement.
                 case VariableDeclaratorSyntax declarator
                     when declarator.Parent?.Parent is BaseFieldDeclarationSyntax:
-                    Declare(model, declarator);
+                    Declare(model, declarator, file, offsets);
                     break;
 
                 case SimpleNameSyntax name when options.References:
-                    Reference(model, name, file, here);
+                    Reference(model, name, file, offsets);
+                    break;
+
+                // **The per-kind location facts, from the node whose kind decides them.**
+                // In this visit rather than a second `DescendantNodes()` pass: asking a
+                // symbol what it means is most of the cost of indexing, and a walk that
+                // reached these nodes again would ask everything twice.
+                case BaseObjectCreationExpressionSyntax creation when options.References:
+                    Created(model, creation, file, offsets);
+                    break;
+
+                case InvocationExpressionSyntax invocation when options.References:
+                    Invoked(model, invocation, file, offsets);
+                    break;
+
+                case MemberAccessExpressionSyntax access when options.References:
+                    if (MemberAccess(model, access, file, offsets) is { } accessed)
+                    {
+                        sink.Add(DotnetIndex.MemberAccessLocation, accessed);
+                    }
+
                     break;
             }
         }
     }
 
     /// <summary>
-    /// The file's line table: one <c>src.Line</c> fact per line, the text on the value
-    /// side.
+    /// The two facts about a file that need no line table: what it is written in, and
+    /// what its contents hash to.
+    /// </summary>
+    /// <remarks>
+    /// None of them is gated by <c>--no-lines</c>: they are one fact each per file, and
+    /// they are what makes a file's row in a search result renderable — a language to
+    /// highlight by, and a digest to tell two checkouts of one path apart. Provenance
+    /// joins them only when the run stated it, since it is the one thing here that is not
+    /// in the code.
+    /// </remarks>
+    private void IndexFile(SyntaxTree tree, FjordFact file)
+    {
+        var language = DotnetIndex.FileLanguageFact(file, SourceLayer.LanguageName(tree.FilePath));
+        var digest = DotnetIndex.FileDigestFact(file, SourceLayer.Digest(tree.GetText()));
+        var origin = options.Repo is { } repo && options.Revision is { } revision
+            ? DotnetIndex.FileOriginFact(file, repo, revision)
+            : null;
+
+        sink.Add(DotnetIndex.FileLanguage, language);
+        sink.Add(DotnetIndex.FileDigest, digest);
+
+        if (origin is not null)
+        {
+            sink.Add(DotnetIndex.FileOrigin, origin);
+        }
+    }
+
+    /// <summary>
+    /// The file's line table — <c>src.FileLine</c> and the <c>src.FileLineAt</c> that
+    /// inverts it — and the <c>src.FileInfo</c> that summarises the file.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>Every line, including the blank ones.</b> A line table whose gaps mean
     /// "empty" is a table a consumer has to know a rule about, and the rule is
     /// indistinguishable from "that line was never indexed". Completeness is the
-    /// property that makes it a table.
+    /// property that makes it a table. The arithmetic that decides which lines those
+    /// are lives in <see cref="SourceLayer"/>, where it is a property rather than a walk.
+    /// </para>
+    /// <para>
+    /// <b><c>FileInfo</c> is written even with <c>--no-lines</c>.</b> It is one fact per
+    /// file and it is what a consumer falls back to when an offset resolves past the last
+    /// line's start; the switch is about the size of the per-line table, and a database
+    /// that knows how many lines a file has but not what is on them is a coherent one.
     /// </para>
     /// <para>
     /// Built outside the lock and added inside it. A large file is a few thousand facts,
@@ -309,542 +470,798 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// all of them would serialise the walk behind the network.
     /// </para>
     /// </remarks>
-    private void IndexLines(SyntaxTree tree, FjordFact file)
+    private void IndexLines(
+        SourceText text,
+        List<SourceLayer.Row> rows,
+        SourceLayer.Summary info,
+        FjordFact file,
+        Document? document)
     {
+        var summary = DotnetIndex.FileInfoFact(file, info.Bytes, info.Lines, info.EndsInNewline);
+
         if (!options.Lines)
         {
+            sink.Add(DotnetIndex.FileInfo, summary);
+
             return;
         }
 
-        var text = tree.GetText();
-        var facts = new List<FjordFact>(text.Lines.Count);
+        var lines = new List<FjordFact>(rows.Count);
+        var offsets = new List<FjordFact>(rows.Count);
 
-        foreach (var line in text.Lines)
+        foreach (var row in rows)
         {
-            facts.Add(CodeIndex.LineFact(file, line.LineNumber + 1, Clip(line.ToString())));
+            lines.Add(DotnetIndex.FileLineFact(
+                file, row.Number, row.Text, row.Start, row.Bytes, row.CStart));
+            offsets.Add(DotnetIndex.FileLineAtFact(file, row.Start, row.Number));
         }
 
-        using (Enter())
-        {
-            foreach (var fact in facts)
-            {
-                sink.Add(CodeIndex.Line, fact);
-            }
+        sink.Add(DotnetIndex.FileInfo, summary);
 
-            Lines += facts.Count;
+        foreach (var fact in lines)
+        {
+            sink.Add(DotnetIndex.FileLine, fact);
+        }
+
+        foreach (var fact in offsets)
+        {
+            sink.Add(DotnetIndex.FileLineAt, fact);
+        }
+
+        Interlocked.Add(ref _lines, lines.Count);
+
+        IndexStyles(document, text, file);
+    }
+
+    /// <summary>
+    /// <c>src.FileLineStyles</c> from Roslyn's own classifier — the reference client's
+    /// answer to a schema field that is deliberately opaque.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A document, not a semantic model.</b> The classifier's semantic-model overload
+    /// is obsolete, and the supported form takes a <see cref="Document"/> — so the
+    /// workspace project Buildalyzer already built is carried down to here rather than
+    /// a scratch one being invented. Where a compilation was built without a workspace
+    /// <paramref name="document"/> is null, so no styles are written.
+    /// </para>
+    /// <para>
+    /// A file with no tokens on a line writes no fact for it: absent means unhighlighted,
+    /// which is the common case and the reason this costs so much less than markup.
+    /// </para>
+    /// </remarks>
+    private void IndexStyles(Document? document, SourceText text, FjordFact file)
+    {
+        if (!options.Styles || document is null)
+        {
+            return;
+        }
+
+        var spans = Classifier
+            .GetClassifiedSpansAsync(document, new TextSpan(0, text.Length), CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+
+        var lines = SemanticTokens.Encode(spans, text);
+
+        foreach (var line in lines)
+        {
+            sink.Add(
+                DotnetIndex.FileLineStyles,
+                DotnetIndex.FileLineStylesFact(file, line.Line, line.Payload));
+        }
+
+        Interlocked.Add(ref _styled, lines.Count);
+    }
+
+    /// <summary>
+    /// A declaration: its entity, the edges its lists become, where it is written, and
+    /// the global name it answers to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Identity and location are separate now</b>, which is the shape of the whole
+    /// rewrite: the entity is keyed on what the compiler knows, and this adds one
+    /// `DefinitionLocation` beside it. A declaration whose type the layer cannot express
+    /// has no entity and so no location either — counted by
+    /// <see cref="Inexpressible"/> rather than written under a fabricated type.
+    /// </para>
+    /// <para>
+    /// <b>One member, however many declarations it is written across.</b>
+    /// <see cref="ScipSymbols.Defining"/> is what the two halves of a partial member are
+    /// read as, so every fact keyed on the symbol carries one value; the per-declaration
+    /// facts beside them keep every span, which is how a partial type has answered "where
+    /// is this written" all along.
+    /// </para>
+    /// </remarks>
+    private void Declare(
+        SemanticModel model,
+        SyntaxNode node,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
+    {
+        if (model.GetDeclaredSymbol(node) is not { } declared)
+        {
+            return;
+        }
+
+        // **The member, not the declaration.** `GetDeclaredSymbol` on the implementing
+        // half of a partial member answers a symbol its own containing type does not
+        // list, whose signature is the other half's and whose documentation comment is
+        // empty — so reading a per-symbol fact from it writes a second value under a key
+        // the other half already filled.
+        var symbol = ScipSymbols.Defining(declared);
+
+        // Built outside the lock: all of this walks the symbol graph or the syntax, and
+        // none of it needs the sink.
+        var scip = ScipSymbols.Of(symbol, out var unspellable);
+        var span = NameLocation(node).SourceSpan;
+        var (start, length) = offsets.Span(span);
+        var line = offsets.Line(span.Start);
+        var kind = CodeMarkup.Kind(symbol);
+        var signature = CodeMarkup.Signature(symbol);
+        var modifiers = CodeMarkup.Modifiers(symbol);
+        var doc = options.Docs ? DocComment(symbol) : string.Empty;
+
+        if (unspellable)
+        {
+            Interlocked.Increment(ref _unspellable);
+        }
+
+        if (_entities.Definition(symbol) is not { } definition)
+        {
+            return;
+        }
+
+        _entities.Edges(symbol);
+
+        sink.Add(
+            DotnetIndex.DefinitionLocation,
+            DotnetIndex.DefinitionLocationFact(definition, file, start, length));
+
+        if (scip is not null)
+        {
+            var named = DotnetIndex.SymbolFact(scip);
+
+            sink.Add(DotnetIndex.Symbol, named);
+            sink.Add(DotnetIndex.SymbolOf, DotnetIndex.SymbolOfFact(definition, named));
+            sink.Add(
+                DotnetIndex.DefinitionBySymbol,
+                DotnetIndex.DefinitionBySymbolFact(named, definition));
+
+            var (definedStart, definedLength) =
+                offsets.Span(NameLocation(FirstDeclaration(symbol, node)).SourceSpan);
+
+            Markup(
+                symbol, named, file, start, length, definedStart, definedLength, line,
+                kind, signature, modifiers, doc);
+        }
+
+        Interlocked.Increment(ref _declarations);
+    }
+
+    /// <summary>
+    /// The declaration <c>codemarkup.Definition</c> answers with for one file: the
+    /// member's first in that file, whichever of its declarations the walk is at.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The value has to be a function of the key, and the key is
+    /// <c>{symbol, file}</c>.</b> Two declarations of one member in one file — both halves
+    /// of a partial member, two <c>partial class</c> parts — otherwise fill that one key
+    /// twice with two spans, ingest refuses one key with two values (<c>ops-I4</c>),
+    /// <c>FactSink</c> latches the refusal and the write stream dies part-way through. So
+    /// the span is asked of the member and the file rather than of the node.
+    /// </para>
+    /// <para>
+    /// <b>First in the file rather than the defining half</b>, because a partial *type* has
+    /// no defining half and needs the same rule — and because <c>codemarkup.Definition</c>
+    /// is per file: taking the defining half's span would answer the implementing part's
+    /// file with a span that is not in it. Position within one file is fixed, so this
+    /// cannot depend on the order the compiler was handed the files, which
+    /// <c>src.sigla</c>'s charter forbids. Nothing is lost either way:
+    /// <c>csharp.DefinitionLocation</c> and <c>codemarkup.FileDefinition</c> are keyed per
+    /// span and carry every declaration.
+    /// </para>
+    /// </remarks>
+    private static SyntaxNode FirstDeclaration(ISymbol symbol, SyntaxNode node)
+    {
+        var first = node;
+
+        foreach (var reference in Written(symbol))
+        {
+            if (reference.SyntaxTree == node.SyntaxTree && reference.Span.Start < first.Span.Start)
+            {
+                first = reference.GetSyntax();
+            }
+        }
+
+        return first;
+    }
+
+    /// <summary>
+    /// Every declaration a member is written across: every part of a partial type, and
+    /// both halves of a partial member.
+    /// </summary>
+    /// <remarks>
+    /// <b>A partial member's two halves are two symbols, and each knows only its own
+    /// declaration.</b> A partial type's one symbol carries all of its parts in
+    /// <c>DeclaringSyntaxReferences</c>; a partial member's defining half carries one
+    /// reference and names the other half separately, so the union has to be taken by
+    /// hand. The argument is already <see cref="ScipSymbols.Defining"/>'s answer, so the
+    /// implementing part is the only half left to add.
+    /// </remarks>
+    private static IEnumerable<SyntaxReference> Written(ISymbol symbol)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            yield return reference;
+        }
+
+        var implementing = symbol switch
+        {
+            IMethodSymbol method => (ISymbol?)method.PartialImplementationPart,
+            IPropertySymbol property => property.PartialImplementationPart,
+            _ => null,
+        };
+
+        if (implementing is null)
+        {
+            yield break;
+        }
+
+        foreach (var reference in implementing.DeclaringSyntaxReferences)
+        {
+            yield return reference;
         }
     }
 
-    private void Declare(SemanticModel model, SyntaxNode node)
+    /// <summary>
+    /// A reference: the span someone can click, and the definition it resolves to, in
+    /// both directions.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The identifier's extent, not the whole expression's.</b> A viewer draws the
+    /// link over the name someone can click, so `Foo.Bar` is two references rather than
+    /// one span covering both.
+    /// </para>
+    /// <para>
+    /// <b>A target outside this index still gets an entity</b>, which the old model could
+    /// not do: a reference to `System.String` targets a `csharp.Class` for it, interned
+    /// through the same nesting as anything else, so "go to definition" answers for the
+    /// BCL as far as the compiler knows it. <see cref="External"/> still counts them,
+    /// because the entity exists and the *location* does not.
+    /// </para>
+    /// </remarks>
+    private void Reference(
+        SemanticModel model,
+        SimpleNameSyntax name,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
     {
-        if (model.GetDeclaredSymbol(node) is { } symbol)
+        if (Bound(model.GetSymbolInfo(name)) is not { } symbol)
         {
-            using (Enter())
+            if (!IsConstraintKeyword(name))
             {
-                // The fact is emitted by `DeclFor` the first time the symbol is reached,
-                // by whichever path reaches it first. Here that is its own declaration.
-                DeclFor(symbol);
+                Interlocked.Increment(ref _unresolved);
             }
+
+            return;
+        }
+
+        // Namespaces, labels and aliases have no `Definition` alternative at all.
+        if (symbol.Kind is SymbolKind.Namespace or SymbolKind.Label
+            or SymbolKind.RangeVariable or SymbolKind.Preprocessing or SymbolKind.Discard
+            or SymbolKind.Alias)
+        {
+            return;
+        }
+
+        var outside = !symbol.Locations.Any(location => location.IsInSource);
+        var (start, length) = offsets.Span(name.Identifier.Span);
+        var role = CodeMarkup.Role(name, symbol);
+
+        // **A local gets no global name, deliberately.** SCIP models one as an occurrence
+        // ordinal that moves when the file is edited, so `FileLocalXRef` answers it span
+        // to span instead — which needs the declaration's span, and only when it is in
+        // *this* file.
+        string? scip = null;
+
+        if (symbol.Kind is not SymbolKind.Local)
+        {
+            scip = ScipSymbols.Of(symbol, out var unspellable);
+
+            if (unspellable)
+            {
+                Interlocked.Increment(ref _unspellable);
+            }
+        }
+
+        var local = scip is null ? Declared(symbol, name, offsets) : null;
+
+        if (scip is null && local is null && symbol.Kind is SymbolKind.Local)
+        {
+            return;
+        }
+
+        // **The two layers are written independently, and that is not tidiness.** A
+        // local has no `csharp.Definition` — this producer mints none, deliberately —
+        // so a reference to one would be dropped entirely if the `codemarkup` facts
+        // hung off the `csharp` one. They answer different questions and each is
+        // written where it can be.
+        if (_entities.Definition(symbol) is { } definition)
+        {
+            sink.Add(
+                DotnetIndex.EntityXRef,
+                DotnetIndex.EntityXRefFact(file, start, length, definition));
+
+            // **A type written in source, taken from the value already built.**
+            // `type = 0` of `Definition` carries the `AType` this predicate keys on, and
+            // asking `CsharpEntities.Type` for it a second time would count a type the
+            // layer cannot express twice — the tally a run reports as `Inexpressible`.
+            if (definition is FjordValue.Union { Disc: 0u, Value: var written })
+            {
+                sink.Add(
+                    DotnetIndex.TypeLocation,
+                    DotnetIndex.TypeLocationFact(written, file, start, length));
+            }
+
+            // The same reference keyed by what it points at. Written twice because a
+            // predicate leads with one field: find-references needs the target to
+            // lead and a file view needs the file to, and until a derived predicate
+            // can be declared the producer is what states the second order.
+            sink.Add(
+                DotnetIndex.EntityRef,
+                DotnetIndex.EntityRefFact(definition, file, start, length));
+        }
+
+        if (scip is not null)
+        {
+            // The same reference on the language-independent surface, keyed by a
+            // symbol rather than a `Definition` — which costs an interned string and
+            // buys the ability to leave this database.
+            var target = DotnetIndex.SymbolFact(scip);
+
+            sink.Add(DotnetIndex.Symbol, target);
+            sink.Add(
+                DotnetIndex.FileXRef,
+                DotnetIndex.FileXRefFact(file, start, length, target, role));
+            sink.Add(
+                DotnetIndex.SymbolXRef,
+                DotnetIndex.SymbolXRefFact(target, file, start, length));
+        }
+        else if (local is { } declared)
+        {
+            // **A file-local target, answered span to span.** No interned string: a
+            // local has no global name worth minting, and a jump-to-declaration is
+            // then one seek with no symbol table.
+            sink.Add(
+                DotnetIndex.FileLocalXRef,
+                DotnetIndex.FileLocalXRefFact(
+                    file, start, length, declared.Start, declared.Length, role));
+        }
+
+        Interlocked.Increment(ref _references);
+
+        if (outside)
+        {
+            Interlocked.Increment(ref _external);
+        }
+
+        var canonical = symbol.OriginalDefinition;
+        var uses = _uses.AddOrUpdate(canonical, 1, (_, seen) => seen + 1);
+
+        // Racy by design, and the class comment says why: the winner of a near-tie is not
+        // worth a lock, no fact carries this, and nothing asserted depends on it.
+        if (uses > Volatile.Read(ref _sampleUses))
+        {
+            Volatile.Write(ref _sampleUses, uses);
+            SampleName = canonical.Name;
         }
     }
 
-    private void Reference(SemanticModel model, SimpleNameSyntax name, FjordFact file, Module here)
+    /// <summary>
+    /// The symbol a name resolved to, or the one candidate the compiler declined to pick.
+    /// </summary>
+    /// <remarks>
+    /// A single candidate is an ambiguity the compiler declined to resolve but a reader
+    /// would read straight through — an inaccessible member, a failed overload. Several
+    /// candidates is a genuine ambiguity, and guessing would put a wrong edge in the graph.
+    /// </remarks>
+    private static ISymbol? Bound(SymbolInfo info) =>
+        info.Symbol ?? (info.CandidateSymbols.Length == 1 ? info.CandidateSymbols[0] : null);
+
+    /// <summary>
+    /// <c>csharp.ObjectCreationLocation</c> — where an object is constructed, and the
+    /// constructor the compiler chose for it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The type as written, or the <c>new</c> keyword where the type is not written at
+    /// all.</b> A target-typed <c>new()</c> has no type syntax to point at, and the whole
+    /// expression's span would cover the argument list and the initialiser — which for
+    /// <c>new T(a, b) { X = 1 }</c> is most of a line and nothing a viewer can draw a link
+    /// over. The span is converted through the line table like every other span here, so
+    /// it counts in the UTF-8 bytes <c>position-encoding</c> declares rather than in
+    /// Roslyn's UTF-16 positions.
+    /// </remarks>
+    private void Created(
+        SemanticModel model,
+        BaseObjectCreationExpressionSyntax creation,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
     {
-        var info = model.GetSymbolInfo(name);
-
-        // A single candidate is an ambiguity the compiler declined to resolve but a
-        // reader would read straight through — an inaccessible member, a failed
-        // overload. Several candidates is a genuine ambiguity, and guessing would put a
-        // wrong edge in the graph.
-        var symbol = info.Symbol
-            ?? (info.CandidateSymbols.Length == 1 ? info.CandidateSymbols[0] : null);
-
-        if (symbol is null)
-        {
-            using (Enter())
-            {
-                Unresolved++;
-            }
-
-            return;
-        }
-
-        // Namespaces, locals, parameters, type parameters, labels, ranges: real symbols
-        // that are not declarations this index holds.
-        if (symbol.Kind is not (SymbolKind.NamedType or SymbolKind.Method
-            or SymbolKind.Property or SymbolKind.Field or SymbolKind.Event))
+        if (Bound(model.GetSymbolInfo(creation)) is not IMethodSymbol constructor
+            || constructor.ContainingType is not { } created
+            || _entities.Type(created) is not { } type
+            || _entities.Entity(constructor) is not { } method)
         {
             return;
         }
 
-        // The symbol is resolved; from here on it is bookkeeping, and bookkeeping is
-        // shared.
-        using (Enter())
+        var span = creation is ObjectCreationExpressionSyntax { Type: { } written }
+            ? written.Span
+            : creation.NewKeyword.Span;
+
+        var (start, length) = offsets.Span(span);
+
+        sink.Add(
+            DotnetIndex.ObjectCreationLocation,
+            DotnetIndex.ObjectCreationLocationFact(type, method, file, start, length));
+    }
+
+    /// <summary>
+    /// <c>csharp.MethodInvocationLocation</c> — where a method is invoked, and the member
+    /// access it was invoked through if there was one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The invoked name's own extent</b>, the way every other span this producer writes
+    /// is an identifier's: <c>_store.Add(x)</c> points at <c>Add</c>, not at the statement
+    /// around it. The optional carries the member access itself rather than a flag, so a
+    /// consumer holding an invocation can reach that row and read its span; <c>nothing</c>
+    /// is what tells <c>Add(x)</c> from <c>_store.Add(x)</c>.
+    /// </para>
+    /// <para>
+    /// <b><c>nothing</c> means "through no member access this producer wrote".</b> A
+    /// conditional call — <c>x?.M()</c> — is invoked through a member <i>binding</i>, a
+    /// different syntax node with no <c>a.b</c> shape to write a row for, so the invocation
+    /// is recorded and the optional is empty. Reading it as "the call had no receiver"
+    /// would be wrong for exactly those calls.
+    /// </para>
+    /// </remarks>
+    private void Invoked(
+        SemanticModel model,
+        InvocationExpressionSyntax invocation,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
+    {
+        if (Bound(model.GetSymbolInfo(invocation)) is not IMethodSymbol invoked
+            || _entities.Entity(invoked) is not { } method)
         {
-            if (DeclFor(symbol) is not { } target)
+            return;
+        }
+
+        var named = InvokedName(invocation.Expression);
+        var (start, length) = offsets.Span(
+            named is null ? invocation.Expression.Span : named.Identifier.Span);
+
+        // Built and nested, not emitted here: the node is reached by the walk in its own
+        // right, which is where its row is written. A nested reference carries the whole
+        // fact, so the two agree because they are the same fact.
+        var through = invocation.Expression is MemberAccessExpressionSyntax access
+            ? MemberAccess(model, access, file, offsets)
+            : null;
+
+        sink.Add(
+            DotnetIndex.MethodInvocationLocation,
+            DotnetIndex.MethodInvocationLocationFact(method, file, start, length, through));
+    }
+
+    /// <summary>The name an invocation invokes, where the expression has one.</summary>
+    private static SimpleNameSyntax? InvokedName(ExpressionSyntax expression) => expression switch
+    {
+        SimpleNameSyntax name => name,
+        MemberAccessExpressionSyntax access => access.Name,
+        MemberBindingExpressionSyntax binding => binding.Name,
+        _ => null,
+    };
+
+    /// <summary>
+    /// <c>csharp.MemberAccessLocation</c> — where a member is accessed, and what the
+    /// accessed member resolves to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The accessed member, not the expression it was reached through.</b> The schema's
+    /// field is named after Roslyn's own <c>Expression</c> property, which is the
+    /// <i>receiver</i> — so the reading is worth stating rather than leaving to the field
+    /// name. The comment declaring the predicate says "what the accessed member resolves
+    /// to", and the location predicates around it are per kind: a type, a construction, a
+    /// call, and this one — the field, property or method a <c>.</c> reaches. A row
+    /// carrying the receiver instead would answer the position of <c>b</c> in <c>a.b</c>
+    /// with <c>a</c>, and leave every field and property read answered by nothing.
+    /// </para>
+    /// <para>
+    /// Returned rather than written, so <see cref="Invoked"/> can nest the same fact.
+    /// </para>
+    /// </remarks>
+    private FjordFact? MemberAccess(
+        SemanticModel model,
+        MemberAccessExpressionSyntax access,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
+    {
+        if (Bound(model.GetSymbolInfo(access.Name)) is not { } member
+            || _entities.Accessed(member) is not { } expression)
+        {
+            return null;
+        }
+
+        var (start, length) = offsets.Span(access.Name.Identifier.Span);
+
+        return DotnetIndex.MemberAccessLocationFact(expression, file, start, length);
+    }
+
+    /// <summary>
+    /// Whether a name is a <c>where</c> clause's constraint keyword rather than a type.
+    /// </summary>
+    /// <remarks>
+    /// <b>There is no symbol to resolve, so this is not an unresolved name.</b>
+    /// <c>notnull</c> and <c>unmanaged</c> are the two constraints C# spells as an
+    /// identifier, and Roslyn parses each as a <c>TypeConstraint</c> whose type binds to
+    /// nothing — counting them puts an indexing failure that did not happen into a number
+    /// operators read as one. Every other keyword constraint (<c>class</c>,
+    /// <c>struct</c>, <c>new()</c>, <c>default</c>, <c>allows ref struct</c>) has a syntax
+    /// node of its own and never reaches this walk as a name. The position is checked as
+    /// well as the spelling: outside a constraint both words are ordinary identifiers, and
+    /// a type by either name that fails to bind is a real miss.
+    /// </remarks>
+    private static bool IsConstraintKeyword(SimpleNameSyntax name) =>
+        name is IdentifierNameSyntax { Parent: TypeConstraintSyntax }
+        && name.Identifier.Text is "notnull" or "unmanaged";
+
+    /// <summary>
+    /// The <c>codemarkup</c> projection of one declaration: the same facts, re-keyed for
+    /// the questions a UI asks.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every one of these is redundant with the <c>csharp</c> facts beside it by
+    /// construction — while <c>nyi/derivation</c> stands, a producer is what states the
+    /// second keying, and the query that *would* derive each is a comment in the schema.
+    /// </para>
+    /// <para>
+    /// <b>Two spans, because two of these are keyed per member and the rest per
+    /// declaration.</b> <c>codemarkup.Definition</c> is <c>{symbol, file}</c> and
+    /// <c>codemarkup.SymbolInfo</c> is <c>{symbol}</c>, so both take
+    /// <paramref name="definedStart"/> — the member's first declaration in this file —
+    /// and are the same fact whichever of its declarations the walk is at.
+    /// <c>FileDefinition</c> leads with a span and <c>SearchEntry</c>'s key carries a
+    /// <c>line</c> — neither is <c>{symbol, file}</c>, so both take the declaration the
+    /// walk is standing on and both get a row per declaration. A partial member declared
+    /// twice in one file therefore appears twice in the search index, differing in
+    /// <c>line</c>, and it is that field rather than a span that keeps the two apart.
+    /// </para>
+    /// </remarks>
+    private void Markup(
+        ISymbol symbol,
+        FjordFact named,
+        FjordFact file,
+        long start,
+        long length,
+        long definedStart,
+        long definedLength,
+        long line,
+        FjordValue kind,
+        string signature,
+        string modifiers,
+        string doc)
+    {
+        var name = symbol.Name;
+
+        sink.Add(
+            DotnetIndex.MarkupDefinition,
+            DotnetIndex.MarkupDefinitionFact(
+                named, file, definedStart, definedLength, kind, name, symbol.ToDisplayString()));
+
+        sink.Add(
+            DotnetIndex.FileDefinition,
+            DotnetIndex.FileDefinitionFact(file, start, length, named, kind, name));
+
+        sink.Add(
+            DotnetIndex.SymbolInfo,
+            DotnetIndex.SymbolInfoFact(named, signature, doc, modifiers));
+
+        // The two search rows: the case-folded one a prefix or fuzzy match seeks on, and
+        // the exact one, because "find exactly `Parse`" and "find anything spelled like
+        // parse" are different questions.
+        sink.Add(
+            DotnetIndex.SearchEntry,
+            DotnetIndex.SearchEntryFact(name, kind, named, file, line));
+        sink.Add(DotnetIndex.SymbolByName, DotnetIndex.SymbolByNameFact(name, named));
+
+        Relate(symbol, named);
+    }
+
+    /// <summary>The relation edges a declaration implies, in both directions.</summary>
+    /// <remarks>
+    /// Containment is a relation rather than a field on the definition, so that it is
+    /// joinable both ways — <c>Relation {from = C, kind = {contains}, to = S}</c> answers
+    /// "what is in this" and <c>RelationOf</c> answers "what contains this".
+    /// </remarks>
+    private void Relate(ISymbol symbol, FjordFact named)
+    {
+        // **`fromOther` is the direction, and getting it wrong is silent.**
+        // `codemarkup.sigla` reads `Relation` as "`from` <kind> `to`", and `RelationOf`
+        // carries the same edge reversed — so a transposed pair still answers both
+        // queries with every symbol resolving, and says "Base extends Derived".
+        void Edge(ISymbol? other, uint kind, bool fromOther)
+        {
+            if (other is null)
             {
-                External++;
                 return;
             }
 
-            // **The identifier's extent, not the whole expression's.** A viewer draws
-            // the link over the name someone can click, so `Foo.Bar` is two references
-            // rather than one span covering both.
-            var span = name.Identifier.GetLocation().GetLineSpan();
-            var at = span.StartLinePosition;
-            var length = name.Identifier.Span.Length;
-
-            sink.Add(CodeIndex.Ref, CodeIndex.RefFact(
-                at.Line + 1, at.Character + 1, length, file, target.Fact));
-
-            // The same reference, keyed by file and position. Written twice because a
-            // predicate leads with one field: find-references needs the target to lead
-            // and a file view needs the file to, and until a derived predicate can be
-            // declared the producer is what states the second order.
-            sink.Add(CodeIndex.FileXRef, CodeIndex.FileXRefFact(
-                at.Line + 1, at.Character + 1, length, file, target.Fact));
-
-            References++;
-
-            if (++target.Uses > _sampleUses)
+            // **The flagged overload here too, because a dropped edge is invisible.** A
+            // `Relation` row is a pair of symbols and half of one is no edge, so an
+            // unspellable target loses the whole edge — a larger loss than a declaration's
+            // and the one with nothing else in the database pointing at it. The `as` casts
+            // below mean every `other` reaching this line is a named type, which always
+            // spells; the flag says so rather than assuming it.
+            if (ScipSymbols.Of(other, out var unspellable) is not { } text)
             {
-                _sampleUses = target.Uses;
-                SampleName = target.Name;
-            }
-
-            // A second sample, kept separately because the most-used declaration in a
-            // repository is nearly always a type — and a type has no parameters, so the
-            // query that demonstrates `src.Param` would return nothing and look broken.
-            if (target.Kind == "method" && target.Uses > _sampleMethodUses)
-            {
-                _sampleMethodUses = target.Uses;
-                SampleMethod = target.Name;
-            }
-
-            // The dependency edge the reference implies. In C# a `using` names a
-            // namespace, which is declared across many files and says nothing about
-            // which of them this one needs; what carries that is where the names
-            // actually resolved to.
-            if (target.Module.Id != here.Id)
-            {
-                var edge = ((long)here.Id << 32) | (uint)target.Module.Id;
-
-                if (_imports.Add(edge))
+                if (unspellable)
                 {
-                    sink.Add(CodeIndex.Import, CodeIndex.ImportFact(here.Fact, target.Module.Fact));
-                }
-            }
-        }
-    }
-
-    /// <summary>The declaration a symbol names, or nothing if it is not in this index.</summary>
-    /// <remarks>Called with <see cref="_gate"/> held: it memoises, counts and emits.</remarks>
-    private Declared? DeclFor(ISymbol symbol)
-    {
-        Debug.Assert(_gate.IsHeldByCurrentThread, "the declaration memo is shared");
-
-        symbol = Canonical(symbol);
-
-        if (_declarations.TryGetValue(symbol, out var known))
-        {
-            return known;
-        }
-
-        var built = Build(symbol);
-
-        // **The memo is written before the graph is walked, and that is load-bearing.**
-        // Describing a declaration reaches its container, its base type and the
-        // interface members it implements — every one of which is a declaration this
-        // function is then asked for. Containment is a tree and inheritance is a DAG in
-        // code that compiles; this indexer is pointed at code that sometimes does not,
-        // and a cycle would otherwise recurse until the stack ran out.
-        _declarations[symbol] = built;
-
-        if (built is { First: true })
-        {
-            Describe(symbol, built);
-        }
-
-        return built;
-    }
-
-    /// <summary>
-    /// Everything about a declaration that is not the declaration: what contains it,
-    /// what it extends and implements, what it overrides, its parameters, its type, its
-    /// doc comment, its attributes.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>This is the half a syntax walk cannot do.</b> Every question here is asked of
-    /// a symbol — what a base type resolves to across projects, which interface member
-    /// a method implicitly implements, what a parameter's type is after inference — and
-    /// the answers are what make the index a graph rather than a list of names.
-    /// </para>
-    /// <para>
-    /// Called with <see cref="_gate"/> held, once per declaration key, from
-    /// <see cref="DeclFor"/> — see there for why it is called after the memo is written.
-    /// </para>
-    /// </remarks>
-    private void Describe(ISymbol symbol, Declared declared)
-    {
-        Debug.Assert(_gate.IsHeldByCurrentThread, "the declaration memo is shared");
-
-        // Containment. `src.Decl`'s name is already qualified by its containing types,
-        // which is how a person reads the nesting; this is how a query joins on it.
-        if (symbol.ContainingType is { } containing && DeclFor(containing) is { } parent)
-        {
-            sink.Add(CodeIndex.Member, CodeIndex.MemberFact(parent.Fact, declared.Fact));
-        }
-
-        foreach (var attribute in symbol.GetAttributes())
-        {
-            // Resolved only, and here the reason is about *keys* rather than values: an
-            // attribute the compiler could not bind displays as whatever the source
-            // wrote, so `[Obsolete]` and `System.ObsoleteAttribute` would be two keys
-            // for one attribute and a search for either would miss the other.
-            if (attribute.AttributeClass is { } applied
-                && Known(applied)
-                && applied.OriginalDefinition.ToDisplayString() is { Length: > 0 } name)
-            {
-                sink.Add(CodeIndex.Attribute, CodeIndex.AttributeFact(name, declared.Fact));
-                sink.Add(CodeIndex.AttributeOf, CodeIndex.AttributeOfFact(declared.Fact, name));
-            }
-        }
-
-        if (options.Docs && DocComment(symbol) is { } doc)
-        {
-            sink.Add(CodeIndex.Doc, CodeIndex.DocFact(declared.Fact, doc));
-        }
-
-        switch (symbol)
-        {
-            case INamedTypeSymbol type:
-                DescribeType(type, declared);
-                break;
-
-            case IMethodSymbol method:
-                Parameters(declared, method.Parameters);
-
-                // A constructor's return type is `void` because Roslyn has to say
-                // something, not because the constructor returns anything.
-                if (method.MethodKind is not (MethodKind.Constructor or MethodKind.StaticConstructor
-                    or MethodKind.Destructor))
-                {
-                    TypeOf(declared, method.ReturnType);
+                    Interlocked.Increment(ref _unspellable);
                 }
 
-                Overrides(declared, method.OverriddenMethod);
-                break;
-
-            case IPropertySymbol property:
-                // An indexer's parameters are its subscript — `this[int index]`.
-                Parameters(declared, property.Parameters);
-                TypeOf(declared, property.Type);
-                Overrides(declared, property.OverriddenProperty);
-                break;
-
-            case IFieldSymbol field:
-                TypeOf(declared, field.Type);
-                break;
-
-            case IEventSymbol @event:
-                TypeOf(declared, @event.Type);
-                Overrides(declared, @event.OverriddenEvent);
-                break;
-        }
-    }
-
-    /// <summary>What a type extends, what it implements, and who implements it.</summary>
-    /// <remarks>
-    /// <para>
-    /// <b><c>AllInterfaces</c>, not the interfaces the declaration lists.</b> A type
-    /// that says <c>: List&lt;T&gt;</c> is an <c>IEnumerable</c>, and a query asking for
-    /// every enumerable in a repository is asking the semantic question. There is no
-    /// recursion in sigla to close a transitive relation with afterwards, so the
-    /// closure is written down — which is a decision this schema makes twice, the other
-    /// being <c>src.SearchByName</c>.
-    /// </para>
-    /// <para>
-    /// <c>System.Object</c> is skipped: every class extends it, the edge distinguishes
-    /// nothing, and in an index <i>of</i> the framework it would be one key with a
-    /// hundred thousand rows under it.
-    /// </para>
-    /// </remarks>
-    private void DescribeType(INamedTypeSymbol type, Declared declared)
-    {
-        if (type.BaseType is { SpecialType: not SpecialType.System_Object } @base
-            && DeclFor(@base) is { } extended)
-        {
-            sink.Add(CodeIndex.Extends, CodeIndex.ExtendsFact(extended.Fact, declared.Fact));
-            sink.Add(CodeIndex.DerivesFrom, CodeIndex.DerivesFromFact(declared.Fact, extended.Fact));
-        }
-
-        foreach (var iface in type.AllInterfaces)
-        {
-            if (DeclFor(iface) is { } implemented)
-            {
-                sink.Add(CodeIndex.Implements, CodeIndex.ImplementsFact(implemented.Fact, declared.Fact));
+                return;
             }
 
-            // **Implicit implementation is the common case in C#**, and there is nothing
-            // in the syntax that says a method implements an interface member — only the
-            // compiler knows. Asked here, per type, rather than per member: the answer
-            // is a lookup on the type either way, and a member-by-member sweep would ask
-            // the same question once for every interface member the type has.
-            foreach (var member in iface.GetMembers())
+            var target = DotnetIndex.SymbolFact(text);
+            var value = DotnetIndex.Tagged(kind);
+            var from = fromOther ? target : named;
+            var to = fromOther ? named : target;
+
+            sink.Add(DotnetIndex.Symbol, target);
+            sink.Add(DotnetIndex.Relation, DotnetIndex.RelationFact(from, value, to));
+            sink.Add(DotnetIndex.RelationOf, DotnetIndex.RelationOfFact(to, value, from));
+        }
+
+        Edge(symbol.ContainingSymbol as INamedTypeSymbol, 1u, fromOther: true);
+
+        if (symbol is INamedTypeSymbol type)
+        {
+            if (type.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
             {
-                if (type.FindImplementationForInterfaceMember(member) is not { } implementation
-                    || !SymbolEqualityComparer.Default.Equals(implementation.ContainingType, type))
+                Edge(baseType, 2u, fromOther: false);
+            }
+
+            foreach (var iface in type.Interfaces)
+            {
+                Edge(iface, 3u, fromOther: false);
+            }
+        }
+
+        if (symbol.IsOverride)
+        {
+            Edge(
+                symbol switch
                 {
-                    // Either nothing implements it — an abstract class may leave it — or
-                    // a base type does, in which case the edge belongs to that type and
-                    // is emitted when it is described.
-                    continue;
-                }
-
-                if (DeclFor(member) is { } required && DeclFor(implementation) is { } provided)
-                {
-                    sink.Add(CodeIndex.Override, CodeIndex.OverrideFact(required.Fact, provided.Fact));
-                }
-            }
-        }
-
-        // A delegate's signature is on the method it invokes, which has no declaration
-        // of its own for the walk to reach.
-        if (type.DelegateInvokeMethod is { } invoke)
-        {
-            Parameters(declared, invoke.Parameters);
-            TypeOf(declared, invoke.ReturnType);
-        }
-    }
-
-    private void Parameters(Declared declared, IReadOnlyList<IParameterSymbol> parameters)
-    {
-        for (var index = 0; index < parameters.Count; index++)
-        {
-            if (!Known(parameters[index].Type))
-            {
-                continue;
-            }
-
-            sink.Add(
-                CodeIndex.Param,
-                CodeIndex.ParamFact(
-                    declared.Fact,
-                    index,
-                    parameters[index].Name,
-                    Clip(parameters[index].Type.ToDisplayString())));
+                    IMethodSymbol method => method.OverriddenMethod,
+                    IPropertySymbol property => property.OverriddenProperty,
+                    IEventSymbol @event => @event.OverriddenEvent,
+                    _ => null,
+                },
+                4u,
+                fromOther: false);
         }
     }
 
     /// <summary>
-    /// Whether the compiler resolved this type, rather than leaving the name it could
-    /// not bind.
+    /// A declaration's doc comment as plain text — the summary, collapsed.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <b>An unresolved type is not merely imprecise — it is a conflict waiting to
-    /// happen.</b> A type and a doc comment are <i>values</i>, and `ops-I5` rejects a
-    /// second value for a key that already has one. Resolved, a type displays the same
-    /// everywhere: <c>System.Collections.Generic.List&lt;T&gt;</c>. Unresolved, it
-    /// displays as whatever the source happened to write — so the same declaration
-    /// reached from a run that resolved it and a run that did not is one key with two
-    /// answers, and the server is right to fail the stream carrying the second.
-    /// </para>
-    /// <para>
-    /// That is not hypothetical: it is the ordinary case when a checkout is indexed in
-    /// slices (<c>--skip-files</c>), where a declaration is walked by one run and merely
-    /// referenced by another.
-    /// </para>
+    /// <b>The summary only, and no markup.</b> Roslyn hands back the whole XML block, and
+    /// a hover card wants a sentence: the tags would have to be stripped by every
+    /// consumer, and stripping them here means the fact is the same for a consumer that
+    /// cannot parse XML. What is lost is <c>&lt;param&gt;</c> and <c>&lt;returns&gt;</c>,
+    /// which a signature already carries.
     /// </remarks>
-    private static bool Known(ITypeSymbol type) => type.TypeKind != TypeKind.Error;
-
-    /// <summary>
-    /// The type a declaration says it is, as a <i>spelling</i> rather than as an
-    /// identity.
-    /// </summary>
-    /// <remarks>
-    /// `ReadOnlySpan&lt;byte&gt;` is what a reader wants shown and never what a query
-    /// filters by — the identity is already in the index, since the type name in a
-    /// declaration is an ordinary reference that the walk resolves like any other.
-    /// </remarks>
-    private void TypeOf(Declared declared, ITypeSymbol type)
+    private static string DocComment(ISymbol symbol)
     {
-        if (Known(type))
+        if (symbol.GetDocumentationCommentXml() is not { Length: > 0 } xml)
         {
-            sink.Add(CodeIndex.TypeOf, CodeIndex.TypeOfFact(declared.Fact, Clip(type.ToDisplayString())));
+            return string.Empty;
         }
-    }
 
-    private void Overrides(Declared declared, ISymbol? overridden)
-    {
-        if (overridden is not null && DeclFor(overridden) is { } target)
+        var opened = xml.IndexOf("<summary>", StringComparison.Ordinal);
+        var closed = xml.IndexOf("</summary>", StringComparison.Ordinal);
+
+        if (opened < 0 || closed <= opened)
         {
-            sink.Add(CodeIndex.Override, CodeIndex.OverrideFact(target.Fact, declared.Fact));
+            return string.Empty;
         }
+
+        var summary = xml[(opened + "<summary>".Length)..closed];
+
+        // Inner tags — `<see cref="X"/>`, `<c>x</c>` — become their text, and the
+        // line-wrapped source becomes one line.
+        var text = System.Text.RegularExpressions.Regex.Replace(summary, "<[^>]*>", string.Empty);
+
+        return SourceLayer.Clip(
+            string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
     }
 
     /// <summary>
-    /// The symbol a name really means, for the purpose of pointing at a declaration.
+    /// Where a file-local target is declared, as a byte span in this file.
     /// </summary>
-    private static ISymbol Canonical(ISymbol symbol)
+    /// <remarks>
+    /// Null when the declaration is in another file, which for a local cannot happen and
+    /// for anything else means there is no span in *this* file to point at.
+    /// </remarks>
+    private static (long Start, long Length)? Declared(
+        ISymbol symbol,
+        SimpleNameSyntax name,
+        SourceLayer.Offsets offsets)
     {
-        // `List<int>.Add` and `List<T>.Add` are the same declaration.
-        symbol = symbol.OriginalDefinition;
+        var here = name.SyntaxTree;
 
-        // `items.Where(...)` calls a static method whose first parameter is `items`.
-        if (symbol is IMethodSymbol { ReducedFrom: { } reduced })
+        foreach (var location in symbol.Locations)
         {
-            symbol = reduced.OriginalDefinition;
-        }
-
-        // `get_Length` is not a declaration; `Length` is.
-        if (symbol is IMethodSymbol { AssociatedSymbol: { } associated })
-        {
-            symbol = associated.OriginalDefinition;
-        }
-
-        // A member with no syntax of its own — a default constructor, a record's
-        // generated `Equals` — is named by the type that produced it. A positional
-        // record's properties are *not* caught here: each has a parameter to point at,
-        // which is where someone reading the code would look.
-        while (symbol.DeclaringSyntaxReferences.Length == 0 && symbol.ContainingType is { } containing)
-        {
-            symbol = containing.OriginalDefinition;
-        }
-
-        return symbol;
-    }
-
-    private Declared? Build(ISymbol symbol)
-    {
-        if (symbol.DeclaringSyntaxReferences.FirstOrDefault() is not { } declaration)
-        {
-            // Metadata: a type from a package or the framework. Nothing in this index
-            // is it, and inventing a declaration for it would put a file fact in the
-            // database naming a path that does not exist.
-            return null;
-        }
-
-        if (Relative(declaration.SyntaxTree.FilePath) is not { } path)
-        {
-            return null;
-        }
-
-        // The whole declaration's extent, and separately where its *name* starts — a
-        // viewer highlights the identifier and folds the body, which are two spans.
-        var syntax = declaration.GetSyntax();
-        var nameSpan = NameLocation(syntax).GetLineSpan();
-        var wholeSpan = syntax.GetLocation().GetLineSpan();
-
-        var line = nameSpan.StartLinePosition.Line + 1;
-        var module = ModuleFor(path, NamespaceOf(symbol));
-        var name = QualifiedName(symbol);
-        var kind = KindOf(symbol);
-        var first = true;
-
-        var key = $"{module.Id}\0{line}\0{name}";
-
-        if (_kinds.TryGetValue(key, out var settled))
-        {
-            // Not the first symbol to reach this key, which is the whole of what
-            // `First` tells `Describe`: a type, a doc comment and a kind are all
-            // *values*, and a second answer for a settled key is the same-key
-            // different-value conflict `ops-I5` fails the stream over.
-            first = false;
-
-            if (settled != kind)
+            if (location.IsInSource && location.SourceTree == here)
             {
-                // Keep the first answer rather than send the server two. See `_kinds`.
-                Conflicts++;
-                kind = settled;
+                return offsets.Span(location.SourceSpan);
             }
         }
-        else
-        {
-            _kinds[key] = kind;
-        }
 
-        var fact = CodeIndex.DeclFact(line, module.Fact, name, kind);
-        var simple = SimpleName(symbol);
-
-        sink.Add(CodeIndex.Decl, fact);
-
-        // The span, only for the symbol that *owns* this key. A partial class reaches
-        // here once per part and they disagree about the extent; `first` is already the
-        // flag for "this is the answer that settled the key", and a span is an attribute
-        // of a declaration exactly as its type and doc comment are.
-        if (first)
-        {
-            sink.Add(CodeIndex.DeclSpan, CodeIndex.DeclSpanFact(
-                fact,
-                nameSpan.StartLinePosition.Character + 1,
-                wholeSpan.EndLinePosition.Line + 1,
-                wholeSpan.EndLinePosition.Character + 1));
-        }
-
-        // The same declaration keyed the other way round, so a prefix of a *name* is a
-        // range rather than a filter over every declaration in the database. A
-        // declaration's own key begins with its module, which is why this predicate
-        // exists at all — and the name here is the short one, which is what someone
-        // searching types.
-        sink.Add(CodeIndex.SearchByName, CodeIndex.SearchFact(simple, fact));
-
-        // And once more folded, because sigla has no `toLower` to apply at read time —
-        // invariant rather than current-culture, since the server compares bytes and
-        // has no notion of a culture.
-        sink.Add(CodeIndex.SearchByLowerName,
-            CodeIndex.SearchLowerFact(simple.ToLowerInvariant(), fact));
-
-        Declarations++;
-        return new Declared(fact, module, simple, kind, first);
+        return null;
     }
 
+    /// <summary>The file fact for a path, and the project edges that go with it.</summary>
     private FjordFact FileOf(string path)
     {
-        Debug.Assert(_gate.IsHeldByCurrentThread, "the file memo is shared");
-
         if (_files.TryGetValue(path, out var known))
         {
             return known;
         }
 
-        var fact = CodeIndex.FileFact(path);
-        _files[path] = fact;
-        sink.Add(CodeIndex.File, fact);
+        // **Built outside, published with `TryAdd`, and only the winner writes.** The fact
+        // is a function of the path, so two threads reaching one file build the same one —
+        // but the project edges beside it, and the count of files nobody compiles, must
+        // happen once. A `GetOrAdd` factory would not do: it runs on the losers too.
+        var fact = DotnetIndex.FileFact(path);
 
-        // **What compiles this file** — here rather than in the walk, because a file
-        // fact is also created for a file nobody walked: a declaration in another
-        // project, reached through a reference, names one.
+        if (!_files.TryAdd(path, fact))
+        {
+            return _files[path];
+        }
+
+        sink.Add(DotnetIndex.File, fact);
+
+        // **What compiles this file** — here rather than in the walk, because a file fact
+        // is also created for a file nobody walked: a declaration in another project,
+        // reached through a reference, names one. Both directions are stored because
+        // neither is derivable in a seek from the other.
         var owners = projects.Owners(path);
 
         foreach (var project in owners)
         {
-            sink.Add(CodeIndex.ProjectSource, CodeIndex.ProjectSourceFact(fact, project.Fact));
+            sink.Add(
+                DotnetIndex.SourceFileToProject,
+                DotnetIndex.SourceFileToProjectFact(fact, project.Fact));
+            sink.Add(
+                DotnetIndex.ProjectToSourceFile,
+                DotnetIndex.ProjectToSourceFileFact(project.Fact, fact));
         }
 
         if (owners.Count == 0)
         {
-            Unattributed++;
+            Interlocked.Increment(ref _unattributed);
         }
 
         return fact;
-    }
-
-    private Module ModuleFor(string path, string name)
-    {
-        Debug.Assert(_gate.IsHeldByCurrentThread, "the module memo is shared");
-
-        if (_modules.TryGetValue((path, name), out var known))
-        {
-            return known;
-        }
-
-        var fact = CodeIndex.ModuleFact(FileOf(path), name);
-        var module = new Module(fact, _modules.Count);
-        _modules[(path, name)] = module;
-        sink.Add(CodeIndex.Module, fact);
-        return module;
     }
 
     /// <summary>The path a fact names it by, or nothing if this file is not indexed.</summary>
@@ -857,33 +1274,28 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             return null;
         }
 
-        var relative = Path.GetRelativePath(root, absolute).Replace(Path.DirectorySeparatorChar, '/');
-
-        // Build output, not source. `obj/` in particular holds the generated assembly
-        // attributes every project has, which would be the same six declarations in
-        // every project and none of them anything anyone wants to find.
-        return relative.Contains("/obj/", StringComparison.Ordinal)
-            || relative.Contains("/bin/", StringComparison.Ordinal)
-            || relative.StartsWith("obj/", StringComparison.Ordinal)
-            || relative.StartsWith("bin/", StringComparison.Ordinal)
-            ? null
-            : relative;
+        // **Outside the root is not a name.** `Paths.Relative` refuses a path that climbs
+        // out — it would come back as `../../../elsewhere`, which depends on where the
+        // root happens to be, so two runs of one repository would disagree about it — and
+        // this walk used to do its own arithmetic without that check. A test project
+        // referencing a package with source in it therefore put
+        // `../../../.nuget/packages/…/Program.cs` in the index, where it named nothing a
+        // consumer could open and nothing a second run would agree with.
+        //
+        // Build output is not source either. `obj/` in particular holds the generated
+        // assembly attributes every project has, which would be the same six declarations
+        // in every project and none of them anything anyone wants to find.
+        return Paths.Relative(root, absolute) is { } relative && !Paths.IsBuildOutput(relative)
+            ? relative
+            : null;
     }
 
-    /// <summary>The namespace a symbol is declared in, spelled as it is written.</summary>
-    private static string NamespaceOf(ISymbol symbol) =>
-        symbol.ContainingNamespace is { IsGlobalNamespace: false } containing
-            ? containing.ToDisplayString()
-            : "<global>";
-
-    /// <summary>
-    /// Where the name is, rather than where the declaration starts.
-    /// </summary>
+    /// <summary>Where a declaration's name is written, rather than where its syntax starts.</summary>
     /// <remarks>
     /// A declaration's syntax node begins at its first attribute or modifier, so a
-    /// documented method's line would be the line of its <c>[Obsolete]</c>. A row of
-    /// this index is somewhere a person is meant to be able to open, so it points at
-    /// the identifier.
+    /// documented method's span would start at its <c>[Obsolete]</c>. A location in this
+    /// index is somewhere a person is meant to be able to open, so it points at the
+    /// identifier.
     /// </remarks>
     private static Location NameLocation(SyntaxNode node) => node switch
     {
@@ -903,164 +1315,4 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         ParameterSyntax parameter => parameter.Identifier.GetLocation(),
         _ => node.GetLocation(),
     };
-
-    /// <summary>The name someone searching would type.</summary>
-    private static string SimpleName(ISymbol symbol) => symbol switch
-    {
-        IMethodSymbol { MethodKind: MethodKind.Constructor } => "ctor",
-        IMethodSymbol { MethodKind: MethodKind.StaticConstructor } => "cctor",
-        IMethodSymbol { MethodKind: MethodKind.Destructor } => "finalize",
-        IMethodSymbol { MethodKind: MethodKind.UserDefinedOperator or MethodKind.Conversion } method =>
-            method.Name.StartsWith("op_", StringComparison.Ordinal) ? method.Name[3..] : method.Name,
-        IPropertySymbol { IsIndexer: true } => "this[]",
-        _ => symbol.Name,
-    };
-
-    /// <summary>
-    /// The name qualified by the types it is nested in — <c>Store.Cursor.Next</c> — but
-    /// not by its namespace, which the module it points at already names.
-    /// </summary>
-    /// <remarks>
-    /// A constructor is <c>Store.ctor</c> rather than <c>Store</c> deliberately: a type
-    /// and its constructor declared on one line would otherwise be one key with two
-    /// kinds, which is a conflict the server is right to reject.
-    /// </remarks>
-    private static string QualifiedName(ISymbol symbol)
-    {
-        var qualified = new StringBuilder(SimpleName(symbol));
-
-        for (var type = symbol.ContainingType; type is not null; type = type.ContainingType)
-        {
-            qualified.Insert(0, '.').Insert(0, type.Name);
-        }
-
-        return qualified.ToString();
-    }
-
-    /// <summary>
-    /// The doc comment somebody wrote above a declaration, stripped of its slashes.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The trivia rather than <c>GetDocumentationCommentXml</c>: that builds and
-    /// formats an XML document per symbol, and what a search result wants to show is
-    /// what a person typed. The tags are left in — they are part of what was written,
-    /// and a consumer that wants only the summary can find it.
-    /// </para>
-    /// <para>
-    /// <b>A partial type documented in two files gets one of them.</b> The declaration
-    /// this reads is the one <c>src.Decl</c>'s line came from, so the fact and its
-    /// value name the same place, which is the property that matters.
-    /// </para>
-    /// </remarks>
-    private static string? DocComment(ISymbol symbol)
-    {
-        if (symbol.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not { } node)
-        {
-            return null;
-        }
-
-        // **A field's comment is above the declaration, not above the declarator.**
-        // `int a, b;` is one declaration and two declarators, the symbol hangs off the
-        // declarator, and the trivia is on the statement two levels up — so asking the
-        // declarator finds nothing, silently, for every documented field in a codebase.
-        if (node is VariableDeclaratorSyntax { Parent.Parent: BaseFieldDeclarationSyntax field })
-        {
-            node = field;
-        }
-
-        StringBuilder? text = null;
-
-        foreach (var trivia in node.GetLeadingTrivia())
-        {
-            if (!trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia)
-                && !trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia))
-            {
-                continue;
-            }
-
-            text ??= new StringBuilder();
-
-            foreach (var line in trivia.ToFullString().Split('\n'))
-            {
-                var stripped = line.TrimStart().TrimStart('/', '*').Trim();
-
-                if (stripped.Length > 0)
-                {
-                    if (text.Length > 0)
-                    {
-                        text.Append('\n');
-                    }
-
-                    text.Append(stripped);
-                }
-            }
-        }
-
-        return text is { Length: > 0 } ? Clip(text.ToString()) : null;
-    }
-
-    /// <summary>
-    /// A string bounded, because a block is bounded.
-    /// </summary>
-    /// <remarks>
-    /// A block carries up to <c>--batch</c> facts in one frame, and a frame's payload
-    /// caps at 64 MiB — so a generated file with a megabyte on one line, or a doc
-    /// comment holding an entire specification, is a stream failure rather than a large
-    /// fact. Four thousand characters is past anything a person writes on a line and
-    /// leaves the default batch two orders of magnitude clear of the cap.
-    /// </remarks>
-    private static string Clip(string text) =>
-        text.Length <= MaxText ? text : text[..MaxText];
-
-    private const int MaxText = 4096;
-
-    private static string KindOf(ISymbol symbol) => symbol switch
-    {
-        INamedTypeSymbol type => type.TypeKind switch
-        {
-            TypeKind.Class => type.IsRecord ? "record" : "class",
-            TypeKind.Struct => type.IsRecord ? "record struct" : "struct",
-            TypeKind.Interface => "interface",
-            TypeKind.Enum => "enum",
-            TypeKind.Delegate => "delegate",
-            _ => "type",
-        },
-
-        IMethodSymbol method => method.MethodKind switch
-        {
-            MethodKind.Constructor or MethodKind.StaticConstructor => "ctor",
-            MethodKind.Destructor => "dtor",
-            MethodKind.UserDefinedOperator or MethodKind.Conversion => "operator",
-            MethodKind.LocalFunction => "local function",
-            _ => "method",
-        },
-
-        IPropertySymbol property => property.IsIndexer ? "indexer" : "property",
-
-        IFieldSymbol field =>
-            field.ContainingType?.TypeKind == TypeKind.Enum ? "enum member"
-            : field.IsConst ? "const"
-            : "field",
-
-        IEventSymbol => "event",
-
-        _ => "declaration",
-    };
-
-    /// <summary>The first namespace the file declares, or the global one.</summary>
-    private static string PrimaryNamespace(SyntaxNode syntax)
-    {
-        // A namespace declaration is a child of the compilation unit, so this is a scan
-        // of the top level rather than of the file.
-        foreach (var node in syntax.ChildNodes())
-        {
-            if (node is BaseNamespaceDeclarationSyntax declaration)
-            {
-                return declaration.Name.ToString();
-            }
-        }
-
-        return "<global>";
-    }
 }

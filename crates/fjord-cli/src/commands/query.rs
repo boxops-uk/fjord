@@ -364,7 +364,7 @@ mod tests {
     ) -> super::Summary {
         run(
             &Target::at(&serving.socket, "code"),
-            "F where src.File F",
+            "F where code.File F",
             // Counted rather than rendered: what these tests are about is *how many*
             // rows crossed the socket before the cancel landed, and a table would put
             // six hundred lines through the harness to say it.
@@ -474,7 +474,7 @@ mod tests {
 
         let summary = run(
             &Target::at(&serving.socket, "code"),
-            "X where src.File X; src.File _; src.File _",
+            "X where code.File X; code.File _; code.File _",
             Rendering::plain(RowFormat::Count),
             Limits {
                 rows: Some(5),
@@ -496,7 +496,7 @@ mod tests {
         // assertion above would hold for a build that never sent a profile at all.
         let whole = run(
             &Target::at(&serving.socket, "code"),
-            "F where src.File F",
+            "F where code.File F",
             Rendering::plain(RowFormat::Count),
             Limits::default(),
             true,
@@ -608,7 +608,7 @@ mod catalogue {
     /// A query that never mentions the catalogue does not pay for one.
     ///
     /// Not a performance nicety: building it walks the store root and reads a sidecar
-    /// per database, and doing that on every query about `src.File` would make every
+    /// per database, and doing that on every query about `code.File` would make every
     /// read cost a directory listing. The assertion is indirect — the query answers —
     /// but the guard it protects is the `reads` check, and deleting that check makes
     /// this test slower rather than red, so the comment is the guard's real home.
@@ -616,7 +616,7 @@ mod catalogue {
     fn an_ordinary_query_still_answers_with_the_catalogue_declared() {
         let serving = serving(4);
 
-        let (summary, _) = ask(&serving, "F where src.File F");
+        let (summary, _) = ask(&serving, "F where code.File F");
 
         assert_eq!(summary.rows, 4);
     }
@@ -650,7 +650,7 @@ mod over_tcp {
             let target = Target::resolve(address, &local, true).expect("an address");
             run(
                 &target,
-                "F where src.File F",
+                "F where code.File F",
                 Rendering::plain(RowFormat::Count),
                 Limits::default(),
                 false,
@@ -769,7 +769,7 @@ mod mixed {
         // re-opened per outer row.
         let rows = count(
             &serving,
-            "{db = D.name, file = F} where D = fjord.db.List _; src.File F",
+            "{db = D.name, file = F} where D = fjord.db.List _; code.File F",
         );
         assert_eq!(rows, FILES as u64, "one database × {FILES} files");
     }
@@ -787,11 +787,11 @@ mod mixed {
 
         let catalogue_first = count(
             &serving,
-            "{db = D.name, file = F} where D = fjord.db.List _; src.File F",
+            "{db = D.name, file = F} where D = fjord.db.List _; code.File F",
         );
         let files_first = count(
             &serving,
-            "{db = D.name, file = F} where src.File F; D = fjord.db.List _",
+            "{db = D.name, file = F} where code.File F; D = fjord.db.List _",
         );
 
         assert_eq!(catalogue_first, files_first);
@@ -814,7 +814,7 @@ mod mixed {
 
         let absent = count(
             &serving,
-            "F where src.File F; !fjord.db.List {name = \"no-such-database\"}",
+            "F where code.File F; !fjord.db.List {name = \"no-such-database\"}",
         );
         assert_eq!(
             absent, FILES as u64,
@@ -823,7 +823,7 @@ mod mixed {
 
         let present = count(
             &serving,
-            "F where src.File F; !fjord.db.List {name = \"code\"}",
+            "F where code.File F; !fjord.db.List {name = \"code\"}",
         );
         assert_eq!(
             present, 0,
@@ -834,32 +834,29 @@ mod mixed {
     /// **A fetch beside the catalogue** — the path that makes the wrapped store answer a
     /// *point read* rather than a scan.
     ///
-    /// `D.module.name` reads **through** a reference: one `point()` per row of the level
+    /// `R.from.name` reads **through** a reference: one `point()` per row of the level
     /// above, which is the second of `FactStore`'s two methods and the one no other test
     /// here reaches — a file is a bare string, so a query over files alone never asks for
-    /// one. `Catalogued::point` has to delegate an id belonging to a stored predicate,
-    /// and the failure if it did not would be a fetch answering with catalogue bytes:
-    /// not an error, a wrong name.
+    /// one, and a declaration's own fields are in its key. `Catalogued::point` has to
+    /// delegate an id belonging to a stored predicate, and the failure if it did not
+    /// would be a fetch answering with catalogue bytes: not an error, a wrong name.
     #[test]
     fn a_fetch_through_a_reference_works_beside_the_catalogue() {
         const FILES: usize = 6;
         let serving = serving(FILES);
 
         // The fetch alone, first, so the count below has something to be compared with.
-        let alone = count(
-            &serving,
-            "{d = D.name, m = D.module.name} where D = src.Decl _",
-        );
+        let alone = count(&serving, "{d = R.from.name} where R = code.Ref _");
         assert_eq!(alone, FILES as u64);
 
         let beside = count(
             &serving,
-            "{db = C.name, d = D.name, m = D.module.name} \
-             where C = fjord.db.List _; D = src.Decl _",
+            "{db = C.name, d = R.from.name} \
+             where C = fjord.db.List _; R = code.Ref _",
         );
         assert_eq!(
             beside, FILES as u64,
-            "one database × {FILES} declarations, each one fetching its module"
+            "one database × {FILES} references, each one fetching its source"
         );
     }
 
@@ -877,7 +874,7 @@ mod mixed {
         const _: () = assert!(FILES > 3 * SERVER_CHUNK);
 
         let serving = serving(FILES);
-        let query = "{db = D.name, file = F} where D = fjord.db.List _; src.File F";
+        let query = "{db = D.name, file = F} where D = fjord.db.List _; code.File F";
 
         let whole = count(&serving, query);
         assert_eq!(whole, FILES as u64);
@@ -920,7 +917,7 @@ mod mixed {
         // case below evidence rather than an absence.
         let matched = count(
             &serving,
-            "{db = N, file = F} where fjord.db.List {name = N}; src.File F; N = \"code\"",
+            "{db = N, file = F} where fjord.db.List {name = N}; code.File F; N = \"code\"",
         );
         assert_eq!(matched, FILES as u64, "the one database × every file");
 
@@ -929,7 +926,7 @@ mod mixed {
         // either side would answer zero to both, and the pair separates them.
         let unmatched = count(
             &serving,
-            "{db = N, file = F} where fjord.db.List {name = N}; src.File F; N = \"nope\"",
+            "{db = N, file = F} where fjord.db.List {name = N}; code.File F; N = \"nope\"",
         );
         assert_eq!(unmatched, 0, "no database is called `nope`");
     }
@@ -981,7 +978,7 @@ mod surface {
 
         let expanded = run(
             &Target::at(&serving.socket, "code"),
-            "D where src.Decl D",
+            "D where code.Decl D",
             Rendering {
                 format: RowFormat::Count,
                 expand: fjord_client::FULL_DEPTH,
@@ -994,9 +991,9 @@ mod surface {
 
         assert_eq!(expanded.rows, FILES as u64, "the same rows either way");
         assert_eq!(
-            expanded.fetched,
-            (FILES * 2) as u64,
-            "one module and one file per declaration, each read once"
+            expanded.fetched, FILES as u64,
+            "one declaration per reference, each read once — the chain is one hop \
+             deep now that a declaration names its file directly"
         );
         assert_eq!(
             expanded.unresolved, 0,
@@ -1006,7 +1003,7 @@ mod surface {
         // Off, nothing is read at all — the flag is the whole difference.
         let plain = run(
             &Target::at(&serving.socket, "code"),
-            "D where src.Decl D",
+            "D where code.Decl D",
             Rendering::plain(RowFormat::Count),
             Limits::default(),
             false,
@@ -1020,7 +1017,7 @@ mod surface {
         // One hop reads the modules and not their files.
         let shallow = run(
             &Target::at(&serving.socket, "code"),
-            "D where src.Decl D",
+            "D where code.Decl D",
             Rendering {
                 format: RowFormat::Count,
                 expand: 1,
@@ -1252,7 +1249,7 @@ mod surface {
     fn a_disjunction_draws_one_branch_from_each_store() {
         let serving = serving(FILES);
 
-        let both = count(&serving, "N where fjord.db.List {name = N} | src.File N");
+        let both = count(&serving, "N where fjord.db.List {name = N} | code.File N");
         assert_eq!(
             both,
             FILES as u64 + 1,
@@ -1262,7 +1259,7 @@ mod surface {
         // Each branch alone, so the sum above is a sum of two known things rather than a
         // number that happens to be right.
         assert_eq!(count(&serving, "N where fjord.db.List {name = N}"), 1);
-        assert_eq!(count(&serving, "N where src.File N"), FILES as u64);
+        assert_eq!(count(&serving, "N where code.File N"), FILES as u64);
     }
 
     /// A negation of a **stored** predicate, over a variable the **catalogue** bound.
@@ -1275,12 +1272,12 @@ mod surface {
         let serving = serving(FILES);
 
         // No file is named `code`, so the database survives the negation.
-        let survives = count(&serving, "N where fjord.db.List {name = N}; !src.File N");
+        let survives = count(&serving, "N where fjord.db.List {name = N}; !code.File N");
         assert_eq!(survives, 1, "no file is called `code`");
 
         // The assertion's partner: with the negation the other way up, the same row is
         // excluded — so the pair says the probe ran rather than that it matched nothing.
-        let excluded = count(&serving, "N where fjord.db.List {name = N}; src.File N");
+        let excluded = count(&serving, "N where fjord.db.List {name = N}; code.File N");
         assert_eq!(excluded, 0, "and asserting it instead answers nothing");
     }
 
@@ -1290,7 +1287,7 @@ mod surface {
     fn a_negation_of_the_catalogue_reads_a_stored_binding() {
         let serving = serving(FILES);
 
-        let all = count(&serving, "F where src.File F; !fjord.db.List {name = F}");
+        let all = count(&serving, "F where code.File F; !fjord.db.List {name = F}");
         assert_eq!(all, FILES as u64, "no file shares a name with a database");
     }
 
@@ -1357,7 +1354,7 @@ mod surface {
 
         let rows = count(
             &serving,
-            "{db = N, file = F} where N = (M where fjord.db.List {name = M}); src.File F",
+            "{db = N, file = F} where N = (M where fjord.db.List {name = M}); code.File F",
         );
         assert_eq!(rows, FILES as u64, "the subquery's one row × every file");
     }

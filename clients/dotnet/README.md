@@ -112,13 +112,85 @@ a producer.
 order-preserving, self-delimiting and frozen on disk; none of that is on the wire, and
 a client never sees it.
 
+## The flag day: what to do when a shipped schema moves
+
+A client sends **one** whole-schema fingerprint and the server checks it for equality, so
+any edit to that file refuses every client until each one is rebuilt. The protocol carries
+an alternative — per-predicate containment, which would make an *additive* change free —
+and it is deliberately not used: the default schema is not expected to move often, and a
+version bump is the accepted cost of the simpler client. That decision is the reason this
+section exists.
+
+**There was a script for this, and it is gone.** `scripts/flag-day.sh` walked nine steps
+in order and stopped at the first stale one, because the expensive failure was discovering
+step 3 after step 7. Every step that was a *correctness* claim is a test now, and a test is
+a required check rather than a thing somebody remembers to run:
+
+| what the script checked | what checks it now |
+|---|---|
+| the schema resolves, and its number | `every_shipped_schema_has_a_recorded_fingerprint` |
+| each client's constant | `the_dotnet_clients_carry_the_fingerprint_the_schema_has`, per schema and by name |
+| the Rust side agrees byte for byte | `byte_identical_with_the_dotnet_client` |
+| the fixture reader's counts and key order | `sample_schema`'s four tests |
+| the suite and the lint gate | the ordinary gate |
+
+What went with it is one nudge rather than one guarantee: it noticed goldens that had
+been regenerated and not committed, which is a `git status` away.
+
+So the order below is for a person, and nothing enforces it:
+
+1. **Edit the schema** — `schemas/demo.sigla` for the demo and the fixture,
+   `schemas/dotnet.sigla` for what the indexer writes. **A shared layer moves more than
+   itself**: `csharp.sigla` is imported by `dotnet.sigla` and by `index.sigla`, so editing
+   it moves three numbers, and which three is a thing to read off the imports rather than
+   remember.
+2. **Read the new number** — `fjord --schema-path ./schemas schema check <file>`, over
+   **every** shipped schema rather than the one you edited, so the set that moved is
+   measured and not guessed.
+3. **Paste it into the constant that states *that* schema.** The clients are written
+   against different schemas: `Boxops.Fjord.Demo/Program.cs` states `demo.sigla`,
+   `Boxops.Fjord.Indexer/DotnetIndex.cs` states `dotnet.sigla`, and
+   `Boxops.Fjord.Scip/ScipFacts.cs` states `index.sigla` — three, each restated
+   independently on purpose. The test above checks each against its own, so a missed one
+   is a red suite rather than a refused handshake at somebody's site.
+4. **Regenerate the goldens** — `./clients/dotnet/emit-golden.sh`. This needs a .NET SDK,
+   and it is the step most often forgotten because the Rust test that depends on it
+   *looks* like a Rust problem.
+5. **Check the Rust side still agrees** — `cargo test -p fjord-client byte_identical`. Its
+   corpus is stated independently, so a block added on one side and not the other fails
+   here by count before it fails by bytes.
+6. **Update `crates/fjord-cli/src/sample_schema.rs`** if the fixture moved: the predicate
+   count, `KEY_ORDER`, `VALUE_ORDER` and the name lookups.
+7. **Bump the .NET package version** in the same commit that re-pastes the constant. A
+   moved fingerprint *is* a client release, and an un-upgraded client's refusal is the
+   designed failure — `a_schema_mismatch_is_refused_at_the_handshake` asserts it names
+   both numbers, so an operator can tell a stale client from one pointed at the wrong
+   database.
+8. **`cargo test` and the pinned lint gate.**
+
+A schema *re-keying* — changing a predicate's key rather than adding one — is a bigger
+job than this: every query and every producer that reads the predicate moves with it, and
+no script can find them. Rehearse it end to end on a branch first.
+
 ## What is not implemented
 
 The client mirrors the server, so it stops where the server does. Streams are issued
 sequentially — the ids are real and the server tags every reply with one, but this
-client sends a stream's frames and reads its replies before starting the next. There is
-no cancellation and no flow control. All three are named as deferred in
-[operations](../../website/content/operations.md).
+client sends a stream's frames and reads its replies before starting the next, so one
+result is open at a time and `FjordConnection.Rows` refuses a second while one is. There
+is no per-stream flow control, which is
+[deferred](../../website/content/operations.md) on the server too.
+
+**Paging, counting and cancellation are implemented, and they travel together.**
+`FjordConnection.Rows` pulls a page at a time and yields rows, so `Take(n)` costs one
+page rather than the whole result; `Page` is the single exchange under it, and
+`CountRows` asks for the total without a row being encoded. Cancellation is what makes
+the first of those safe rather than a hazard: a caller that stops mid-page leaves that
+page's remaining rows on a socket every stream shares, so disposing the enumerator sends
+`CANCEL` on the open stream and reads to its `Complete` before handing the connection
+back. `Query` still collects the whole result and still cannot be stopped — it is the
+right thing for a result whose size the caller already knows, and the wrong thing for
+one it does not.
 
 There is no test project: the console program *is* the test, and it is a better one
 than a unit suite would be, because it runs against the real server over a real socket.
@@ -142,15 +214,3 @@ and does the database hold up when the facts were not chosen to be convenient. I
 own [README](Boxops.Fjord.Indexer/README.md) — what it maps onto the twenty-two predicates,
 what it resolves, and what the numbers it prints mean.
 
-**It also writes to Glean.** `--glean-out <dir>` puts the same facts into Glean's own JSON
-batch format instead, against [`glean/fjbench.angle`](glean/fjbench.angle) — a predicate,
-field and *field-order* preserving translation of `schemas/code.sigla`:
-
-```sh
-./clients/dotnet/index-repo-glean.sh ~/src/SomeSolution fjbench --syntax-only
-```
-
-One walk, two sinks, so a measurement of the two systems is a measurement of the two
-systems and not of two indexers. What that costs to keep honest — nested references on
-both paths, `int` becoming `nat`, and the fact that emitting is not writing — is in the
-indexer's README under *Into Glean instead*.

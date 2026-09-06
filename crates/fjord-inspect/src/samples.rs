@@ -9,7 +9,7 @@
 //!
 //! The schema is [`schemas/demo.sigla`](crate::demo) — the site's own, small
 //! enough to read in a screen and chosen so every shape the language has
-//! appears exactly once. `code.sigla` is the real one and cannot do this job:
+//! appears exactly once. `dotnet.sigla` is the real one and cannot do this job:
 //! it has no union and no nested record, so a select, a union pattern and a
 //! discriminant residual would have nothing to bind against.
 

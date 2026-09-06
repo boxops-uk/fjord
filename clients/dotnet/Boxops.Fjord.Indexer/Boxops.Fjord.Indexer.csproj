@@ -19,6 +19,14 @@
     <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces" Version="4.14.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- **The gates have to be able to see what they gate.** The walk's internals are
+         internal, and six of the indexer runs state a mechanical gate over them. The write
+         half is published in `Boxops.Fjord.Client` now, so what is left behind this is the
+         indexer's own machinery; it grants nothing to a consumer. -->
+    <InternalsVisibleTo Include="Boxops.Fjord.Tests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>

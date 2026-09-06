@@ -83,9 +83,11 @@ impl FieldPath {
     /// one is [`FjordError::DiscriminantMismatch`] rather than another type's bytes
     /// read as this type's.
     ///
-    /// Flatten emits the tag's own check *before* any residual reading through the
-    /// payload, so from a compiled plan that error is unreachable; it is here for a
-    /// plan built by hand or arriving over the wire. See [phase 8.6 D-d].
+    /// Flatten hands the executor a source's residuals **ordered outside-in**: every
+    /// tag check sits ahead of the residuals reading through the payload it names,
+    /// whichever pass emitted either of them. So from a compiled plan that error is
+    /// unreachable; it is here for a plan built by hand or arriving over the wire,
+    /// where nothing has ordered anything. See [phase 8.6 D-d].
     ///
     /// [`FjordError::DiscriminantMismatch`]: crate::error::FjordError::DiscriminantMismatch
     /// [phase 8.6 D-d]: ../../../website/content/storage.md
@@ -133,10 +135,50 @@ impl fmt::Display for FieldPath {
     }
 }
 
+/// Where a level's scan opens, and — just as much — what ends the range it opens.
+///
+/// **Two of these forms are the same bytes asking different questions**, which is
+/// why the *variant* rather than the byte string is what the executor reads. A run
+/// of complete field encodings — `X = "a"`, a constant bind folded — names the keys
+/// of those values, and the keys of a **greater** value can extend it: `enc(v)` is
+/// a byte prefix of `enc(w)` exactly when `w` is `v` with a NUL and more after it,
+/// so the range ends at the separator
+/// [`above_field`](fjord_encoding::tuple::above_field). A byte prefix of one field —
+/// `X = "a"..`, whose whole point is to match every value the prefix starts — names
+/// every key sharing those bytes, so it ends at their successor
+/// [`strinc`](fjord_encoding::tuple::strinc). Read off the bytes rather than the
+/// variant the two are indistinguishable, and whichever end is chosen is wrong for
+/// the other: the successor swallows the NUL-extensions an equality excludes, and
+/// the separator cuts off the ones a pattern is asking for.
 #[derive(Debug, Clone)]
 pub enum SeekKey {
+    /// A run of **complete field encodings**, every one of them constant — the
+    /// common case, merged into one byte string because it needs no per-row work.
+    /// A run may also end at a **union tag**, which `narrow_by_tag` pins where the
+    /// prefix has closed on a union: self-delimiting, with the payload following.
     Prefix(Box<[u8]>),
+    /// The same run where a register's bytes have to be spliced in each time the
+    /// level is opened. Every part is a whole field: a constant, a field of a bound
+    /// row, or a bound row's identity.
     Composite(Box<[SeekKeyPart]>),
+    /// A fixed prefix, then a **byte prefix of one field** — the seek form of
+    /// sigla's `..`.
+    ///
+    /// `prefix` is a field encoding with its terminator dropped, which is exactly
+    /// what every value beginning with that payload begins with ([I1]) — so one run
+    /// of the value order is one run of the key order here too, and the range is
+    /// the successor's.
+    ///
+    /// **Beside the parts rather than in them**, for the reason
+    /// [`Bounded`](SeekKey::Bounded)'s edges are: nothing may follow it. A part
+    /// appended after a partial field would compare the next field against bytes
+    /// belonging to this one, matching nothing, silently.
+    ///
+    /// [I1]: ../../../website/content/invariants.md#i1
+    PrefixRange {
+        parts: Box<[SeekKeyPart]>,
+        prefix: Box<[u8]>,
+    },
     /// A fixed prefix, then **one bounded field** — the seek form of an order
     /// comparison.
     ///
@@ -170,13 +212,16 @@ pub enum SeekKey {
 /// One end of a [`SeekKey::Bounded`] range: the encoded field value, and whether
 /// the bound itself is in.
 ///
-/// **The inclusivity is a successor, not a comparison.** A stored key runs on past
+/// **The inclusivity is a separator, not a comparison.** A stored key runs on past
 /// the bounded field, so every row *at* the bound sorts after `prefix ++ value` —
 /// which makes `>= v` and `< v` the bare concatenation, and `> v` and `<= v` the
-/// same bytes put through [`strinc`](fjord_encoding::tuple::strinc), the successor a
-/// prefix's own upper bound already uses. Conflating the two is an off-by-one at
-/// the boundary and nowhere else, which is exactly the shape of bug that survives
-/// a hand-checked example.
+/// same bytes put through
+/// [`above_field`](fjord_encoding::tuple::above_field), which lands between the
+/// keys at `v` and the keys above it. Conflating the two is an off-by-one at the
+/// boundary and nowhere else, which is exactly the shape of bug that survives a
+/// hand-checked example — and reaching for a prefix's own upper bound instead is
+/// the shape that survives every value but one whose encoding another extends
+/// through a NUL.
 #[derive(Debug, Clone)]
 pub struct RangeEdge {
     pub value: Box<[u8]>,
@@ -244,11 +289,11 @@ pub struct Guide {
 pub enum ResidualOp {
     EqConst(Box<[u8]>),
     Prefix(Box<[u8]>),
-    /// The negatives of the two above — `X != "abc"`, `X != "a".."`.
+    /// The negatives of the two above — `X != "abc"`, `X != "a"..`.
     ///
     /// Residuals and nothing else, where their positive twins are the residual
     /// *form* of something a seek could also do. A prefix denotes one contiguous
-    /// range of the key order, so `X = "a".."` narrows a seek; its negation is the
+    /// range of the key order, so `X = "a"..` narrows a seek; its negation is the
     /// two ranges either side of that one, which no single seek expresses. So a
     /// denial always reads the rows and drops them, and there is no sargeable
     /// variant of these to look for later.
@@ -952,6 +997,10 @@ impl Fingerprint {
         match ty {
             PredicateTy::Int => self.byte(0),
             PredicateTy::Str => self.byte(1),
+            // Its own next free number in this table, derived from no other: sharing
+            // `Str`'s would make a plan over a `bytes` key the same plan as one over a
+            // `string` key, and a cursor issued against one accepted by the other.
+            PredicateTy::Bytes => self.byte(5),
             PredicateTy::Fact(p) => {
                 self.byte(2);
                 self.int(u64::from(p.0));
@@ -988,6 +1037,10 @@ impl Fingerprint {
             Value::Str(s) => {
                 self.byte(2);
                 self.bytes(s.as_bytes());
+            }
+            Value::Bytes(payload) => {
+                self.byte(6);
+                self.bytes(payload);
             }
             Value::FactRef(id) => {
                 self.byte(3);
@@ -1064,6 +1117,16 @@ impl Fingerprint {
             SeekKey::Composite(parts) => {
                 self.byte(1);
                 self.seek_key_parts(parts);
+            }
+            // Its own tag, and that is the whole of why the variant exists: the same
+            // byte string as a complete field encoding and as a byte prefix of one
+            // opens two different ranges, so a cursor from either must not be
+            // accepted by the other — replayed across, the saved key would resume a
+            // range it was never inside.
+            SeekKey::PrefixRange { parts, prefix } => {
+                self.byte(3);
+                self.seek_key_parts(parts);
+                self.bytes(prefix);
             }
             // Its own tag, and both edges inside it. A cursor is accepted on a plan
             // fingerprint and a bound is what positions the scan, so two plans
@@ -1502,6 +1565,49 @@ mod tests {
                             }])),
                         },
                         residuals: Box::new([]),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            // **The same bytes read the other way**, which is the whole reason
+            // `PrefixRange` is a variant: the base plan's seek is those bytes as a
+            // run of complete field encodings, and this one is them as a byte prefix
+            // of a field. The two open ranges with different ends, so a token from
+            // either would start the page somewhere the other query never was — and
+            // the byte string cannot tell them apart.
+            (
+                "the same bytes as a byte prefix of one field",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    l.sources = Box::new([Source::Seek {
+                        access: Access {
+                            predicate_id: PredicateId(1),
+                            seek_key: SeekKey::PrefixRange {
+                                parts: Box::new([]),
+                                prefix: Box::new([1, 2]),
+                            },
+                        },
+                        residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                    }]);
+                    body[0] = Step::Level(l);
+                }),
+            ),
+            (
+                "a byte prefix of one field behind a spliced register",
+                with_body(&|body| {
+                    let mut l = level(body, 0);
+                    l.sources = Box::new([Source::Seek {
+                        access: Access {
+                            predicate_id: PredicateId(1),
+                            seek_key: SeekKey::PrefixRange {
+                                parts: Box::new([SeekKeyPart::RegisterField {
+                                    address: Address::new(0),
+                                    path: FieldPath::field(0),
+                                }]),
+                                prefix: Box::new([1, 2]),
+                            },
+                        },
+                        residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
                     }]);
                     body[0] = Step::Level(l);
                 }),
@@ -1964,7 +2070,7 @@ pub mod proptest {
         Access, Address, Compare, FieldPath, FuzzyAnchor, Guide, Level, Plan, Project, RangeEdge,
         Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step,
     };
-    use crate::fixtures::{compose, i64_field, interner_with, str_field};
+    use crate::fixtures::{bytes_field, compose, i64_field, interner_with, str_field};
     use fjord_encoding::tuple::{MARK_TERM, UnionTag, Value};
     use fjord_schema::schema::{Alternative, LocalInterner, PredicateId, PredicateTy};
     use fjord_store_mem::MemStore;
@@ -1988,6 +2094,39 @@ pub mod proptest {
     /// either exactly one value or all of them — never the interesting middle.
     const INTS: [i64; 4] = [0, 1, 2, 3];
     const STRS: [&str; 3] = ["a", "ab", "b"];
+
+    /// The `bytes` domain — payload for payload the same as [`STRS`], so the two
+    /// families differ in the family and not in the values.
+    const BLOBS: [&[u8]; 3] = [b"a", b"ab", b"b"];
+
+    /// The values a **stored key** holds that the two domains above leave out:
+    /// the same values with an embedded NUL.
+    ///
+    /// Separate domains rather than more entries above, because the two generators
+    /// want different things. The query generator writes sigla, and its oracle is a
+    /// model reasoning over the source it wrote; the plan generator writes bytes,
+    /// and a NUL is the byte the *encoding* turns on — a terminated field is
+    /// `MARK ++ escaped(payload) ++ 0x00` with a payload NUL escaped to `0x00 0xFF`,
+    /// so `enc("a")` is a byte prefix of `enc("a\0")` and of nothing else.
+    ///
+    /// **[`STRS`] and [`BLOBS`] are prefix-free and these are what breaks that**,
+    /// which is the whole reason they are drawn: over a prefix-free domain the
+    /// separator and the successor answer a seek identically — a bound's excluding
+    /// edges and the end of the range a spliced equality opens alike — so every law
+    /// about either holds of both, vacuously.
+    const NUL_STRS: [&str; 2] = ["a\u{0}", "a\u{0}b"];
+    const NUL_BLOBS: [&[u8]; 2] = [b"a\x00", b"a\x00b"];
+
+    /// One value of a stored domain: `base`, then the values only a stored key can
+    /// hold.
+    fn stored<T: Copy>(base: &[T], only_stored: &[T], pick: u8) -> T {
+        let n = pick as usize % (base.len() + only_stored.len());
+
+        match n.checked_sub(base.len()) {
+            None => base[n],
+            Some(n) => only_stored[n],
+        }
+    }
 
     /// Terms to draw a fuzzy match for, at one edit against [`STRS`]: `"a"` reaches
     /// all three, `"ac"` reaches `"a"` and `"ab"`, `"b"` reaches `"a"` and `"b"`.
@@ -2016,7 +2155,11 @@ pub mod proptest {
 
     /// Upper bound (exclusive) on every "pick" draw; resolution takes it modulo
     /// however many options are legal in context.
-    const PICKS: u8 = 4;
+    ///
+    /// It has to reach the *widest* domain any draw resolves against, or the tail
+    /// of that domain is unreachable and the census that would have said so is the
+    /// only thing standing between a five-value domain and a three-value one.
+    const PICKS: u8 = 5;
 
     /// One head record field per level, so the projected row shows every binding.
     /// Listed in level order, which for these names is also sorted order — a head
@@ -2031,6 +2174,12 @@ pub mod proptest {
     pub enum FieldTy {
         Int,
         Str,
+        /// The other terminated family, and the one whose payloads are NUL-bearing
+        /// **by design** — a digest is not text and nothing filters a zero out of
+        /// it. It shares `string`'s escaping, so a bound over it is the same
+        /// arithmetic; drawn separately because a family reached only through the
+        /// family beside it is a family the census cannot count.
+        Bytes,
         /// `{ num : int = 3 | text : string = 0 }` — the same shape everywhere, with
         /// the same tags the fixture uses and for the same reason: neither of them is a
         /// position, and they are not in declaration order.
@@ -2060,11 +2209,12 @@ pub mod proptest {
             }
         }
 
-        /// Every field type, unions included.
+        /// Every field type, unions and `bytes` included.
         pub fn any(pick: u8) -> Self {
-            match pick % 4 {
+            match pick % 5 {
                 0 | 1 => FieldTy::Int,
                 2 => FieldTy::Str,
+                3 => FieldTy::Bytes,
                 _ => FieldTy::Union,
             }
         }
@@ -2073,6 +2223,7 @@ pub mod proptest {
             match self {
                 FieldTy::Int => PredicateTy::Int,
                 FieldTy::Str => PredicateTy::Str,
+                FieldTy::Bytes => PredicateTy::Bytes,
                 FieldTy::Union => PredicateTy::Union(Arc::from([
                     Alternative {
                         name: Spur::default(),
@@ -2099,6 +2250,7 @@ pub mod proptest {
     pub enum FieldVal {
         Int(i64),
         Str(&'static str),
+        Bytes(&'static [u8]),
         /// One alternative of [`FieldTy::Union`], with its payload.
         ///
         /// Ordered by **discriminant first**, which is what the encoding does — so a
@@ -2108,10 +2260,13 @@ pub mod proptest {
     }
 
     impl FieldVal {
+        /// **What a query can spell** — the domain [`FieldTy::of`]'s types are drawn
+        /// over, and the one the front end's generator writes source from.
         pub fn of(ty: FieldTy, pick: u8) -> Self {
             match ty {
                 FieldTy::Int => FieldVal::Int(INTS[pick as usize % INTS.len()]),
                 FieldTy::Str => FieldVal::Str(STRS[pick as usize % STRS.len()]),
+                FieldTy::Bytes => FieldVal::Bytes(BLOBS[pick as usize % BLOBS.len()]),
                 // **Both alternatives get drawn**, so a battery covers the tag as well
                 // as the payload: one pick chooses the alternative and the same pick
                 // chooses the value inside it.
@@ -2122,6 +2277,28 @@ pub mod proptest {
                         FieldVal::Union(TEXT, Box::new(FieldVal::of(FieldTy::Str, pick)))
                     }
                 }
+            }
+        }
+
+        /// **What a stored key can hold** — [`FieldVal::of`]'s domain, plus
+        /// [`NUL_STRS`] and [`NUL_BLOBS`].
+        ///
+        /// The pair to [`FieldTy::any`], and split from [`FieldVal::of`] for the
+        /// same reason: this is the plan generator's vocabulary, and the plan
+        /// generator is checked against another *reading of the bytes* rather than
+        /// against a model that reasons over source.
+        pub fn any(ty: FieldTy, pick: u8) -> Self {
+            match ty {
+                FieldTy::Str => FieldVal::Str(stored(&STRS, &NUL_STRS, pick)),
+                FieldTy::Bytes => FieldVal::Bytes(stored(&BLOBS, &NUL_BLOBS, pick)),
+                FieldTy::Union => {
+                    if pick % 2 == 0 {
+                        FieldVal::Union(NUM, Box::new(FieldVal::any(FieldTy::Int, pick)))
+                    } else {
+                        FieldVal::Union(TEXT, Box::new(FieldVal::any(FieldTy::Str, pick)))
+                    }
+                }
+                FieldTy::Int => FieldVal::of(ty, pick),
             }
         }
 
@@ -2137,6 +2314,7 @@ pub mod proptest {
             match self {
                 FieldVal::Int(i) => i64_field(*i),
                 FieldVal::Str(s) => str_field(s),
+                FieldVal::Bytes(payload) => bytes_field(payload),
                 // A group: the tag, the payload, the terminator.
                 FieldVal::Union(disc, payload) => {
                     let mut out = UnionTag::new(*disc).as_bytes().to_vec();
@@ -2154,6 +2332,7 @@ pub mod proptest {
             match self {
                 FieldVal::Int(i) => Value::Int(*i),
                 FieldVal::Str(s) => Value::Str((*s).to_owned()),
+                FieldVal::Bytes(payload) => Value::Bytes((*payload).to_owned()),
                 // The name is what the *schema* calls the alternative, and this
                 // generator's schema interns none — so the empty one, which the
                 // comparison ignores (see `Value`'s `Ord`).
@@ -2166,16 +2345,20 @@ pub mod proptest {
         }
 
         /// This value as a **sigla literal**, for writing the query that matches
-        /// it. The string domain holds no character needing an escape, so
-        /// quoting is all this has to do.
+        /// it. [`STRS`] holds no character needing an escape, so quoting is all
+        /// this has to do.
         #[must_use]
         pub fn source(&self) -> String {
             match self {
                 FieldVal::Int(i) => i.to_string(),
                 FieldVal::Str(s) => format!("{s:?}"),
-                // Unreachable from the query generator, which draws no unions — see
-                // [`FieldTy::of`] — and spelled anyway so the two vocabularies stay one
-                // vocabulary.
+                // Unreachable from the query generator, which draws neither `bytes`
+                // nor unions — see [`FieldTy::of`] — and spelled anyway so the two
+                // vocabularies stay one vocabulary.
+                FieldVal::Bytes(payload) => {
+                    let hex: String = payload.iter().map(|byte| format!("{byte:02x}")).collect();
+                    format!("0x{hex}")
+                }
                 FieldVal::Union(disc, payload) => {
                     let alt = if *disc == NUM { "num" } else { "text" };
                     format!("{{{alt} = {}}}", payload.source())
@@ -2284,6 +2467,23 @@ pub mod proptest {
         }
     }
 
+    /// How much of a level's narrowing one materialisation of a spec puts in the
+    /// **seek** — the axis a metamorphic gate moves.
+    ///
+    /// All three answer the same rows, and each pair is two readings that share the
+    /// encoding and nothing else: scan-bound arithmetic computed once from an
+    /// encoded value on one side, a byte compare per row on the other.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Narrowing {
+        /// Everything the seek can carry is in it: the spliced equality, the range,
+        /// and the automaton that walks it.
+        Seek,
+        /// The range filters and the rest of the seek stands.
+        FilterBounds,
+        /// Nothing is folded — every level scans its predicate whole.
+        Filter,
+    }
+
     #[derive(Debug, Clone)]
     struct LevelSpec {
         predicate: usize,
@@ -2318,6 +2518,53 @@ pub mod proptest {
         guide: Option<GuideSpec>,
     }
 
+    impl LevelSpec {
+        /// The narrowings `narrowing` leaves **out** of the seek, as residuals — the
+        /// oracle's side of every fold, in one place so that a materialisation
+        /// cannot drop one silently and answer more rows than the seek does.
+        fn filters(&self, narrowing: Narrowing) -> Vec<Residual> {
+            let mut out = vec![];
+
+            if let Some(bound) = self.bound.as_ref().filter(|_| narrowing != Narrowing::Seek) {
+                out.extend(bound.lo.iter().map(|e| e.residual(bound.field, true)));
+                out.extend(bound.hi.iter().map(|e| e.residual(bound.field, false)));
+            }
+
+            if narrowing != Narrowing::Filter {
+                return out;
+            }
+
+            // **At field 0**, which is where the seek put it: a seek prefix is a byte
+            // prefix of the stored key, so the one part it holds pins the first field.
+            if let Some((ref_level, ref_field)) = self.seek {
+                out.push(Residual {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::EqRegisterField {
+                        address: Address::new(ref_level),
+                        path: FieldPath::field(ref_field),
+                    },
+                });
+            }
+
+            // A guide narrows the same field a `Fuzzy` residual filters on, and by
+            // the same rule — it decides where the scan goes next rather than
+            // whether a row it produced survives, which is a difference in cost and
+            // not in rows.
+            if let Some(guide) = &self.guide {
+                out.push(Residual {
+                    path: FieldPath::field(guide.field),
+                    op: ResidualOp::Fuzzy {
+                        term: Arc::from(guide.term),
+                        distance: guide.distance,
+                        anchor: guide.anchor,
+                    },
+                });
+            }
+
+            out
+        }
+    }
+
     #[derive(Debug, Clone)]
     enum HeadSpec {
         Field { level: usize, field: usize },
@@ -2342,6 +2589,65 @@ pub mod proptest {
         /// The plan's loop-nest depth (one register, one generator per level).
         pub fn levels(&self) -> usize {
             self.levels.len()
+        }
+
+        /// Every key field type this spec's schema declares — the population a
+        /// census counts families over.
+        pub fn key_field_tys(&self) -> impl Iterator<Item = FieldTy> + '_ {
+            self.schema
+                .iter()
+                .flat_map(|predicate| predicate.fields.iter().copied())
+        }
+
+        /// Whether some drawn bound sits at a value that a **stored value of the
+        /// same field extends through a NUL** — the one input class the bounded
+        /// seek's arithmetic turns on, and the one a prefix-free value domain
+        /// cannot produce.
+        ///
+        /// Asked of the spec rather than of the plan because it is a question about
+        /// the *store beside* the bound: the plan alone says which byte string the
+        /// edge is, never whether a row exists on the far side of it.
+        pub fn bounds_a_value_a_stored_one_extends(&self) -> bool {
+            self.levels.iter().any(|level| {
+                let Some(bound) = &level.bound else {
+                    return false;
+                };
+
+                bound.lo.iter().chain(bound.hi.iter()).any(|edge| {
+                    let at = edge.val.encode();
+
+                    self.facts[level.predicate]
+                        .iter()
+                        .any(|key| extends(&at, &key[bound.field].encode()))
+                })
+            })
+        }
+
+        /// Whether some drawn seek can splice a value that a **stored key of the
+        /// predicate it seeks extends through a NUL** — the input class the bucket
+        /// seek's arithmetic turns on, and the one field 0 could not hold while it
+        /// was drawn from the prefix-free domain.
+        ///
+        /// Asked over the spliced predicate's facts rather than over one row,
+        /// because which value is spliced is decided per row at run time: the
+        /// question is whether the pair exists in the store at all, which is what
+        /// makes the case reachable.
+        pub fn splices_a_value_a_stored_one_extends(&self) -> bool {
+            self.levels.iter().any(|level| {
+                let Some((ref_level, ref_field)) = level.seek else {
+                    return false;
+                };
+
+                self.facts[self.levels[ref_level].predicate]
+                    .iter()
+                    .any(|spliced| {
+                        let at = spliced[ref_field].encode();
+
+                        self.facts[level.predicate]
+                            .iter()
+                            .any(|key| extends(&at, &key[0].encode()))
+                    })
+            })
         }
 
         /// An interner holding the head's record field names, so projection can
@@ -2385,7 +2691,7 @@ pub mod proptest {
         }
 
         pub fn build_plan(&self, interner: &LocalInterner) -> Plan {
-            self.plan(interner, true)
+            self.plan(interner, Narrowing::Seek)
         }
 
         /// The same plan with every bound written as a **filter** instead — the
@@ -2399,21 +2705,41 @@ pub mod proptest {
         /// which sense an edge is, or drops a row at the boundary disagrees with
         /// this — where a run compared against itself would not.
         pub fn build_plan_filtering(&self, interner: &LocalInterner) -> Plan {
-            self.plan(interner, false)
+            self.plan(interner, Narrowing::FilterBounds)
         }
 
-        fn plan(&self, interner: &LocalInterner, fold_bounds: bool) -> Plan {
+        /// The same plan narrowing by **nothing but residuals**: no seek prefix, no
+        /// range, no automaton — every level scans its predicate whole and drops
+        /// what does not match.
+        ///
+        /// The oracle for the **bucket** seek, and the same argument the one above
+        /// it makes. A spliced equality becomes scan bounds computed once from an
+        /// encoded value; a [`ResidualOp::EqRegisterField`] compares the two field
+        /// spans of each row it is handed. Nothing but the encoding is shared, so a
+        /// seek that opens a range one value too wide — the keys of a value another
+        /// extends through a NUL — disagrees with this, where a run compared against
+        /// itself agrees with itself perfectly.
+        pub fn build_plan_filtering_everything(&self, interner: &LocalInterner) -> Plan {
+            self.plan(interner, Narrowing::Filter)
+        }
+
+        fn plan(&self, interner: &LocalInterner, narrowing: Narrowing) -> Plan {
+            let fold_seek = narrowing != Narrowing::Filter;
+            let fold_bounds = narrowing == Narrowing::Seek;
+
             let body = self
                 .levels
                 .iter()
                 .enumerate()
                 .map(|(level, spec)| {
                     let parts: Box<[SeekKeyPart]> = match spec.seek {
-                        None => Box::new([]),
-                        Some((ref_level, ref_field)) => Box::new([SeekKeyPart::RegisterField {
-                            address: Address::new(ref_level),
-                            path: FieldPath::field(ref_field),
-                        }]),
+                        Some((ref_level, ref_field)) if fold_seek => {
+                            Box::new([SeekKeyPart::RegisterField {
+                                address: Address::new(ref_level),
+                                path: FieldPath::field(ref_field),
+                            }])
+                        }
+                        _ => Box::new([]),
                     };
 
                     let seek_key = match (&spec.bound, fold_bounds) {
@@ -2426,23 +2752,10 @@ pub mod proptest {
                         _ => SeekKey::Composite(parts),
                     };
 
-                    // The bound as filters, for the oracle: on every source, since
-                    // a bound belongs to the access every source of the level
-                    // shares.
-                    let filters: Vec<Residual> = match (&spec.bound, fold_bounds) {
-                        (Some(bound), false) => bound
-                            .lo
-                            .iter()
-                            .map(|edge| edge.residual(bound.field, true))
-                            .chain(
-                                bound
-                                    .hi
-                                    .iter()
-                                    .map(|edge| edge.residual(bound.field, false)),
-                            )
-                            .collect(),
-                        _ => vec![],
-                    };
+                    // Whatever this materialisation left out of the seek, as
+                    // filters for the oracle: on every source, since the access
+                    // is what every source of the level shares.
+                    let filters = spec.filters(narrowing);
 
                     let access = Access {
                         predicate_id: PredicateId(spec.predicate as u32),
@@ -2496,7 +2809,7 @@ pub mod proptest {
                             let residuals: Box<[Residual]> =
                                 filters.iter().cloned().chain(drawn.into_vec()).collect();
 
-                            match &spec.guide {
+                            match spec.guide.as_ref().filter(|_| fold_seek) {
                                 None => Source::Seek {
                                     access: access.clone(),
                                     residuals,
@@ -2647,9 +2960,14 @@ pub mod proptest {
     /// exercises no rows. Falls back to the domain for an empty predicate.
     fn constant_for(facts: &[Vec<FieldVal>], field: usize, ty: FieldTy, pick: u8) -> FieldVal {
         match facts.len() {
-            0 => FieldVal::of(ty, pick),
+            0 => FieldVal::any(ty, pick),
             len => facts[pick as usize % len][field].clone(),
         }
+    }
+
+    /// Whether `longer` is `shorter` plus at least one byte.
+    fn extends(shorter: &[u8], longer: &[u8]) -> bool {
+        longer.len() > shorter.len() && longer.starts_with(shorter)
     }
 
     /// Pick an already-bound `(level, field)` whose type is `want`.
@@ -2716,7 +3034,7 @@ pub mod proptest {
                             .fields
                             .iter()
                             .enumerate()
-                            .map(|(field, &ty)| FieldVal::of(ty, picks[field]))
+                            .map(|(field, &ty)| FieldVal::any(ty, picks[field]))
                             .collect()
                     })
                     .collect();

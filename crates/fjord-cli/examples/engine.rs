@@ -275,9 +275,8 @@ fn resolve_instance(path: &Path) -> Result<PathBuf, String> {
 /// *Where the values come from* stays here, because an in-process bench has a `FjallDb`
 /// and a load generator has a socket, and those are not the same act.
 fn sample(db: &FjallDb, schema: &Schema) -> Pivots {
-    let file = sample_str(db, schema, "F where src.File F", 16_000);
-    let decl = sample_str(db, schema, "N where src.Decl {name = N}", 400_000);
-    let search = sample_str(db, schema, "N where src.SearchByName {name = N}", 400_000);
+    let file = sample_str(db, schema, "F where code.File F", 16_000);
+    let decl = sample_str(db, schema, "N where code.Decl {name = N}", 400_000);
 
     match (file, decl) {
         // A corpus with neither a file nor a declaration is not one to measure, and
@@ -286,7 +285,13 @@ fn sample(db: &FjallDb, schema: &Schema) -> Pivots {
         (None, None) => Pivots::unsampled(),
         (file, decl) => {
             let decl = decl.unwrap_or_else(|| "\u{0}none".to_owned());
-            let search = search.unwrap_or_else(|| decl.clone());
+
+            // **The third pivot is the declaration's name.** It was a term sampled from
+            // the search index, whose *lookup* was a seek; the fixture has no search
+            // index, so there is nothing separate to sample and Run 7 owns re-aiming the
+            // workloads that wanted one.
+            let search = decl.clone();
+
             Pivots::new(file.unwrap_or_else(|| "\u{0}none".to_owned()), decl, search)
         }
     }
@@ -302,7 +307,7 @@ fn describe(pivots: &Pivots) -> String {
 
 /// Run `sigla` and return the string at `index`, or the last row if the scan is shorter.
 ///
-/// Stops there rather than draining: a pivot from row 400,000 of `src.Decl` should cost
+/// Stops there rather than draining: a pivot from row 400,000 of `code.Decl` should cost
 /// 400,000 rows, not 888,292.
 fn sample_str(db: &FjallDb, schema: &Schema, sigla: &str, index: u64) -> Option<String> {
     let plan = compiled(sigla, schema);
@@ -837,7 +842,7 @@ fn generated(k: usize) -> String {
         if i > 0 {
             sigla.push_str("; ");
         }
-        let _ = write!(sigla, "src.File X{i}");
+        let _ = write!(sigla, "code.File X{i}");
     }
     sigla
 }
@@ -978,7 +983,7 @@ fn seek_cost(db: &FjallDb, keys: &[Vec<u8>]) -> String {
 
 /// The floor under a `Source::Fetch`: one `point` per row of the level above it.
 fn point_reads(db: &FjallDb, schema: &Schema) {
-    // Modules, because that is what `read through reference` fetches — the same
+    // Declarations, because that is what `read through reference` fetches — the same
     // predicate, so the two numbers subtract.
     let Some(module) = (0..schema.len())
         .map(|id| PredicateId(id as u32))
@@ -986,7 +991,7 @@ fn point_reads(db: &FjallDb, schema: &Schema) {
             schema
                 .get(*id)
                 .and_then(|p| p.name())
-                .is_some_and(|name| name == "src.Module")
+                .is_some_and(|name| name == "code.Decl")
         })
     else {
         return;
@@ -1069,8 +1074,10 @@ fn plan_shape(plan: &Plan, schema: &Schema) -> String {
                             let full = match &access.seek_key {
                                 SeekKey::Prefix(bytes) => bytes.is_empty(),
                                 SeekKey::Composite(parts) => parts.is_empty(),
-                                // A bound narrows the range whether or not
-                                // anything ahead of it is pinned.
+                                // A range narrows whether or not anything ahead of
+                                // it is pinned, and a prefix range's bytes are
+                                // never empty — they carry the field's marker.
+                                SeekKey::PrefixRange { .. } => false,
                                 SeekKey::Bounded { parts, lo, hi } => {
                                     parts.is_empty() && lo.is_none() && hi.is_none()
                                 }

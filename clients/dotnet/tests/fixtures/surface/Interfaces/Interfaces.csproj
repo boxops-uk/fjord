@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Interfaces</RootNamespace>
+
+    <!-- Nullable is left off deliberately. Clause 19 is about what an interface declares and
+         how a class maps onto it; a `?` annotation on an interface member would add clause
+         8.9's null state to every signature here and put the two clauses in one file. -->
+  </PropertyGroup>
+</Project>

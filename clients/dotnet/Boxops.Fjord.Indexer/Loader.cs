@@ -17,7 +17,13 @@ namespace Boxops.Fjord.Indexer;
 /// machine indexing and a machine swapping; asked for one at a time, each is reachable
 /// only while it is being walked.
 /// </remarks>
-internal sealed record LoadedProject(string Name, Func<Compilation?> Compile);
+/// <param name="Roslyn">
+/// The workspace's project, or <c>null</c> where a compilation was built without one.
+/// Carried only so <c>--styles</c> can reach a <see cref="Document"/>:
+/// <see cref="Microsoft.CodeAnalysis.Classification.Classifier"/>'s semantic-model
+/// overload is obsolete, and its supported form takes a document.
+/// </param>
+internal sealed record LoadedProject(string Name, Func<Compilation?> Compile, Project? Roslyn = null);
 
 /// <summary>What there is to walk, and what compiled it.</summary>
 /// <remarks>
@@ -25,7 +31,57 @@ internal sealed record LoadedProject(string Name, Func<Compilation?> Compile);
 /// build that produces a compilation is also the only thing that knows the project's
 /// resolved framework, its assembly name and its real source list.
 /// </remarks>
-internal sealed record LoadedSolution(IReadOnlyList<LoadedProject> Projects, ProjectIndex Build);
+/// <summary>One target framework's worth of a checkout: what to walk, and what compiled it.</summary>
+/// <remarks>
+/// <b>One of these becomes one database.</b> A project compiled for two frameworks is two
+/// compilations with different preprocessor symbols, different references and, often,
+/// different members — so the facts belong to the target rather than to the project, and
+/// there is no key in the schema that could hold both. Fanning out is the only shape that
+/// does not quietly index one of the two and call it the project.
+/// </remarks>
+internal sealed record LoadedTarget(
+    string Framework,
+    IReadOnlyList<LoadedProject> Projects,
+    ProjectIndex Build);
+
+internal sealed record LoadedSolution(
+    IReadOnlyList<LoadedTarget> Targets,
+    int Retried,
+    IReadOnlyList<string> Skipped);
+
+/// <summary>
+/// The solution file a run resolved, and the projects it lists — absolute paths.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Null is the answer for a run that resolved none</b>, and that is the whole
+/// discriminator for <c>msbuild.Solution</c> and its two edges: they belong to a run built
+/// from a solution and are absent from one built from a project. Nothing here searches for
+/// a solution that happens to list a given <c>.csproj</c> — MSBuild's containment is
+/// one-way, so the search would be inventing a claim the build system does not make.
+/// </para>
+/// <para>
+/// <b>Listed, not loaded.</b> These are the paths the solution names, whether or not the
+/// design-time build answered for them and whether or not they resolve under the index
+/// root — <see cref="ProjectIndex"/> is what decides which of them an edge can point at,
+/// and what to say about the rest.
+/// </para>
+/// </remarks>
+internal sealed record ResolvedSolution(string File, IReadOnlyList<string> Projects);
+
+/// <summary>
+/// One design-time build, as the thing that can be swapped for a test.
+/// </summary>
+/// <remarks>
+/// <b>A seam rather than a race.</b> The failure this exists for needs several MSBuild
+/// processes racing over one pipe, and a fixture small enough to run in a test cannot
+/// reach it — so a repro-based gate would be green with the bug fully present. Injected
+/// here, "a throw is retried and a clean empty result is not" is a statement about the
+/// loader, checked in milliseconds.
+/// </remarks>
+internal delegate IAnalyzerResults? DesignTimeBuild(
+    IProjectAnalyzer analyzer,
+    EnvironmentOptions environment);
 
 /// <summary>
 /// Turning a checkout into compilations, which is the half of an indexer that is not
@@ -51,24 +107,69 @@ internal sealed record LoadedSolution(IReadOnlyList<LoadedProject> Projects, Pro
 /// <b>The fallback is deliberate.</b> A real repository has projects that will not
 /// restore on this machine — a Windows-only target, a pinned SDK, a missing feed. One
 /// project failing must not cost the other four hundred, so a failure is reported and
-/// skipped; if <i>every</i> project fails, the loader falls back to parsing the
-/// <c>.cs</c> files it can find. That mode resolves less (see the README) and says so.
+/// skipped. If <i>every</i> project fails there is nothing to index and the run says so:
+/// a producer that cannot resolve types has nothing to write but degraded facts, and
+/// writing those is the one thing this indexer refuses to do.
 /// </para>
 /// </remarks>
 internal static class Loader
 {
-    public static LoadedSolution Load(Options options, string root, TextWriter log)
+    /// <summary>How many times the pair of attempts is tried before a project is skipped.</summary>
+    /// <remarks>
+    /// Three, and the number is the point of the run: two would make one unlucky project
+    /// a coin toss, and more would spend minutes on a repository that is simply broken.
+    /// </remarks>
+    private const int Attempts = 3;
+
+    public static LoadedSolution Load(
+        Options options,
+        string root,
+        TextWriter log,
+        DesignTimeBuild? design = null)
     {
-        if (options.SyntaxOnly)
+        var build = design ?? ((analyzer, environment) => analyzer.Build(environment));
+        var retried = 0;
+
+        foreach (var entry in options.Entries)
         {
-            return Syntax(options, root, log);
+            if (!File.Exists(entry))
+            {
+                throw new FileNotFoundException($"nothing to index at {entry}");
+            }
+
+            log.WriteLine($"  entry point {entry}");
         }
 
-        var entry = ResolveEntryPoint(options.Source);
-        log.WriteLine($"  entry point {entry}");
-
         var workspace = new AdhocWorkspace();
-        var analyzers = Analyzers(entry, options, log);
+
+        // **Unioned, and deduplicated by project path.** Two solutions naming one project
+        // is ordinary — a `Directory.Build.props` tree with a core solution and a tools one
+        // over the same code — and it must be walked once, not twice into one database.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var analyzers = options.Entries
+            .SelectMany(entry => Analyzers(entry, options, log))
+            .Where(analyzer => seen.Add(Path.GetFullPath(analyzer.ProjectFile.Path.ToString())))
+            .ToList();
+
+        // **Captured before `--max-projects` narrows anything.** What a solution lists is a
+        // fact about the repository, the same rule the build layer already follows for
+        // which projects exist — so a run told to stop after two projects still says the
+        // solution has five, rather than recording a membership that depends on a flag.
+        //
+        // **The C# projects, because `Analyzers` has already narrowed to those.** A
+        // solution may list an `.fsproj`, and this producer writes no `msbuild.Project` for
+        // one — so counting it as an edge it failed to write would conflate "this index
+        // cannot key that project" with "this producer does not read that language", which
+        // are different facts with different fixes. The narrowing is said out loud one line
+        // above, as `N C# project(s) in the solution`.
+        // **One per solution named**, so membership stays a fact about a solution rather
+        // than about the run: a project in two of them gets an edge from each.
+        var resolved = options.Solutions
+            .Select(solution => new ResolvedSolution(
+                solution,
+                [.. Analyzers(solution, options, log)
+                    .Select(analyzer => Path.GetFullPath(analyzer.ProjectFile.Path.ToString()))]))
+            .ToList();
 
         if (options.MaxProjects > 0 && analyzers.Count > options.MaxProjects)
         {
@@ -80,76 +181,135 @@ internal static class Loader
         // is several processes and not several threads in this one. That is what makes
         // it worth doing: a few hundred projects at three seconds each is the difference
         // between a coffee and a lunch, and the results are independent.
-        var results = new IAnalyzerResult?[analyzers.Count];
+        var results = new IReadOnlyList<IAnalyzerResult>[analyzers.Count];
 
         Parallel.For(0, analyzers.Count, new ParallelOptions { MaxDegreeOfParallelism = options.Jobs }, index =>
         {
-            results[index] = BuildOne(analyzers[index], options, log);
+            results[index] = BuildOne(analyzers[index], options, log, build, ref retried);
         });
 
-        var built = 0;
+        // Flattened in the order the solution lists them, so two runs over one checkout
+        // produce the same index.
+        var every = results.SelectMany(one => one).ToList();
+
+        if (every.Count == 0)
+        {
+            // **A run that cannot resolve fails, and must not fall back to a syntax walk.**
+            // Globbing the `.cs` files and parsing them against the running framework's
+            // reference set finds every declaration and loses every reference into a NuGet
+            // package — the type is an error type, so the member on it binds to nothing —
+            // and the result is an index that looks complete while missing most of its
+            // edges, with nothing in it to say so.
+            //
+            // The rule this protects: a producer that cannot resolve emits nothing rather
+            // than a degraded fact.
+            throw new InvalidOperationException(
+                analyzers.Count == 0
+                    ? "no projects were found under --source, so there is nothing to "
+                        + "resolve against and nothing to index"
+                    : $"every project failed to build ({analyzers.Count} of them), so no "
+                        + "type in this checkout can be resolved. Fix the build — a "
+                        + "restore, an SDK, a missing reference — and run again; this "
+                        + "indexer writes no facts it cannot resolve");
+        }
+
+        // **Sorted and deduped here, because nothing else does it.** The server's name
+        // check accepts `#` and says nothing about what follows it, so two runs that
+        // disagreed about the order would be two sets of databases.
+        var present = every
+            .Select(result => result.TargetFramework!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderByDescending(Rank)
+            .ThenBy(framework => framework, StringComparer.Ordinal)
+            .ToList();
+
+        var wanted = options.Framework is { Length: > 0 } asked
+            ? present.Where(framework =>
+                string.Equals(framework, asked, StringComparison.OrdinalIgnoreCase)).ToList()
+            : present;
+
+        if (wanted.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"no project in this checkout compiles as {options.Framework}. "
+                + $"It builds for: {string.Join(", ", present)}");
+        }
+
+        // **Named, because a project silently absent from an index is the failure mode
+        // this run exists to remove.** A project that compiles for none of the frameworks
+        // being indexed is not broken and not indexed, and only the run can say so.
+        var skipped = every
+            .Where(result => !wanted.Contains(result.TargetFramework!, StringComparer.Ordinal))
+            .Select(result => Path.GetFileName(result.ProjectFilePath))
+            .Concat(analyzers
+                .Where(analyzer => !every.Any(result => string.Equals(
+                    Full(result.ProjectFilePath), Full(analyzer.ProjectFile.Path.ToString()), StringComparison.Ordinal)))
+                .Select(analyzer => Path.GetFileName(analyzer.ProjectFile.Path.ToString())))
+            .Distinct(StringComparer.Ordinal)
+            .Where(name => !every
+                .Where(result => wanted.Contains(result.TargetFramework!, StringComparer.Ordinal))
+                .Any(result => string.Equals(Path.GetFileName(result.ProjectFilePath), name, StringComparison.Ordinal)))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var name in skipped)
+        {
+            log.WriteLine($"  ! {name}: compiles for none of {string.Join(", ", wanted)}, skipping it");
+        }
+
+        var targets = new List<LoadedTarget>();
+
+        foreach (var framework in wanted)
+        {
+            targets.Add(Target(
+                framework,
+                [.. every.Where(result => string.Equals(
+                    result.TargetFramework, framework, StringComparison.Ordinal))],
+                options,
+                root,
+                resolved,
+                log));
+        }
+
+        return new LoadedSolution(targets, retried, skipped);
+    }
+
+    /// <summary>One framework's workspace and build layer, from that framework's results.</summary>
+    /// <remarks>
+    /// A workspace each, because a project compiled for two frameworks is two compilations
+    /// and Roslyn holds one per project. A build layer each for the same reason: the
+    /// <c>msbuild.Compilation</c> facts name this framework, so a database built for
+    /// <c>net8.0</c> says <c>net8.0</c> everywhere rather than saying both and leaving a
+    /// consumer to guess which half it is holding.
+    /// </remarks>
+    private static LoadedTarget Target(
+        string framework,
+        IReadOnlyList<IAnalyzerResult> results,
+        Options options,
+        string root,
+        IReadOnlyList<ResolvedSolution> solutions,
+        TextWriter log)
+    {
+        var workspace = new AdhocWorkspace();
+        var added = new List<(IAnalyzerResult Result, ProjectId Id)>();
         var failed = 0;
 
-        // Added in the order the solution lists them rather than the order they
-        // finished, so two runs over one checkout produce the same index.
         foreach (var result in results)
         {
-            if (result is null)
-            {
-                failed++;
-                continue;
-            }
-
-            // **It may already be here, and by its own doing.** The previous project's
-            // add pulled its project references in with it, and one of those may be this
-            // one — a test project sorts before the library it tests as often as not.
-            // Adding it twice throws and takes the whole run with it.
-            if (Holds(workspace, result.ProjectFilePath))
-            {
-                built++;
-                continue;
-            }
-
             try
             {
-                // `addProjectReferences: true` pulls in whatever this project references
-                // and is not already here, which is what makes a cross-project reference
-                // resolve to source rather than to a metadata symbol with no location to
-                // point at.
-                result.AddToWorkspace(workspace, addProjectReferences: true);
-                built++;
-            }
-            catch (ArgumentException)
-            {
-                // **The references are what failed, not this project.** `addProjectReferences`
-                // walks to every project this one names, and one whose own design-time
-                // build failed has no result to add. Dropping this project too would
-                // spend a successful build on nothing; added alone, its own file's
-                // declarations are still exact and only the symbols it reached *through*
-                // that reference degrade to metadata.
+                // **`addProjectReferences: false`, and the graph wired below instead.**
+                // The `true` form walks to every project this one names and *builds* the
+                // ones nobody asked for — so a solution listing two projects loaded three,
+                // and one design-time build happened inside what is supposed to be pure
+                // bookkeeping. It also left the compilation holding the referenced project
+                // twice, once as a project and once as its assembly, which makes every type
+                // in it ambiguous.
                 //
-                // The add is not atomic, so ask before retrying: it walks references
-                // depth-first and may well have added *this* project before reaching the
-                // one it could not resolve, and adding it a second time throws again —
-                // this time saying the solution already contains it, which would report
-                // a project that is in the workspace as one that failed.
-                if (Holds(workspace, result.ProjectFilePath))
-                {
-                    built++;
-                    continue;
-                }
-
-                try
-                {
-                    result.AddToWorkspace(workspace, addProjectReferences: false);
-                    built++;
-                }
-                catch (Exception alone) when (alone is InvalidOperationException or ArgumentException)
-                {
-                    log.WriteLine($"  ! {Path.GetFileName(result.ProjectFilePath)}: "
-                        + $"the workspace refused it — {alone.Message}");
-                    failed++;
-                }
+                // Nothing is lost by refusing: a project this one references and the run
+                // did not build is a project outside the indexed set, and its assembly is
+                // already on the compiler's reference list.
+                added.Add((result, result.AddToWorkspace(workspace, addProjectReferences: false).Id));
             }
             catch (InvalidOperationException refused)
             {
@@ -161,19 +321,12 @@ internal static class Loader
             }
         }
 
-        if (built == 0)
-        {
-            log.WriteLine(failed == 0
-                ? "  no projects found; falling back to parsing the .cs files under --source"
-                : $"  every project failed ({failed}); falling back to parsing the .cs files under --source");
-
-            return Syntax(options, root, log);
-        }
-
         if (failed > 0)
         {
-            log.WriteLine($"  {failed} project(s) skipped, {built} built");
+            log.WriteLine($"  {failed} project(s) refused for {framework}, {added.Count} added");
         }
+
+        Wire(workspace, added, log);
 
         // Ordered by path, not by whatever order the workspace hands them back: with
         // `--max-files` the order decides *which* files get indexed, and a run that
@@ -183,97 +336,234 @@ internal static class Loader
             .OrderBy(project => project.FilePath ?? project.Name, StringComparer.Ordinal)
             .Select(project => new LoadedProject(
                 project.Name,
-                () => project.GetCompilationAsync().GetAwaiter().GetResult()))
+                () => project.GetCompilationAsync().GetAwaiter().GetResult(),
+                project))
             .ToList();
 
         // The build layer is built from *every* project file under the source, not only
         // the ones that built: a project MSBuild refused is still a project, its
         // references are still in its XML, and the files under it still have somewhere
         // to belong. The results that did succeed then overwrite what they know better.
-        var build = ProjectIndex.Build(
-            root,
-            options.Source,
-            results.Where(result => result is not null).Select(result => result!).ToList(),
-            log);
+        var layer = ProjectIndex.Build(root, root, results, solutions, log);
 
-        return new LoadedSolution(walking, build);
+        return new LoadedTarget(framework, walking, layer);
     }
 
-    /// <summary>Whether the workspace already has the project at <paramref name="path"/>.</summary>
-    private static bool Holds(Workspace workspace, string? path) =>
-        path is not null
-        && workspace.CurrentSolution.Projects.Any(project =>
-            project.FilePath is { } held
-            && string.Equals(Path.GetFullPath(held), Path.GetFullPath(path), StringComparison.Ordinal));
+    /// <summary>
+    /// The reference graph, wired between the projects that were built.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Keyed on the project file <i>and</i> its framework, not on the file alone.</b> A
+    /// multi-targeting project is several results at one path, and a reference from
+    /// something built for <c>net10.0</c> means that project's <c>net10.0</c> target.
+    /// Keyed on the path, the second sighting would look like a duplicate to be skipped —
+    /// which is also the thing a fan-out over frameworks consumes, so it would be
+    /// discarding the run after next's input.
+    /// </para>
+    /// <para>
+    /// <b>Adding the edge is half of it; removing the assembly is the other half.</b> The
+    /// compiler's reference list names the *output* of every project this one references,
+    /// so a project reference added beside it puts the same types in the compilation
+    /// twice — from source and from a dll — and every one of them becomes ambiguous.
+    /// Roslyn answers <c>null</c> for such a type rather than choosing, and a walk asking
+    /// what a name means gets nothing back.
+    /// </para>
+    /// <para>
+    /// <b>Which file that is depends on <c>ProduceReferenceAssembly</c>, so both are
+    /// removed.</b> It is on by default, and then the command line names
+    /// <c>obj/…/ref/X.dll</c> — <c>TargetRefPath</c>, not the <c>bin/…/X.dll</c> of
+    /// <c>TargetPath</c>. Matching one spelling leaves the other in place in exactly the
+    /// checkouts that have been built, which is every checkout anybody works in.
+    /// </para>
+    /// <para>
+    /// A reference to a project the run did not build is left exactly as MSBuild resolved
+    /// it: an assembly on the reference list, with no source behind it. That is the honest
+    /// answer — the project is outside the indexed set — and it is what the run reports as
+    /// a reference to a declaration outside the index.
+    /// </para>
+    /// </remarks>
+    private static void Wire(
+        AdhocWorkspace workspace,
+        IReadOnlyList<(IAnalyzerResult Result, ProjectId Id)> added,
+        TextWriter log)
+    {
+        var targets = new Dictionary<(string Path, string Framework), (ProjectId Id, string[] Outputs)>();
+
+        foreach (var (result, id) in added)
+        {
+            targets[(Full(result.ProjectFilePath), result.TargetFramework ?? string.Empty)] =
+                (id, Outputs(result));
+        }
+
+        foreach (var (result, id) in added)
+        {
+            foreach (var reference in result.ProjectReferences)
+            {
+                if (Target(targets, Full(reference), result.TargetFramework) is not { } target)
+                {
+                    continue;
+                }
+
+                var solution = workspace.CurrentSolution;
+                var project = solution.GetProject(id);
+
+                if (project is null)
+                {
+                    continue;
+                }
+
+                if (!project.ProjectReferences.Any(held => held.ProjectId == target.Id))
+                {
+                    solution = solution.AddProjectReference(id, new ProjectReference(target.Id));
+                }
+
+                // The metadata references this replaces, matched on the paths MSBuild said
+                // the referenced project writes.
+                foreach (var metadata in solution.GetProject(id)!.MetadataReferences
+                    .OfType<PortableExecutableReference>()
+                    .Where(held => target.Outputs.Contains(Full(held.FilePath), StringComparer.Ordinal))
+                    .ToList())
+                {
+                    solution = solution.RemoveMetadataReference(id, metadata);
+                }
+
+                if (!workspace.TryApplyChanges(solution))
+                {
+                    log.WriteLine($"  ! {Path.GetFileName(result.ProjectFilePath)}: "
+                        + $"the workspace refused a reference to {Path.GetFileName(reference)}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The built target a project reference names: this framework's, or the best one this
+    /// project was built for.
+    /// </summary>
+    /// <remarks>
+    /// The fallback is what makes a reference across frameworks resolve at all — a
+    /// <c>net10.0</c> project referencing a <c>netstandard2.0</c> library names a project
+    /// with no <c>net10.0</c> target, and MSBuild picked the compatible one long before
+    /// this. Ranked rather than first-found, so two runs agree.
+    /// </remarks>
+    private static (ProjectId Id, string[] Outputs)? Target(
+        Dictionary<(string Path, string Framework), (ProjectId Id, string[] Outputs)> targets,
+        string path,
+        string? framework)
+    {
+        if (targets.TryGetValue((path, framework ?? string.Empty), out var exact))
+        {
+            return exact;
+        }
+
+        foreach (var entry in targets
+            .Where(entry => string.Equals(entry.Key.Path, path, StringComparison.Ordinal))
+            .OrderByDescending(entry => Rank(entry.Key.Framework)))
+        {
+            return entry.Value;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The files a project's own output can be named by on somebody else's reference list.
+    /// </summary>
+    /// <remarks>
+    /// <b>Both spellings, because <c>ProduceReferenceAssembly</c> decides which one
+    /// appears.</b> On — the SDK default — the compiler is handed <c>TargetRefPath</c>,
+    /// <c>obj/…/ref/X.dll</c>; off, it is handed <c>TargetPath</c>, <c>bin/…/X.dll</c>.
+    /// A removal that knows only one of them removes nothing under the other setting, and
+    /// the compilation then holds the referenced project twice with no error to say so.
+    /// </remarks>
+    private static string[] Outputs(IAnalyzerResult result) =>
+        [.. new[] { result.GetProperty("TargetPath"), result.GetProperty("TargetRefPath") }
+            .Select(Full)
+            .Where(path => path.Length > 0)
+            .Distinct(StringComparer.Ordinal)];
+
+    /// <summary>One spelling of a path, so two of them can be compared.</summary>
+    private static string Full(string? path) =>
+        string.IsNullOrEmpty(path) ? string.Empty : Path.GetFullPath(path);
 
     /// <summary>One project's design-time build, or nothing and a reason.</summary>
-    private static IAnalyzerResult? BuildOne(IProjectAnalyzer analyzer, Options options, TextWriter log)
+    /// <remarks>
+    /// <para>
+    /// <b>A throw is retried and a clean answer is not, and that is the whole distinction.</b>
+    /// MSBuild is asked out of process, and several at once over one machine occasionally
+    /// lose a pipe — a transient failure of the asking, which says nothing about the
+    /// project and comes back different the next time. A build that *returns*, without
+    /// error and without a compiler invocation to read, has told the truth about this
+    /// project: asking again produces the same answer more slowly. Retrying both is how a
+    /// broken repository takes three times as long to say so; retrying neither is how a
+    /// project set depends on <c>--jobs</c>.
+    /// </para>
+    /// <para>
+    /// <b>The pair is the unit.</b> A multi-targeting project needs the second attempt and
+    /// a single-targeted one needs the first, so a throw in either is a throw of the
+    /// question rather than of one phrasing of it.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<IAnalyzerResult> BuildOne(
+        IProjectAnalyzer analyzer,
+        Options options,
+        TextWriter log,
+        DesignTimeBuild build,
+        ref int retried)
     {
         var name = Path.GetFileName(analyzer.ProjectFile.Path);
         var started = DateTime.UtcNow;
 
-        var plain = Attempt(innerBuilds: false);
-        var results = plain;
-
-        // **A multi-targeting project has no `Compile` target to run.** `TargetFrameworks`
-        // plural makes the project an *outer* build whose whole job is to dispatch to one
-        // inner build per framework, and `Compile` lives only on the inner ones — so the
-        // first attempt comes back `MSB4057: the target does not exist`. Asking the outer
-        // build to dispatch `Compile` rather than its default `Build` reaches the same
-        // `CoreCompile`, once per framework, and `Preferred` still picks one to walk.
-        //
-        // Tried second rather than first because which of the two is right is a property
-        // of the project, not of the repository: a single-targeted project has no
-        // `DispatchToInnerBuilds` either, and would fail the mirror-image way.
-        if (Preferred(results) is null)
-        {
-            results = Attempt(innerBuilds: true);
-        }
-
-        if (results is null)
-        {
-            return null;
-        }
-
-        if (Preferred(results) is not { } result)
-        {
-            // The first error is nearly always the real one, and a repository that will
-            // not restore says so in the same three words four hundred times.
-            //
-            // **Both attempts are asked, and "no such target" is discounted.** One of
-            // the two is always wrong about this project by construction — a
-            // single-targeted project has no `DispatchToInnerBuilds` and a
-            // multi-targeted one has no `Compile` — so reporting the last attempt's
-            // error tells every reader the wrong thing about why their project was
-            // skipped. What is wanted is whichever attempt failed for a reason of its
-            // own.
-            var reason = Reasons(plain).Concat(Reasons(results))
-                .FirstOrDefault(error => !error.Contains("does not exist in the project", StringComparison.Ordinal))
-                ?? Reasons(plain).Concat(Reasons(results)).FirstOrDefault();
-
-            Say($"  ! {name}: the design-time build failed, skipping it"
-                + (reason is null ? string.Empty : $" — {reason}"));
-
-            return null;
-        }
-
-        var elapsed = (DateTime.UtcNow - started).TotalSeconds;
-        Say($"  built {name} ({result.TargetFramework}, {result.SourceFiles.Length} files, {elapsed:F1}s)");
-
-        return result;
-
-        // One design-time build, or nothing and a reason. A throw is this project's
-        // failure and not the run's, exactly as a build error is.
-        IAnalyzerResults? Attempt(bool innerBuilds)
+        for (var attempt = 1; ; attempt++)
         {
             try
             {
-                return analyzer.Build(BuildOptions(options, innerBuilds));
+                var plain = build(analyzer, BuildOptions(options, innerBuilds: false));
+
+                // **A multi-targeting project has no `Compile` target to run.**
+                // `TargetFrameworks` plural makes the project an *outer* build whose whole
+                // job is to dispatch to one inner build per framework, and `Compile` lives
+                // only on the inner ones — so the first attempt comes back `MSB4057: the
+                // target does not exist`. Asking the outer build to dispatch `Compile`
+                // rather than its default `Build` reaches the same `CoreCompile`, once per
+                // framework, and `Preferred` still picks one to walk.
+                //
+                // Tried second rather than first because which of the two is right is a
+                // property of the project, not of the repository: a single-targeted
+                // project has no `DispatchToInnerBuilds` either, and would fail the
+                // mirror-image way.
+                var results = Usable(plain).Count == 0
+                    ? build(analyzer, BuildOptions(options, innerBuilds: true))
+                    : plain;
+
+                if (Usable(results) is { Count: > 0 } usable)
+                {
+                    var elapsed = (DateTime.UtcNow - started).TotalSeconds;
+                    Say($"  built {name} ({string.Join(", ", usable.Select(one => one.TargetFramework))}, "
+                        + $"{usable[0].SourceFiles.Length} files, {elapsed:F1}s)");
+
+                    return usable;
+                }
+
+                Say($"  ! {name}: the design-time build failed, skipping it — {Because(analyzer, plain, results)}");
+                return [];
+            }
+            catch (Exception failure) when (attempt < Attempts)
+            {
+                Interlocked.Increment(ref retried);
+                Say($"  .. {name}: the design-time build threw, asking again "
+                    + $"({attempt} of {Attempts}) — {failure.Message}");
+
+                // Escalating, because the thing being waited out is another process
+                // finishing with a resource this one wants.
+                Thread.Sleep(TimeSpan.FromMilliseconds(200 * attempt));
             }
             catch (Exception failure)
             {
-                Say($"  ! {name}: the design-time build threw — {failure.Message}");
-                return null;
+                Say($"  ! {name}: the design-time build threw {Attempts} times, "
+                    + $"skipping it — {failure.Message}");
+                return [];
             }
         }
 
@@ -287,6 +577,72 @@ internal static class Loader
             }
         }
     }
+
+    /// <summary>Why a project was skipped, in words a reader can act on.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both attempts are asked, and "no such target" is discounted.</b> One of the two
+    /// is always wrong about this project by construction — a single-targeted project has
+    /// no <c>DispatchToInnerBuilds</c> and a multi-targeted one has no <c>Compile</c> — so
+    /// reporting the last attempt's error tells every reader the wrong thing about why
+    /// their project was skipped. What is wanted is whichever attempt failed for a reason
+    /// of its own, and the first error is nearly always the real one: a repository that
+    /// will not restore says so in the same three words four hundred times.
+    /// </para>
+    /// <para>
+    /// <b>And when every error is discounted, say that instead of printing one.</b> A
+    /// build that succeeds without running the compiler leaves nothing to read, and the
+    /// only messages left are the two that are wrong by construction — so the report used
+    /// to name a target the project was never going to have. It is a real state with a
+    /// real cause, and naming it is the difference between a fixable run and a mystery.
+    /// </para>
+    /// </remarks>
+    private static string Because(
+        IProjectAnalyzer analyzer,
+        IAnalyzerResults? plain,
+        IAnalyzerResults? inner)
+    {
+        var reasons = Reasons(plain).Concat(Reasons(inner)).ToList();
+
+        if (reasons.FirstOrDefault(error =>
+                !error.Contains("does not exist in the project", StringComparison.Ordinal))
+            is { } named)
+        {
+            return named;
+        }
+
+        // **It reached no compiler and MSBuild called that success, so there is no cause
+        // to report — only facts.** The message here used to assert one anyway ("a target
+        // skipped as up to date does this"), and two of twelve repositories in a
+        // compatibility sweep were told exactly that when the real reason was a platform
+        // this host is not. A diagnostic that names one possibility out of several reads
+        // as a finding, and sends whoever believes it after the wrong thing.
+        //
+        // So: the possibilities, and the two facts that decide between them — what the
+        // project says it compiles for, and what this is running on. Both are knowable
+        // without a build, which is the point, because the build is what failed.
+        var host = System.Runtime.InteropServices.RuntimeInformation.OSDescription.Split(' ')[0];
+        var declared = Frameworks(analyzer);
+
+        return "MSBuild reported no error and reached no compiler, so there is nothing to "
+            + "read — a target skipped as up to date, a workload this host does not have, "
+            + $"or a platform it is not. This build is running on {host}"
+            + (declared.Count > 0
+                ? $", and the project compiles for {string.Join(", ", declared)}"
+                : ", and the project names no target framework this could read");
+    }
+
+    /// <summary>The project file's own target frameworks, which need no build to read.</summary>
+    /// <remarks>
+    /// <b>From the project rather than from the build, because the build is what failed.</b>
+    /// A design-time build that reaches no compiler comes back with no results at all, so
+    /// the frameworks are not in what it returned — and they are among the few things that
+    /// tell a reader whether this host was ever going to build it.
+    /// </remarks>
+    private static IReadOnlyList<string> Frameworks(IProjectAnalyzer analyzer) =>
+        [.. (analyzer.ProjectFile.TargetFrameworks ?? [])
+            .Where(framework => !string.IsNullOrEmpty(framework))
+            .Distinct()];
 
     /// <summary>Every project the entry point names.</summary>
     private static IReadOnlyList<IProjectAnalyzer> Analyzers(string entry, Options options, TextWriter log)
@@ -309,10 +665,34 @@ internal static class Loader
         var projects = manager.Projects.Values
             .Where(analyzer => analyzer.ProjectFile.Path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
             .OrderBy(analyzer => analyzer.ProjectFile.Path, StringComparer.Ordinal)
+            .Select(analyzer => Normalised(analyzer, managerOptions))
             .ToList();
 
         log.WriteLine($"  {projects.Count} C# project(s) in the solution");
         return projects;
+    }
+
+    /// <summary>
+    /// The same project, asked for under the path MSBuild will call it by.
+    /// </summary>
+    /// <remarks>
+    /// <b>A solution may name a project by a path that climbs.</b> A solution in
+    /// <c>app/</c> listing <c>../lib/Lib.csproj</c> is ordinary, and the path is carried
+    /// through exactly as written — while MSBuild reports the project it built under the
+    /// normalised one. Buildalyzer pairs the two by string, so nothing matches: the build
+    /// succeeds, reports no error, and hands back <i>no results</i>. The project is then
+    /// skipped, which reads as "it does not build" for a project that builds perfectly.
+    /// </remarks>
+    private static IProjectAnalyzer Normalised(
+        IProjectAnalyzer analyzer,
+        AnalyzerManagerOptions options)
+    {
+        var written = analyzer.ProjectFile.Path.ToString();
+        var real = Path.GetFullPath(written);
+
+        return string.Equals(written, real, StringComparison.Ordinal)
+            ? analyzer
+            : new AnalyzerManager(options).GetProject(IOPath.Parse(real)) ?? analyzer;
     }
 
     private static EnvironmentOptions BuildOptions(Options options, bool innerBuilds)
@@ -361,6 +741,24 @@ internal static class Loader
             environment.TargetsToBuild.Add("Compile");
         }
 
+        // **A checkout somebody has built is the normal case, and it used to index as
+        // nothing.** `CoreCompile` is incremental: its outputs are the intermediate
+        // assembly, its inputs are the sources, and after any ordinary `dotnet build` the
+        // former is newer than the latter — so MSBuild skips the target, the compiler
+        // command line is never logged, and the whole of what Buildalyzer reads is that
+        // line. Every project then comes back succeeded-with-no-result, which the loader
+        // reports as a failed design-time build, and a run over a built repository ends
+        // with "every project failed to build" and no clue why.
+        //
+        // `$(NonExistentFile)` is `CoreCompile`'s own escape hatch — it sits in the
+        // target's `Inputs` list precisely so a caller can name a file that is not there
+        // and make the up-to-date check fail. Nothing is written and nothing is deleted:
+        // the target re-runs, logs its command line, and `SkipCompilerExecution` still
+        // stops the compiler itself from doing any work.
+        environment.GlobalProperties["NonExistentFile"] =
+            Path.Combine("__NonExistentSubDir__", "__NonExistentFile.cs");
+
+
         // Node reuse leaves MSBuild processes alive between builds, which over a few
         // hundred projects is a few hundred idle processes holding a machine's memory.
         environment.EnvironmentVariables["MSBUILDDISABLENODEREUSE"] = "1";
@@ -369,15 +767,6 @@ internal static class Loader
         return environment;
     }
 
-    /// <summary>
-    /// One target framework's result, preferring the newest .NET a multi-targeted
-    /// project builds for.
-    /// </summary>
-    /// <remarks>
-    /// Indexing every target framework of a multi-targeted project would index the same
-    /// files two or three times over. They dedup on the way in — the facts are
-    /// identical — but the work is not, so one is picked here.
-    /// </remarks>
     /// <summary>What MSBuild said went wrong, in the order it said it.</summary>
     private static IEnumerable<string> Reasons(IAnalyzerResults? results) =>
         results is null
@@ -387,11 +776,33 @@ internal static class Loader
                 .Select(error => error.Message)
                 .OfType<string>();
 
-    private static IAnalyzerResult? Preferred(IAnalyzerResults? results) =>
-        results?.Results
-            .Where(result => result.Succeeded && result.SourceFiles is { Length: > 0 })
-            .OrderByDescending(result => Rank(result.TargetFramework))
-            .FirstOrDefault();
+    /// <summary>
+    /// Every target framework this project actually compiled as, newest first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>All of them, not the best of them.</b> An outer build dispatched to its inner
+    /// builds answers once per framework, and this used to keep the newest and throw the
+    /// rest away — so a project targeting <c>net8.0</c> and <c>net10.0</c> was indexed as
+    /// the second, and its <c>net8.0</c> compilation, which is a different program, was
+    /// never seen. The fan-out consumes exactly what was being discarded, which is why it
+    /// costs another walk and not another build.
+    /// </para>
+    /// <para>
+    /// <b>Compiled as, rather than compatible with.</b> A result is here only if MSBuild
+    /// ran the compiler for that framework; there is no nearest-compatible reduction, so a
+    /// project with no <c>net8.0</c> result is absent from the <c>net8.0</c> index rather
+    /// than present under a target it was never built for.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<IAnalyzerResult> Usable(IAnalyzerResults? results) =>
+        results is null
+            ? []
+            : [.. results.Results
+                .Where(result => result.Succeeded
+                    && result.SourceFiles is { Length: > 0 }
+                    && result.TargetFramework is { Length: > 0 })
+                .OrderByDescending(result => Rank(result.TargetFramework))];
 
     private static (int Family, int Version) Rank(string? framework)
     {
@@ -428,162 +839,17 @@ internal static class Loader
         }
     }
 
-    /// <summary>
-    /// Every <c>.cs</c> file under the source, parsed against the running framework's
-    /// reference set — no MSBuild, no NuGet, no project graph.
-    /// </summary>
-    /// <remarks>
-    /// This is the honest degraded mode. Declarations are all still found: they are in
-    /// the syntax. References to anything whose type comes from a NuGet package are not,
-    /// because the type is an error type and the member on it binds to nothing. It is
-    /// here so that a repository which will not restore still produces an index, and so
-    /// that a run measuring the <i>database</i> need not wait for MSBuild first.
-    /// </remarks>
-    /// <summary>
-    /// The syntax-only walk, and the build layer read straight off the disk beside it.
-    /// </summary>
-    /// <remarks>
-    /// No MSBuild means no resolved framework and no exact source list, but the project
-    /// files are still there and still say what they reference — so the layer is thinner
-    /// rather than absent, and <see cref="ProjectIndex"/> is explicit about which of the
-    /// two a fact came from.
-    /// </remarks>
-    private static LoadedSolution Syntax(Options options, string root, TextWriter log) =>
-        new([SyntaxOnly(options, log)], ProjectIndex.Build(root, options.Source, [], log));
-
-    private static LoadedProject SyntaxOnly(Options options, TextWriter log)
-    {
-        var root = Directory.Exists(options.Source)
-            ? options.Source
-            : Path.GetDirectoryName(options.Source)!;
-
-        // Relative to `--root` rather than to `--source`, so an exclusion reads the way a
-        // path in the index reads: `src/tests` is what a `src.File` fact calls it.
-        var relativeTo = options.Root ?? root;
-
-        var all = Directory
-            .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-            .Where(Indexable)
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .ToList();
-
-        var found = options.Excludes.Length == 0
-            ? all
-            : all.Where(path => !Excluded(path)).ToList();
-
-        if (all.Count != found.Count)
-        {
-            log.WriteLine($"  excluding {all.Count - found.Count} file(s) under "
-                + string.Join(", ", options.Excludes));
-        }
-
-        // `--max-files` bounds the *parse* here, not just the walk. Parsing seventeen
-        // thousand files to index two thousand of them is the wrong shape for the flag
-        // people reach for when they want a quick answer.
-        //
-        // With `--skip-files` it is also the slice: this compilation holds files
-        // [skip, skip + max) of the source root in path order, and the next run holds
-        // the ones after them. Path order is what makes the slices a partition rather
-        // than a lottery — the same run twice is the same files.
-        IEnumerable<string> slice = found;
-
-        if (options.SkipFiles > 0)
-        {
-            slice = slice.Skip(options.SkipFiles);
-        }
-
-        if (options.MaxFiles > 0)
-        {
-            slice = slice.Take(options.MaxFiles);
-        }
-
-        var files = ReferenceEquals(slice, found) ? found : slice.ToList();
-
-        log.WriteLine($"  syntax-only: {files.Count} of {found.Count} file(s) under {root}"
-            + (options.SkipFiles > 0 ? $", skipping the first {options.SkipFiles}" : string.Empty));
-
-        var parse = new CSharpParseOptions(LanguageVersion.Preview);
-        var trees = new List<SyntaxTree>(files.Count);
-
-        foreach (var file in files)
-        {
-            try
-            {
-                trees.Add(CSharpSyntaxTree.ParseText(File.ReadAllText(file), parse, path: file));
-            }
-            catch (IOException failure)
-            {
-                log.WriteLine($"  ! {file}: {failure.Message}");
-            }
-        }
-
-        // The framework the indexer itself is running on. Not the framework the corpus
-        // targets — which is exactly the imprecision this mode is admitting to.
-        var references = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? string.Empty)
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-            .Where(path => path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-            .Select(path => (MetadataReference)MetadataReference.CreateFromFile(path))
-            .ToList();
-
-        var compilation = CSharpCompilation.Create(
-            "syntax-only",
-            trees,
-            references,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-
-        return new LoadedProject("syntax-only", () => compilation);
-
-        static bool Indexable(string path) =>
-            !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-            && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
-
-        // A prefix on the *relative* path, and a separator after it, so `--exclude src/te`
-        // excludes nothing and `--exclude src/tests` excludes exactly that tree.
-        bool Excluded(string path)
-        {
-            var relative = Path.GetRelativePath(relativeTo, path).Replace('\\', '/');
-
-            foreach (var excluded in options.Excludes)
-            {
-                if (relative.StartsWith($"{excluded}/", StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-    }
-
     /// <summary>A solution, a project, or the directory one lives in.</summary>
-    private static string ResolveEntryPoint(string source)
-    {
-        if (File.Exists(source))
-        {
-            return source;
-        }
 
-        if (!Directory.Exists(source))
-        {
-            throw new FileNotFoundException($"nothing to index at {source}");
-        }
-
-        // `.slnx` first: a repository carrying both is mid-migration, and the XML one is
-        // the one being kept.
-        foreach (var pattern in (string[])["*.slnx", "*.sln", "*.csproj"])
-        {
-            var found = Directory
-                .EnumerateFiles(source, pattern, SearchOption.TopDirectoryOnly)
-                .OrderBy(path => path, StringComparer.Ordinal)
-                .FirstOrDefault();
-
-            if (found is not null)
-            {
-                return found;
-            }
-        }
-
-        throw new FileNotFoundException(
-            $"no .slnx, .sln or .csproj directly under {source} — name one with --source, or use --syntax-only");
-    }
+    /// <summary>Whether the entry point this run resolved is a solution.</summary>
+    /// <remarks>
+    /// <b>Asked of what was resolved, not of what was typed.</b>
+    /// <see cref="ResolveEntryPoint"/> picks a solution out of a directory, so
+    /// <c>--source ~/src/repo</c> and <c>--source ~/src/repo/Repo.slnx</c> are the same
+    /// run — and a discriminator reading <c>options.Source</c> would write the solution
+    /// facts for one of the two and not the other, over one checkout.
+    /// </remarks>
+    private static bool IsSolution(string entry) =>
+        entry.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+        || entry.EndsWith(".sln", StringComparison.OrdinalIgnoreCase);
 }

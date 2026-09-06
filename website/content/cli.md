@@ -176,7 +176,7 @@ re-running the index, never a wrong answer from one that sealed.
 ## `fjord create <name>`
 
 ```bash
-fjord --data-dir ./db create code --schema ./schemas/code.sigla
+fjord --data-dir ./db create code --schema ./schemas/demo.sigla
 fjord --data-dir ./db create people --schema ./people.sigla
 ```
 
@@ -251,8 +251,8 @@ the canonical schema source — which is the text `create --schema` would take, 
 
 ```bash
 fjord query code 'F where src.File F' --limit 20
-fjord query code 'D where D = src.Decl _' --format jsonl --expand
-fjord query code 'R where R = src.Ref _' --count --timing
+fjord query code 'D where D = codemarkup.Definition _' --format jsonl --expand
+fjord query code 'R where R = codemarkup.SymbolXRef _' --count --timing
 fjord query '/tmp/fjord.sock//code' 'F where src.File F'
 ```
 
@@ -295,8 +295,8 @@ Full command list: [Shell reference](shell.html).
 ## `fjord schema …`
 
 ```bash
-fjord schema check ./code.sigla
-fjord schema fingerprint ./code.sigla [--format json] [--canonical]
+fjord schema check ./demo.sigla
+fjord schema fingerprint ./demo.sigla [--format json] [--canonical]
 fjord schema diff before.sigla after.sigla
 fjord schema diff before.sigla code           # a file against a database
 ```

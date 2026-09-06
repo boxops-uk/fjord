@@ -9,7 +9,9 @@ layer described elsewhere; where a subject has more depth, there is a link.
 The query:
 
 ```sigla
-{f = F, l = L} where src.Ref {to = src.Decl {name = "encode_str"}, file = F, at = {line = L}}
+{f = F, at = S} where
+  codemarkup.SearchEntry {nameLowercase = _, name = "Crc32", kind = _, symbol = T, file = _, line = _};
+  codemarkup.SymbolXRef {target = T, file = F, span = S}
 ```
 
 ## The whole journey
@@ -162,16 +164,17 @@ struct Plan {
 For our query:
 
 ```plan
-  r0 <- src.Decl scan
-       where name == "encode_str"
-  r1 <- src.Ref seek[to = r0#, file = _, at = _]
-  head {f = r1.file, l = r1.at.line}
+  r0 <- codemarkup.SearchEntry scan
+       where name == "Crc32"
+  r1 <- codemarkup.SymbolXRef seek[target = r0.symbol, file = _, span = _]
+  head {at = r1.span, f = r1.file}
 ```
 
-Read it as two nested loops. The outer one scans `src.Decl` and filters on `name` — because
-`src.Decl`'s key is `{module, name, line}` and the leading field is open, so the name cannot
-narrow the scan. The inner one **seeks**: `src.Ref`'s key leads with `to`, so the
-declaration's fact id is spliced into the seek key and only its references are read.
+Read it as two nested loops. The outer one scans `codemarkup.SearchEntry` and filters on
+`name` — because that key is `{nameLowercase, name, kind, symbol, file, line}` and the
+leading field is open, so the name cannot narrow the scan. The inner one **seeks**:
+`codemarkup.SymbolXRef`'s key leads with `target`, so the symbol is spliced into the seek key
+and only its references are read.
 
 That difference — which field narrowed and which one only filtered — is most of what a query
 costs, and it is decided here rather than at run time. [Query
@@ -293,10 +296,10 @@ last chunk has run. A `--limit` that cancels early therefore reports **none** ra
 reporting a different query's numbers.
 
 ```text
-STEP      EXAMINED
-src.Decl  1000      full scan
-src.Ref   1
-1001 examined, 1 produced
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
 ```
 
 It is per **step of the plan's body** rather than per predicate, which is what the machine
@@ -364,9 +367,10 @@ size; encoding a row costs about 1.5× the executor's work, and the wire above i
 3.6×. Which is why `--count` exists: it runs the same plan and the same executor and throws
 away the part that costs.
 
-See [Performance](performance.html) for the method and the numbers; `bench/FINDINGS.md` in
-the repository is the register of what was measured, at what size, and what acting on it
-would cost.
+See [Performance](performance.html) for the method and the shape of these costs. The register
+of what was measured — at what size, and what acting on it would cost — is `bench/FINDINGS.md`
+in the repository, and it is closed until a 1.0 pass: the ratios above are what survives, and
+every absolute in it is read against a tree that no longer exists.
 
 ## Where a write goes instead
 

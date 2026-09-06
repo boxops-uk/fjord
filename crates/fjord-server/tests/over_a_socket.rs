@@ -6,6 +6,17 @@
 //! promised. The client here is deliberately hand-rolled from `fjord-wire` alone,
 //! which is the same position the .NET client is in: if this needs something the wire
 //! crate does not expose, so does every other client.
+//!
+//! # One battery, every door
+//!
+//! Every claim below runs once per transport the server opens — the Unix socket and an
+//! opted-in TCP port, which is what [`Over`] enumerates. A transport whose only coverage
+//! is *it answers the same as the other one* is covered by a differential, and two doors
+//! that mangled a frame the same way would satisfy that and both be wrong. A listener
+//! added later joins by growing [`Over`] and [`Client::connect`]; a second copy of the
+//! battery would be two statements of one protocol.
+//!
+//! Names below still say *socket* where the criterion they quote does.
 
 use std::{
     io::{Read, Write},
@@ -15,7 +26,7 @@ use std::{
 };
 
 use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
-use fjord_server::{Registry, registry::Schemas, server::Listener};
+use fjord_server::{Registry, registry::Schemas};
 use fjord_store_fjall::catalog::Catalog;
 use fjord_wire::{
     Desc, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId, WireFact, WireRef, WireValue,
@@ -82,10 +93,149 @@ fn blob(path: &str, contents: i64) -> WireFact {
     }
 }
 
-/// A running server, and how to reach it.
+/// A door onto a server, and the whole of what a claim needs to know about one.
+///
+/// Growing this and [`Client::connect`] is how a new listener joins the battery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Over {
+    UnixSocket,
+    Tcp,
+}
+
+/// Every door the server below opens.
+const EVERY: [Over; 2] = [Over::UnixSocket, Over::Tcp];
+
+/// Run one claim over every door, and report every door it failed over.
+///
+/// The door is **printed rather than asserted**: libtest shows a failing test's output,
+/// and without this an assertion firing inside a claim would not say which transport it
+/// fired on — the first thing anybody wants to know.
+///
+/// **A door whose claim fails does not stop the next one.** Returning at the first
+/// panic would report one door and say nothing about the other, and a reader could not
+/// tell a transport-specific defect from one both doors share — which is the single
+/// question this battery exists to answer. Each panic is caught so the run continues,
+/// the hook prints it where it happened, and the doors that failed are named together at
+/// the end. A claim is a `fn` pointer that starts its own server, so no state crosses
+/// from one door to the next for the unwind to have damaged, and [`PORT`] is taken
+/// through `PoisonError::into_inner` — so a claim that panicked while holding it does
+/// not take the next door down with it.
+fn over_every_door(claim: fn(Over)) {
+    let mut failed = Vec::new();
+
+    for over in EVERY {
+        println!("--- over {over:?}");
+
+        if std::panic::catch_unwind(|| claim(over)).is_err() {
+            failed.push(over);
+        }
+    }
+
+    assert!(
+        failed.is_empty(),
+        "the claim failed over {failed:?}, of {} door(s) tried",
+        EVERY.len()
+    );
+}
+
+/// **A claim that fails over one door is still tried over the other.**
+///
+/// The battery's own guard, and it is about the report rather than about a protocol: a
+/// helper that stopped at the first failing door would leave a reader unable to say
+/// whether the second door broke too, and a claim's whole purpose here is to be answered
+/// once per transport. Driven with a claim planted to fail over the first door, so what
+/// is asserted is which doors ran and which the report names.
+#[test]
+fn a_claim_that_fails_over_one_door_is_still_tried_over_the_other() {
+    static TRIED: std::sync::Mutex<Vec<Over>> = std::sync::Mutex::new(Vec::new());
+
+    fn refuses_the_first_door(over: Over) {
+        TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(over);
+
+        assert!(
+            !matches!(over, Over::UnixSocket),
+            "planted: this claim refuses {over:?}"
+        );
+    }
+
+    let report = std::panic::catch_unwind(|| over_every_door(refuses_the_first_door))
+        .expect_err("a claim that fails over a door has to fail its test");
+
+    assert_eq!(
+        *TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        EVERY.to_vec(),
+        "a door the battery never tried is a door its report cannot speak for"
+    );
+
+    let message = report
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .expect("the battery's own failure is a formatted message");
+
+    // Both halves: the door that failed is named, and the door that passed is not
+    // implicated with it.
+    assert!(message.contains("UnixSocket"), "{message}");
+    assert!(!message.contains("Tcp"), "{message}");
+}
+
+/// **A claim that fails over every door names every door.**
+///
+/// The other half of the report, and the reason the doors are collected rather than
+/// counted: one door failing and both failing are different defects — a transport's own
+/// and the protocol's — and a report that cannot tell them apart sends a reader to the
+/// wrong half of the server.
+#[test]
+fn a_claim_that_fails_over_every_door_names_every_door() {
+    static TRIED: std::sync::Mutex<Vec<Over>> = std::sync::Mutex::new(Vec::new());
+
+    fn refuses_every_door(over: Over) {
+        TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(over);
+
+        panic!("planted: this claim refuses {over:?}");
+    }
+
+    let report = std::panic::catch_unwind(|| over_every_door(refuses_every_door))
+        .expect_err("a claim that fails over every door has to fail its test");
+
+    assert_eq!(
+        *TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        EVERY.to_vec(),
+        "every door is tried whatever the one before it did"
+    );
+
+    let message = report
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .expect("the battery's own failure is a formatted message");
+
+    for over in EVERY {
+        assert!(message.contains(&format!("{over:?}")), "{message}");
+    }
+}
+
+/// Serialises the window between probing for a free port and the server binding it.
+///
+/// `serve_on` takes an address rather than a bound listener, so a free port can only be
+/// learned by taking one and letting it go — and two claims doing that at once in this
+/// binary would be handed the same port, leaving one of them with a door that never
+/// opens. Held across the bind, not just the probe.
+static PORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A running server, and how to reach it through either door.
 struct Serving {
     _dir: tempfile::TempDir,
     socket: std::path::PathBuf,
+    address: String,
     fingerprint: u64,
 }
 
@@ -104,34 +254,84 @@ fn start() -> Serving {
 
     let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
 
-    let listener = Listener::bind(&socket).expect("a socket");
+    let claim = PORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let address = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        probe.local_addr().expect("its address").to_string()
+    };
 
-    // `run_blocking`, because this thread has no runtime: the server is async now and
-    // the client below deliberately is not — a client written against the wire format
-    // should need nothing of the server's runtime, and this is where that is checked.
-    thread::spawn(move || {
-        let _ = listener.run_blocking(Arc::new(registry));
-    });
+    // `serve_on` rather than `Listener::run_blocking`, because the TCP door is
+    // `ops-I10`'s opt-in and that function is where the opt-in lives — a test that bound
+    // its own port would be exercising a shape no operator can ask for. It blocks, so it
+    // gets a thread of its own; the client below is deliberately runtime-free, which is
+    // the position every non-Rust client is in.
+    {
+        let socket = socket.clone();
+        let address = address.clone();
+        thread::spawn(move || {
+            let _ = fjord_server::server::serve_on(
+                &socket,
+                Some(&address),
+                None,
+                None,
+                Arc::new(registry),
+            );
+        });
+    }
 
-    // The listener is bound before `run` is called, so the socket is already
-    // accepting by the time `bind` returned — no readiness poll needed here. A
-    // separate process would use `announce`, which is what that exists for.
+    // **Waiting on the port waits for both doors.** `serve_on` binds the socket before
+    // it binds the port, so a TCP connection that succeeds proves the socket is already
+    // accepting — the reverse is not true, and the readiness file lands between the two.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::net::TcpStream::connect(&address).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never opened its doors"
+        );
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+    drop(claim);
+
     Serving {
         _dir: dir,
         socket,
+        address,
         fingerprint,
     }
 }
 
+/// The whole of what this client needs of a transport: blocking, byte-oriented I/O.
+trait Duplex: Read + Write {}
+impl<T: Read + Write> Duplex for T {}
+
 /// A minimal client: frames in, frames out.
 struct Client {
-    stream: UnixStream,
+    /// Boxed rather than a type parameter, so a claim's signature names a door at
+    /// runtime instead of at compile time — which is what lets one function body be the
+    /// claim for every transport.
+    stream: Box<dyn Duplex>,
 }
 
 impl Client {
-    fn connect(serving: &Serving) -> Client {
+    fn connect(serving: &Serving, over: Over) -> Client {
         Client {
-            stream: UnixStream::connect(&serving.socket).expect("a connection"),
+            stream: match over {
+                Over::UnixSocket => Box::new(
+                    UnixStream::connect(&serving.socket).expect("a connection over the socket"),
+                ),
+                Over::Tcp => {
+                    let stream = std::net::TcpStream::connect(&serving.address)
+                        .expect("a connection over TCP");
+
+                    // What every client does, and for the reason `fjord_client` states:
+                    // frames are small and answered one at a time, so Nagle holds a
+                    // handshake back waiting for company that is not coming.
+                    stream.set_nodelay(true).expect("nodelay");
+                    Box::new(stream)
+                }
+            },
         }
     }
 
@@ -194,8 +394,12 @@ fn decl(path: &str, line: i64, name: &str) -> WireFact {
 /// back — one connection, start to finish.
 #[test]
 fn facts_are_writable_over_a_socket_and_queried_back_on_the_same_connection() {
+    over_every_door(writable_and_queried_back);
+}
+
+fn writable_and_queried_back(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
 
     // ---- handshake
     let (header, payload) = client.hello(serving.fingerprint, Mode::ReadWrite);
@@ -270,8 +474,12 @@ fn facts_are_writable_over_a_socket_and_queried_back_on_the_same_connection() {
 /// predicate declares this shape.
 #[test]
 fn a_record_head_describes_itself_and_its_rows_follow() {
+    over_every_door(a_record_head_describes_itself);
+}
+
+fn a_record_head_describes_itself(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     let write = StreamId(1);
@@ -326,8 +534,12 @@ fn a_record_head_describes_itself_and_its_rows_follow() {
 /// different string rather than failing.
 #[test]
 fn a_record_head_of_undeclared_names_holding_a_reference() {
+    over_every_door(undeclared_names_and_a_reference);
+}
+
+fn undeclared_names_and_a_reference(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     let write = StreamId(1);
@@ -388,25 +600,52 @@ fn a_record_head_of_undeclared_names_holding_a_reference() {
 
 /// **A wrong schema fingerprint is refused before any data flows** — the cheap early
 /// mismatch detection §6 is after, and the reason the handshake carries one.
+///
+/// This is also **the flag day's own failure**, and the reason it is a flag day. A
+/// client carrying one whole-schema constant and claiming no predicates — which is what
+/// the .NET client sends, deliberately — takes this branch the moment
+/// a shipped schema moves, and stays refused until it is rebuilt. So the message has
+/// to carry **both numbers**: an operator seeing only "schema mismatch" cannot tell a
+/// stale client from a client pointed at the wrong database, and those have different
+/// fixes.
 #[test]
 fn a_schema_mismatch_is_refused_at_the_handshake() {
-    let serving = start();
-    let mut client = Client::connect(&serving);
+    over_every_door(a_schema_mismatch_is_refused);
+}
 
-    let (header, payload) = client.hello(serving.fingerprint ^ 0xFF, Mode::ReadWrite);
+fn a_schema_mismatch_is_refused(over: Over) {
+    let serving = start();
+    let mut client = Client::connect(&serving, over);
+
+    let stale = serving.fingerprint ^ 0xFF;
+    let (header, payload) = client.hello(stale, Mode::ReadWrite);
 
     assert_eq!(header.kind, FrameKind::ERROR);
     let (code, message) = protocol::decode_error(&payload).expect("an error frame");
     assert_eq!(code, ErrorCode::SchemaMismatch);
     assert!(message.contains("schema mismatch"), "{message}");
+
+    assert!(
+        message.contains(&format!("{stale:x}")),
+        "the refusal must name what the client claimed, or a stale client and a client \
+         on the wrong database read the same: {message}"
+    );
+    assert!(
+        message.contains(&format!("{:x}", serving.fingerprint)),
+        "the refusal must name what the database has: {message}"
+    );
 }
 
 /// Zero means "do not check", which is what a reader or a client written against
 /// whatever the server has will send.
 #[test]
 fn a_zero_fingerprint_skips_the_check() {
+    over_every_door(a_zero_fingerprint_skips);
+}
+
+fn a_zero_fingerprint_skips(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
 
     let (header, _) = client.hello(0, Mode::ReadOnly);
     assert_eq!(header.kind, kinds::READY);
@@ -417,8 +656,12 @@ fn a_zero_fingerprint_skips_the_check() {
 /// frame.
 #[test]
 fn a_read_only_session_cannot_write() {
+    over_every_door(a_read_only_session_refuses_a_write);
+}
+
+fn a_read_only_session_refuses_a_write(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadOnly);
 
     client.send(kinds::OPEN_WRITE, StreamId(1), &[]);
@@ -434,8 +677,12 @@ fn a_read_only_session_cannot_write() {
 /// connection afterwards.
 #[test]
 fn a_failed_stream_leaves_the_connection_usable() {
+    over_every_door(a_failed_stream_leaves_the_connection);
+}
+
+fn a_failed_stream_leaves_the_connection(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     // A query that does not compile.
@@ -458,8 +705,12 @@ fn a_failed_stream_leaves_the_connection_usable() {
 /// an implicit open would be worse than an error.
 #[test]
 fn copy_data_on_an_unopened_stream_is_refused() {
+    over_every_door(copy_data_unopened_is_refused);
+}
+
+fn copy_data_unopened_is_refused(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     let mut block = vec![];
@@ -489,8 +740,12 @@ fn copy_data_on_an_unopened_stream_is_refused() {
 /// if it became one.
 #[test]
 fn an_unknown_frame_kind_is_refused_by_code_and_the_connection_lives() {
+    over_every_door(an_unknown_frame_kind_is_refused);
+}
+
+fn an_unknown_frame_kind_is_refused(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadOnly);
 
     client.send(FrameKind(b'Z'), StreamId(1), b"");
@@ -521,8 +776,12 @@ fn an_unknown_frame_kind_is_refused_by_code_and_the_connection_lives() {
 /// survivable, where a frame that would not parse is `Protocol` and is not.
 #[test]
 fn a_malformed_block_fails_its_stream_and_the_connection_lives() {
+    over_every_door(a_malformed_block_fails_its_stream);
+}
+
+fn a_malformed_block_fails_its_stream(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     let write = StreamId(1);
@@ -546,8 +805,12 @@ fn a_malformed_block_fails_its_stream_and_the_connection_lives() {
 /// contradicted yourself" from "your bytes were malformed" without reading English.
 #[test]
 fn a_conflict_has_its_own_code() {
+    over_every_door(a_conflict_under_its_own_code);
+}
+
+fn a_conflict_under_its_own_code(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     let mut send_blob = |stream: StreamId, contents: i64| {
@@ -609,8 +872,12 @@ fn seed_files(client: &mut Client, count: usize) {
 /// while the long one is still sending rows.
 #[test]
 fn a_long_query_does_not_delay_a_short_one() {
+    over_every_door(the_streams_interleave);
+}
+
+fn the_streams_interleave(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     seed_files(&mut client, 4_000);
@@ -676,8 +943,12 @@ fn a_long_query_does_not_delay_a_short_one() {
 /// restarted a level would still produce a thousand frames.
 #[test]
 fn a_chunked_result_is_the_same_rows_an_uninterrupted_one_would_give() {
+    over_every_door(a_chunked_result_is_every_row);
+}
+
+fn a_chunked_result_is_every_row(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     seed_files(&mut client, 1_000);
@@ -735,8 +1006,12 @@ fn a_chunked_result_is_the_same_rows_an_uninterrupted_one_would_give() {
 /// rather than a failure, and a client that asked for one is not owed an error.
 #[test]
 fn cancelling_a_stream_ends_it_and_leaves_the_connection() {
+    over_every_door(a_cancel_ends_one_stream);
+}
+
+fn a_cancel_ends_one_stream(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadWrite);
 
     seed_files(&mut client, 8_000);
@@ -790,8 +1065,12 @@ fn cancelling_a_stream_ends_it_and_leaves_the_connection() {
 /// session `create` is sent on is also one a query must not silently default on.
 #[test]
 fn a_query_on_a_session_naming_no_database_is_refused() {
+    over_every_door(a_query_with_no_database_is_refused);
+}
+
+fn a_query_with_no_database_is_refused(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
 
     let startup = protocol::encode_startup(&Startup {
         version: protocol::VERSION,
@@ -821,8 +1100,12 @@ fn a_query_on_a_session_naming_no_database_is_refused() {
 /// subset needs exactly that.
 #[test]
 fn a_predicate_claim_the_database_does_not_hold_is_named() {
+    over_every_door(an_unheld_predicate_claim_is_named);
+}
+
+fn an_unheld_predicate_claim_is_named(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
 
     let startup = protocol::encode_startup(&Startup {
         version: protocol::VERSION,
@@ -850,8 +1133,12 @@ fn a_predicate_claim_the_database_does_not_hold_is_named() {
 /// taking the connection.
 #[test]
 fn a_fault_of_the_servers_own_is_internal_and_survivable() {
+    over_every_door(an_internal_fault_is_survivable);
+}
+
+fn an_internal_fault_is_survivable(over: Over) {
     let serving = start();
-    let mut client = Client::connect(&serving);
+    let mut client = Client::connect(&serving, over);
     client.hello(0, Mode::ReadOnly);
 
     let page = protocol::encode_page(&protocol::Page {

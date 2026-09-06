@@ -2,7 +2,8 @@
 #
 # **Virtual**: answered by whoever is running the query out of what it knows, rather
 # than read from a keyspace. That makes it a property of the *server* and not of any
-# database, which is why it is a file of its own rather than a block in `code.sigla` — it
+# database, which is why it is a file of its own rather than a block in a shipped schema —
+# it
 # is deliberately absent from the handshake fingerprint, from the copy embedded at
 # create, and from every artifact's keyspaces. A client that has never heard of it
 # connects exactly as before.

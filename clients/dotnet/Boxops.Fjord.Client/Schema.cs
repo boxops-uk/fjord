@@ -23,6 +23,16 @@ public abstract record FjordType
 
     public sealed record Str : FjordType;
 
+    /// <summary>Uninterpreted bytes.</summary>
+    /// <remarks>
+    /// Length-prefixed and raw on the wire, exactly as <see cref="Str"/> is, and the
+    /// only difference is that the run is not validated as UTF-8 — which is the whole
+    /// of the type. Its descriptor tag is <b>appended</b> after the union's, so a peer
+    /// built before this type refuses a stream carrying one rather than reading it as
+    /// a string and handing its caller bytes that are not text.
+    /// </remarks>
+    public sealed record Bytes : FjordType;
+
     /// <summary>A reference to a fact of <paramref name="Predicate"/>.</summary>
     public sealed record Fact(uint Predicate) : FjordType;
 
@@ -56,6 +66,7 @@ public abstract record FjordType
 
     public static readonly FjordType Integer = new Int();
     public static readonly FjordType String = new Str();
+    public static readonly FjordType Blob = new Bytes();
 
     public static FjordType Reference(uint predicate) => new Fact(predicate);
 

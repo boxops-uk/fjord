@@ -1,0 +1,10 @@
+<Project>
+
+  <!-- **Deliberately empty, and that is the whole content.** MSBuild walks up from a
+       project looking for this file, so without one here every fixture below would be
+       handed `clients/dotnet/Directory.Build.props` — a version number, package
+       metadata, Source Link. A fixture is a *subject*: what it builds with has to be
+       what its own files say, or a test asserting what MSBuild resolved is asserting
+       something the harness put there. -->
+
+</Project>

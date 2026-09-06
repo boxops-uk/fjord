@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.SyntaxForms</RootNamespace>
+
+    <!-- `CompilationUnit` and `GlobalStatement` are rows: the entry point a file of
+         top-level statements declares is a `Program.<Main>$` whose declaring syntax is the
+         *file*, and a class library cannot hold one (CS8805). `SfEntryPoint.cs` is the one
+         file with statements at the top level, so no `StartupObject` is needed — and no
+         other type here may declare a `Main`, or CS0017 picks the fight instead. -->
+    <OutputType>Exe</OutputType>
+
+    <!-- `PointerType`, `FunctionPointerType`, and the two prefix-unary kinds that only
+         exist over pointers (`AddressOfExpression`, `PointerIndirectionExpression`). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- `ExtensionDeclaration` and the C# 14 `field` keyword. The walk's parse options come
+         from MSBuild, so this is what decides whether the indexer is handed an
+         `ExtensionDeclarationSyntax` at all: the pinned Roslyn 4.14.0 declares the node and
+         parses it only above C# 13. A fixture that left the default would exercise the row
+         in the SDK's csc and not in the compiler the indexer links. -->
+    <LangVersion>preview</LangVersion>
+
+    <!-- The six cref rows are references written inside documentation-comment trivia, and
+         trivia is only *structured* — parsed into `CrefSyntax` nodes rather than left as
+         text — when the documentation mode is on. Without this the cref rows would be
+         string literals in a comment and the fixture would assert nothing. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- `NullableType` over an unconstrained or class-constrained type parameter, and the
+         `SuppressNullableWarningExpression` postfix kind, both need an annotation context;
+         outside one they are CS8632/CS8598 noise about the syntax under test. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- `ExternAliasDirective` is the one row here that no source file can reach alone:
+       `extern alias xdoc;` is CS0430 unless some reference actually carries that alias, and
+       the alias has to be attached to a *resolved* reference because the SDK resolves the
+       framework by targeting pack rather than by `<Reference>` item. `System.Xml.XDocument`
+       is chosen because nothing in this project needs it in the global namespace — aliasing
+       an assembly removes its types from `global::`, so aliasing `System.Runtime` would make
+       `object` itself unresolvable. -->
+  <Target Name="SfAliasXDocument" AfterTargets="ResolveReferences">
+    <ItemGroup>
+      <ReferencePath Condition="'%(FileName)' == 'System.Xml.XDocument'">
+        <Aliases>xdoc</Aliases>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
+
+</Project>

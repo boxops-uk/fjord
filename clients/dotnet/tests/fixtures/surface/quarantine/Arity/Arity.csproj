@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Quarantine.Arity</RootNamespace>
+
+    <!-- No `LangVersion`. Generic attributes are C# 11 and `nameof` over an unbound generic
+         is C# 14, both of which the net10.0 default already allows; a pin would turn a
+         compiler change into a fixture edit. -->
+  </PropertyGroup>
+</Project>

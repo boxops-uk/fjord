@@ -185,6 +185,7 @@ pub fn render_ty(ty: &Ty, schema: &Schema, interner: &LocalInterner) -> String {
     match ty {
         Ty::Int => "int".to_owned(),
         Ty::String => "str".to_owned(),
+        Ty::Bytes => "bytes".to_owned(),
         Ty::Error => "?error".to_owned(),
         Ty::Var(_) => "?".to_owned(),
         Ty::Fact(predicate) => schema

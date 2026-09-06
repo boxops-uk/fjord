@@ -152,6 +152,7 @@ fn intern_one<S: FactSink>(
 /// The recursion that makes the walk bottom-up: a `Fact`-typed position holding a
 /// nested fact interns it *here*, before this value has been built, which is
 /// necessarily before the fact holding this value can be encoded.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn resolve<S: FactSink>(
     sink: &S,
     schema: &Schema,
@@ -159,37 +160,73 @@ fn resolve<S: FactSink>(
     value: &WireValue,
     counts: &mut Ingested,
 ) -> Result<Value, IngestError> {
-    match (ty, value) {
-        (PredicateTy::Int, WireValue::Int(n)) => Ok(Value::Int(*n)),
-        (PredicateTy::Str, WireValue::Str(s)) => Ok(Value::Str(s.clone())),
+    // Dispatched on the declared type exhaustively, then on the value: a joint match
+    // needs a wildcard, and that wildcard absorbs a new scalar family into a run-time
+    // refusal where the compiler could have named the site.
+    let mismatch = || IngestError::TypeMismatch {
+        what: "a value",
+        detail: "does not fit the type the schema declares for it",
+    };
 
-        (PredicateTy::Fact(target), WireValue::Ref(reference)) => match reference {
-            // A producer that already holds the id. Checked against the field's
-            // declared target even though the wire decoder checks it too: a
-            // `WireFact` can be built by hand — a deriver does — and the id's own
-            // tag is what makes this free ([I11]).
-            WireRef::Id(id) => {
-                if id.predicate() != *target {
-                    return Err(IngestError::TypeMismatch {
-                        what: "a reference",
-                        detail: "names a different predicate than the field declares",
-                    });
+    match ty {
+        PredicateTy::Int => {
+            let WireValue::Int(n) = value else {
+                return Err(mismatch());
+            };
+            Ok(Value::Int(*n))
+        }
+
+        PredicateTy::Str => {
+            let WireValue::Str(s) = value else {
+                return Err(mismatch());
+            };
+            Ok(Value::Str(s.clone()))
+        }
+
+        PredicateTy::Bytes => {
+            let WireValue::Bytes(payload) = value else {
+                return Err(mismatch());
+            };
+            Ok(Value::Bytes(payload.clone()))
+        }
+
+        PredicateTy::Fact(target) => {
+            let WireValue::Ref(reference) = value else {
+                return Err(mismatch());
+            };
+
+            match reference {
+                // A producer that already holds the id. Checked against the field's
+                // declared target even though the wire decoder checks it too: a
+                // `WireFact` can be built by hand — a deriver does — and the id's own
+                // tag is what makes this free ([I11]).
+                WireRef::Id(id) => {
+                    if id.predicate() != *target {
+                        return Err(IngestError::TypeMismatch {
+                            what: "a reference",
+                            detail: "names a different predicate than the field declares",
+                        });
+                    }
+                    Ok(Value::FactRef(*id))
                 }
-                Ok(Value::FactRef(*id))
-            }
 
-            WireRef::Nested(nested) => {
-                if nested.predicate != *target {
-                    return Err(IngestError::TypeMismatch {
-                        what: "a nested fact",
-                        detail: "is of a different predicate than the field declares",
-                    });
+                WireRef::Nested(nested) => {
+                    if nested.predicate != *target {
+                        return Err(IngestError::TypeMismatch {
+                            what: "a nested fact",
+                            detail: "is of a different predicate than the field declares",
+                        });
+                    }
+                    Ok(Value::FactRef(intern_one(sink, schema, nested, counts)?))
                 }
-                Ok(Value::FactRef(intern_one(sink, schema, nested, counts)?))
             }
-        },
+        }
 
-        (PredicateTy::Record(field_tys), WireValue::Record(fields)) => {
+        PredicateTy::Record(field_tys) => {
+            let WireValue::Record(fields) = value else {
+                return Err(mismatch());
+            };
+
             if field_tys.len() != fields.len() {
                 return Err(IngestError::TypeMismatch {
                     what: "a record",
@@ -223,7 +260,11 @@ fn resolve<S: FactSink>(
         // does, so a parent's key still has no bytes until its children have ids.
         // Nothing about the striping rule changes — a payload is a child, not a
         // second parent.
-        (PredicateTy::Union(alts), WireValue::Union { disc, value }) => {
+        PredicateTy::Union(alts) => {
+            let WireValue::Union { disc, value } = value else {
+                return Err(mismatch());
+            };
+
             let alt =
                 alts.iter()
                     .find(|alt| alt.disc == *disc)
@@ -249,11 +290,6 @@ fn resolve<S: FactSink>(
                 value: Box::new(resolve(sink, schema, &alt.ty, value, counts)?),
             })
         }
-
-        _ => Err(IngestError::TypeMismatch {
-            what: "a value",
-            detail: "does not fit the type the schema declares for it",
-        }),
     }
 }
 
@@ -377,6 +413,82 @@ mod tests {
                 },
             ]),
         )
+    }
+
+    /// **A wire value that does not fit its declared type is refused**, at every
+    /// family.
+    ///
+    /// Nothing provoked this before the restructure: it was the wildcard of a joint
+    /// `(ty, value)` match, and the same wildcard absorbed a new scalar family, which
+    /// would then be refused here at ingest time rather than named by the compiler.
+    #[test]
+    fn a_wire_value_that_does_not_fit_its_type_is_refused() {
+        use fjord_schema::schema::{Alternative, Predicate};
+        use lasso::Rodeo;
+        use std::sync::Arc;
+
+        // A `RodeoReader` cannot be cloned, so each case builds its own — which also
+        // keeps the union's alternative name out of the schemas that have no union.
+        let case = |which: &str| {
+            let mut rodeo = Rodeo::new();
+            let name = rodeo.get_or_intern("gen.P");
+            let key = match which {
+                "int" => PredicateTy::Int,
+                "string" => PredicateTy::Str,
+                "reference" => PredicateTy::Fact(PredicateId(0)),
+                "record" => PredicateTy::Record(Arc::from([])),
+                _ => PredicateTy::Union(Arc::from([Alternative {
+                    name: rodeo.get_or_intern("a"),
+                    disc: 5,
+                    ty: PredicateTy::Int,
+                }])),
+            };
+            let schema = Schema::new(
+                rodeo.into_reader(),
+                Arc::from(vec![Predicate {
+                    name,
+                    key: key.clone(),
+                    value: None,
+                }]),
+            );
+            (schema, key)
+        };
+
+        for which in ["int", "string", "reference", "record", "union"] {
+            let (schema, key) = case(which);
+            let sink = Recorder::default();
+
+            // An empty record fits no scalar and no union; against the record case
+            // it is an int instead, since an empty record would fit that one.
+            let value = if which == "record" {
+                WireValue::Int(1)
+            } else {
+                WireValue::Record(Box::from([]))
+            };
+
+            let err = intern_fact(
+                &sink,
+                &schema,
+                &WireFact {
+                    predicate: PredicateId(0),
+                    key: value,
+                    value: None,
+                },
+            )
+            .unwrap_err();
+
+            assert!(
+                matches!(
+                    err,
+                    IngestError::TypeMismatch {
+                        what: "a value",
+                        detail: "does not fit the type the schema declares for it",
+                    }
+                ),
+                "{key:?}: got {err:?}"
+            );
+            assert!(sink.written().is_empty(), "{key:?} wrote a fact anyway");
+        }
     }
 
     /// **The walk is bottom-up, and the order is forced rather than chosen.**

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Assemblies.Left</RootNamespace>
+
+    <!-- **This csproj and `Assemblies.Right/Assemblies.Right.csproj` must stay identical in
+         every property that shapes a symbol's display string.** `PairedType.cs` is
+         declaration-identical in both projects on purpose (M17), and `CodeMarkup.Signature`
+         is a Hover-format display string of the declaration alone. If one side compiled with
+         nullable annotations off, its `AsmPairSlot<T>.Take()` would hover as `T` where the
+         other hovers as `T?` — and two different values under one `codemarkup.SymbolInfo`
+         key is a refused write, which would turn this project's silent-merge mechanism into a
+         dead indexing run. The mechanism wants a MERGE, not a conflict, so the two halves
+         agree about everything a display string is made of. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- No ProjectReference, and none is possible: the pair's whole subject is one
+       namespace-qualified type name declared in two assemblies, which is CS0433 at every use
+       site the moment one compilation can see the other's copy. No PackageReference either —
+       CI has no network. -->
+</Project>

@@ -28,7 +28,6 @@ built rather than described as if it were.
 | **CLI** | `serve`, `create`, `finish`, `list`, `describe`, `query`, `shell`, `schema …`, `db rm` |
 | **Shell** | The wire REPL: compiles locally against the schema the server serves, real cursor paging, expansion, profiling |
 | **Second implementation** | A C# client, its demo producer, a real Roslyn/MSBuild indexer, and a byte-for-byte golden against the Rust encoder |
-| **Viewer** | A code-search site: browse, file view with cross-references, prefix search, symbol pages |
 | **Measurement** | Six instruments across seven rungs, and a findings register |
 | **Documentation** | This site, deployed on every push to main after the tests and the drift gate; each release carries it as an attested bundle beside the binaries. The same pages are also rendered by the interactive site, which parses them from the same files and runs the engine inside them |
 | **The engine in a browser** | `fjord-engine` compiles to `wasm32-unknown-unknown`, and the whole of it runs there: the lexer's tokens, the parser's tree, the lowered tree with its inferred types, the plan the executor would run, and **the run itself, stepped one transition at a time** — registers filling, rows answered, the rows a residual read and dropped, and the whole database as a table with the range each scan walks shaded across it in bytes. Against a schema you can edit in the page. CI checks the browser build, and both configurations of the trace hook, on every push |
@@ -40,6 +39,7 @@ built rather than described as if it were.
 | **Ingestion from files** | Facts arrive over the wire from a producer. The file format, block encoding and splitting rule are all defined and shared with the wire path; the pipeline is not wired to a command | Was gated on parallel ingestion, which is now done |
 | **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand — which is what four predicates in the sample schema are | The schema DSL (done) plus the re-derivation decision below |
 | **Arrays and sets** | A one-to-many is one fact per element. Marker bands are reserved | An open design question, not a missing implementation |
+| **A code-search UI** | `fjord-viewer` is retired: it proved a viewer is an ordinary consumer of the protocol, and what replaces it is a browser application rather than a Rust binary. [Clients](clients.html#the-viewer) has the three things it needs from this side | A WebSocket listener carrying the same frames |
 | **`fjord write`, `db backup/restore/verify`, `completions`** | Named in the CLI design, absent from the binary. A Complete database is a directory, so `tar` is the backup | — |
 | **Per-predicate statistics** | Nothing feeds a selectivity heuristic, which is why the reorderer does not have one — loop order is the query's written order wherever the written order is legal. [Query efficiency](query-efficiency.html) is what to do about that in the meantime | `finish` is the natural place to record them |
 | **Recursion** | A query cannot name a relation and derive it. The plan is written and its first movement has landed: the pure pieces a driver will call — a budget chokepoint, canonical ids from content, the DNF product, head materialisation, a predicate catalogue, a program's rule shape, the local-identity refusals and the read-work bound — each proved against an independent oracle, none wired to a pipeline, because no pipeline exists before the next movement | The movements after it, in order: the relation store, a `Program` and the naive driver it is differentiated against, semi-naive, resume re-proved over a program, stratification, magic sets, then the surface |
@@ -122,9 +122,9 @@ Four rules that look inherited are not. Glean does the opposite, or nothing, in 
 | Values never enter the scan hot loop | [I6](invariants.html#i6) |
 | Union discriminants are stable and append-only | [I10](invariants.html#i10) |
 
-The repository keeps the full ledger — what was taken, what was changed, and what has not
-been decided — in `docs/glean.md`. It is the file to read before proposing a feature Glean
-already has.
+What is decided and what is not is [the roadmap](https://github.com/boxops-uk/fjord/blob/main/PLAN.md)'s
+job: it carries the acceptance criteria for what is unbuilt and the settled decisions, so a
+feature is proposed against that rather than against a comparison.
 
 ## Two rules about what may change
 
@@ -152,6 +152,6 @@ history lives in git, where every step can be cited by commit.
 |---|---|
 | File ingestion (`fjord write`) | designed; the format is built and shared with the wire path |
 | Stored derivation | designed; gated on the re-derivation decision above |
-| The read-path comparison against Glean | planned with predictions; the write paths are measured and within 8% |
+| The read-path benchmark | the instruments exist; the corpus and the question set are owed |
 | Authentication | design of record written; nothing built |
 | Operational gaps and the language backlog | each listed with the seam that keeps it cheap |

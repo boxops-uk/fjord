@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Namespaces</RootNamespace>
+
+    <!-- 14.5.2 (using alias directives): a using alias may name a pointer type, which is
+         `using unsafe NsCellPointer = int*;` and needs the unsafe switch. The alias target
+         is the only unsafe construct here; nothing in this project pins or allocates. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- 14.4 (extern alias directives): `extern alias` names an assembly the compiler was
+       handed under that alias, so it normally implies a reference with an `Aliases`
+       attribute. The corpus may not reference anything — CI has no network, and a
+       ProjectReference would tie two fixtures together — so the alias is put on one
+       assembly of the framework reference itself, which is already resolved and costs no
+       restore. `System.Net.Ping` is chosen because nothing in this project uses its types
+       any other way: giving a reference an alias *removes* it from the global alias, so an
+       assembly whose types were also wanted unqualified would stop compiling. That is the
+       point of the choice, and Extern/NsExternAlias.cs records the negative half. -->
+  <Target Name="NsAliasOneFrameworkReference"
+          AfterTargets="ResolveAssemblyReferences"
+          BeforeTargets="FindReferenceAssembliesForReferences">
+    <ItemGroup>
+      <ReferencePath Condition="'%(FileName)' == 'System.Net.Ping'">
+        <Aliases>NsPing</Aliases>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
+</Project>

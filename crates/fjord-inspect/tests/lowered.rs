@@ -29,16 +29,22 @@ fn the_shipped_schema_is_a_schema() {
     );
     assert_eq!(
         view.predicates.len(),
-        6,
-        "the site's schema is six predicates, one per shape the language has"
+        11,
+        "the site's schema is eleven predicates — at least one per construct the type \
+         model can hold, which is what makes it the fixture the corpus measures over"
     );
     for wanted in [
         "code.File",
         "code.Decl",
         "code.Ref",
         "code.Span",
+        "code.Extent",
         "code.Kind",
         "code.KindOf",
+        "code.Resolves",
+        "code.Digest",
+        "code.Extends",
+        "code.Note",
     ] {
         assert!(
             view.predicates.iter().any(|p| p.name == wanted),

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.EnumsDelegates</RootNamespace>
+
+    <!-- Clause 21 is about delegates, and a delegate variable that has not been assigned is
+         null — an event with no subscribers is the everyday case. `enable` lets the
+         null-conditional invocations in DelegateInvocation.cs and DelegateEvents.cs say so
+         in the type rather than in a comment. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

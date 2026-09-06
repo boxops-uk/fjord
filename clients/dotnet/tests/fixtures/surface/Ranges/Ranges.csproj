@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Ranges</RootNamespace>
+
+    <!-- 17.2.1's own type table is written with nullable annotations on the element type
+         and on the array itself (`string?[]`, `string[]?`, `string[,]?[]?[][,,]`), and the
+         standard's rank rule turns on where that `?` sits. An annotation outside a nullable
+         context is CS8632 noise about the very syntax under test, so the context is on for
+         the project and `ArrTypeGrammar.cs` is written against it. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

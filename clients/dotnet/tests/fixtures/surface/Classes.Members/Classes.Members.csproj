@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Classes.Members</RootNamespace>
+
+    <!-- 15.8.2 (field-like events) and 15.7.4 (automatically implemented properties) are
+         declared here the way they are declared in real code: `EventHandler?`, because a
+         field-like event is null until something subscribes, and `?.Invoke` is the only
+         correct reference to one. Outside an annotations context every one of those `?`s is
+         a CS8632 warning, so the whole event surface of this project would read as a mistake
+         rather than as the idiom the clause describes. `required` (15.7.4) also only means
+         anything with nullable analysis on. -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

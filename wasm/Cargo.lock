@@ -71,7 +71,6 @@ dependencies = [
  "fjord-schema",
  "lasso",
  "memchr",
- "serde",
  "thiserror",
 ]
 

@@ -153,6 +153,47 @@ impl fmt::Display for FormatVersion {
 mod tests {
     use super::*;
 
+    /// **A database written by 0.1.0 still opens**, byte for byte, and the stamp it
+    /// carries is the one this build writes.
+    ///
+    /// Stated as literal bytes rather than as `CURRENT.encode()`, which would compare
+    /// this build against itself and pass whatever the stamp became. `check_readable`
+    /// insists on **equality** ([I15]), so a bump to either number is not a migration
+    /// — it is every database ever written by an earlier build becoming unopenable.
+    /// That is the whole reason the marker table is append-only and why `MARK_BYTES`
+    /// took the next free number rather than a tidier one.
+    ///
+    /// [I15]: ../../website/content/invariants.md#i15
+    #[test]
+    fn a_database_written_before_a_new_scalar_family_still_opens() {
+        // What a 0.1.0 instance holds in its stamp block: the magic, then codec 1 and
+        // storage 1, big-endian.
+        let mut on_disk = [0u8; BLOCK_LEN];
+        on_disk[..MAGIC.len()].copy_from_slice(MAGIC);
+        on_disk[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&1u16.to_be_bytes());
+        on_disk[MAGIC.len() + 2..].copy_from_slice(&1u16.to_be_bytes());
+
+        let stamped = FormatVersion::decode(&on_disk).expect("a 0.1.0 stamp decodes");
+        assert_eq!(
+            stamped,
+            FormatVersion {
+                codec: 1,
+                storage: 1
+            }
+        );
+        stamped
+            .check_readable()
+            .expect("a 0.1.0 database must still be readable");
+
+        // And this build writes the same bytes, so a database it creates is one a
+        // 0.1.0 reader would accept too.
+        assert_eq!(
+            FormatVersion::CURRENT.encode(),
+            on_disk,
+            "the format stamp moved — every database written by 0.1.0 is now unopenable"
+        );
+    }
+
     /// The stamp round-trips, and its width is fixed — the number the length check
     /// in [`FormatVersion::decode`] is entitled to insist on.
     #[test]

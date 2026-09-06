@@ -15,10 +15,10 @@ recovers a slow spelling for you. What decides the cost is the **schema's field 
 ## The unit of cost is a row examined
 
 ```text
-STEP      EXAMINED
-src.Decl  483       full scan
-src.Ref   5
-488 examined, 5 produced
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
 ```
 
 `--profile` prints that, per step. **Examined** is rows pulled off a scan; **produced** is

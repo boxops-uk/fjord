@@ -395,18 +395,23 @@ is refused rather than adopted.
 
 Explained in full on the [Operations](operations.html) page.
 
-| # | Statement |
-|---|---|
-| `ops-I1` | Single-**process** store ownership; no silent connect→open fallback |
-| `ops-I2` | Complete = immutable; every write refused at session establishment |
-| `ops-I3` | Finish ordering: durable first, status flip last |
-| `ops-I4` | Reproducibility; identity is `hash(canonical schema, base facts)`; conflicts reject, order-independently |
-| `ops-I5` | One write funnel — one *pipeline*, not one thread |
-| `ops-I6` | Session modes declared at open, resolved once against status |
-| `ops-I7` | The filesystem is the catalog |
-| `ops-I8` | Derivation is phased: create → ingest → derive → finish |
-| `ops-I9` | No cross-database anything in P0 |
-| `ops-I10` | No in-database auth; the transport is the trust boundary |
+The Guard column is sparse on purpose — most of these are about a *deployment* rather than a
+data structure, and are held by the operations page and the lifecycle tests rather than by one
+named assertion. Where a guard exists it is named, because the alternative is a table that reads
+as though it were all covered.
+
+| # | Statement | Guard |
+|---|---|---|
+| `ops-I1` | Single-**process** store ownership; no silent connect→open fallback | |
+| `ops-I2` | Complete = immutable; every write refused at session establishment | `sealing_leaves_the_data_in_tables`, `a_sealed_artifact_is_its_tables`, `an_on_demand_open_stamps_the_status_on_disk_and_not_the_one_it_resolved` |
+| `ops-I3` | Finish ordering: durable first, status flip last | `a_sealed_database_reopens_and_answers_identically`, `what_a_sealed_artifact_costs_is_settled_at_seal` |
+| `ops-I4` | Reproducibility; identity is `hash(canonical schema, base facts)`; conflicts reject, order-independently | |
+| `ops-I5` | One write funnel — one *pipeline*, not one thread | |
+| `ops-I6` | Session modes declared at open, resolved once against status | |
+| `ops-I7` | The filesystem is the catalog | `a_half_delivered_instance_is_refused_and_left_untouched` — a sidecar makes a directory a database the root *lists*, and never one a session is served out of before its store is there; `a_store_one_keyspace_manifest_short_is_never_served_the_facts_it_records` for the rest of that copy window, where a bind cannot be served a wrong answer and the open **damages the artifact anyway** |
+| `ops-I8` | Derivation is phased: create → ingest → derive → finish | |
+| `ops-I9` | No cross-database anything in P0 | |
+| `ops-I10` | No in-database auth; the transport is the trust boundary | |
 
 ## The anti-patterns each one forbids
 

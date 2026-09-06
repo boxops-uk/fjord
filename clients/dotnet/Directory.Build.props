@@ -22,7 +22,12 @@
     <IsPackable>false</IsPackable>
 
     <!-- One version for the whole repository, matching the Rust workspace's. -->
-    <Version>0.1.0</Version>
+    <!-- **A moved schema fingerprint is a client release.** The client carries one
+         whole-schema constant and the server checks it for equality, so an un-upgraded
+         client is refused at the handshake — which means the version bumps in the same
+         commit that re-pastes the constant, never later. README.md's flag-day section
+         names the guard that checks each of the remaining steps. -->
+    <Version>0.4.0</Version>
     <Company>Boxops</Company>
     <Authors>Boxops</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

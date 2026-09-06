@@ -1,42 +1,28 @@
-//! **The sample code index** — `schemas/code.sigla`, parsed, and the name lookups the
-//! rest of this crate's tests, benchmarks and instruments resolve against it.
+//! **The sample schema** — `schemas/demo.sigla`, parsed, and the name lookups the rest
+//! of this crate's tests, benchmarks and instruments resolve against it.
 //!
-//! One fact per thing, and everything about a thing pointing at it by
-//! [`FactId`](fjord_schema::id::FactId) rather than repeating it. It is the shape the
-//! .NET demo and the real Roslyn indexer write, the shape the viewer reads, and the
-//! shape every number in `bench/FINDINGS.md` was measured over.
-//!
-//! **It is not a default, and there is no longer such a thing.** Until 0.0.1 this was
-//! *the built-in schema*: what a database got when `create` was not given a path. That
-//! made a default decide how every stored row of somebody's database decoded, and made
-//! the artifact a property of which build of the tool created it. `--schema` is required
-//! now, and what is left here is a **fixture** — one worked example, in one place, so an
+//! **It is not a default, and there is no longer such a thing.** Until 0.0.1 there *was*
+//! a built-in schema: what a database got when `create` was not given a path. That made a
+//! default decide how every stored row of somebody's database decoded, and made the
+//! artifact a property of which build of the tool created it. `--schema` is required now,
+//! and what is left here is a **fixture** — one worked example, in one place, so an
 //! instrument cannot declare its own and end up measuring a database it could not have
 //! written.
 //!
-//! **Nothing here states a schema.** `schemas/code.sigla` is the single statement, in the
+//! **Nothing here states a schema.** `schemas/demo.sigla` is the single statement, in the
 //! language `fjord create --schema` takes, and this module is the two lines that parse it
-//! plus the name lookups. What is left to guard is therefore not
-//! "does the vector still say what it said" but "does the *file* still declare what the
-//! rest of the tree names" — which is what `tests` below asks.
+//! plus the name lookups. What is left to guard is therefore not "does the vector still
+//! say what it said" but "does the *file* still declare what the rest of the tree names" —
+//! which is what `tests` below asks.
 //!
-//! **Three layers, and the joins between them are the point.** Nine predicates are the
-//! source layer any syntax walk can fill — files, modules, declarations, references,
-//! their spans, the two search indexes — with `src.Line` holding the file's text beside
-//! them. Fifteen more are what a *compiler* and a *build system* know and a syntax walk
-//! does not: which project a file is compiled by and into which assembly, what a type
-//! extends, what a member overrides, what a parameter's type is spelled as, what the doc
-//! comment says. Those are written by
-//! [`Boxops.Fjord.Indexer`](../../../clients/dotnet/Boxops.Fjord.Indexer/README.md), which has Roslyn and
-//! MSBuild to answer them with. A predicate nobody fills is an empty keyspace pair, which
-//! costs the ~30 ms it takes to create it and nothing after that.
-//!
-//! **Three of the twenty-seven are the same data keyed a second way**, and they are here
-//! because a predicate leads with one field and two questions want different ones:
-//! `src.SearchByName` against `src.Decl`, `src.FileXRef` against `src.Ref`,
-//! `src.AttributeOf` and `src.DerivesFrom` against their originals. Each is what a
-//! *stored derivation* would materialise ([the roadmap](../../../PLAN.md)); until one can
-//! be declared, the producer writes both orders.
+//! **Why this file and not the shipped set.** `schemas/dotnet.sigla` is what a real
+//! producer writes: sixty-five predicates across five layers, keyed for questions a code
+//! browser asks. It is the wrong fixture for an instrument. A benchmark wants a corpus it
+//! can generate to any size and a shape a reader can hold in their head; the browser
+//! playground wants a schema that lowers in one file; the corpus tests want every
+//! construct the language has, exactly once. `demo.sigla` is all three, and it is the
+//! schema the site opens with — so a number measured here is a number a reader can
+//! reproduce in a browser tab.
 
 use std::sync::LazyLock;
 
@@ -48,64 +34,64 @@ use fjord_schema::{
 /// The schema itself, as text.
 ///
 /// **The file is the schema**, and it is a file a person can read, diff, and pass to
-/// `fjord create --schema` — which is exactly what the scripts and the two integration
-/// suites do. Compiled in here so a bench does not have to find it on disk.
-const SOURCE: &str = include_str!("../../../schemas/code.sigla");
+/// `fjord create --schema` — which is exactly what the scripts and the integration suites
+/// do. Compiled in here so a bench does not have to find it on disk.
+///
+/// A *list* of one, and resolved rather than lowered directly, because the resolving path
+/// is the one production takes: `demo.sigla` imports nothing today and an entry that grew
+/// an import would otherwise be read as a schema quietly missing everything it brought in.
+/// The multi-file case has its own test, `the_embedded_reader_follows_imports`.
+const SOURCES: &[(&str, &str)] = &[(
+    "schemas/demo.sigla",
+    include_str!("../../../schemas/demo.sigla"),
+)];
 
-/// The schema everything here resolves names against: **a code index**, which is the
-/// canonical shape for a fact database — one fact per thing, and everything about a
+/// The schema everything here resolves names against: **a small code index**, which is
+/// the canonical shape for a fact database — one fact per thing, and everything about a
 /// thing pointing at it rather than repeating it.
 ///
 /// **There are no id constants, and that is the point.** An id is a *position*, and
-/// positions come from sorting the schema's names ([D1](../../../website/content/schema-language.md)),
-/// so a constant would be a second statement of something the schema already decides —
-/// wrong the first time somebody adds a predicate that sorts earlier. Ask [`id`] by
-/// name. Nothing outside this process ever sees one anyway: a block header carries the
-/// predicate's *name*, so a client keeps no table to fall out of step.
+/// positions come from sorting the schema's names, so a constant would be a second
+/// statement of something the schema already decides — wrong the first time somebody adds
+/// a predicate that sorts earlier. Ask [`id`] by name. Nothing outside this process ever
+/// sees one anyway: a block header carries the predicate's *name*, so a client keeps no
+/// table to fall out of step.
 ///
-/// What each predicate is here to show:
+/// **Eleven predicates, one per construct the type model can hold.** What each is here to
+/// show:
 ///
 /// | predicate | shows |
 /// |---|---|
-/// | `src.File` | a **scalar** key — a path is one string, and needs no record |
-/// | `src.Module` | a **reference**, so a module names its file rather than repeating the path |
-/// | `src.Decl` | a **value side**, so `D.value` has something to read, plus a second reference |
-/// | `src.SearchByName` | **key order is the index**: the same names keyed so a prefix narrows |
-/// | `src.Ref` | a **nested record** key field, and two references to two predicates, reached through an open pattern |
-/// | `src.Import` | two references to one predicate, which is what a graph edge is |
-/// | `src.Project` · `src.Assembly` | scalar keys again, and the two ends of the build layer |
-/// | `src.Compilation` | the **crossing**: a project, a target framework, and the assembly the pair produces |
-/// | `src.ProjectSource` · `src.ProjectRef` · `src.PackageRef` | edges, which is how a many-to-many is said without arrays |
-/// | `src.Package` | a **compound identity** — a package is its name *and* its version, and neither alone |
-/// | `src.Member` · `src.Extends` · `src.Implements` · `src.Override` | the declaration graph, all four keyed **container-first** so the fan-out direction is the seek |
-/// | `src.Param` | an `Int` in the middle of a key, so a method's parameters come back **in order** |
-/// | `src.TypeOf` · `src.Doc` | a key of one field, which is a thing an *attribute* of something else is |
-/// | `src.Attribute` | a string leading the key, so `[Obsolete]` everywhere is a seek rather than a scan |
-/// | `src.Line` | the **wide row**: a file's line table, one fact per line, the text on the value side |
+/// | `code.File` | a **scalar key** — a path is one string and needs no record |
+/// | `code.Decl` | a record key with a **reference leading it**, and a **scalar value side**, so `D.value` has something to read |
+/// | `code.Ref` | two references to one predicate, which is what a graph edge is |
+/// | `code.Span` | a **nested record** in a key, spliced into it rather than framed |
+/// | `code.Extent` | a **record value side**, which is the shape a scalar one cannot hold |
+/// | `code.Kind` · `code.KindOf` | a **union in a key**, and the same data keyed the other way — because a predicate leads with one field and both questions are worth a seek |
+/// | `code.Resolves` | a union carrying a payload of **every kind**: none, a reference, a different reference, and a record |
+/// | `code.Digest` | **`bytes`**, which the language will not look inside, ordered by `memcmp` |
+/// | `code.Extends` | **a keyword as a field name** — `type` is how a named type is declared and is still legal here |
+/// | `code.Note` | a **single-alternative union**, which needs the trailing `\|` to be one at all |
 ///
 /// **Why the field order decides the seeks, and why it is declared rather than derived.**
-/// A record's fields are stored in the order `schemas/code.sigla` lists them, that order
-/// *is* the key order, and a query can only narrow on a leading run of it. So
-/// `src.Extends` is declared `{base, type}` because "everything deriving from this" is
-/// the question worth a seek; `{iface, type}`, `{container, member}` and
-/// `{attribute, target}` are the same choice made three more times. Lowering preserves
+/// A record's fields are stored in the order `schemas/demo.sigla` lists them, that order
+/// *is* the key order, and a query can only narrow on a leading run of it. So `code.Decl`
+/// leads with `file` because "this file's declarations" is the question worth a seek, and
+/// `line` trails so a window is a range on the last key field. Lowering preserves
 /// declaration order for exactly this reason — it does not sort a record's fields.
 ///
-/// Nothing sorts these slices: `flatten` walks the
-/// schema's own slice by index and looks each query field up by name, and
-/// `fjord_store::fact`'s `the_encoding_order_is_the_declared_order` pins
-/// that. An **alphabetical** habit makes the physical key order a *consequence*
-/// of naming — which is how a `src.Decl` comes to lead with a line number and a `src.Ref` with
-/// a column — the two most expensive keys in the index, both by accident.
+/// Nothing sorts these slices: `flatten` walks the schema's own slice by index and looks
+/// each query field up by name, and `fjord_store::fact`'s
+/// `the_encoding_order_is_the_declared_order` pins that. An **alphabetical** habit makes
+/// the physical key order a *consequence* of naming, which is how a declaration comes to
+/// lead with a line number — the most expensive key in an index, by accident.
 ///
-/// The order is now chosen per predicate and stated in `tests::KEY_ORDER`, which is the
-/// guard: a field list that changes silently answers a different question, and asserting
-/// the intended order catches that where asserting sortedness only caught it when the
-/// intended order happened to be alphabetical.
+/// The order is chosen per predicate and stated in `tests::KEY_ORDER`, which is the guard:
+/// a field list that changes silently answers a different question.
 pub fn schema() -> Schema {
     /// Parsed once. `Schema` is `Arc`-backed, so handing out clones is a refcount bump
     /// rather than a re-parse — which matters because every connection asks for one.
-    static SCHEMA: LazyLock<Schema> = LazyLock::new(|| parse_or_panic(SOURCE, None));
+    static SCHEMA: LazyLock<Schema> = LazyLock::new(|| resolve_or_panic(SOURCES));
 
     SCHEMA.clone()
 }
@@ -121,31 +107,23 @@ pub fn id(name: &str) -> PredicateId {
     schema()
         .find_position(name)
         .map(|(id, _)| id)
-        .unwrap_or_else(|| panic!("`schemas/code.sigla` declares no `{name}`"))
+        .unwrap_or_else(|| panic!("`schemas/demo.sigla` declares no `{name}`"))
 }
 
-/// Parse a schema, or explain why the build is broken.
+/// Resolve an embedded schema, or explain why the build is broken.
 ///
 /// A schema compiled into the binary is not input — it ships with the program — so a
-/// failure here is a bug rather than a bad file, and the panic carries every diagnostic
-/// so it says which line.
-fn parse_or_panic(source: &str, _path: Option<&str>) -> Schema {
-    let mut diags = vec![];
-
-    let Some(cst) = syntax::parse::parse(source, &mut diags) else {
-        panic!("`schemas/code.sigla` does not parse: {diags:#?}");
-    };
-
-    let Some(lowered) = syntax::lower::lower(&cst, &mut diags) else {
-        panic!("`schemas/code.sigla` does not lower: {diags:#?}");
-    };
-
-    assert!(
-        diags.is_empty(),
-        "`schemas/code.sigla` is not clean: {diags:#?}"
-    );
-
-    lowered.schema
+/// failure here is a bug rather than a bad file, and the panic carries the rendered
+/// reason so it says which line of which file.
+///
+/// **The resolving path, not `lower` directly**, and the diagnostics asserted on are
+/// the *resolved* ones: an unanswered import is then a failure here rather than a
+/// schema quietly missing what it imported.
+pub(crate) fn resolve_or_panic(sources: &[(&str, &str)]) -> Schema {
+    match syntax::resolve::resolve_from(sources.iter().copied()) {
+        Ok(resolved) => resolved.schema,
+        Err(reason) => panic!("the embedded schema does not resolve:\n{reason}"),
+    }
 }
 
 #[cfg(test)]
@@ -164,30 +142,26 @@ mod tests {
     #[test]
     fn the_schema_declares_what_the_tree_names() {
         let schema = schema();
+
         assert_eq!(
             schema.len(),
-            27,
-            "`schemas/code.sigla` is twenty-seven predicates"
+            11,
+            "`demo.sigla` is eleven predicates — at least one per construct the type \
+             model can hold, which is what makes it the fixture"
         );
 
         for name in [
-            "src.File",
-            "src.Module",
-            "src.Decl",
-            "src.SearchByName",
-            "src.Ref",
-            "src.Import",
-            "src.Project",
-            "src.Assembly",
-            "src.Package",
-            "src.Line",
-            // The five a code-search viewer needs and a syntax walk alone cannot
-            // key for — three of them second key orders over data already here.
-            "src.DeclSpan",
-            "src.SearchByLowerName",
-            "src.FileXRef",
-            "src.DerivesFrom",
-            "src.AttributeOf",
+            "code.File",
+            "code.Decl",
+            "code.Ref",
+            "code.Span",
+            "code.Extent",
+            "code.Kind",
+            "code.KindOf",
+            "code.Resolves",
+            "code.Digest",
+            "code.Extends",
+            "code.Note",
         ] {
             assert_eq!(
                 schema.get(id(name)).and_then(|p| p.name()),
@@ -197,23 +171,27 @@ mod tests {
         }
     }
 
-    /// **The .NET client states this schema independently, and must still agree.**
+    /// **The .NET demo states its schema independently, and must still agree with the
+    /// file the server parses.**
     ///
     /// The golden records the fingerprint `Boxops.Fjord.Demo` computed from its own
-    /// twenty-seven declarations. `byte_identical_with_dotnet` compares that against a
-    /// *third* statement in Rust, which is what makes the codec argument; what neither
-    /// checks is whether either agrees with the schema the **server** actually serves,
-    /// because that one is parsed from `schemas/code.sigla` and nothing else reads it.
+    /// declarations. `byte_identical_with_dotnet` compares that against a *third*
+    /// statement in Rust, which is what makes the codec argument; what neither checks is
+    /// whether either agrees with the schema the **server** actually serves, because that
+    /// one is parsed from a file and nothing else reads it.
     ///
-    /// Until this test, drift there surfaced as a failed handshake in `run-demo.sh` —
-    /// a real guard, but one that needs `dotnet` and a running server to fire. This is
-    /// the same claim as a string compare.
+    /// **It names the file rather than trusting `schema()`.** The two are the same
+    /// today — both are `demo.sigla` — and naming it is what keeps this a claim about the
+    /// *server's* copy: if the fixture and the demo ever part company again, as they did
+    /// while the indexer moved to `dotnet.sigla`, comparing the golden against whatever
+    /// `schema()` returned would compare two unrelated numbers and pass by coincidence.
     ///
-    /// Regenerate with `./clients/dotnet/emit-golden.sh` when the schema moves on
+    /// Regenerate with `./clients/dotnet/emit-golden.sh` when that schema moves on
     /// purpose; both sides move together, which is the point.
     #[test]
-    fn the_dotnet_clients_schema_is_this_one() {
+    fn the_dotnet_demos_schema_is_the_file_the_server_parses() {
         const GOLDEN: &str = include_str!("../../../clients/dotnet/golden/blocks.txt");
+        const DEMO: &str = "schemas/demo.sigla";
 
         let recorded = GOLDEN
             .lines()
@@ -222,11 +200,15 @@ mod tests {
             .and_then(|hex| u64::from_str_radix(hex, 16).ok())
             .expect("the golden names a schema fingerprint");
 
+        let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let served = syntax::resolve::resolve(&root.join(DEMO), &[root.join("schemas")])
+            .unwrap_or_else(|reason| panic!("{DEMO} does not resolve:\n{reason}"));
+
         assert_eq!(
-            fjord_schema::fingerprint::of(&schema()),
+            fjord_schema::fingerprint::of(&served.schema),
             recorded,
-            "`schemas/code.sigla` and the .NET client's declaration have drifted — \
-             the demo would be refused at the handshake"
+            "`{DEMO}` and the .NET demo's declaration have drifted — the demo would be \
+             refused at the handshake"
         );
     }
 
@@ -238,38 +220,33 @@ mod tests {
     /// on the rest, so the first name in each row is the question that predicate is fast
     /// at, and everything after it is a tie-break.
     ///
-    /// The build layer's four are alphabetical because they were written that way and
-    /// nothing has measured a reason to disagree — they are thousands of rows, not
-    /// millions. That is a different statement from the two that were changed, and it is
-    /// here so the next reader can tell a decision from an inheritance.
     const KEY_ORDER: &[(&str, &[&str])] = &[
-        ("src.Module", &["file", "name"]),
-        ("src.Decl", &["module", "name", "line"]),
-        ("src.DeclSpan", &["decl", "col", "endLine", "endCol"]),
-        ("src.SearchByName", &["name", "to"]),
-        ("src.SearchByLowerName", &["name", "to"]),
-        ("src.Ref", &["to", "file", "at.line", "at.col", "at.length"]),
+        ("code.Decl", &["file", "name", "line"]),
+        ("code.Ref", &["from", "to"]),
+        ("code.Span", &["decl", "at.line", "at.col"]),
+        ("code.Extent", &["decl"]),
+        ("code.Kind", &["decl", "what"]),
+        ("code.KindOf", &["what", "decl"]),
+        ("code.Resolves", &["at", "to"]),
+        ("code.Digest", &["file"]),
+        ("code.Extends", &["type", "base"]),
+        ("code.Note", &["decl", "text"]),
+    ];
+
+    /// **What a record *value* side holds, in declaration order.**
+    ///
+    /// Separate from [`KEY_ORDER`] because the two are different claims. A key's order is
+    /// the index design — it decides what a query can narrow on. A value's order decides
+    /// nothing about seeking and everything about *decoding*: a value is encoded
+    /// positionally against its declared type, so two fields swapped here reinterprets
+    /// every stored row of that predicate, and `nyi/value-field` means a consumer takes
+    /// the whole record or none of it.
+    const VALUE_ORDER: &[(&str, &[&str])] = &[
         (
-            "src.FileXRef",
-            &["file", "at.line", "at.col", "at.length", "to"],
+            "code.Extent",
+            &["from.line", "from.col", "to.line", "to.col"],
         ),
-        ("src.Import", &["from", "to"]),
-        ("src.Compilation", &["assembly", "framework", "project"]),
-        ("src.ProjectSource", &["file", "project"]),
-        ("src.ProjectRef", &["from", "to"]),
-        ("src.Package", &["name", "version"]),
-        ("src.PackageRef", &["package", "project"]),
-        ("src.Member", &["container", "member"]),
-        ("src.Extends", &["base", "type"]),
-        ("src.Implements", &["iface", "type"]),
-        ("src.Override", &["base", "member"]),
-        ("src.DerivesFrom", &["type", "base"]),
-        ("src.Param", &["decl", "index", "name"]),
-        ("src.TypeOf", &["decl"]),
-        ("src.Doc", &["decl"]),
-        ("src.Attribute", &["attribute", "target"]),
-        ("src.AttributeOf", &["target", "attribute"]),
-        ("src.Line", &["file", "line"]),
+        ("code.Digest", &["sha256"]),
     ];
 
     /// **A record's fields are stored in the order this file declares them.**
@@ -319,14 +296,6 @@ mod tests {
             let mut key = Vec::new();
             walk(&predicate.predicate().key, &schema, "", &mut key);
 
-            // A value side is not a key and never seeks, but a record in one would
-            // still be stored in declaration order — and there is none today, so this
-            // asserts that rather than leaving the next one unexamined.
-            assert!(
-                !matches!(predicate.predicate().value, Some(PredicateTy::Record(_))),
-                "`{name}` has a record value side, which needs a decision and an entry here"
-            );
-
             let expected = KEY_ORDER.iter().find(|(p, _)| *p == name).map(|(_, k)| *k);
 
             match expected {
@@ -338,6 +307,34 @@ mod tests {
                 None => assert!(
                     key.is_empty(),
                     "`{name}` has a record key and no entry in KEY_ORDER"
+                ),
+            }
+
+            // **A record value side is declared order too, and the source layer is the
+            // first thing here to have one.** It never seeks, so this is not the index
+            // design — it is the *codec*: a value is encoded positionally against the
+            // declared type, so swapping two fields of one silently reinterprets every
+            // stored row of that predicate. `nyi/value-field` means a consumer reads the
+            // whole value or none of it, which is what makes a silent swap total.
+            let mut value = Vec::new();
+            if let Some(ty) = &predicate.predicate().value {
+                walk(ty, &schema, "", &mut value);
+            }
+
+            let expected = VALUE_ORDER
+                .iter()
+                .find(|(p, _)| *p == name)
+                .map(|(_, v)| *v);
+
+            match expected {
+                Some(expected) => assert_eq!(
+                    value, expected,
+                    "`{name}`'s stored value is not the one VALUE_ORDER declares, \
+                     so every row of it decodes into different fields"
+                ),
+                None => assert!(
+                    value.is_empty(),
+                    "`{name}` has a record value side and no entry in VALUE_ORDER"
                 ),
             }
         }
@@ -377,7 +374,7 @@ mod tests {
                         walk(&alt.ty, len, name);
                     }
                 }
-                PredicateTy::Int | PredicateTy::Str => {}
+                PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes => {}
             }
         }
 

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Genuinely broken, and broken for a reason MSBuild names: the import is not there.
+       Single-targeted on purpose — the run's second attempt asks for a target this
+       project has no reason to have, so the two errors it can report are one real one
+       and one that is wrong by construction. -->
+  <Import Project="Missing.props" />
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>

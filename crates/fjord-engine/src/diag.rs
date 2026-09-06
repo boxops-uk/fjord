@@ -110,6 +110,9 @@ pub enum Code {
     LitIntRange,
     LitIntUnderscore,
     LitStringEscape,
+    LitBytesEmpty,
+    LitBytesOddDigits,
+    LitBytesDigit,
 }
 
 impl Code {
@@ -153,6 +156,9 @@ impl Code {
         Code::LitIntRange,
         Code::LitIntUnderscore,
         Code::LitStringEscape,
+        Code::LitBytesEmpty,
+        Code::LitBytesOddDigits,
+        Code::LitBytesDigit,
     ];
 
     /// The rendered code — what a reader sees, and what the corpus asserts on.
@@ -195,6 +201,9 @@ impl Code {
             Code::LitIntRange => "lit/int-range",
             Code::LitIntUnderscore => "lit/int-underscore",
             Code::LitStringEscape => "lit/string-escape",
+            Code::LitBytesEmpty => "lit/bytes-empty",
+            Code::LitBytesOddDigits => "lit/bytes-odd-digits",
+            Code::LitBytesDigit => "lit/bytes-digit",
         }
     }
 
@@ -238,7 +247,10 @@ impl Code {
             Code::LitIntLeadingZero
             | Code::LitIntRange
             | Code::LitIntUnderscore
-            | Code::LitStringEscape => Kind::Literal,
+            | Code::LitStringEscape
+            | Code::LitBytesEmpty
+            | Code::LitBytesOddDigits
+            | Code::LitBytesDigit => Kind::Literal,
         }
     }
 
@@ -493,7 +505,10 @@ mod tests {
                 | Code::LitIntLeadingZero
                 | Code::LitIntRange
                 | Code::LitIntUnderscore
-                | Code::LitStringEscape => 1,
+                | Code::LitStringEscape
+                | Code::LitBytesEmpty
+                | Code::LitBytesOddDigits
+                | Code::LitBytesDigit => 1,
             }
         }
 

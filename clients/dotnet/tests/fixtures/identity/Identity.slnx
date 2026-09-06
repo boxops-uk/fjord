@@ -1,0 +1,10 @@
+<Solution>
+  <!-- Two projects of one name in two solution folders, as `dotnet/runtime` files
+       `src/coreclr/System.Private.CoreLib` beside `src/mono/System.Private.CoreLib`. -->
+  <Folder Name="/fast/">
+    <Project Path="Engine/fast/Engine.csproj" />
+  </Folder>
+  <Folder Name="/portable/">
+    <Project Path="Engine/portable/Engine.csproj" />
+  </Folder>
+</Solution>

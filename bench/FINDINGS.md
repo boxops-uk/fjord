@@ -1,8 +1,45 @@
-# Findings — the measurement register
+# Findings — the measurement register, closed until a 1.0 pass
 
-> The method is [performance](../website/content/performance.md); the read-path comparison
-> plan is [`glean-read-path.md`](glean-read-path.md); the predictions this register was
-> opened to check are the [appendix](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured).
+> **Every number in this file is superseded, and the register is closed rather than
+> stale.** Read it for what was *learned*, never for what anything currently costs.
+>
+> Four things happened to the tree underneath it, and any one of them would have been
+> enough. The schema every figure was measured over — `code.sigla`, 22 predicates — is
+> deleted; the producer writes a different set with a per-kind C# layer where this had one
+> declaration predicate. The mode that built the corpus, `--syntax-only`, is deleted, and a
+> semantic walk over the same tree is a different and much larger workload. The Glean
+> comparison the write-path entries turn on is retired. And the two largest pieces of work
+> still ahead — **cost-based reordering** and **recursion** — change how a query is planned
+> and what the language can express, which is most of what the read-path entries measure.
+>
+> **What survives is the lessons, and they are load-bearing rather than historical:**
+>
+> - **A join's cost is decided by key field order, and that order is the schema's to
+>   choose** (§2). This is why every predicate in `schemas/` carries a comment saying which
+>   question its key order answers, and why `sample_schema`'s `KEY_ORDER` is asserted.
+> - **Interning is most of what ingest spends** (§12, §13) — three quarters of the work was
+>   re-reading, and committing is 41% of it. The lookup cache exists because of this.
+> - **The plateau was the connect and the allocator, not the engine** (§18): 27× from
+>   pooling a connection, 5–10% from mimalloc. Both are in the tree with guards.
+> - **A connection dying mid-answer stranded the stream answering it** (§10), and **a
+>   sealed database's data was in its journal rather than its tables** (§20). Both fixed,
+>   both guarded.
+> - **A new scalar family is a compile error rather than a corrupt row** (§19), and the site
+>   count is the coverage ledger `scripts/check-exhaustive.sh` re-derives.
+>
+> **The instruments survive too**, and they are how the next pass happens:
+> `examples/engine.rs`, `examples/breakdown.rs`, `examples/ingest.rs` and the workload
+> catalogue in `workload.rs`, which states one access class per entry. What they lack is a
+> corpus and a chosen question set — Run 7's, and the pass itself is scheduled nearer 1.0,
+> when the planner and the language have stopped moving.
+>
+> Nothing below is amended to match the present tree. A measurement is only worth reading
+> against the tree that produced it, and rewriting these to look current would destroy the
+> one thing they are still good for.
+
+> The method is [performance](../website/content/performance.md); the predictions this
+> register was opened to check are the
+> [appendix](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured).
 > One entry per thing measured: what was measured, the number, and what it costs to act on.
 > This file is deliberately a history — a number is only worth reading against the tree that
 > produced it, so entries cite commits and are amended rather than rewritten.
@@ -67,7 +104,14 @@ taken away — open a scan at a key sampled from the middle of the keyspace, tak
 | **`src.Decl`** | 888,177 | 1 | **646.6 µs** | **4.7 µs** |
 | `src.SearchByName` | 888,177 | 1 | 4.3 µs | 8.8 µs |
 | `src.Ref` | 4,879,151 | 5 | 160.1 µs | 10.4 µs |
-| `src.Line` | 8,583,810 | 4 | 7.0 µs | 3.4 µs |
+| `src.Line` † | 8,583,810 | 4 | 7.0 µs | 3.4 µs |
+
+> **† `src.Line` no longer exists.** The source layer replaced it with `src.FileLine`, whose value
+> is four fields where this one's was one — the line's text plus its three offsets — so both the
+> corpus's size and this predicate's per-row read cost move. The *seek* figures above are about
+> the key, which is unchanged (`{file, line}`), so they are the row here least affected; the row
+> counts and the byte totals elsewhere in this section are not. Re-run scheduled in R7 against a
+> named corpus. Nothing else in this table moved.
 
 `src.Decl` and `src.SearchByName` hold **exactly the same number of rows** in the same
 database, each in a single table, and one seeks 150× slower than the other. Ruled out by
@@ -193,6 +237,10 @@ L where F = src.File _;   src.Line {file = F, line = L}      -- seeks
 D where M = src.Module _; src.Decl {module = M, name = D}    -- rescans src.Decl per module
 ```
 
+> **`src.Line` is `src.FileLine` now** — same key, `{file, line}`, so the finding above is
+> unchanged: it is about which field *leads* a key, and the leading field is still the file. The
+> workload in `workload.rs` reads `src.FileLine`; the query is written here as it was run.
+
 The second cannot narrow, so it reads all 888,177 declarations once per module — 32
 billion rows to completion, which is why the instrument caps it. `--profile` already tells
 you (`full scan` on the inner step); nothing warns you when you write it.
@@ -300,6 +348,9 @@ Two more from the same table:
 
 Found while writing the catalogue, and it bounds what any of these numbers can cover.
 
+> *(`src.Line` is `src.FileLine` now, and its value is a record of four fields rather than a
+> bare string — so the 133 MB below is a floor for what the same corpus costs today.)*
+>
 > `src.Line` is `{ file, line } -> string` and holds 8,583,810 line texts — 133 MB, the
 > largest predicate in the index. No sigla query can read one. There is no `->` in the
 > grammar, and every spelling tried is a parse error; a query binds *key fields* only,
@@ -511,8 +562,10 @@ streams does not sweep on every frame.
 **So the mechanism is gone and the number is not retired.** Nobody has re-run this
 instrument since, so the honest statement of finding 7 today is: the cause was found, a fix
 addressing it has landed, and *the 3.5 kB per query has not been measured at zero*. Anyone
-sizing RAM for a pooled connection should re-run this before trusting either figure, and
-`crates/fjord-viewer`'s pool is exactly the shape that would show it.
+sizing RAM for a pooled connection should re-run this before trusting either figure. The
+shape that would show it is a pool of long-lived connections issuing many queries each —
+`crates/fjord-viewer`'s pool was exactly that, and it has been retired, so re-running this
+now needs one built for the purpose or the browser viewer that replaces it.
 
 What is still missing to verify it cheaply is the phase plan's own task 10f: a
 `live stream tasks` counter would turn "RSS grew" into "N tasks are live", and would have
@@ -808,8 +861,8 @@ the 4.9M-row scan came from.
 
 ## 12. Ingest is 5.2k facts/s, and the write path was never the reason — three quarters of the work was re-reading, and half the wall clock was the producer waiting
 
-The one number [glean-capabilities §2.3](../docs/glean.md) said "nothing in
-`bench/FINDINGS.md` yet attributes". Attributed here. **Not an S-rung measurement** — there is no
+The one number the capability ledger said "nothing in `bench/FINDINGS.md` yet attributes".
+Attributed here. **Not an S-rung measurement** — there is no
 write-path instrument yet — but read off counters the indexer already reports, on a 25M-fact
 `dotnet/runtime` index: a larger run than §1's `--syntax-only` 18.2M-fact one, reaching the build
 and declaration layers as well as the source layer.
@@ -963,8 +1016,7 @@ cost 20–30% before that. `queueing` on a real index is 1,019.4 s of 3,977.7 s 
 
 **What was measured.** `dotnet/runtime` at `c99188c2f97`, its whole `src/` tree, four runs
 of the same producer: `clients/dotnet/Boxops.Fjord.Indexer --syntax-only --jobs 8`, the line
-table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches
-(`--glean-out`, [§Into Glean instead](../clients/dotnet/Boxops.Fjord.Indexer/README.md)) which
+table on, `--batch 4096`. Three write into Fjord, one writes Glean JSON batches which
 `glean create -j 8 --finish` then loads. **One walk, two sinks**, so what differs between
 the last two rows is the database and not the indexer.
 
@@ -1195,8 +1247,7 @@ question this makes worth asking.
 
 **Storage is still 3.7× on disk** (659 MB against 2.4 GB), 2.1× on the logical figures each
 system reports. Nothing here explains it, and it is the one gap that also acts on the read
-path — a database that fits in cache is a database that scans faster, which is
-[Phase 13](glean-read-path.md)'s F5.
+path — a database that fits in cache is a database that scans faster.
 
 **The indexer's gate amplifies ~12×, and this run measured it by accident.** The same walk,
 two sinks:
@@ -1329,7 +1380,120 @@ serialises and mimalloc's per-thread caches do not.
   the same allocator — and that build now needs a C compiler for musl in CI, because mimalloc is
   a C library and a pure-Rust cross build never wanted one.
 
+## 19. A new scalar family: a compile error at 21 sites, and at 13 before the restructure
+
+Not a measurement of the running system — a measurement of the *compiler*, taken because
+the claim "adding a scalar family is a compiler-guided change" is the whole of
+[W2](../docs/unified-plan/02-exhaustiveness-gap.md) and was not true when it was written.
+
+**Method.** Add a throwaway `Probe` variant to the enum, build the workspace with
+`--all-targets`, and record every site the compiler names. Silence one site per file with
+`_ => todo!(),` and build again, until it compiles; the union of every pass is the answer.
+`scripts/check-exhaustive.sh {schema|engine}` applies the variant and runs the first pass.
+**It fails the build by design and is not wired into CI.**
+
+**`PredicateTyNamed` — before: 13 sites.** `fingerprint::type_form`, `fingerprint::walk`,
+`syntax::print::ty`, `tuple::decode_typed_at`, `desc::of`, `value::decode_value`,
+`value::Tape::value`, `fact::describe`, `local_identity::reject_local_field_type`,
+`plan::ty`, `ty::schema_ty`, `flatten::render_ty`, `sample_schema::walk`. Every one of
+them a `match ty` over a single enum — and **not one of them one of the six** that
+absorb a family silently. `fjord-ingest` and `fjord-server` were named nowhere at all.
+
+**After: 21.** The same 13, plus the six restructured functions — `syntax::print::same_ty`,
+`wire::value::encode_value`, `store::fact::checked`, `ingest::intern::resolve`,
+`server::rows::to_wire`, `encoding::tuple::encode_typed_at` — plus the two halves of the
+generator census (`tuple::tests::family` and its walk), which is what stops a family being
+added to `PredicateTy`, handled everywhere, and then never *drawn*.
+
+**`fjord_engine::syntax::Ty` — 8 sites**, `unify_shapes` among them, where before the
+restructure it was 7 and `unify` was not: `ty::unify_shapes`, `ty::zonk`, `ty::occurs`,
+`ty::Checker::render`, `ty::tests::render`, `inspect::lowered::render`,
+`server::rows::desc_of`, `cli::prompt::render_ty`. Nothing that merely passes a `Ty`
+through is named, which is the other half of the claim. `ty::schema_ty` is named by the
+*first* experiment rather than this one: it reads a `PredicateTy` and only constructs a
+`Ty`.
+
+A shorter list than either of these is a regression.
+
+---
+
+## 20. A sealed database's data was in its journal, not its tables — and the fix makes the artifact *bigger*
+
+`Catalog::seal` called `persist` then `compact`. `persist` fsyncs the write-ahead journal;
+`compact` merges already-flushed segments. **Neither touches a memtable**, so whatever ingest
+left resident was never written to a table at all: it stayed only in the journal, invisible to
+the merge that followed, and served from a recovered memtable rather than the merged tables
+sealing exists to leave behind.
+
+The guard that should have caught it,
+`sealing_merges_every_tree_into_one_table`, calls `flush_to_tables()` **itself** before sealing
+— honestly, with an asserted precondition saying why. What it could not see is that the
+production path never creates the state it sets up. That is the class AGENTS.md warns about, and
+it is worth reading beside the fix.
+
+### Measured, same corpus both ways
+
+520,000 facts (20,000 files × 5 declarations, `loadgen`), release build, one machine:
+
+| | seal without the flush | seal with it |
+|---|---|---|
+| tables after `finish` | **1,176 kB** | **17,120 kB** |
+| journal after `finish` | 73,376 kB | 73,376 kB |
+| `du` of the instance | 74,572 kB | 90,516 kB |
+| `FJORD_META.bytes` | 75,230,038 | 91,513,383 |
+| `finish` | 4.97 s | 9.26 s |
+| after a reopen | unchanged | unchanged |
+
+Read the first row: **520,000 facts came to 1.2 MB of tables.** Everything else was journal.
+
+### Three things this settles, one of them against the prediction
+
+1. **The flush is real and it is not free.** `finish` goes from 4.97 s to 9.26 s — 1.86× — and
+   writes 16 MB it did not write before. `finish` is the operation whose whole job is to say
+   *this is finished*, so the cost is acceptable; it should be public.
+2. **The journal is not reclaimed, and the artifact therefore grows** — 74 MB → 90 MB, +21%. The
+   plan predicted one of three outcomes and this is the middle one: fjall reclaims sealed
+   journals only inside `JournalManager::maintenance`, reached only from its flush worker and
+   gated on a hardcoded 64 MB journal position, with **no public API to force it**. So the
+   options are an upstream request for a `gc()`/`seal_journals()` or a documented residual, and
+   the residual here is material rather than incidental — 73 MB of journal against 17 MB of
+   tables.
+3. **A reopen reclaims nothing**, which contradicts the plan's own guess at #43's 2.6×
+   discrepancy. `FJORD_META.bytes` and `du` agree to within block rounding both before and after
+   sealing, and opening the sealed database read-only moves neither. So `bytes` is an honest
+   on-disk measurement at the moment of sealing and the reporter's 2.6× is **not** explained by
+   reclamation-on-open. What is left as the likely cause is a `du` taken after some later
+   write-mode open crossed fjall's own threshold — which this measurement cannot reach, and which
+   is worth saying rather than guessing at twice.
+
+### What it does *not* touch: the read numbers already published
+
+`ops-I4` hashes the facts, so no change to where bytes sit may move an identity — and none did:
+the test corpus seals to `0xbd38b7d3971a1c5d` on both paths, which is what makes a flush a flush
+rather than a rewrite.
+
+For the read-path sections the question is whether their databases were sealed unflushed, and the
+answer is **no, and §1 says so in its own table**: `src.File` 1 table, `src.Line` 4, `src.Ref` 5.
+A database whose per-tree memtables exceed their own size limit flushes during ingest without
+being asked, and at 18M facts across 44 keyspaces they do repeatedly. So §1, §2, §6 and §11 were
+measured against tables and their figures stand.
+
+The exposure is the other way round from the obvious guess: it scales with **per-tree** volume,
+not total. Half a million facts spread over 44 keyspaces leaves almost everything resident,
+which is why the corpus above shows 1.2 MB of tables and 73 MB of journal. A *small* index is
+where this bit hardest.
+
+---
+
 ## What is still open
+
+This is the inbox for the pass that re-opens the register, not a list anybody is working
+through — it is the closure's other half, and it is kept whole because an unmeasured question
+is worth more than a stale answer. Read it with two exclusions: anything that names the
+retired Glean comparison (storage against Glean, the tail file, the re-index behind finding
+13) is void as *comparison* and survives only as a question about this system, and anything
+that names the old corpus needs Run 7's new one before it can be asked at all. What does not
+expire is the shape of each question, which is why they are stated rather than deleted.
 
 - **Finding 7's number, after its fix.** The per-query retention had a cause, the cause has a
   fix in the tree, and nobody has re-run the instrument — so "~3.5 kB per query" is what the

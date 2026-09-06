@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Bindings</RootNamespace>
+
+    <!-- `Roles/BindWriteRole.cs` writes through a null-conditional access — `maybe?.Value = 1`,
+         C# 14's null-conditional assignment — and `maybe` has to be spelled `BindHolder?` for
+         that to be the construct rather than a redundant `?.` on a non-null reference. With
+         annotations off the whole file reads as a mistake instead of as the shape M9 is
+         about. -->
+    <Nullable>enable</Nullable>
+
+    <!-- No `LangVersion`. The null-conditional assignment above needs C# 14, which is the
+         default for net10.0; pinning would turn an SDK change into a fixture edit, and
+         `preview` would claim more than this project uses. -->
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,46 @@
+# What a database was built for: the axes it was resolved against, stated inside it.
+#
+# Nothing here is derived — a producer writes these. A consumer that finds none is reading
+# a database that predates the layer, not one with no axes.
+
+schema config {
+
+  # One axis of the index, as a dimension and a value.
+  #
+  # Key-only and multi-valued: `{dimension, value}` is the whole key, so one dimension may
+  # hold several values (two defines, two languages). Both fields are strings rather than
+  # unions so a new dimension costs nothing; the price is that spelling is unchecked, and
+  # the table below is the registry.
+  #
+  # ## Reserved dimensions
+  #
+  # A consumer may assume the meaning of these. Anything else belongs to its producer, and
+  # an unrecognised dimension is ignored.
+  #
+  # | dimension | meaning |
+  # |---|---|
+  # | `repo`, `revision` | which checkout this database was built from. `src.FileOrigin` overrides it per file where an index spans several |
+  # | `index-root` | what every `src.File` path is relative to |
+  # | `position-encoding` | `utf8` or `utf16` — the unit every offset and column *this schema declares* counts in. What an opaque payload counts in is its own encoding's business: see `style-encoding` |
+  # | `style-encoding` | how to read `src.FileLineStyles`, e.g. `roslyn-lsp-1`. Names the byte format and the token legend together, because they version as a unit. An unrecognised value means a consumer renders those lines plain |
+  # | `symbol-scheme` | the scheme token(s) this database's `src.Symbol` strings use |
+  # | `language` | multi-valued; what this database holds facts about |
+  # | `producer` | one fact per producer and version, so a partial index says which layers exist |
+  # | `framework`, `configuration`, `define`, `target-triple`, `feature` | the build axes the index was resolved against |
+  #
+  # ## Scope
+  #
+  # Per-database, so it cannot record a per-project or per-file axis.
+  # `{dimension = "define", value = "DEBUG"}` says the run defined `DEBUG`, not which
+  # projects did. Where an axis varies inside one index, the fact that varies carries it:
+  # a compilation's target framework on `msbuild.Compilation`, a file's origin on
+  # `src.FileOrigin`.
+  #
+  # ## Position encoding
+  #
+  # Roslyn and the TypeScript compiler count UTF-16 code units; a byte offset counts UTF-8
+  # bytes; a renderer walking `str::chars()` counts scalar values and agrees with neither.
+  # `position-encoding` is declared once for the whole database — a mixed-encoding database
+  # is not expressible — and a database that does not state it is read as `utf16`.
+  predicate Setting : { dimension : string, value : string }
+}

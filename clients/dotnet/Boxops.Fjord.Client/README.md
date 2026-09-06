@@ -29,18 +29,24 @@ each side, because a shared statement would make the two agree by construction.
 ```csharp
 using Boxops.Fjord.Client;
 
-// A predicate id is its **position** in the schema, and a schema is sorted by name.
+// A predicate id is this client's own: what crosses the wire is the *name*, and a
+// nested reference takes its predicate from the field's declared target. So a client
+// may declare only the shapes it writes, in whatever order reads well.
 const uint File = 0;
-const uint Module = 1;
+const uint Symbol = 1;
 
 // The fingerprint is carried, never computed: `fjord schema fingerprint` prints it, and
 // the number only says which schema these shapes were written against.
 var schema = new FjordSchema(
     [
         new FjordPredicate("src.File", FjordType.String, null),
-        new FjordPredicate("src.Module", FjordType.Rec(
+        new FjordPredicate("src.Symbol", FjordType.String, null),
+        new FjordPredicate("codemarkup.SymbolXRef", FjordType.Rec(
+            ("target", FjordType.Reference(Symbol)),
             ("file", FjordType.Reference(File)),
-            ("name", FjordType.String)), null),
+            ("span", FjordType.Rec(
+                ("start", FjordType.Integer),
+                ("length", FjordType.Integer)))), null),
     ],
     fingerprint: 0x2c8d1f4b9a7e3506);
 
@@ -53,13 +59,19 @@ using var connection = FjordConnection.Connect(
 // is the physical key order, so it is the schema's to decide and not the caller's.
 FjordFact FileFact(string path) => new(File, FjordValue.Of(path));
 
-// A module names its file by nesting the whole fact. No id, and no bookkeeping.
-FjordFact ModuleFact(string path, string name) =>
-    new(Module, FjordValue.Rec(
-        FjordValue.Of(FjordRef.To(FileFact(path))),
-        FjordValue.Of(name)));
+// A reference names its file and its symbol by nesting the whole fact. No id, and no
+// bookkeeping.
+FjordFact SymbolFact(string symbol) => new(Symbol, FjordValue.Of(symbol));
 
-var summary = connection.Write(Module, [ModuleFact("store/codec.py", "store.codec")]);
+FjordFact XRefFact(string symbol, string path, long start, long length) =>
+    new(2, FjordValue.Rec(
+        FjordValue.Of(FjordRef.To(SymbolFact(symbol))),
+        FjordValue.Of(FjordRef.To(FileFact(path))),
+        FjordValue.Rec(FjordValue.Of(start), FjordValue.Of(length))));
+
+var summary = connection.Write(
+    2, [XRefFact("scip-python . store 1.0 codec/Codec#", "store/codec.py", 412, 5)]);
+
 Console.WriteLine($"created {summary.Created}, deduped {summary.Deduped}");
 ```
 

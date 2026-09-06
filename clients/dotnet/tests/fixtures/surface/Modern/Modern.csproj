@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Modern</RootNamespace>
+
+    <!-- No `LangVersion` on purpose. Everything here is a C# 10-13 feature, and the point of
+         the project is that the *default* language version for `net10.0` already accepts it:
+         a pinned version would turn a compiler regression into a fixture edit. C# 14 features
+         live in `Preview`, which has to ask. -->
+
+    <!-- C# 12's alias-any-type reaches pointer types, and C# 13 allows an unsafe context
+         inside an iterator or an async method. Both are errors without this, and neither has
+         a safe spelling that still exercises the row. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- `required` members and the null-state analysis rows are only themselves against an
+         annotated baseline: with nullability off, `required string?` and `required string`
+         are the same declaration to a reader and to the index. -->
+    <Nullable>enable</Nullable>
+
+    <!-- C# 12's interceptors are opt-in per namespace, and the opt-in is an MSBuild property
+         rather than anything in source. Without it `[InterceptsLocation]` is CS9137 and the
+         row cannot be exercised at all. -->
+    <InterceptorsPreviewNamespaces>$(InterceptorsPreviewNamespaces);Surface.Modern.Interceptors</InterceptorsPreviewNamespaces>
+  </PropertyGroup>
+</Project>

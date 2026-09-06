@@ -102,8 +102,9 @@ playground to edit the query and explore everything the engine exposes.
 
 :::note Status
 The engine, the storage layer, the language, the wire protocol, the server, the client,
-the CLI, the shell and a code-search viewer are **built and guarded**. Ingestion from
-**files** and **stored derivation** are not. [Status & roadmap](status.html) has the
+the CLI and the shell are **built and guarded**. Ingestion from **files** and **stored
+derivation** are not, and the code-search viewer is retired — what replaces it is a browser
+application ([clients](clients.html#the-viewer)). [Status & roadmap](status.html) has the
 honest list.
 :::
 
@@ -120,7 +121,6 @@ honest list.
 <span class="pill ok">server + client</span>
 <span class="pill ok">CLI + shell</span>
 <span class="pill ok">parallel ingest</span>
-<span class="pill ok">code-search viewer</span>
 <span class="pill todo">file ingestion</span>
 <span class="pill todo">stored derivation</span>
 </p>
@@ -140,8 +140,8 @@ honest list.
   [Clients & the viewer](clients.html).
 - **Operating it?** [CLI reference](cli.html) and [Operations](operations.html).
 - **Just want the binaries?** [The latest release](https://github.com/boxops-uk/fjord/releases/latest)
-  carries `fjord` and `fjord-viewer` with SLSA provenance — dynamically linked for glibc 2.34
-  and newer, statically linked beside it for anything older — and this site as a bundle.
+  carries `fjord` with SLSA provenance — dynamically linked for glibc 2.34 and newer,
+  statically linked beside it for anything older — and this site as a bundle.
 
 :::note About these docs
 This site **is** the Fjord design book — the design of record, including the invariant

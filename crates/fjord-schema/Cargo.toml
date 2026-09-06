@@ -19,6 +19,17 @@ include = ["src/**/*.rs", "src/**/*.llw", "build.rs", "README.md", "LICENSE"]
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+default = ["fs"]
+# **The filesystem half of schema resolution.** Default-on, because reading a `.sigla`
+# file is what almost every caller wants — and separable, because it is what makes "the
+# embedded path touches no filesystem" mechanical rather than a promise: with
+# `--no-default-features` the provider is not compiled, so a call to it from
+# `resolve_from` is a compile error rather than a code review.
+#
+# It is also what a browser build needs. See `syntax::resolve`.
+fs = []
+
 [dependencies]
 # The schema DSL's front end. [Operations](../../website/content/operations.md)
 # puts "parse → AST → canonical model; imports/resolution; fingerprints" in this

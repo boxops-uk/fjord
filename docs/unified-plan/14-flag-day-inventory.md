@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Issues** | revision 2's Run 4e; [#39](https://github.com/boxops-uk/fjord/issues/39) inherits it |
-| **Area** | `schemas/`, `clients/dotnet`, `crates/fjord-cli`, `crates/fjord-client`, `crates/fjord-viewer`, `bench/` |
+| **Area** | `schemas/`, `clients/dotnet`, `crates/fjord-cli`, `crates/fjord-client`, `bench/` |
 | **Used by** | **W6** and **R4** — the two changes in this plan that move `code.sigla` |
 
 ## Two flag days, in this order, and why not one
@@ -55,13 +55,12 @@ byte-for-byte the constant the clients carry.
 | 1 | `schemas/code.sigla` | the schema | a person |
 | 2 | `clients/dotnet/Boxops.Fjord.Indexer/CodeIndex.cs` | `SchemaFingerprint`, 27 predicate constants, the `*Fact` helpers, and the field order | a person |
 | 3 | `clients/dotnet/Boxops.Fjord.Demo/Program.cs:71` | the **same** fingerprint, restated independently on purpose | a person |
-| 4 | `clients/dotnet/golden/blocks.txt`, `golden/unions.txt` | the checked-in golden bytes | `./clients/dotnet/emit-golden.sh` |
+| 4 | `clients/dotnet/golden/blocks.txt`, `unions.txt`, `bytes.txt` | the checked-in golden bytes | `./clients/dotnet/emit-golden.sh` |
 | 5 | `crates/fjord-client/tests/byte_identical_with_dotnet.rs` | the Rust-side schema and corpus, **stated independently** (`fn schema()` at `:44`) | a person |
 | 6 | `crates/fjord-cli/src/sample_schema.rs` | the predicate count (`:169`), `KEY_ORDER` (`:245`, `src.Decl` at `:247`), the name lookups | a person |
 | 7 | `clients/dotnet/glean/fjbench.angle` | the Glean translation of the same shapes | a person |
-| 8 | `crates/fjord-viewer/src/query.rs` | five sigla queries over `src.*` | a person (R4 only) |
 | 9 | `crates/fjord-cli/src/workload.rs`, `examples/loadgen.rs` | the workload's predicates | a person (R4 only) |
-| 10 | `crates/fjord-cli/tests/{cli,over_a_server}.rs`, `crates/fjord-viewer/tests/over_a_real_index.rs` | path constants and expectations | a person |
+| 10 | `crates/fjord-cli/tests/{cli,over_a_server}.rs` | path constants and expectations | a person |
 | 11 | `website/content/*.md`, `scripts/bench.sh:35`, `clients/dotnet/*.sh` | example commands naming the schema | a person |
 | 12 | the 61 files matching `git grep -l 'src\.Decl'` | R4's migration | a person |
 
@@ -71,11 +70,11 @@ byte-for-byte the constant the clients carry.
 1. edit schemas/code.sigla
 2. fjord schema fingerprint schemas/code.sigla          → the new number
 3. paste it into CodeIndex.cs and Demo/Program.cs       (two independent restatements)
-4. ./clients/dotnet/emit-golden.sh                      → golden/blocks.txt, golden/unions.txt
+4. ./clients/dotnet/emit-golden.sh                      → golden/*.txt
 5. cargo test -p fjord-client byte_identical unions_are_byte_identical
 6. sample_schema.rs — count, names, KEY_ORDER
 7. clients/dotnet/glean/fjbench.angle
-8. (R4 only) the 61 files, the viewer's five queries, the workload
+8. (R4 only) the 61 files and the workload
 9. cargo test && cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 ```
 
@@ -90,6 +89,10 @@ and is the reason to prefer it over a separate job.
 1. **The inventory is executable.** `scripts/flag-day.sh` (or a numbered checklist in
    `clients/dotnet/README.md`) walks steps 1–9 and **fails loudly** at any step whose artifact is
    stale — in particular, it must fail if `golden/blocks.txt` was not regenerated.
+   *Met by the second branch, and the first is retired:* the script was written and has since been
+   deleted, because a step that is a correctness claim belongs in the required suite rather than in
+   something somebody remembers to run. `clients/dotnet/README.md` carries the ordered checklist
+   and a table naming the test that now checks each step.
 2. **A stale constant is a red suite, not a runtime refusal.** A test asserts that
    `fjord schema fingerprint schemas/code.sigla` equals the constant in `CodeIndex.cs` (parsed out
    of the C# source, which is a grep, not a build). Today nothing does, and the first sign of a

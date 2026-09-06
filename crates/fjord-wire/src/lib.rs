@@ -93,7 +93,7 @@ pub mod protocol;
 pub mod value;
 pub mod varint;
 
-pub use block::{BlockHeader, decode_block, encode_block, find_sync};
+pub use block::{BlockHeader, Scan, decode_block, encode_block, find_block, find_sync};
 pub use desc::{Desc, decode_desc, encode_desc};
 pub use error::WireError;
 pub use frame::{FrameHeader, FrameKind, StreamId, decode_frame, encode_frame};

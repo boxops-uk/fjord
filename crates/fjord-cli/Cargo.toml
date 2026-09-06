@@ -101,6 +101,10 @@ fjord-encoding = { path = "../fjord-encoding", features = ["proptest"] }
 # real one because the *tool* writes over a socket like any other client, and adding this
 # to `[dependencies]` would quietly give it a second way in.
 fjord-ingest = { path = "../fjord-ingest" }
+# The *other* live JSON renderer. Both are hand-written and nothing made them agree
+# on a shape, so `the_two_json_renderers_agree_on_every_family` compares them — which
+# needs the two in one test binary.
+fjord-inspect = { path = "../fjord-inspect" }
 fjord-store = { path = "../fjord-store", features = ["proptest"] }
 # The `arb_*` strategies are active under `cfg(test)` whether or not the
 # `proptest` feature is on, so the crate has to be here as well as being an

@@ -24,7 +24,10 @@ use std::{
 
 use fjord_schema::schema::{Predicate, PredicateId, PredicateTy, Schema};
 use fjord_server::{Registry, registry::Schemas, server::Listener};
-use fjord_store_fjall::catalog::{Catalog, Intent, Selector};
+use fjord_store_fjall::{
+    catalog::{Catalog, Intent, Selector},
+    store::FjallDb,
+};
 use fjord_wire::{
     Control, ControlOp, ControlReply, ErrorCode, FrameHeader, FrameKind, Mode, Startup, StreamId,
     WireFact, WireValue, encode_block, encode_frame, frame,
@@ -574,6 +577,79 @@ fn a_declined_request_says_why() {
     assert_eq!(error_of(&payload).0, ErrorCode::UnknownDatabase);
 }
 
+/// **A database published into a live root binds over the wire**, with nothing having
+/// told the server it arrived.
+///
+/// That is the deployment rather than a curiosity: CI seals `<name>/<ULID>/` and a
+/// sidecar syncs it under the root a server owns, and `ops-I7` means the create needs
+/// no ownership of the root to do it. A handshake that refused what it resolved would
+/// leave this name advertised by `fjord.db.List` and unbindable until the process was
+/// restarted.
+#[test]
+fn a_database_published_under_a_running_server_binds_without_a_restart() {
+    let serving = start();
+
+    serving
+        .catalog()
+        .create("published", &schema())
+        .expect("a database");
+
+    let (_client, header, payload) = Client::hello(&serving, "published", Mode::ReadOnly);
+
+    assert_eq!(
+        header.kind,
+        kinds::READY,
+        "it must bind: {:?}",
+        protocol::decode_error(&payload)
+    );
+}
+
+/// **And one that will not open says so over the wire**, naming the instance and what
+/// went wrong with it.
+///
+/// The whole point of telling the two apart is what an operator reads, and an operator
+/// reads it through a socket. "No database named `broken`" for a directory that is
+/// plainly under the root is the answer that sends somebody looking in the wrong place;
+/// a name that is genuinely absent still gets exactly that, which is the contrast being
+/// asserted here.
+#[test]
+fn a_database_that_will_not_open_says_which_instance_and_why() {
+    let serving = start();
+
+    let published = serving
+        .catalog()
+        .create("broken", &schema())
+        .expect("a database");
+
+    // What a half-finished sync leaves: the sidecar has landed, the schema copy the
+    // database must be served through has not.
+    std::fs::remove_dir_all(published.path.join("schema")).expect("it goes");
+
+    let (_client, header, payload) = Client::hello(&serving, "broken", Mode::ReadOnly);
+    assert_eq!(header.kind, FrameKind::ERROR);
+
+    let (code, message) = error_of(&payload);
+    assert_eq!(code, ErrorCode::UnknownDatabase);
+    assert!(
+        message.contains(&published.meta.instance),
+        "the client is told which instance: {message}"
+    );
+    assert!(
+        message.contains("no schema copy"),
+        "and what could not be read: {message}"
+    );
+
+    let (_client, header, payload) = Client::hello(&serving, "absent", Mode::ReadOnly);
+    assert_eq!(header.kind, FrameKind::ERROR);
+
+    let (code, message) = error_of(&payload);
+    assert_eq!(code, ErrorCode::UnknownDatabase, "the same code");
+    assert!(
+        message.contains("no database named"),
+        "and a different sentence: {message}"
+    );
+}
+
 /// **`create` needs a schema, and an empty one is refused rather than substituted.**
 ///
 /// Until 0.0.1 an empty `schema` field meant "this server's own", and a server carried a
@@ -617,5 +693,221 @@ fn creating_a_database_with_no_schema_is_refused() {
             )
             .is_err(),
         "a refused create leaves no database"
+    );
+}
+
+/// **A copy that has not finished delivering is refused over the wire**, and the same
+/// name answers its facts once it has.
+///
+/// The contract layer is the point. An operator reads this through a socket, and a
+/// client branches on the code: a copy that has not delivered the store yet is a
+/// database that will be there shortly, so it answers `InUse` — the retryable one —
+/// rather than `UnknownDatabase` about a directory that is plainly under the root. What
+/// it must never do is what it did before: answer `READY` and serve zero rows out of an
+/// empty store this server stamped into the copy's own target, permanently.
+///
+/// **`InUse` is the code for this part of the copy, not for the whole of it.** The
+/// shape here is before fjall's marker file lands. Past that point the open goes ahead,
+/// its recovery deletes the keyspaces the copy has not finished, and the refusal that
+/// comes back is a fact count that will not agree however long anybody waits —
+/// `UnknownDatabase`, a database that is there and will not open.
+/// `a_store_one_keyspace_manifest_short_is_never_served_the_facts_it_records` is that
+/// window; publishing under one rename is what keeps a bind out of it.
+///
+/// Built, sealed and removed through the server so that the artifact being delivered is
+/// a real one with a real fact count, then delivered back under the name and instance id
+/// it was built at — which is what a copy into a store root does.
+#[test]
+fn a_copy_that_has_not_finished_is_refused_over_the_wire() {
+    let serving = start();
+    let mut control = Client::control_session(&serving, Mode::ReadWrite);
+
+    let ControlReply::Created { instance } = control.control(ControlOp::Create, "code", false)
+    else {
+        panic!("expected a created reply");
+    };
+
+    let built = serving
+        .catalog()
+        .resolve(&Selector::of("code"), Intent::Read)
+        .expect("it is on the disk")
+        .path;
+
+    {
+        let (mut writer, header, _) = Client::hello(&serving, "code", Mode::ReadWrite);
+        assert_eq!(header.kind, kinds::READY);
+        let (header, _) = writer.write_block(StreamId(1), &["a.py", "b.py", "c.py"]);
+        assert_eq!(header.kind, kinds::COMPLETE);
+    }
+
+    let reply = control.control(ControlOp::Finish, "code", false);
+    assert!(
+        matches!(reply, ControlReply::Finished { facts: 3, .. }),
+        "{reply:?}"
+    );
+
+    // The sealed artifact CI would publish, kept outside the root, and the root put
+    // back the way it was before it was there.
+    let stash = tempfile::tempdir().expect("a scratch directory");
+    let source = stash.path().join("sealed");
+    copy_tree(&built, &source);
+
+    eventually("the sessions let go of `code`", || {
+        matches!(
+            control.control_raw(ControlOp::Remove, "code", false).0.kind,
+            kinds::CONTROL_REPLY
+        )
+    });
+    assert!(!built.exists(), "the root holds nothing under that name");
+
+    // A copy in flight: the sidecar and the schema copy have landed, the tables have
+    // not. `fjord.db.List` reports three facts for it from here on, because `ops-I7`
+    // reads the sidecar.
+    for part in ["FJORD_META", "schema"] {
+        copy_tree(&source.join(part), &built.join(part));
+    }
+
+    let (_client, header, payload) = Client::hello(&serving, "code", Mode::ReadOnly);
+    assert_eq!(
+        header.kind,
+        FrameKind::ERROR,
+        "a database whose store has not arrived must not be served"
+    );
+
+    let (code, message) = error_of(&payload);
+    assert_eq!(
+        code,
+        ErrorCode::InUse,
+        "the copy ends by itself, so this is the retryable code: {message}"
+    );
+    assert!(
+        message.contains(&instance),
+        "the client is told which instance: {message}"
+    );
+    assert!(
+        message.contains("has a sidecar but no store"),
+        "and what is missing: {message}"
+    );
+
+    // The rest of it arrives, and the same handshake is served the database — with the
+    // rows the sidecar has been claiming all along, which is the assertion the defect
+    // failed: it answered `READY` and zero.
+    copy_tree(&source, &built);
+
+    let (mut reader, header, payload) = Client::hello(&serving, "code", Mode::ReadOnly);
+    assert_eq!(
+        header.kind,
+        kinds::READY,
+        "the finished copy is served: {:?}",
+        protocol::decode_error(&payload)
+    );
+    assert_eq!(reader.count(StreamId(1), "X where src.File X"), 3);
+}
+
+/// **A store another process is holding answers `InUse` over the wire**, not
+/// `UnknownDatabase`.
+///
+/// The mapping has an in-process guard; this is the layer it exists for. A client that
+/// reads code 2 for a held instance stops, because "no such database" is the one answer
+/// worth no retry — and the condition ends the moment the holder lets go, which is the
+/// second half here.
+#[test]
+fn a_held_instance_answers_in_use_over_the_wire() {
+    let serving = start();
+
+    // Published behind the server's back, so this server has never opened it and the
+    // handle below is the only one on it.
+    let published = serving
+        .catalog()
+        .create("held", &schema())
+        .expect("a database");
+    let holder = FjallDb::open(&published.path).expect("something else has it");
+
+    let (_client, header, payload) = Client::hello(&serving, "held", Mode::ReadOnly);
+    assert_eq!(header.kind, FrameKind::ERROR);
+
+    let (code, message) = error_of(&payload);
+    assert_eq!(code, ErrorCode::InUse, "{message}");
+    assert!(
+        message.contains(&published.meta.instance),
+        "the client is told which instance: {message}"
+    );
+
+    drop(holder);
+
+    let (_client, header, payload) = Client::hello(&serving, "held", Mode::ReadOnly);
+    assert_eq!(
+        header.kind,
+        kinds::READY,
+        "and it binds once the holder lets go: {:?}",
+        protocol::decode_error(&payload)
+    );
+}
+
+/// Copy a file, or a directory and everything under it, to `to`.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    if from.is_dir() {
+        std::fs::create_dir_all(to).expect("a directory");
+        for entry in std::fs::read_dir(from).expect("a directory") {
+            let entry = entry.expect("an entry");
+            copy_tree(&entry.path(), &to.join(entry.file_name()));
+        }
+    } else {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).expect("a parent directory");
+        }
+        std::fs::copy(from, to).expect("a copy");
+    }
+}
+
+/// **A schema declaring into the reserved namespace is refused, and publishes nothing.**
+///
+/// Serving a database composes its own schema with the server's catalogue and marks every
+/// reserved predicate virtual, so a database that already declares `fjord.db.List`
+/// composes to two of them and cannot be opened at all. `create` used to accept such a
+/// schema, publish the instance, and *then* fail to open it — answering
+/// [`ServerError::Internal`] about an artifact sitting under the root that no listing
+/// could explain and nothing could repair.
+///
+/// **`Catalog::create` now refuses it before anything is written**, which is what this
+/// asserts: the refusal names the predicate, and the root is left as it was found.
+///
+/// The claim that replaced it — an open that fails after a publish answers `Internal`
+/// rather than "no such database" — is
+/// [`a_database_that_will_not_open_says_which_instance_and_why`], which provokes it with a
+/// genuinely broken artifact rather than through `create`. That is the better provocation
+/// anyway: it does not depend on a wart to reach the state it is about.
+#[test]
+fn a_schema_in_the_reserved_namespace_is_refused_and_publishes_nothing() {
+    let serving = start();
+    let mut control = Client::control_session(&serving, Mode::ReadWrite);
+
+    let request = protocol::encode_control(&Control {
+        op: ControlOp::Create,
+        database: "collides".to_owned(),
+        allow_zero_facts: false,
+        schema: "schema fjord.db {\n  predicate List : string\n}\n".to_owned(),
+    });
+
+    control.send(kinds::CONTROL, StreamId(1), &request);
+    let (header, payload) = control.recv();
+    assert_eq!(header.kind, FrameKind::ERROR);
+
+    let (_, message) = error_of(&payload);
+    assert!(
+        message.contains("fjord.db.List"),
+        "the refusal names the predicate that cannot be declared: {message}"
+    );
+
+    // **Nothing published is the half that used to fail.** A refusal that still left an
+    // instance under the root would leave a database no server can open and no listing
+    // can explain, which is the state this check exists to prevent.
+    assert!(
+        serving
+            .catalog()
+            .find("collides")
+            .expect("the root reads")
+            .is_none(),
+        "a refused create must publish nothing"
     );
 }

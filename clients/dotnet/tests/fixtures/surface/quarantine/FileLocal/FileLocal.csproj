@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Quarantine.FileLocal</RootNamespace>
+
+    <!-- No `LangVersion`. File-local types are C# 11 and the net10.0 default allows them. -->
+  </PropertyGroup>
+</Project>

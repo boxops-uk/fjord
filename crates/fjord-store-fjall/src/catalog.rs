@@ -23,9 +23,8 @@
 //!
 //! `<name>` holds one directory per **instance**, and `create` adds one rather than
 //! conflicting: a database-per-CI-run needs somewhere to go. This is the
-//! [Glean `Repo`](../../../docs/glean.md) shape — a name plus a version of
-//! it — with a generated [ULID](crate::ulid) where Glean takes a caller-supplied
-//! revision.
+//! Glean `Repo` shape — a name plus a version of it — with a generated
+//! [ULID](crate::ulid) where Glean takes a caller-supplied revision.
 //!
 //! Which instance an unqualified name means is [`Intent`]'s answer and depends on what
 //! the caller is about to do, because the cost of being wrong differs: a read ranks the
@@ -54,6 +53,7 @@ use std::{
 use fjord_schema::{
     fingerprint,
     schema::{PredicateId, Schema},
+    syntax::lower::RESERVED_NAMESPACE,
 };
 
 use crate::{
@@ -84,8 +84,8 @@ pub const INSTANCE_SEPARATOR: char = '@';
 
 /// Which database a caller means: a name, and optionally which instance of it.
 ///
-/// This is the [Glean `Repo`](../../../docs/glean.md) shape — a name plus a
-/// version of it — with one deliberate difference. Glean's second component is a
+/// This is Glean's `Repo` shape — a name plus a version of it — with one
+/// deliberate difference. Glean's second component is a
 /// caller-supplied hash, usually the revision indexed; ours is a generated
 /// [ULID](crate::ulid), so it is opaque and orders by creation time. Both systems order
 /// instances by a *recorded timestamp* rather than by the id itself, which is why the id
@@ -224,6 +224,65 @@ impl Entry {
     #[must_use]
     pub fn selector(&self) -> Selector {
         Selector::at(self.name(), &self.meta.instance)
+    }
+
+    /// Open this instance's store — and **refuse a directory that holds none**.
+    ///
+    /// **The one way to open a resolved instance**, because
+    /// [`FjallDb::open`](crate::store::FjallDb::open) is create-or-recover and every
+    /// caller here has resolved a database it means to find already there. Handed the
+    /// path of a directory a copy into the store root is still filling, that call
+    /// stamps a fresh empty keyspace into the copy's target and serves it: `Complete`
+    /// on the sidecar's word, answering none of the facts the same sidecar records,
+    /// for as long as the handle is held. [`FjallDb::open_existing`] asks the disk
+    /// first instead.
+    ///
+    /// The presence check does not consult the status, and must not: `create` publishes
+    /// an instance directory with the store already in it — built in a scratch and
+    /// moved in under one rename — so there is no legitimate moment at which an
+    /// instance the root lists holds a sidecar and no store.
+    ///
+    /// **And a store that is there is checked against what the sidecar records.** The
+    /// presence check answers one level; fjall's create-or-recover recurs per keyspace
+    /// inside, and a recovery deletes a keyspace whose `current` manifest a copy has
+    /// not delivered yet — so a store can be there, open, and hold fewer facts than the
+    /// sealed sidecar beside it says. A `Complete` sidecar carries the count the seal
+    /// walked, so this compares it and refuses with
+    /// [`CatalogError::FactsDoNotMatch`], whose doc says what that does and does not
+    /// buy: the open has already deleted what had not arrived, so this converts a wrong
+    /// answer served for the life of the process into a refusal, and repairs nothing.
+    ///
+    /// Only for `Complete`, and only where the sidecar carries a count: a `Writable`
+    /// database has no recorded count to disagree with, and comparing against a
+    /// half-ingested one would refuse every database being written to.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::NoStore`] for a directory holding no store, naming this instance
+    /// and what is missing; [`CatalogError::FactsDoNotMatch`] for a sealed instance
+    /// whose store is not the one its sidecar describes; otherwise whatever the open
+    /// reports.
+    pub fn open_store(&self) -> Result<FjallDb, CatalogError> {
+        let db = FjallDb::open_existing(&self.path)?.ok_or_else(|| CatalogError::NoStore {
+            name: self.name().to_owned(),
+            instance: self.meta.instance.clone(),
+            path: self.path.clone(),
+        })?;
+
+        if let (Status::Complete, Some(recorded)) = (self.status(), self.meta.facts) {
+            let found = db.count_facts()?;
+            if found != recorded {
+                return Err(CatalogError::FactsDoNotMatch {
+                    name: self.name().to_owned(),
+                    instance: self.meta.instance.clone(),
+                    path: self.path.clone(),
+                    recorded,
+                    found,
+                });
+            }
+        }
+
+        Ok(db)
     }
 }
 
@@ -508,6 +567,23 @@ impl Catalog {
             detail,
         })?;
 
+        // **And nothing in the namespace a server answers.** Serving a database appends
+        // the virtual predicates to its own schema, so one that already declares
+        // `fjord.db.List` composes to two of them and refuses to open — after the
+        // artifact exists, which is exactly the state the check above is placed early to
+        // avoid. Reachable from outside: a client can ask a session what schema it is
+        // served, and the answer includes the virtuals.
+        if let Some(predicate) = (0..schema.len())
+            .filter_map(|index| schema.get(PredicateId(index as u32)))
+            .filter_map(|predicate| predicate.name())
+            .find(|name| name.starts_with(RESERVED_NAMESPACE))
+        {
+            return Err(CatalogError::ReservedNamespace {
+                name: name.to_owned(),
+                predicate: predicate.to_owned(),
+            });
+        }
+
         let instance = ulid::new();
         let scratch = Scratch::new(self.root.join(format!("{SCRATCH_PREFIX}{instance}")));
         let built = scratch.path().join(&instance);
@@ -604,7 +680,7 @@ impl Catalog {
             });
         }
 
-        let db = FjallDb::open(&entry.path)?;
+        let db = entry.open_store()?;
         Ok((entry, db))
     }
 
@@ -615,7 +691,7 @@ impl Catalog {
     /// [`CatalogError::NoSuchDatabase`], or whatever opening the store reports.
     pub fn open_read(&self, selector: &Selector) -> Result<(Entry, FjallDb), CatalogError> {
         let entry = self.resolve(selector, Intent::Read)?;
-        let db = FjallDb::open(&entry.path)?;
+        let db = entry.open_store()?;
         Ok((entry, db))
     }
 
@@ -684,7 +760,7 @@ impl Catalog {
         })?;
         let schema = &schema;
 
-        let db = FjallDb::open(&entry.path)?;
+        let db = entry.open_store()?;
         let identity = seal(&name, &entry, &db, schema, allow_zero_facts)?;
 
         // Dropped before the sidecar write for the same reason the sync came first:
@@ -823,6 +899,19 @@ fn seal(
     // identity computed here describes bytes that survive a power loss.
     db.persist()?;
 
+    // **Then flush, because `persist` and `compact` both skip a memtable.** `persist`
+    // fsyncs the write-ahead journal; `compact` merges already-flushed segments. So
+    // whatever ingest left resident was never written to a table at all: it stayed only
+    // in the journal, invisible to the merge below, replayed into memory at every open,
+    // and served from a recovered memtable rather than the merged tables this function
+    // exists to leave behind — which `compact`'s own doc prices at up to 180× on a
+    // re-seek. Measured before this line existed: 208,000 facts came to 60 kB of tables
+    // against 29 MB of journal.
+    //
+    // Ordered before `compact` so the merge sees what the flush wrote, and the tree that
+    // ships is the tree the identity is computed over.
+    db.flush_to_tables()?;
+
     // Then merge, and merge *here* — before the walk, so the identity is computed over
     // the tree that will actually be shipped, and before `record`, so the byte count it
     // writes down is the artifact's rather than the ingest's. What this reclaims is
@@ -834,6 +923,11 @@ fn seal(
     // Not conditional on `allow_zero_facts`: an empty database has nothing to merge and
     // merging it costs nothing, so the check stays where it reads best.
     db.compact()?;
+
+    // **Durable again, and the reason is `ops-I3` exactly as it reads.** The flush and
+    // the merge both wrote files; an identity computed over bytes a power loss could
+    // still take back would describe a database that might not exist.
+    db.persist()?;
 
     let identity = identity::compute(db, schema, entry.meta.schema_fingerprint)?;
 

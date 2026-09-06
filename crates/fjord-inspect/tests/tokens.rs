@@ -206,7 +206,7 @@ proptest! {
 
 /// A comment is a token here and not in sigla, which is a fact about the two
 /// languages rather than an omission — and the pane leans on it, because
-/// `schemas/code.sigla` is more comment than declaration.
+/// `schemas/demo.sigla` is more comment than declaration.
 #[test]
 fn a_schema_comment_is_a_token_of_its_own() {
     let view = schema_tokens("# what this predicate is for\npredicate src.File : string");

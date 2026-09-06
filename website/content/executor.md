@@ -69,7 +69,11 @@ residual arm (`DiscriminantEq`, a byte-prefix compare against the tag), one bran
 nested-field walk, and a projection arm — no new `Source`, `Step`, frame kind or cursor entry.
 A field path stepping *into* a union payload carries the expected discriminant, checked before
 any read through it, so a payload read against the wrong alternative is an error rather than
-another type's bytes.
+another type's bytes. That order is flatten's to establish and the machine's to rely on: a
+source's residuals are sorted **outside-in**, every tag check ahead of the residuals reading
+through the payload it names, so a check is never behind the read it guards — including where a
+union sits under a union and the checks come from two different passes, one walking the key and
+one applying a select.
 
 ### Access, seek, splice
 
@@ -87,7 +91,28 @@ folded form of an [order comparison](query-efficiency.html#an-order-comparison-s
 The edges are fields of that variant rather than one more kind of piece, and that is the point:
 a bounded field's bytes are not a single value, so nothing may follow one, and there is no way
 to write a key that does. An edge is a value and a bit saying whether the bound is in; the
-executor turns each into a scan bound, using the same successor a prefix's upper bound uses.
+executor turns each into a scan bound — the bare concatenation where the bound is in, and where
+it is out the byte that **separates** one value's keys from the next value's.
+
+That separator is not a prefix's upper bound, and the difference is the whole of the arithmetic.
+A `string` or `bytes` value is stored as `MARK ++ escaped(payload) ++ 0x00` with a payload NUL
+escaped to `0x00 0xFF`, so `enc(v)` is a byte prefix of `enc(w)` exactly when `w` is `v` with a
+NUL and more after it — and every such `w` is *greater* than `v`. The successor of everything
+sharing that byte prefix therefore sits above both runs rather than between them: it would
+answer `> v` without those rows and `<= v` with them. `0xFF` is what lies between, because a key
+at `v` runs on with a marker and every marker is below it, while a key of one of those greater
+values runs on with the escape byte itself.
+
+The **other** range is `SeekKey::PrefixRange`, the folded form of sigla's `..` string-prefix
+operator, and it sits beside the parts for the reason the edges do: a byte prefix of a field is
+not a field, so nothing may follow it either. It is also why the *variant* rather than the byte
+string decides where a range ends. `X = "a"` and `X = "a"..` are two questions over almost the
+same bytes — a constant is a whole field encoding, and the pattern is that encoding without its
+terminator — and they want opposite ends. The equality wants the keys of one value, which stops
+at the separator; the pattern wants every value the prefix starts, which is what the successor
+of everything sharing those bytes is for. So the separator is not only a bounded edge's: it ends
+*every* seek whose parts are complete field encodings, and the successor belongs to a seek that
+pins no field at all or one whose last bytes are only part of one.
 
 A **guided** source is the third shape, and it is deliberately not a fourth kind of thing: it
 carries an ordinary `Access`, so `lo` and `hi` come from the same prefix machinery, and the
@@ -141,15 +166,15 @@ a second level would read the same row again and could never disagree with the f
 
 ## Every construct, as a plan
 
-Each of these is `:plan` output over the sample code schema, and each one is a different
-piece of the machine — the concrete form of everything above.
+Each of these is `:plan` output over `schemas/demo.sigla`, the sample code schema, and each
+one is a different piece of the machine — the concrete form of everything above.
 
 **Reading through a reference** — a fetch level, one point read per row above it:
 
 ```text
-sigla> :plan N where src.Ref {to = D}; N = D.name
-  r0 <- src.Ref scan
-  r1 <- src.Decl fetch[r0.to]
+sigla> :plan N where code.Ref {to = D}; N = D.name
+  r0 <- code.Ref scan
+  r1 <- code.Decl fetch[r0.to]
   head r1.name
 ```
 
@@ -157,8 +182,8 @@ sigla> :plan N where src.Ref {to = D}; N = D.name
 level: the cursor stores nothing for it, because it is recomputed on resume.
 
 ```text
-sigla> :plan Y where src.Decl {line = L}; Y = L + 1
-  r0 <- src.Decl scan
+sigla> :plan Y where code.Decl {line = L}; Y = L + 1
+  r0 <- code.Decl scan
   r1 = r0.line + 1
   head r1=
 ```
@@ -167,9 +192,9 @@ sigla> :plan Y where src.Decl {line = L}; Y = L + 1
 source is drained only to its first row, because the question is whether a witness exists:
 
 ```text
-sigla> :plan F where F = src.File _; !src.Module {file = F, name = "Boxops.Fjord.Client"}
-  r0 <- src.File scan
-  absent src.Module seek[file = r0#, name = "Boxops.Fjord.Client"]
+sigla> :plan F where F = code.File _; !code.Decl {file = F, name = "Plan"}
+  r0 <- code.File scan
+  absent code.Decl seek[file = r0#, name = "Plan", line = _]
   head r0#
 ```
 
@@ -177,9 +202,9 @@ sigla> :plan F where F = src.File _; !src.Module {file = F, name = "Boxops.Fjord
 written: "does not start with X" is the two ranges either side of one, and a seek walks one.
 
 ```text
-sigla> :plan N where src.Decl {name = N}; N != "Block"..
-  r0 <- src.Decl scan
-       where name does not start with "Block"
+sigla> :plan N where code.Decl {name = N}; N != "key"..
+  r0 <- code.Decl scan
+       where name does not start with "key"
   head r0.name
 ```
 
@@ -187,10 +212,10 @@ sigla> :plan N where src.Decl {name = N}; N != "Block"..
 concatenated. Never DNF-expanded across conjuncts:
 
 ```text
-sigla> :plan X where src.Decl {module = M, name = X} | src.Module {file = _, name = X}
-  r0 <- src.Decl scan
-     | src.Module scan
-  head r0.1
+sigla> :plan X where code.Decl {file = X, name = _, line = _} | code.Digest {file = X}
+  r0 <- code.Decl scan
+     | code.Digest scan
+  head r0.0
 ```
 
 ## The register file, and the row–slot model
@@ -333,7 +358,7 @@ receives each row and answers `Continue` or `Suspend`.
 
 A `Row` is **borrowed and one-step-lived**: it is a view of the registers as they stand, not a
 copy. Nothing materialises a result set, at any layer — the server's chunk loop, the CLI's
-renderer and the viewer's pages are all consumers of this seam.
+renderer and the interactive site's stepped run are all consumers of this seam.
 
 ## The `Cursor` — bytes, and nothing else
 
@@ -508,10 +533,10 @@ counter back instead of throwing it away, **per step of the plan's body** — wh
 a fetch, a disjunction and a negation each a line of their own:
 
 ```text
-STEP      EXAMINED
-src.Decl  1000      full scan
-src.Ref   1
-1001 examined, 1 produced
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
 ```
 
 Read it against `:plan`: the plan is the intent, this is the outcome.

@@ -16,7 +16,7 @@ use fjord_encoding::{
     error::StoreCodecError,
     tuple::{
         MARK_ESCAPE, MARK_RECORD, MARK_TERM, MARK_UNION, TupleDecoder, UnionTag, Value,
-        decode_typed, fact_ref_bytes, get_u64, put_str, skip, str_chars, strinc,
+        above_field, decode_typed, fact_ref_bytes, get_u64, put_str, skip, str_chars, strinc,
     },
 };
 use fjord_schema::{
@@ -338,9 +338,11 @@ fn nested_field_span(
     //
     // Checked, not assumed: a payload read against the wrong alternative would
     // otherwise decode another type's bytes at this offset and answer with whatever
-    // was there. Flatten emits the tag's residual first, so a compiled plan never
-    // reaches the error — it is the backstop for a plan built by hand or arriving
-    // over the wire, and it is a refusal rather than a mis-read.
+    // was there. Flatten orders each source's residuals outside-in — a tag check
+    // ahead of everything reading through the payload it names — so a compiled plan
+    // has dropped such a row before this walk runs; the error is the backstop for a
+    // plan built by hand or arriving over the wire, and it is a refusal rather than a
+    // mis-read.
     //
     // [`FieldPath::payload`]: crate::plan::FieldPath::payload
     if key.get(outer.start) == Some(&MARK_UNION) {
@@ -927,20 +929,34 @@ impl GuideWalk {
 /// The half-open `[lo, hi)` one opening of `seek_key` covers, given the fixed
 /// `prefix` its parts came to.
 ///
-/// An unbounded seek is the bucket itself — `prefix` to its successor — and that
-/// is the same range this always opened. A bounded one moves one or both edges
-/// inwards, and the whole of the arithmetic is in one place because the two
-/// halves are not symmetric: **a stored key runs on past the bounded field**, so
-/// every row *at* the bound sorts after `prefix ++ value`. Excluding the bound
-/// below therefore needs the successor and excluding it above does not — the
-/// asymmetry an off-by-one here would look exactly like.
+/// A bounded seek moves one or both edges inwards from what the parts opened, and
+/// the whole of the arithmetic is in one place because the two halves are not
+/// symmetric: **a stored key runs on past the bounded field**, so every row *at*
+/// the bound sorts after `prefix ++ value`. Including the bound therefore takes the
+/// bare concatenation and excluding it takes the byte that separates one value's
+/// keys from the next's — the asymmetry an off-by-one here would look exactly like.
 ///
-/// `hi` is `None` only where `strinc` has no answer, which is a range running to
-/// the end of the key space; a scan is bounded to its own predicate by the store
-/// either way ([`FactStore::scan`]).
+/// **The separator is [`above_field`], not [`strinc`].** A `string` or `bytes`
+/// value's encoding is a byte prefix of a *greater* value's whenever the greater
+/// one extends it through a NUL, so a successor of `prefix ++ value` sits above
+/// both runs rather than between them; `above_field` carries the reasoning and the
+/// mark table it rests on. Reaching for `strinc` here answered `> v` without the
+/// NUL-extensions of `v` and `<= v` with them, silently — the fold has already
+/// taken the comparison out of the residual list.
+///
+/// **What the parts themselves opened is the same question**, which is why
+/// [`parts_end`] reads the variant and not the bytes: a seek is not always the
+/// bucket, and where its parts are complete field encodings it is the keys of
+/// *those values* — so the unbounded form and an absent edge run to the separator
+/// too, and only a seek that pins no field, or one whose last bytes are a byte
+/// prefix of a field, runs to a successor.
+///
+/// `hi` is `None` only where that successor does not exist, which is a range
+/// running to the end of the key space; a scan is bounded to its own predicate by
+/// the store either way ([`FactStore::scan`]).
 fn scan_bounds(prefix: &[u8], seek_key: &SeekKey) -> (Vec<u8>, Option<Vec<u8>>) {
     let SeekKey::Bounded { lo, hi, .. } = seek_key else {
-        return (prefix.to_vec(), strinc(prefix));
+        return (prefix.to_vec(), parts_end(prefix, seek_key));
     };
 
     let at = |edge: &RangeEdge| {
@@ -950,33 +966,61 @@ fn scan_bounds(prefix: &[u8], seek_key: &SeekKey) -> (Vec<u8>, Option<Vec<u8>>) 
     };
 
     let low = match lo {
-        None => Some(prefix.to_vec()),
+        None => prefix.to_vec(),
         // `> v`: the first key that can be greater than every row at `v`, since
-        // those keys are `prefix ++ v ++ …` and all begin with it. `None` is a
-        // bound above every key there is, which is the empty range below.
-        Some(edge) if !edge.inclusive => strinc(&at(edge)),
-        Some(edge) => Some(at(edge)),
+        // those keys are `prefix ++ v ++ …` and all begin with it.
+        Some(edge) if !edge.inclusive => above_field(&at(edge)),
+        Some(edge) => at(edge),
     };
 
     let high = match hi {
-        None => strinc(prefix),
+        // A bound of one sense only: the other end is wherever the parts stopped,
+        // which for a run of complete field encodings is *not* the bucket's end.
+        None => parts_end(prefix, seek_key),
         // `<= v` has to include the rows *at* `v`, which extend `prefix ++ v`.
-        Some(edge) if edge.inclusive => strinc(&at(edge)),
+        Some(edge) if edge.inclusive => Some(above_field(&at(edge))),
         Some(edge) => Some(at(edge)),
     };
 
-    // A lower bound with no successor is a range no key is in; so is one that
-    // has overtaken the upper bound (`X >= 10; X < 5` is a query, not a fault).
-    // Handed to the store as `lo..lo` rather than as a reversed range, which is
-    // a panic inside the map rather than an empty answer.
-    let Some(low) = low else {
-        let end = high.clone().unwrap_or_else(|| prefix.to_vec());
-        return (end.clone(), Some(end));
-    };
-
+    // A lower bound that has overtaken the upper one (`X >= 10; X < 5` is a query,
+    // not a fault) is handed to the store as `lo..lo` rather than as a reversed
+    // range, which is a panic inside the map rather than an empty answer.
     match &high {
         Some(high) if *high < low => (low.clone(), Some(low)),
         _ => (low, high),
+    }
+}
+
+/// The exclusive end of the range a seek's **parts** opened, before any bound
+/// narrows it.
+///
+/// The distinction is [`SeekKey`]'s and cannot be read off `prefix`, because the
+/// two forms that matter are the same bytes. A run of complete field encodings
+/// names the keys *of those values*, and the keys of a greater value can extend it
+/// — `enc(v)` is a byte prefix of `enc(w)` exactly when `w` is `v` with a NUL and
+/// more after it — so the end is the separator between the two runs. A byte prefix
+/// of one field names every key sharing those bytes, which is what the pattern is
+/// asking for, so the end is their successor.
+///
+/// A run can also end at a **union tag** rather than at a whole value, where
+/// `narrow_by_tag` pinned one, and the separator is still the right end: a payload
+/// continues with its own marker, no marker is [`MARK_ESCAPE`], so `prefix ++ 0xFF`
+/// sits above every payload of that tag and below the next tag's.
+///
+/// A seek pinning no field is the predicate: `prefix` is its id, there is no field
+/// value for a separator to sit above, and the successor is the next predicate.
+fn parts_end(prefix: &[u8], seek_key: &SeekKey) -> Option<Vec<u8>> {
+    let pins_a_field = match seek_key {
+        SeekKey::Prefix(bytes) => !bytes.is_empty(),
+        SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => !parts.is_empty(),
+        // Never: its last bytes are part of a field, not all of one.
+        SeekKey::PrefixRange { .. } => false,
+    };
+
+    if pins_a_field {
+        Some(above_field(prefix))
+    } else {
+        strinc(prefix)
     }
 }
 
@@ -1276,7 +1320,9 @@ impl<S: FactStore> StackFrame<S> {
                 prefix.extend_from_slice(bytes.as_ref());
                 return Ok(prefix);
             }
-            SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. } => parts,
+            SeekKey::Composite(parts)
+            | SeekKey::Bounded { parts, .. }
+            | SeekKey::PrefixRange { parts, .. } => parts,
         };
 
         for part in parts.iter() {
@@ -1297,6 +1343,12 @@ impl<S: FactStore> StackFrame<S> {
                     prefix.extend_from_slice(&fact_ref_bytes(fact_id));
                 }
             }
+        }
+
+        // The partial field the parts stop short of, last because nothing may
+        // follow it (see [`SeekKey::PrefixRange`]).
+        if let SeekKey::PrefixRange { prefix: range, .. } = &access.seek_key {
+            prefix.extend_from_slice(range.as_ref());
         }
 
         Ok(prefix)
@@ -1491,11 +1543,13 @@ impl<S: FactStore> StackFrame<S> {
                 // a stack buffer over a borrowed span — the same shape as the
                 // reference compare above it, and for the same reason.
                 //
-                // Where this sits in the list matters: flatten puts it **before**
-                // any residual reading through the payload, so by the time a payload
-                // path is walked on this row the alternative is known. The residual
-                // walk short-circuits on the first failure, which is what makes that
-                // ordering enough.
+                // Where this sits in the list matters: flatten sorts the checks
+                // **outside-in**, each ahead of every residual reading through the
+                // payload it names — a check is itself behind the one guarding it
+                // where a union sits under a union — so by the time a payload path is
+                // walked on this row, every alternative on the way to it is known.
+                // The residual walk short-circuits on the first failure, which is
+                // what makes that ordering enough.
                 ResidualOp::DiscriminantEq(disc) => {
                     field.starts_with(UnionTag::new(*disc).as_bytes())
                 }
@@ -2610,13 +2664,15 @@ mod tests {
     use super::*;
     use crate::{
         fixtures::{
-            FrozenStore, PointSpy, collect_rows, compose, count_rows, fact_ref_field, i64_field,
-            interner_with, run_with_suspends, str_field,
+            FrozenStore, PointSpy, bytes_field, collect_rows, compose, count_rows, fact_ref_field,
+            i64_field, interner_with, run_with_suspends, str_field,
         },
         plan::{
             Access, Compare, DerivedBind, FieldPath, Level, Plan, Project, RangeEdge, Residual,
             ResidualOp, SeekKey, SeekKeyPart,
-            proptest::{PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points},
+            proptest::{
+                FieldTy, PlanAndStore, arb_interruption_schedule, arb_plan_and_store, cut_points,
+            },
         },
     };
     use ::proptest::prelude::*;
@@ -2625,7 +2681,10 @@ mod tests {
     use fjord_store::fact_store::Entity;
     use fjord_store_fjall::store::FjallDb;
     use fjord_store_mem::MemStore;
-    use std::{collections::BTreeSet, sync::atomic::Ordering};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::atomic::Ordering,
+    };
     use tempfile::TempDir;
 
     /// Run a plan whose head projects only scalars (no record field names to
@@ -3042,6 +3101,108 @@ mod tests {
         assert_eq!(profile.total(), 100);
     }
 
+    /// **A value whose encoding is a byte prefix of a greater value's.**
+    ///
+    /// A terminated field is `MARK ++ escaped(payload) ++ 0x00`, and a payload NUL
+    /// escapes to `0x00 0xFF` — so `enc(v)` is a byte prefix of `enc(w)` exactly
+    /// when `w` is `v` with a NUL and something after it, and every such `w` is
+    /// strictly greater than `v`. The two edges that exclude the value (`> v`
+    /// below, `<= v` above) have to place a bound *between* those two runs of the
+    /// key order, and the successor of everything sharing that byte prefix is not
+    /// between them: it is above both, so `> v` loses the NUL-extensions and
+    /// `<= v` keeps them.
+    ///
+    /// Silently, which is why this is a test rather than a reading of the code:
+    /// the fold takes the comparison out of the residual list, so nothing behind
+    /// the seek re-checks the rows.
+    ///
+    /// The oracle is the same bound left as a residual — a byte compare per row,
+    /// which shares the encoding with the seek and nothing else.
+    #[test]
+    fn a_bound_holds_the_rows_whose_encoding_extends_it_through_a_nul() {
+        let p = PredicateId(0);
+
+        // In encoded order, which for these five is payload order. `a\0` and
+        // `a\0b` are the two whose keys continue *past* `enc("a")`; `ab` and `b`
+        // diverge at its terminator with a byte above it.
+        let payloads: [&[u8]; 5] = [b"a", b"a\x00", b"a\x00b", b"ab", b"b"];
+
+        /// The two terminated families, each with the key-field encoder for it.
+        type Family = (PredicateTy, fn(&[u8]) -> Vec<u8>);
+
+        // Every payload here is ASCII, so both families can hold all five.
+        let families: [Family; 2] = [
+            (PredicateTy::Str, |payload| {
+                str_field(std::str::from_utf8(payload).expect("the payloads are ASCII"))
+            }),
+            (PredicateTy::Bytes, bytes_field),
+        ];
+
+        for (ty, encode) in families {
+            let store = || {
+                let mut store = MemStore::new();
+                for (n, payload) in payloads.iter().enumerate() {
+                    store.insert(p, compose(&[&encode(payload)]), n as u64 + 1);
+                }
+                store
+            };
+
+            let head = Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: ty.clone(),
+            };
+
+            // The two edges that exclude the value: `> "a"` and `<= "a"`.
+            for (lower, inclusive, op) in [(true, false, Compare::Gt), (false, true, Compare::Le)] {
+                let value: Box<[u8]> = encode(b"a").into();
+                let edge = RangeEdge {
+                    value: value.clone(),
+                    inclusive,
+                };
+
+                let folded = Plan {
+                    nvars: 1,
+                    body: Step::levels([Level::seek(
+                        Access {
+                            predicate_id: p,
+                            seek_key: SeekKey::Bounded {
+                                parts: Box::new([]),
+                                lo: lower.then(|| edge.clone()),
+                                hi: (!lower).then_some(edge),
+                            },
+                        },
+                        Box::new([Address::new(0)]),
+                        Box::new([]),
+                    )]),
+                    head: head.clone(),
+                };
+
+                let filtered = Plan {
+                    nvars: 1,
+                    body: Step::levels([Level::seek(
+                        Access {
+                            predicate_id: p,
+                            seek_key: SeekKey::Prefix(Box::new([])),
+                        },
+                        Box::new([Address::new(0)]),
+                        Box::new([Residual {
+                            path: FieldPath::field(0),
+                            op: ResidualOp::CmpConst { op, value },
+                        }]),
+                    )]),
+                    head: head.clone(),
+                };
+
+                let interner = interner_with(&[]);
+                let want = collect_rows(store(), filtered, &interner).expect("the filter runs");
+                let got = collect_rows(store(), folded, &interner).expect("the range runs");
+
+                assert_eq!(got, want, "{ty:?}: {op:?} \"a\" folded into the seek");
+            }
+        }
+    }
+
     /// **The boundary arithmetic, at the unit it lives in.**
     ///
     /// The metamorphic property above compares whole runs and would catch every one
@@ -3049,20 +3210,27 @@ mod tests {
     /// reader needs to check the reasoning rather than only the outcome. The pair is
     /// the same one the field-offset cache has: a contract asserted directly, and
     /// the same contract asserted through the executor.
+    ///
+    /// Over a real encoded value rather than a stand-in byte, because which byte
+    /// string is right depends on the encoding: `string` is where the separator and
+    /// the successor part company, and the last two assertions are that separation
+    /// stated as the two keys it has to fall between.
     #[test]
-    fn a_bounds_inclusivity_is_a_successor_and_its_sense_decides_which_end() {
+    fn an_excluded_bound_takes_the_separator_and_its_sense_decides_which_end() {
         let prefix = [0u8, 0, 0, 1, 7];
-        let edge = |value: u8, inclusive: bool| {
-            Some(RangeEdge {
-                value: Box::new([value]),
-                inclusive,
-            })
-        };
         let bounded = |lo, hi| SeekKey::Bounded {
             parts: Box::new([]),
             lo,
             hi,
         };
+        let edge = |value: Vec<u8>, inclusive: bool| {
+            Some(RangeEdge {
+                value: value.into_boxed_slice(),
+                inclusive,
+            })
+        };
+        let at = |value: &[u8]| [prefix.as_slice(), value].concat();
+        let separated = |value: &[u8]| [prefix.as_slice(), value, &[MARK_ESCAPE]].concat();
 
         // An unbounded seek is the bucket, which is what it always was.
         assert_eq!(
@@ -3070,48 +3238,291 @@ mod tests {
             (prefix.to_vec(), Some(vec![0, 0, 0, 1, 8]))
         );
 
-        // `>= 5` starts at the bound; `> 5` starts past every key extending it.
+        for value in [i64_field(5), str_field("a")] {
+            let bucket = Some(vec![0u8, 0, 0, 1, 8]);
+
+            // `>= v` starts at the bound; `> v` starts past every key at `v`.
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(edge(value.clone(), true), None)),
+                (at(&value), bucket.clone())
+            );
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(edge(value.clone(), false), None)),
+                (separated(&value), bucket)
+            );
+
+            // And the upper edge the other way round: `< v` stops at the bound,
+            // `<= v` stops past the keys at `v`.
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(None, edge(value.clone(), false))),
+                (prefix.to_vec(), Some(at(&value)))
+            );
+            assert_eq!(
+                scan_bounds(&prefix, &bounded(None, edge(value.clone(), true))),
+                (prefix.to_vec(), Some(separated(&value)))
+            );
+
+            // A range that crosses is empty, and is handed over as `lo..lo` — a
+            // reversed range is a panic inside the map, not an empty answer.
+            let (lo, hi) = scan_bounds(
+                &prefix,
+                &bounded(edge(value.clone(), false), edge(value, false)),
+            );
+            assert_eq!(Some(lo), hi, "a crossed range is empty, not reversed");
+        }
+
+        // The separator falls **between** the two runs of the key order, which the
+        // successor of `prefix ++ enc("a")` does not: `"a\0"` is a greater value
+        // whose key extends that byte prefix, so `strinc` sits above it.
+        let bound = separated(&str_field("a"));
+        assert!(
+            at(&compose(&[&str_field("a"), &i64_field(0)])) < bound,
+            "a key at the bound is below the separator"
+        );
+        assert!(
+            bound <= at(&str_field("a\u{0}")),
+            "and every key of a greater value is at or above it"
+        );
+        assert!(
+            strinc(&at(&str_field("a"))).expect("the prefix is not all 0xff")
+                > at(&str_field("a\u{0}")),
+            "which is what the successor could not do"
+        );
+    }
+
+    /// **A folded equality opens the keys of that one value.**
+    ///
+    /// The reproduction the bound's separator left behind: `X = "a"` over a store
+    /// holding `"a"`, `"a\0"` and `"a\0z"`. A complete field encoding and a
+    /// byte-prefix pattern are the same bytes and different questions — the
+    /// equality wants the keys *at* `"a"`, and `[prefix, strinc(prefix))` is the
+    /// range of everything that byte string starts, which swallows the
+    /// NUL-extensions. Silently, because a constant bind folds: there is no
+    /// residual behind the seek to re-check what it let through.
+    #[test]
+    fn a_folded_equality_seek_stops_at_the_end_of_that_value() {
+        let p = PredicateId(0);
+        let mut store = MemStore::new();
+
+        for (i, text) in ["a", "a\u{0}", "a\u{0}z"].into_iter().enumerate() {
+            store.insert(p, compose(&[&str_field(text)]), i as u64 + 1);
+        }
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(str_field("a").into()),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Str,
+            },
+        };
+
+        assert_eq!(run(store, plan), vec![Value::Str("a".to_owned())]);
+    }
+
+    /// **A byte-prefix pattern opens every value the prefix starts**, which is the
+    /// other reading of the same bytes and the reason the plan has to say which it
+    /// holds.
+    ///
+    /// `X = "a"..` over the same store answers all three: the encoded prefix of a
+    /// string is what every string beginning with it begins with, so the range of
+    /// the byte prefix *is* the match.
+    #[test]
+    fn a_prefix_range_seek_opens_every_value_the_prefix_starts() {
+        let p = PredicateId(0);
+        let mut store = MemStore::new();
+
+        for (i, text) in ["a", "a\u{0}", "a\u{0}z", "b"].into_iter().enumerate() {
+            store.insert(p, compose(&[&str_field(text)]), i as u64 + 1);
+        }
+
+        let mut pattern = str_field("a");
+        pattern.pop().expect("a terminated string");
+
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::PrefixRange {
+                        parts: Box::new([]),
+                        prefix: pattern.into(),
+                    },
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Str,
+            },
+        };
+
         assert_eq!(
-            scan_bounds(&prefix, &bounded(edge(5, true), None)),
-            (vec![0, 0, 0, 1, 7, 5], Some(vec![0, 0, 0, 1, 8]))
+            run(store, plan),
+            ["a", "a\u{0}", "a\u{0}z"]
+                .map(|text| Value::Str(text.to_owned()))
+                .to_vec()
+        );
+    }
+    /// **A one-sided bound behind a splice stops where the spliced value's keys
+    /// stop**, not where the predicate does.
+    ///
+    /// The half of the separator the excluding edges' own fix did not reach: an
+    /// *absent* edge ran to the successor of the seek's bytes, which is above the
+    /// keys of every value the spliced one is a byte prefix of. `file = F,
+    /// line >= 1000` over a `bytes` file field is the shape — a window in one file
+    /// that answered lines of another file whose name extends the first through a
+    /// NUL.
+    #[test]
+    fn a_one_sided_bound_behind_a_splice_stops_at_the_spliced_value() {
+        let (files, decls) = (PredicateId(0), PredicateId(1));
+
+        let mut store = MemStore::new();
+        for (i, name) in [b"a".as_slice(), b"a\x00".as_slice()]
+            .into_iter()
+            .enumerate()
+        {
+            store.insert(files, compose(&[&bytes_field(name)]), i as u64 + 1);
+
+            for line in 1..=2i64 {
+                store.insert(
+                    decls,
+                    compose(&[&bytes_field(name), &i64_field(line)]),
+                    (i as u64) * 2 + line as u64,
+                );
+            }
+        }
+
+        let plan = Plan {
+            nvars: 2,
+            body: Step::levels([
+                Level::seek(
+                    Access {
+                        predicate_id: files,
+                        seek_key: SeekKey::Prefix(Box::new([])),
+                    },
+                    Box::new([Address::new(0)]),
+                    Box::new([]),
+                ),
+                Level::seek(
+                    Access {
+                        predicate_id: decls,
+                        seek_key: SeekKey::Bounded {
+                            parts: Box::new([SeekKeyPart::RegisterField {
+                                address: Address::new(0),
+                                path: FieldPath::field(0),
+                            }]),
+                            lo: Some(RangeEdge {
+                                value: i64_field(2).into(),
+                                inclusive: true,
+                            }),
+                            hi: None,
+                        },
+                    },
+                    Box::new([Address::new(1)]),
+                    Box::new([]),
+                ),
+            ]),
+            head: Project::RegisterField {
+                address: Address::new(1),
+                path: FieldPath::field(1),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        // One line per file, and the file whose name is the shorter one answers only
+        // its own: `line >= 2` inside `b"a"`, then `line >= 2` inside `b"a\0"`.
+        assert_eq!(run(store, plan), vec![Value::Int(2), Value::Int(2)]);
+    }
+
+    /// **Which byte string ends an unbounded seek's range comes from the variant,
+    /// not from the bytes.**
+    ///
+    /// The three forms over one field encoding, asserted as the three different
+    /// answers they are: a seek pinning no field is the bucket, a run of complete
+    /// field encodings ends at the separator above the last of them, and a byte
+    /// prefix of a field ends at the successor of everything sharing it. The middle
+    /// two are handed **the same `prefix`** — which is the point, and the reason
+    /// this cannot be decided from the bytes.
+    #[test]
+    fn an_unbounded_seek_takes_the_end_its_variant_names() {
+        let pid = [0u8, 0, 0, 1];
+        let value = str_field("a");
+        let at = |bytes: &[u8]| [pid.as_slice(), bytes].concat();
+
+        // A seek that pins nothing is the whole bucket, which is what it always was.
+        assert_eq!(
+            scan_bounds(&pid, &SeekKey::Prefix(Box::new([]))),
+            (pid.to_vec(), Some(vec![0, 0, 0, 2]))
         );
         assert_eq!(
-            scan_bounds(&prefix, &bounded(edge(5, false), None)),
-            (vec![0, 0, 0, 1, 7, 6], Some(vec![0, 0, 0, 1, 8]))
+            scan_bounds(&pid, &SeekKey::Composite(Box::new([]))),
+            (pid.to_vec(), Some(vec![0, 0, 0, 2]))
         );
 
-        // And the upper edge the other way round: `< 5` stops at the bound, `<= 5`
-        // stops past the keys extending it.
+        // A complete field encoding: the separator, so a NUL-extension of the value
+        // is above the range rather than inside it.
+        let prefix = at(&value);
         assert_eq!(
-            scan_bounds(&prefix, &bounded(None, edge(5, false))),
-            (prefix.to_vec(), Some(vec![0, 0, 0, 1, 7, 5]))
+            scan_bounds(&prefix, &SeekKey::Prefix(value.clone().into())),
+            (prefix.clone(), Some(above_field(&prefix)))
         );
-        assert_eq!(
-            scan_bounds(&prefix, &bounded(None, edge(5, true))),
-            (prefix.to_vec(), Some(vec![0, 0, 0, 1, 7, 6]))
+        assert!(
+            above_field(&prefix) <= at(&str_field("a\u{0}")),
+            "the separator is at or below every key of a greater value"
         );
 
-        // A range that crosses is empty, and is handed over as `lo..lo` — a
-        // reversed range is a panic inside the map, not an empty answer.
-        let (lo, hi) = scan_bounds(&prefix, &bounded(edge(9, true), edge(2, false)));
-        assert_eq!(Some(lo), hi, "a crossed range is empty, not reversed");
+        // The same bytes as a byte prefix: the successor, which is *above* those
+        // keys because they are the ones the pattern is asking for.
+        assert_eq!(
+            scan_bounds(
+                &prefix,
+                &SeekKey::PrefixRange {
+                    parts: Box::new([]),
+                    prefix: value.into()
+                }
+            ),
+            (prefix.clone(), strinc(&prefix))
+        );
+        assert!(
+            strinc(&prefix).expect("the prefix is not all 0xff") > at(&str_field("a\u{0}")),
+            "the successor is above them, which is what the pattern wants"
+        );
+    }
 
-        // A strict lower edge with no successor — every byte `0xff` — is a bound
-        // above every key there is. Unreachable while predicate ids are positions
-        // in a schema, and answered rather than panicked on because a `Plan` is
-        // public and hand-built.
+    /// **`above_field` is total where `strinc` is not**, so the strict lower edge
+    /// no longer has a "no answer" case to fold into the empty range.
+    ///
+    /// Unreachable while predicate ids are positions in a schema, and answered
+    /// rather than panicked on because a `Plan` is public and hand-built.
+    #[test]
+    fn a_bound_over_an_all_ones_prefix_still_has_a_floor() {
         let all_ones = [0xffu8; 4];
+
         let (lo, hi) = scan_bounds(
             &all_ones,
-            &bounded(
-                Some(RangeEdge {
+            &SeekKey::Bounded {
+                parts: Box::new([]),
+                lo: Some(RangeEdge {
                     value: Box::new([0xff]),
                     inclusive: false,
                 }),
-                None,
-            ),
+                hi: None,
+            },
         );
-        assert_eq!(Some(lo), hi, "no successor is the empty range");
+
+        assert_eq!(lo, vec![0xff, 0xff, 0xff, 0xff, 0xff, MARK_ESCAPE]);
+        assert_eq!(hi, None, "the bucket itself has no successor to stop at");
     }
 
     /// **A bounded seek reads the window, not the offset** — the whole claim the
@@ -4854,6 +5265,109 @@ mod tests {
             resumed = resumed.map(|_| "an executor"),
         );
     }
+    /// **A cursor at a row the narrowed equality no longer holds is refused, and
+    /// one inside it still pages.**
+    ///
+    /// The [I4] half of moving a folded equality's range end. The plan fingerprint
+    /// does not move — a [`SeekKey::Prefix`] over the same bytes hashes to the same
+    /// value before and after — so nothing ahead of the range check can tell an
+    /// older build's cursor from this one's. What separates them is the position:
+    /// the range shrank to the keys of one value, and a cursor saved where the
+    /// successor used to reach is now outside the source it would be replayed into.
+    ///
+    /// Both halves, because a refusal is only a fix if it is the *narrow* one. A
+    /// range check that refused every cursor would satisfy the second assertion and
+    /// break paging outright.
+    ///
+    /// [I4]: ../../../website/content/invariants.md#i4
+    #[test]
+    fn a_cursor_at_a_row_the_narrowed_equality_excludes_is_refused() {
+        let p = PredicateId(0);
+        let interner = interner_with(&[]);
+
+        // `("a", 1)`, `("a", 2)`, `("a\0", 3)`, `("a\0z", 4)` — the second field
+        // names the row, so the projection says which one a cursor sits at.
+        let rows = || {
+            let mut store = MemStore::new();
+
+            for (i, text) in ["a", "a", "a\u{0}", "a\u{0}z"].into_iter().enumerate() {
+                let sequence = i as u64 + 1;
+                store.insert(
+                    p,
+                    compose(&[&str_field(text), &i64_field(sequence as i64)]),
+                    sequence,
+                );
+            }
+
+            store
+        };
+
+        let seek = |seek_key| Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek(
+                Access {
+                    predicate_id: p,
+                    seek_key,
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(1),
+                ty: PredicateTy::Int,
+            },
+        };
+        let folded = || seek(SeekKey::Prefix(str_field("a").into()));
+
+        // The fold still pages: every cut point inside the two rows the equality
+        // does hold answers what an uninterrupted run answers.
+        let model =
+            assert_resume_equals_uninterrupted(|| (rows(), folded()), &interner, "MemStore");
+        assert_rows(&model, 2);
+
+        // The range an older build opened ran to the successor of the seek's bytes,
+        // which reached the NUL-extension rows — so a cursor could be saved at one.
+        // Taken here from a bucket scan, which is the range that used to be opened.
+        let out = Executor::new(rows(), seek(SeekKey::Prefix(Box::new([]))))
+            .enumerate(
+                0usize,
+                |n, mut row| {
+                    row.to_value(&interner)?;
+
+                    if n + 1 == 3 {
+                        Ok(Stream::Suspend(n + 1))
+                    } else {
+                        Ok(Stream::Continue(n + 1))
+                    }
+                },
+                &CancellationToken::new(),
+            )
+            .expect("a run");
+
+        let Iteratee::Suspended(_, stale) = out else {
+            panic!("expected a suspend at the third row");
+        };
+
+        let resumed = Executor::resume(
+            rows(),
+            folded(),
+            Cursor {
+                // What the older build stamped: this fix leaves the fingerprint of
+                // a folded equality alone, which is why the position is what has to
+                // catch it.
+                plan: folded().fingerprint(),
+                ..stale
+            },
+            WorldStamp::Unstamped,
+        );
+
+        assert!(
+            matches!(resumed, Err(FjordError::BadResumeKey)),
+            "a saved position above the narrowed range must be refused, got {resumed:?}",
+            resumed = resumed.map(|_| "an executor"),
+        );
+    }
 
     // A one-level scan projects a key field, in ascending key order regardless
     // of insert order (the codec is order-preserving, I1).
@@ -6506,10 +7020,15 @@ mod tests {
         assert_rows(&model, 3);
     }
 
+    /// How many cases the properties below run. Named because the censuses that
+    /// bound their reach are stated as a rate against it, and a census whose
+    /// sample is unrelated to what a property runs bounds nothing.
+    const HEADLINE_CASES: u32 = 1024;
+
     proptest! {
         // This is the executor's headline gate, and a case is cheap (the whole
         // battery runs in well under a second), so take four times the default.
-        #![proptest_config(ProptestConfig::with_cases(1024))]
+        #![proptest_config(ProptestConfig::with_cases(HEADLINE_CASES))]
 
         // I4 — resume == uninterrupted run. **The executor's headline acceptance
         // gate.** Over schema-first `(plan, store)` pairs (1-/2-/3-level, seeks,
@@ -6570,42 +7089,172 @@ mod tests {
 
             prop_assert_eq!(folded, filtered);
         }
+        /// **A bucket seek answers what the same equality filtered answers.**
+        ///
+        /// The metamorphic gate on the *other* fold, and the same argument the
+        /// bound's makes one property up: a spliced equality becomes scan bounds
+        /// computed once from an encoded value, and an `EqRegisterField` residual
+        /// compares two field spans of every row it is handed. They share the
+        /// encoding and nothing else.
+        ///
+        /// What it therefore catches: a range opened one value too wide, because
+        /// `enc(v)` is a byte prefix of the encoding of every value that is `v`
+        /// with a NUL and more after it — so the successor of everything sharing
+        /// the seek's bytes sits above those keys instead of between them, and the
+        /// fold has taken the equality out of the residual list, leaving nothing
+        /// behind the seek to re-check what it let through.
+        #[test]
+        fn a_bucket_seek_answers_what_the_same_equality_filtered_answers(
+            spec in arb_plan_and_store(),
+        ) {
+            let interner = spec.interner();
+
+            let folded = collect_rows(
+                spec.build_store(),
+                spec.build_plan(&interner),
+                &interner,
+            ).unwrap();
+
+            let filtered = collect_rows(
+                spec.build_store(),
+                spec.build_plan_filtering_everything(&interner),
+                &interner,
+            ).unwrap();
+
+            prop_assert_eq!(folded, filtered);
+        }
+    }
+
+    /// How many specs a census draws: eight times the cases a property runs, so
+    /// the **rate** it reports is pinned tightly enough for [`CENSUS_FLOOR`] to sit
+    /// far below every class measured over this generator and still catch a
+    /// collapse. The sample is a multiple of the property's cases and not a round
+    /// number of its own, because the rate is only interesting as a statement about
+    /// how often a property run reaches the class.
+    const CENSUS_DRAWS: usize = 8 * HEADLINE_CASES as usize;
+
+    /// The floor a class's draw count must clear — one draw in 64, so a
+    /// [`HEADLINE_CASES`]-case run of a property above reaches each class at least
+    /// sixteen times.
+    ///
+    /// **A census asserts a rate, never an existence.** `> 0` over a fixed sample
+    /// stays green for a class the strategy reaches one case in a thousand, and
+    /// that is exactly the state in which a property half-catches its own
+    /// regression: the class is reachable, so the census is telling the truth, and
+    /// most runs of the property still never see it. The floor is what makes the
+    /// census say *often enough* rather than *at all*.
+    ///
+    /// Calibrated against the collapse it exists to catch — field 0 drawn from the
+    /// prefix-free half of the domain, which is where this generator stood before
+    /// the bucket seek was fixed. That takes the NUL-extension bound from 424-496
+    /// draws per [`CENSUS_DRAWS`] to 57-68, and the two classes below it to zero,
+    /// against a floor of 128. The rarest class the generator draws as it stands is
+    /// a run answering a row over such a store, at 22-37 per 1024 across four
+    /// measured runs — 176-296 here, six standard deviations clear of the floor,
+    /// which is what keeps an entropy-drawn census a gate and not a coin toss.
+    const CENSUS_FLOOR: usize = CENSUS_DRAWS / 64;
+
+    /// [`CENSUS_DRAWS`] specs **from entropy, which is where the properties draw
+    /// from too**.
+    ///
+    /// A census over `TestRunner::deterministic()` counts one fixed sequence and
+    /// nothing ever re-samples it, so a class that sequence reaches at a rate the
+    /// population does not is a census green about runs nobody makes. That seed
+    /// measured representative here — and that was the part no test was asking.
+    fn census_draws() -> impl Iterator<Item = PlanAndStore> {
+        use ::proptest::{
+            strategy::{Strategy, ValueTree},
+            test_runner::TestRunner,
+        };
+
+        let mut runner = TestRunner::default();
+
+        (0..CENSUS_DRAWS).map(move |_| {
+            arb_plan_and_store()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current()
+        })
+    }
+
+    /// Every class in `classes` was drawn at least [`CENSUS_FLOOR`] times out of
+    /// [`CENSUS_DRAWS`].
+    ///
+    /// The counts go in the message because the number *is* the finding: a class at
+    /// zero is a generator that lost a family, and a class at one or two is the
+    /// vacuous-property state the floor exists to name.
+    fn assert_census(counts: &BTreeMap<&'static str, usize>, classes: &[&'static str]) {
+        let thin: Vec<String> = classes
+            .iter()
+            .map(|what| (what, counts.get(what).copied().unwrap_or(0)))
+            .filter(|(_, count)| *count < CENSUS_FLOOR)
+            .map(|(what, count)| format!("{what} ({count})"))
+            .collect();
+
+        assert!(
+            thin.is_empty(),
+            "of {CENSUS_DRAWS} generated plans, fewer than {CENSUS_FLOOR} reached: {}",
+            thin.join(", ")
+        );
     }
 
     /// **The census for the bound.** The property above says nothing unless the
-    /// generator draws a range, and says nothing about the successor arithmetic
+    /// generator draws a range, and says nothing about the boundary arithmetic
     /// unless it draws each edge at each inclusivity. The empty range is counted
     /// separately because it is the one draw that reaches the clamp — a lower bound
     /// above the upper one, or equal edges where either side excludes the value. The
     /// former would otherwise be a reversed range and a panic inside the map rather
     /// than an empty answer.
     ///
-    /// Counted over the generator rather than asserted per case, as the battery's
-    /// other census is: it is a claim about what is *drawn*.
+    /// The last two entries are the **input class the edges that exclude the value
+    /// turn on**, and the reason the rest of the list is not enough: over a domain
+    /// where no value's encoding is a byte prefix of another's, every one of the
+    /// seven shapes is answered correctly by the successor *and* by the separator,
+    /// so the property passes either way. A `bytes` key field is counted beside it
+    /// because a family the generator never draws is a family every law over it
+    /// passes vacuously for.
+    ///
+    /// Counted over the generator rather than asserted per case: it is a claim
+    /// about what is *drawn*. Stated as a **rate** against the cases the property
+    /// runs ([`CENSUS_FLOOR`]) and drawn from the source the property draws from
+    /// ([`census_draws`]), because a class the generator merely *reaches* is one
+    /// most runs of the property never see.
     #[test]
     fn the_battery_reaches_every_shape_of_a_bounded_seek() {
-        use ::proptest::{
-            strategy::{Strategy, ValueTree},
-            test_runner::TestRunner,
-        };
+        const CLASSES: [&str; 8] = [
+            "a closed lower edge",
+            "an open lower edge",
+            "a closed upper edge",
+            "an open upper edge",
+            "both edges at once",
+            "an empty range",
+            "a `bytes` key field",
+            "a bound a stored value extends through a NUL",
+        ];
 
-        const RUNS: usize = 300;
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
 
-        let mut runner = TestRunner::deterministic();
-        let mut seen: Vec<&'static str> = vec![];
-        let mut note = |what: &'static str| {
-            if !seen.contains(&what) {
-                seen.push(what);
-            }
-        };
-
-        for _ in 0..RUNS {
-            let spec = arb_plan_and_store()
-                .new_tree(&mut runner)
-                .unwrap()
-                .current();
+        for spec in census_draws() {
             let interner = spec.interner();
             let (_, plan) = spec.build(&interner);
+
+            // Noted per drawn plan and not per source: the rate that bounds a
+            // property's reach is the fraction of its *cases* reaching the class,
+            // so a plan carrying four open lower edges is still one such case.
+            let mut reached: Vec<&'static str> = vec![];
+            let mut note = |what: &'static str| {
+                if !reached.contains(&what) {
+                    reached.push(what);
+                }
+            };
+
+            if spec.key_field_tys().any(|ty| ty == FieldTy::Bytes) {
+                note("a `bytes` key field");
+            }
+
+            if spec.bounds_a_value_a_stored_one_extends() {
+                note("a bound a stored value extends through a NUL");
+            }
 
             for step in plan.body.iter() {
                 let Step::Level(level) = step else { continue };
@@ -6643,25 +7292,85 @@ mod tests {
                     }
                 }
             }
+
+            for what in reached {
+                *counts.entry(what).or_default() += 1;
+            }
         }
 
-        let missing: Vec<&str> = [
-            "a closed lower edge",
-            "an open lower edge",
-            "a closed upper edge",
-            "an open upper edge",
-            "both edges at once",
-            "an empty range",
-        ]
-        .into_iter()
-        .filter(|what| !seen.contains(what))
-        .collect();
+        assert_census(&counts, &CLASSES);
+    }
+    /// **The census for the bucket seek.** The property above says nothing unless
+    /// the generator draws a seek that splices a bound register's field, and nothing
+    /// about the *end* of the range it opens unless the store holds the one pair
+    /// that separates the two candidate ends: a spliced value `v` and, at the field
+    /// the seek pins, a stored value that extends `enc(v)` through a NUL.
+    ///
+    /// That pair is what field 0 could not hold while it was drawn from the
+    /// prefix-free half of the domain. Over a prefix-free field 0 the successor of
+    /// the seek's bytes and the separator above its last field open the same rows,
+    /// so the property passed either way — the gap the fence was standing over, and
+    /// the reason taking it down without counting what replaced it would trade a
+    /// known gap for an invisible one.
+    ///
+    /// The third entry is the one that makes the law non-vacuous rather than merely
+    /// reachable: the pair in the store *and* a run that answers rows over it. It is
+    /// also the rarest class this generator draws, which is what [`CENSUS_FLOOR`] is
+    /// calibrated against.
+    #[test]
+    fn the_battery_reaches_a_bucket_seek_a_stored_value_extends() {
+        const SPLICED: &str = "a register field spliced into a seek";
+        const EXTENDED: &str = "a store holding a value that extends a spliced one through a NUL";
+        const ANSWERED: &str = "a run answering a row over such a store";
 
-        assert!(
-            missing.is_empty(),
-            "{RUNS} generated plans never produced: {}",
-            missing.join(", ")
-        );
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+
+        for spec in census_draws() {
+            let interner = spec.interner();
+            let (store, plan) = spec.build(&interner);
+
+            let spliced = plan.body.iter().any(|step| {
+                let Step::Level(level) = step else {
+                    return false;
+                };
+
+                level.sources.iter().any(|source| {
+                    let (Source::Seek { access, .. } | Source::Guided { access, .. }) = source
+                    else {
+                        return false;
+                    };
+
+                    let (SeekKey::Composite(parts) | SeekKey::Bounded { parts, .. }) =
+                        &access.seek_key
+                    else {
+                        return false;
+                    };
+
+                    parts
+                        .iter()
+                        .any(|part| matches!(part, SeekKeyPart::RegisterField { .. }))
+                })
+            });
+
+            if spliced {
+                *counts.entry(SPLICED).or_default() += 1;
+            }
+
+            if !spec.splices_a_value_a_stored_one_extends() {
+                continue;
+            }
+            *counts.entry(EXTENDED).or_default() += 1;
+
+            let rows = collect_rows(store, plan, &interner).expect("a run");
+
+            if !rows.is_empty() {
+                *counts.entry(ANSWERED).or_default() += 1;
+            }
+        }
+
+        // A thin `EXTENDED` is field 0's domain gone prefix-free again; a thin
+        // `ANSWERED` is the pair reaching the store but no run reading over it.
+        assert_census(&counts, &[SPLICED, EXTENDED, ANSWERED]);
     }
 
     /// **The census.** The battery above says nothing about disjunction unless

@@ -13,11 +13,16 @@
 //! profiling ever asks for it; pre-empting it buys nothing.
 //!
 //! What a browser cannot do, stated so it is not filed as a gap: **ingest**,
-//! because interning needs a real backend and durable id claims, and **schema
-//! `import`**, because resolution reads files — so a browser schema is
-//! single-file until a virtual resolver exists. Everything else runs here,
-//! lexing to executing: the queries answer against a `MemStore` holding the
-//! demo database, through the same executor the server runs.
+//! because interning needs a real backend and durable id claims. Everything
+//! else runs here, lexing to executing: the queries answer against a `MemStore`
+//! holding the demo database, through the same executor the server runs.
+//!
+//! **Schema `import` does work**, and it used to be listed above. Resolution is
+//! one algorithm over a source provider, and the filesystem is only one
+//! implementation of it — so a browser embedder hands
+//! `fjord_schema::syntax::resolve::resolve_from` an ordered list of
+//! `(name, text)` and gets the union, with `--no-default-features` making "no
+//! filesystem" a compile error rather than a promise.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -60,6 +65,19 @@ pub fn schema_tokens(source: &str) -> String {
 #[must_use]
 pub fn schema(source: &str) -> String {
     fjord_inspect::schema_json(source)
+}
+
+/// Read a **set** of schema sources as one schema and answer the
+/// [schema view](fjord_inspect::SchemaView) as JSON.
+///
+/// `sources` is a JSON array of `[name, text]` pairs, the entry first, and its
+/// `import`s are followed through the rest. A string in and a string out like
+/// every export here, because a browser has no filesystem to keep a set of files
+/// in — and resolution needs none.
+#[wasm_bindgen]
+#[must_use]
+pub fn schema_set(sources: &str) -> String {
+    fjord_inspect::schema_set_json(sources)
 }
 
 /// Compile `query` against `schema` through the whole front end — lex, parse,
@@ -118,7 +136,7 @@ pub fn database(schema: &str) -> String {
 }
 
 /// The schema the site opens with — `schemas/demo.sigla`, the database in the
-/// page rather than the code index `schemas/code.sigla` describes.
+/// page rather than the code index `schemas/dotnet.sigla` describes.
 #[wasm_bindgen]
 #[must_use]
 pub fn sample_schema() -> String {

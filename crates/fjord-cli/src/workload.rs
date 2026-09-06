@@ -36,7 +36,10 @@ pub struct Pivots {
     pub directory: String,
     /// A declaration name, for a denial that denies almost nothing.
     pub decl: String,
-    /// A name `src.SearchByName` actually holds.
+    /// A name to look up by name. It was sampled from a search index; the shipped
+    /// fixture declares none, so it is the declaration's own name and the two pivots
+    /// coincide — which costs the workloads that use it nothing, because what they
+    /// measure is the lookup and not the term.
     pub search: String,
 }
 
@@ -122,43 +125,43 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         ),
         Workload::new(
             "seek one file",
-            format!("F where src.File F; F = \"{}\"", escape(&pivots.file)),
+            format!("F where code.File F; F = \"{}\"", escape(&pivots.file)),
             "constant fold → one point",
         ),
         Workload::new(
             "seek prefix",
             format!(
-                "F where src.File F; F = \"{}\"..",
+                "F where code.File F; F = \"{}\"..",
                 escape(&pivots.directory)
             ),
             "range seek, one directory",
         ),
+        // **A union leading a key**, which is what `code.KindOf` exists for: the tag is
+        // the first field, so "every function" is a seek and not a filter. The pair with
+        // `code.Kind` below prices the same data keyed the other way round.
         Workload::new(
-            "search by name",
-            format!(
-                "D where src.SearchByName {{name = \"{}\", to = D}}",
-                escape(&pivots.search)
-            ),
-            "the query a person types",
+            "seek a union tag",
+            "D where code.KindOf {what = {func = 1}, decl = D}".to_owned(),
+            "a discriminant leads the key",
         ),
         Workload::new(
             "scan files",
-            "F where src.File F".to_owned(),
+            "F where code.File F".to_owned(),
             "smallest full scan",
         ),
         Workload::new(
-            "scan modules",
-            "N where src.Module {name = N}".to_owned(),
+            "scan kinds",
+            "D where code.Kind {decl = D}".to_owned(),
             "a key field off a record",
         ),
         Workload::new(
             "scan decls",
-            "N where src.Decl {name = N}".to_owned(),
+            "N where code.Decl {name = N}".to_owned(),
             "the mid-sized scan",
         ),
         Workload::new(
             "project record",
-            "{at = D.line, what = D.name} where D = src.Decl _".to_owned(),
+            "{at = D.line, what = D.name} where D = code.Decl _".to_owned(),
             "two fields, one row",
         ),
         // Reading *through* a reference is a `Source::Fetch` — one point read per row of
@@ -168,12 +171,12 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         // off it afterwards is free.
         Workload::new(
             "fetch, project a ref",
-            "{what = D.name, file = D.module.file} where D = src.Decl _".to_owned(),
+            "{what = R.from.name, file = R.from.file} where R = code.Ref _".to_owned(),
             "fetch: a point read per row",
         ),
         Workload::new(
             "fetch, project a string",
-            "{what = D.name, module = D.module.name} where D = src.Decl _".to_owned(),
+            "{what = R.from.name, line = R.from.line} where R = code.Ref _".to_owned(),
             "the same fetch, read further",
         ),
         // **The pair that prices key field order.** A predicate's seekable prefix is its
@@ -182,55 +185,56 @@ pub fn catalogue(pivots: &Pivots) -> Vec<Workload> {
         // whole predicate per outer row. The ratio between these is the price of the
         // declaration.
         //
-        // This pair is why `src.Decl` is declared `{module, name, line}`: declared
-        // alphabetically, the ordinary "declarations in this module" join was the
-        // *slow* arm here, at 56,274 rows examined per row produced. The slow arm
-        // now is a real query that genuinely cannot narrow: `src.SearchByName` is
-        // keyed for lookup *by name*, so reaching it by `to` is the same trap on a
-        // predicate whose own order is right ([findings §2](../../../bench/FINDINGS.md)).
+        // `code.Decl` is declared `{file, name, line}`, so "this file's declarations"
+        // narrows; `code.KindOf` is declared `{what, decl}`, so reaching it *by
+        // declaration* cannot. The slow arm is a real query on a predicate whose own
+        // order is right for the question it was keyed for
+        // ([findings §2](../../../bench/FINDINGS.md)).
         Workload::new(
             "join on a leading field",
-            "L where F = src.File _; src.Line {file = F, line = L}".to_owned(),
+            "L where D = code.Decl _; code.Span {decl = D, at = {line = L}}".to_owned(),
             "seekable: the reference leads the key",
         ),
         Workload::new(
             "join on a leading reference",
-            "D where M = src.Module _; src.Decl {module = M, name = D}".to_owned(),
-            "seekable since the reorder: the module leads the key",
+            "N where F = code.File _; code.Decl {file = F, name = N}".to_owned(),
+            "seekable: the file leads the key",
         ),
         Workload {
             name: "join on a trailing field",
-            sigla: "N where D = src.Decl _; src.SearchByName {to = D, name = N}".to_owned(),
-            about: "not seekable: `name` leads the key, and this joins on `to`",
+            sigla: "W where D = code.Decl _; code.KindOf {decl = D, what = W}".to_owned(),
+            about: "not seekable: `what` leads the key, and this joins on `decl`",
             stop_at: Some(2_000),
         },
         Workload::new(
             "denial",
             format!(
-                "N where src.Decl {{name = N}}; N != \"{}\"..",
+                "N where code.Decl {{name = N}}; N != \"{}\"..",
                 escape(&pivots.decl)
             ),
             "a residual per row, never a seek",
         ),
         Workload::new(
             "scan refs",
-            "F where src.Ref {file = F}".to_owned(),
-            "seven figures, nested key",
+            "D where code.Ref {from = D}".to_owned(),
+            "the largest predicate, a nested key",
         ),
         Workload::new(
             "wide row",
-            "{f = R.file, l = R.at.line, c = R.at.col} where R = src.Ref _".to_owned(),
-            "three fields off a nested key",
+            "{l = S.at.line, c = S.at.col} where S = code.Span _".to_owned(),
+            "two fields off a nested key",
         ),
         Workload::new(
             "join through two references",
-            "{from = I.from.name, to = I.to.name} where I = src.Import _".to_owned(),
+            "{from = R.from.name, to = R.to.name} where R = code.Ref _".to_owned(),
             "two fetches per row",
         ),
+        // `bytes`, which is a scan over a payload the language will not look inside —
+        // the one access class no other workload here touches.
         Workload::new(
-            "scan lines",
-            "L where src.Line {line = L}".to_owned(),
-            "the largest predicate",
+            "scan bytes",
+            "X.value where X = code.Digest _".to_owned(),
+            "an opaque payload, fetched whole",
         ),
     ]
 }
@@ -302,19 +306,36 @@ pub fn sample(
         }))
     }
 
-    let file = first_string(connection, "F where src.File F", 16_000)?;
-    let decl = first_string(connection, "N where src.Decl {name = N}", 400_000)?;
-    let search = first_string(connection, "N where src.SearchByName {name = N}", 400_000)?;
+    let file = first_string(connection, SAMPLE_FILE, 16_000)?;
+    let decl = first_string(connection, SAMPLE_DECL, 400_000)?;
 
     Ok(match (file, decl) {
+        // A corpus with neither a file nor a declaration is not one to measure, and
+        // pivots invented here would make every seek workload answer zero rows and look
+        // fast. `unsampled` makes that loud instead.
         (None, None) => Pivots::unsampled(),
         (file, decl) => {
             let decl = decl.unwrap_or_else(|| "\u{0}none".to_owned());
-            let search = search.unwrap_or_else(|| decl.clone());
+
+            // **The third pivot is the declaration's name**, as it is in the store-side
+            // twin: the term it used to sample came from a search index the shipped
+            // schema does not have, so there is nothing separate to sample.
+            let search = decl.clone();
+
             Pivots::new(file.unwrap_or_else(|| "\u{0}none".to_owned()), decl, search)
         }
     })
 }
+
+/// The two queries [`sample`] asks over the wire.
+///
+/// Consts rather than literals at the call site so `the_sampler_queries_compile` can
+/// reach them. They named `src.*` for three weeks after the catalogue moved to `code.*`,
+/// because the guard beside them compiles the *catalogue* and builds `Pivots` directly —
+/// so the only query strings in this file it did not cover were these, and a run got as
+/// far as seeding a corpus before it refused.
+const SAMPLE_FILE: &str = "F where code.File F";
+const SAMPLE_DECL: &str = "N where code.Decl {name = N}";
 
 /// One workload by name, for an instrument that draws a mix rather than a ladder.
 ///
@@ -431,6 +452,27 @@ mod tests {
         }
     }
 
+    /// **The sampler's own queries compile too**, which `every_workload_compiles` does
+    /// not cover: it builds `Pivots` directly, so nothing above reached the two strings
+    /// `sample` sends. They are the first thing an instrument runs and the last thing
+    /// anything checked.
+    #[test]
+    fn the_sampler_queries_compile() {
+        let schema = crate::sample_schema::schema();
+
+        for sigla in [super::SAMPLE_FILE, super::SAMPLE_DECL] {
+            let mut compilation = fjord_engine::compile::Compilation::new(sigla, &schema);
+            let plan = compilation.plan();
+
+            assert!(
+                !compilation.diagnostics().has_errors(),
+                "the sampler asks `{sigla}`, which does not compile:\n{}",
+                compilation.render_to_string()
+            );
+            assert!(plan.is_some(), "the sampler's `{sigla}` has no plan");
+        }
+    }
+
     /// A sampled path's directory is a **prefix of it**, so a prefix seek built from one
     /// covers keys that exist.
     #[test]
@@ -468,8 +510,7 @@ mod tests {
     fn the_corpus_costs_exactly_what_it_says_it_does() {
         let corpus = Corpus {
             files: 4,
-            modules_per_file: 2,
-            decls_per_module: 3,
+            decls_per_file: 6,
             refs_per_decl: 2,
         };
 
@@ -524,12 +565,12 @@ mod tests {
 /// ([findings §12](../../../bench/FINDINGS.md)) — so a corpus that does not reproduce that
 /// ratio measures a write path nobody has.
 ///
-/// The four fanouts below are what set it. They are the source layer of the built-in
+/// The three fanouts below are what set it. They are the source layer of the fixture
 /// schema, nested exactly as [`fjord_cli::sample_schema`](crate::sample_schema) declares
-/// it: a reference names a declaration, which names a module, which names a file. So one
-/// `src.Ref` carries a four-deep subgraph, and the thousandth reference to a declaration
-/// re-sends the whole chain — which is the redundancy, and is *not* a flaw in the
-/// producer. It is what a syntax walk has in hand.
+/// it: a reference names two declarations, and a declaration names a file. So one
+/// `code.Ref` carries a three-deep subgraph and costs five interns, and the thousandth
+/// reference to a declaration re-sends the whole chain — which is the redundancy, and is
+/// *not* a flaw in the producer. It is what a syntax walk has in hand.
 ///
 /// # Why the counts are predicted rather than probed
 ///
@@ -542,8 +583,7 @@ mod tests {
 #[derive(Debug, Clone, Copy)]
 pub struct Corpus {
     pub files: u64,
-    pub modules_per_file: u64,
-    pub decls_per_module: u64,
+    pub decls_per_file: u64,
     pub refs_per_decl: u64,
 }
 
@@ -562,17 +602,21 @@ pub struct Emission {
 }
 
 impl Corpus {
-    /// The default shape: 24,300 facts at 4.6 interns each.
+    /// The default shape: 24,100 facts at ~4.5 interns each.
     ///
     /// Chosen so the interns-per-fact ratio brackets the real index's 3.8 rather than
     /// matching it exactly — a corpus that reproduced the number by construction could
     /// not be used to ask what moves it.
+    ///
+    /// **Three levels rather than four.** The fixture has no `Module`: a declaration names
+    /// its file directly. What the depth was there for survives — a reference still costs
+    /// five interns, because it nests two declarations and each nests a file — so the
+    /// question the ratio exists to ask is unchanged.
     #[must_use]
     pub fn standard() -> Corpus {
         Corpus {
             files: 100,
-            modules_per_file: 2,
-            decls_per_module: 20,
+            decls_per_file: 40,
             refs_per_decl: 5,
         }
     }
@@ -580,24 +624,20 @@ impl Corpus {
     /// Distinct facts, which is what a first ingest **creates**.
     #[must_use]
     pub fn facts(&self) -> u64 {
-        self.files + self.modules() + self.decls() + self.refs()
+        self.files + self.decls() + self.refs()
     }
 
     /// Resolve-or-create calls a first ingest makes, repeats included.
     ///
-    /// A file costs 1; a module 2 (itself and its file); a declaration 3; a reference 5
-    /// — itself, the declaration chain of three, and the file it also names directly.
+    /// A file costs 1; a declaration 2 (itself and its file); a reference 5 — itself and
+    /// two declarations, each of which names a file.
     #[must_use]
     pub fn interns(&self) -> u64 {
-        self.files + self.modules() * 2 + self.decls() * 3 + self.refs() * 5
-    }
-
-    fn modules(&self) -> u64 {
-        self.files * self.modules_per_file
+        self.files + self.decls() * 2 + self.refs() * 5
     }
 
     fn decls(&self) -> u64 {
-        self.modules() * self.decls_per_module
+        self.files * self.decls_per_file
     }
 
     fn refs(&self) -> u64 {
@@ -608,11 +648,10 @@ impl Corpus {
     #[must_use]
     pub fn describe(&self) -> String {
         format!(
-            "{} files × {} modules × {} decls × {} refs\n         \
+            "{} files × {} decls × {} refs\n         \
              {} facts, {} interns ({:.2} per fact)",
             self.files,
-            self.modules_per_file,
-            self.decls_per_module,
+            self.decls_per_file,
             self.refs_per_decl,
             self.facts(),
             self.interns(),
@@ -638,37 +677,23 @@ impl Corpus {
                 .map(|(id, _)| id)
                 .unwrap_or_else(|| panic!("the schema declares no `{name}`"))
         };
-        let (file_id, module_id, decl_id, ref_id) = (
-            id("src.File"),
-            id("src.Module"),
-            id("src.Decl"),
-            id("src.Ref"),
-        );
+        let (file_id, decl_id, ref_id) = (id("code.File"), id("code.Decl"), id("code.Ref"));
 
-        // `src.File : string`
+        // `code.File : string`
         let file = |f: u64| WireFact {
             predicate: file_id,
             key: WireValue::Str(format!("src/dir{}/file{f}.cs", f % 16)),
             value: None,
         };
-        // `src.Module : { file : File, name : string }`
-        let module = |f: u64, m: u64| WireFact {
-            predicate: module_id,
-            key: WireValue::Record(
-                vec![
-                    WireValue::Ref(WireRef::Nested(Box::new(file(f)))),
-                    WireValue::Str(format!("Ns{m}")),
-                ]
-                .into(),
-            ),
-            value: None,
-        };
-        // `src.Decl : { module : Module, name : string, line : int } -> string`
-        let decl = |f: u64, m: u64, d: u64| WireFact {
+        // `code.Decl : { file : File, name : string, line : int } -> string`
+        //
+        // The file **leads** the key, which is the index design: "this file's
+        // declarations" is a prefix seek and `line` trailing makes a window a range.
+        let decl = |f: u64, d: u64| WireFact {
             predicate: decl_id,
             key: WireValue::Record(
                 vec![
-                    WireValue::Ref(WireRef::Nested(Box::new(module(f, m)))),
+                    WireValue::Ref(WireRef::Nested(Box::new(file(f)))),
                     WireValue::Str(format!("Member{d}")),
                     WireValue::Int(i64::try_from(d * 7 + 1).unwrap_or(i64::MAX)),
                 ]
@@ -676,24 +701,18 @@ impl Corpus {
             ),
             value: Some(WireValue::Str("method".to_owned())),
         };
-        // `src.Ref : { to : Decl, file : File, at : { line, col, length } }` — the target
-        // leads, which is findings §2's key order and the reason find-references seeks.
-        // `at` is a **record**, not an int: a span has the three fields the schema says
-        // it has, and getting that wrong here is what the test below caught.
-        let reference = |f: u64, m: u64, d: u64, r: u64| WireFact {
+        // `code.Ref : { from : Decl, to : Decl }` — an edge between two declarations,
+        // which is what makes it cost five interns: itself, two declarations, and the
+        // file each of them names.
+        let reference = |f: u64, d: u64, r: u64| WireFact {
             predicate: ref_id,
             key: WireValue::Record(
                 vec![
-                    WireValue::Ref(WireRef::Nested(Box::new(decl(f, m, d)))),
-                    WireValue::Ref(WireRef::Nested(Box::new(file((f + r) % self.files)))),
-                    WireValue::Record(
-                        vec![
-                            WireValue::Int(i64::try_from(r * 13 + 2).unwrap_or(i64::MAX)),
-                            WireValue::Int(i64::try_from(r + 4).unwrap_or(i64::MAX)),
-                            WireValue::Int(8),
-                        ]
-                        .into(),
-                    ),
+                    WireValue::Ref(WireRef::Nested(Box::new(decl(f, d)))),
+                    WireValue::Ref(WireRef::Nested(Box::new(decl(
+                        (f + r) % self.files,
+                        (d + r) % self.decls_per_file,
+                    )))),
                 ]
                 .into(),
             ),
@@ -707,52 +726,28 @@ impl Corpus {
         vec![
             Emission {
                 predicate: file_id,
-                name: "src.File",
+                name: "code.File",
                 facts: each(self.files, Box::new(&file)),
                 interns: self.files,
             },
             Emission {
-                predicate: module_id,
-                name: "src.Module",
-                facts: each(
-                    self.modules(),
-                    Box::new(|n| module(n / self.modules_per_file, n % self.modules_per_file)),
-                ),
-                interns: self.modules() * 2,
-            },
-            Emission {
                 predicate: decl_id,
-                name: "src.Decl",
+                name: "code.Decl",
                 facts: each(
                     self.decls(),
-                    Box::new(|n| {
-                        let d = n % self.decls_per_module;
-                        let module = n / self.decls_per_module;
-                        decl(
-                            module / self.modules_per_file,
-                            module % self.modules_per_file,
-                            d,
-                        )
-                    }),
+                    Box::new(|n| decl(n / self.decls_per_file, n % self.decls_per_file)),
                 ),
-                interns: self.decls() * 3,
+                interns: self.decls() * 2,
             },
             Emission {
                 predicate: ref_id,
-                name: "src.Ref",
+                name: "code.Ref",
                 facts: each(
                     self.refs(),
                     Box::new(|n| {
                         let r = n % self.refs_per_decl;
                         let decl = n / self.refs_per_decl;
-                        let d = decl % self.decls_per_module;
-                        let module = decl / self.decls_per_module;
-                        reference(
-                            module / self.modules_per_file,
-                            module % self.modules_per_file,
-                            d,
-                            r,
-                        )
+                        reference(decl / self.decls_per_file, decl % self.decls_per_file, r)
                     }),
                 ),
                 interns: self.refs() * 5,

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    **A consumer of the published write seam, and nothing else.** This project references
+    `Boxops.Fjord.Client` and no indexer: that is the point of it. Run 8a published the
+    seam, and a converter that had to reach into the .NET indexer to use it would mean the
+    seam had not been published at all.
+
+    No protobuf package either. What this reads is four messages and eleven fields of the
+    SCIP schema, and the wire format is varints and length-delimited bytes — a dependency
+    for that would be a build-time code generator and a package feed in exchange for two
+    hundred lines that can be read.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>scip2fjord</AssemblyName>
+    <RootNamespace>Boxops.Fjord.Scip</RootNamespace>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Boxops.Fjord.Client\Boxops.Fjord.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Boxops.Fjord.Tests" />
+  </ItemGroup>
+
+</Project>

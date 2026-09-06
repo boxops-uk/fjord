@@ -43,7 +43,7 @@ union, which would defeat the point of dimension/value and make every new axis a
 | `repo`, `revision` | cross-database identity; a SCIP symbol carries a package coordinate, not an origin (C6). `src.FileOrigin` overrides per file where an index spans several |
 | `index-root` | what every `src.File` path is relative to. The C# index's own provenance had to be *inferred* once, from which checkout was the only one in `$HOME`; this closes that |
 | `position-encoding` | `utf8` or `utf16` — the unit of every `src.ByteSpan` in this database |
-| `style-vocabulary` | which revision of the `src.FileLineStyles` kind table was written (`fjord-1`) |
+| `style-encoding` | how to read `src.FileLineStyles` — the byte format and its token legend together, because they version as a unit (`roslyn-lsp-1`). An unrecognised value renders those lines plain ([D13](OPEN-QUESTIONS.md); this row said `style-vocabulary` and named a fjord kind table, and there is no longer one) |
 | `symbol-scheme` | the scheme token(s) `src.Symbol` strings use here — what a fan-out checks before trusting a string match |
 | `language` | multi-valued; what this database holds facts about |
 | `producer` | one fact per producer and version, so a partial index says which layers exist |
@@ -68,10 +68,11 @@ three conventions:
   *"A .NET string is UTF-16"*.
 - The `csharp` schema's `ByteSpan.start` is documented as a byte offset and **actually holds UTF-16
   code units**, for the same reason.
-- `fjord_viewer::render::source` (`render.rs:113-164`) collects `text.chars()` and indexes by
-  **Unicode scalar values**, which agrees with neither — one unit per codepoint where the producer
-  counted two for anything above the BMP. Its own doc comment says *"1-based columns counted in
-  characters, which is what the indexers emit"*, and that is the sentence that is wrong.
+- `fjord_viewer::render::source` collected `text.chars()` and indexed by **Unicode scalar
+  values**, which agrees with neither — one unit per codepoint where the producer counted two for
+  anything above the BMP. Its own doc comment said *"1-based columns counted in characters, which
+  is what the indexers emit"*, and that was the sentence that was wrong. The crate is retired
+  ([D11](OPEN-QUESTIONS.md)); the mistake is recorded because its replacement can make it again.
 
 SCIP hit this and answered it with `Index.metadata.text_document_encoding` — **one declaration per
 index, not per span**. So:

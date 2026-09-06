@@ -44,15 +44,11 @@ use fjord_schema::schema::{PredicateId, Schema};
 /// Ids, **looked up by name** rather than written down.
 ///
 /// A position comes from sorting the schema's names, so a literal here would be a second
-/// statement of something `schemas/code.sigla` already decides — and wrong the first time a
+/// statement of something `schemas/demo.sigla` already decides — and wrong the first time a
 /// predicate sorting earlier is added.
 fn p(name: &str) -> PredicateId {
     sample_schema::id(name)
 }
-
-/// Lines written per file, for the one predicate that is large without being about a
-/// symbol.
-const LINES_PER_FILE: usize = 8;
 
 struct Options {
     socket: PathBuf,
@@ -181,36 +177,24 @@ fn parse() -> Result<Options, String> {
 
 fn file(index: usize) -> WireFact {
     WireFact {
-        predicate: p("src.File"),
+        predicate: p("code.File"),
         key: WireValue::Str(format!("src/f{index:07}.py")),
         value: None,
     }
 }
 
-fn module(index: usize) -> WireFact {
-    WireFact {
-        predicate: p("src.Module"),
-        key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(file(index)))),
-            WireValue::Str(format!("m{index:07}")),
-        ])),
-        value: None,
-    }
-}
-
-/// Fields in the schema's declared order — module, name, line — and the kind on the
+/// Fields in the schema's declared order — file, name, line — and the signature on the
 /// value side. A `WireFact`'s key is positional, so this list *is* the key order, and
 /// getting it wrong writes a fact nobody can find rather than an error.
 ///
-/// Every declaration nests its module, which nests its file, so the server is doing
-/// two levels of **interning** per fact: look the key up, write it if absent. That is
-/// the write path a real indexer produces, and it is the reason ingest throughput here
-/// is not simply "bytes divided by time".
+/// Every declaration nests its file, so the server is **interning** per fact: look the
+/// key up, write it if absent. That is the write path a real indexer produces, and it is
+/// the reason ingest throughput here is not simply "bytes divided by time".
 fn decl(file_index: usize, n: usize) -> WireFact {
     WireFact {
-        predicate: p("src.Decl"),
+        predicate: p("code.Decl"),
         key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(module(file_index)))),
+            WireValue::Ref(WireRef::Nested(Box::new(file(file_index)))),
             WireValue::Str(format!("symbol_{file_index:07}_{n:03}")),
             WireValue::Int((n * 17 + 1) as i64),
         ])),
@@ -220,61 +204,79 @@ fn decl(file_index: usize, n: usize) -> WireFact {
     }
 }
 
-/// The same declaration keyed by its short name — what a person searches for.
-fn search(file_index: usize, n: usize) -> WireFact {
+/// The same declaration keyed by its **kind**, which is a union leading the key — so
+/// "every class" is a seek rather than a filter. It is what `src.SearchByName` was here
+/// for: a second ordering of data already written, so a read can narrow on a leading
+/// field instead of scanning.
+fn kind_of(file_index: usize, n: usize) -> WireFact {
+    let what = if n % 3 == 0 {
+        // `data : string = 5`
+        WireValue::Union {
+            disc: 5,
+            value: Box::new(WireValue::Str("class".to_owned())),
+        }
+    } else {
+        // `func : int = 2` — the arity, which is what makes the payload differ per
+        // alternative rather than being decoration.
+        WireValue::Union {
+            disc: 2,
+            value: Box::new(WireValue::Int((n % 4) as i64)),
+        }
+    };
+
     WireFact {
-        predicate: p("src.SearchByName"),
+        predicate: p("code.KindOf"),
         key: WireValue::Record(Box::from([
-            WireValue::Str(format!("symbol_{file_index:07}_{n:03}")),
+            what,
             WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
         ])),
         value: None,
     }
 }
 
-/// A reference **from the next file** to this declaration, so a reference's file is not
-/// its target's — which is the whole reason `src.Ref` carries one.
+/// A reference **from a declaration in the next file**, so a reference's two ends are
+/// not in the same file — which is what makes the join across it worth measuring.
 fn reference(file_index: usize, n: usize, files: usize) -> WireFact {
     WireFact {
-        predicate: p("src.Ref"),
+        predicate: p("code.Ref"),
         key: WireValue::Record(Box::from([
             WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
-            WireValue::Ref(WireRef::Nested(Box::new(file((file_index + 1) % files)))),
-            // `{line, col, length}` — three fields, because `at.length` is in the *key*
-            // (it is what a viewer draws a link over, and a key field is already in the
-            // register the scan holds). A two-field span is what this file carried until
-            // the schema gained one, and the arity check refused every block.
+            WireValue::Ref(WireRef::Nested(Box::new(decl((file_index + 1) % files, n)))),
+        ])),
+        value: None,
+    }
+}
+
+/// declaration → declaration, to the next file round, so the inheritance graph is a
+/// cycle rather than a star: a star would make every join fan out from one row.
+fn extends(file_index: usize, files: usize) -> WireFact {
+    WireFact {
+        predicate: p("code.Extends"),
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, 0)))),
+            WireValue::Ref(WireRef::Nested(Box::new(decl((file_index + 1) % files, 0)))),
+        ])),
+        value: None,
+    }
+}
+
+/// A span per declaration — a nested record spliced into a key, and the widest read this
+/// corpus offers.
+///
+/// **The fixture has no per-line predicate**, so this is one fact per declaration rather
+/// than per line: what `src.FileLine` measured — the largest predicate in the index, with
+/// a four-field value — has no equivalent here, and re-establishing it is Run 7's.
+fn span(file_index: usize, n: usize) -> WireFact {
+    WireFact {
+        predicate: p("code.Span"),
+        key: WireValue::Record(Box::from([
+            WireValue::Ref(WireRef::Nested(Box::new(decl(file_index, n)))),
             WireValue::Record(Box::from([
                 WireValue::Int((n * 13 + 2) as i64),
                 WireValue::Int(4),
-                WireValue::Int(12),
             ])),
         ])),
         value: None,
-    }
-}
-
-/// module → module, to the next one round, so the import graph is a cycle rather than a
-/// star: a star would make every join fan out from one row.
-fn import(file_index: usize, files: usize) -> WireFact {
-    WireFact {
-        predicate: p("src.Import"),
-        key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(module(file_index)))),
-            WireValue::Ref(WireRef::Nested(Box::new(module((file_index + 1) % files)))),
-        ])),
-        value: None,
-    }
-}
-
-fn line(file_index: usize, n: usize) -> WireFact {
-    WireFact {
-        predicate: p("src.Line"),
-        key: WireValue::Record(Box::from([
-            WireValue::Ref(WireRef::Nested(Box::new(file(file_index)))),
-            WireValue::Int(n as i64),
-        ])),
-        value: Some(WireValue::Str(format!("    line {n} of f{file_index:07}"))),
     }
 }
 
@@ -318,18 +320,18 @@ fn seed(options: &Options, schema: &Arc<Schema>) {
 
     for (predicate, facts) in [
         (
-            p("src.Decl"),
+            p("code.Decl"),
             (0..options.files)
                 .flat_map(|index| (0..options.decls_per_file).map(move |n| decl(index, n)))
                 .collect::<Vec<_>>(),
         ),
         (
-            p("src.SearchByName"),
+            p("code.KindOf"),
             (0..options.files)
-                .flat_map(|index| (0..options.decls_per_file).map(move |n| search(index, n)))
+                .flat_map(|index| (0..options.decls_per_file).map(move |n| kind_of(index, n)))
                 .collect(),
         ),
-        (p("src.Ref"), {
+        (p("code.Ref"), {
             let files = options.files;
             (0..options.files)
                 .flat_map(|index| {
@@ -337,16 +339,16 @@ fn seed(options: &Options, schema: &Arc<Schema>) {
                 })
                 .collect()
         }),
-        (p("src.Import"), {
+        (p("code.Extends"), {
             let files = options.files;
             (0..options.files)
-                .map(|index| import(index, files))
+                .map(|index| extends(index, files))
                 .collect()
         }),
         (
-            p("src.Line"),
+            p("code.Span"),
             (0..options.files)
-                .flat_map(|index| (0..LINES_PER_FILE).map(move |n| line(index, n)))
+                .flat_map(|index| (0..options.decls_per_file).map(move |n| span(index, n)))
                 .collect(),
         ),
     ] {

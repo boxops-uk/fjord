@@ -36,34 +36,136 @@ internal static class Program
             return ReferenceEquals(error, Options.Usage) ? 0 : 2;
         }
 
+        // One root for the whole index, because `src.File` is a path relative to it and
+        // `config.Setting {dimension = "index-root"}` records the one it was. With a single
+        // input it is that input's directory; with several, `Options` has already refused
+        // the run rather than pick one.
         var root = options.Root
-            ?? (Directory.Exists(options.Source) ? options.Source : Path.GetDirectoryName(options.Source)!);
+            ?? Path.GetDirectoryName(Path.GetFullPath(options.Entries.First()))!;
 
-        Console.WriteLine($"indexing {options.Source}");
-        Console.WriteLine($"  paths relative to {root}");
-        Console.WriteLine($"  schema fingerprint {CodeIndex.Schema.Fingerprint:x16}");
+        // **`--list-frameworks` answers on stdout and says everything else on stderr**, so
+        // a caller can read the list with `$(...)` rather than by filtering a log.
+        var say = options.ListFrameworks ? Console.Error : Console.Out;
+
+        say.WriteLine($"indexing {string.Join(", ", options.Entries)}");
+        say.WriteLine($"  paths relative to {root}");
+        say.WriteLine($"  schema fingerprint {DotnetIndex.Schema.Fingerprint:x16}");
 
         var loading = Stopwatch.StartNew();
         LoadedSolution solution;
 
         try
         {
-            solution = Loader.Load(options, root, Console.Out);
+            solution = Loader.Load(options, root, say);
         }
         catch (Exception failure) when (failure is IOException or InvalidOperationException or ArgumentException)
         {
-            Console.Error.WriteLine($"could not load {options.Source}: {failure.Message}");
+            Console.Error.WriteLine(
+                $"could not load {string.Join(", ", options.Entries)}: {failure.Message}");
             return 1;
         }
 
         loading.Stop();
-        Console.WriteLine($"  {solution.Projects.Count} project(s) to walk, "
-            + $"loaded in {loading.Elapsed.TotalSeconds:F1}s");
+
+        var flavoured = solution.Targets.Count > 1;
+
+        // Asked and answered: the caller that has to create these databases cannot be told
+        // by a run that has already tried to write to them.
+        if (options.ListFrameworks)
+        {
+            foreach (var target in solution.Targets)
+            {
+                Console.WriteLine(target.Framework);
+            }
+
+            return 0;
+        }
+
+        say.WriteLine($"  {solution.Targets.Count} target framework(s) — "
+            + $"{string.Join(", ", solution.Targets.Select(target => target.Framework))}"
+            + $", loaded in {loading.Elapsed.TotalSeconds:F1}s"
+            // Said out loud because it is the difference between a machine under load and
+            // a repository that does not build: a retried build is one that threw, and a
+            // run with many of them was fighting for a machine rather than reading code.
+            + (solution.Retried > 0 ? $", {solution.Retried} build(s) retried" : string.Empty));
+
+        // **`--strict` is for CI, where "the index is complete" should be a check rather
+        // than a line somebody reads.** A developer indexing a repository with one
+        // unbuildable project wants the other four hundred, so this is off by default and
+        // the run says what it left out either way.
+        if (options.Strict && solution.Skipped.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"--strict: {solution.Skipped.Count} project(s) were left out of this index — "
+                + string.Join(", ", solution.Skipped));
+            return 1;
+        }
+
         Console.WriteLine();
 
-        // Nothing to connect to on the Glean path: the facts go into files, and the
-        // database at the far end has not been written to yet.
-        List<FjordConnection> connections = options.GleanOut is null ? Connect(options) : [];
+        foreach (var target in solution.Targets)
+        {
+            // **One database per target, and the flavour is only added when there is one
+            // to add.** A checkout with a single target framework writes the database it
+            // always wrote; a checkout with two writes `code#net10.0` and `code#net8.0`,
+            // because a project compiled twice is two programs and there is no key in the
+            // schema that could hold both.
+            //
+            // **`#` and not `@`**: the server's name check refuses `@`, which separates a
+            // name from an instance, and would resolve `code@net9.0` as a lookup by id.
+            var each = flavoured
+                ? options with
+                {
+                    Address = FjordAddress.Parse($"{options.Address}#{target.Framework}"),
+
+                    // **The emitted file is flavoured too, or the second target silently
+                    // replaces the first's.** `--emit` opens its path for writing, so a
+                    // fan-out over two frameworks would leave one file holding whichever
+                    // ran last — a golden that depends on the order of a loop.
+                    Emit = options.Emit is { } path
+                        ? Path.Combine(
+                            Path.GetDirectoryName(path) ?? string.Empty,
+                            $"{Path.GetFileNameWithoutExtension(path)}.{target.Framework}"
+                                + Path.GetExtension(path))
+                        : null,
+                }
+                : options;
+
+            if (flavoured)
+            {
+                Console.WriteLine($"== {target.Framework} → {each.Address}");
+            }
+
+            int code;
+
+            try
+            {
+                code = Walk(each, root, target);
+            }
+            catch (FjordServerException refused)
+            {
+                // **A refusal is an answer, not a crash.** The server says no for reasons a
+                // person can act on — the database is sealed, the schema does not match,
+                // the name is not there — and every one of them arrived as an unhandled
+                // exception with a stack trace through `Connect`, which buries the sentence
+                // that matters under twenty frames of this program's own plumbing.
+                Console.Error.WriteLine($"could not write to {each.Address}: {refused.Message}");
+                return 1;
+            }
+
+            if (code != 0)
+            {
+                return code;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>One target framework: connect, write its facts, and say what it wrote.</summary>
+    private static int Walk(Options options, string root, LoadedTarget target)
+    {
+        List<FjordConnection> connections = Connect(options);
         using var closing = new Closing<FjordConnection>(connections);
         var connection = connections.Count > 0 ? connections[0] : null;
 
@@ -74,28 +176,43 @@ internal static class Program
             Console.WriteLine();
         }
 
-        if (Targets(options, connections) is not { } targets)
-        {
-            return 1;
-        }
-
+        var targets = Targets(connections);
         using var closingTargets = new Closing<IBlockTarget>(targets);
 
         var walking = Stopwatch.StartNew();
         int files;
         Indexer indexer;
 
-        using (var sink = new FactSink(options, targets))
+        using (var sink = new FactSink(
+            DotnetIndex.Schema, targets, options.Batch, options.Emit))
         {
-            indexer = new Indexer(options, sink, root, solution.Build);
+            // **`--emit` walks on one thread as well as writing on one.** The flag exists
+            // to produce a file whose bytes can be compared — a golden — and one writer is
+            // only half of what that takes: the block *order* is the order the walk
+            // reached things, so eight walker threads produce a different file every run
+            // with the same facts in it. The design-time builds have already happened by
+            // here, so `--jobs` keeps its meaning for the half of the run that is slow.
+            indexer = new Indexer(
+                options.Emit is null ? options : options with { Jobs = 1 },
+                sink,
+                root,
+                target.Build);
             var reported = TimeSpan.Zero;
+
+            // What this database is, before what is in it: the axes it was resolved
+            // against are the first thing a consumer has to agree with, and a database
+            // that does not say them can only be guessed at.
+            foreach (var setting in Provenance.Of(options, root, target.Framework, Version))
+            {
+                sink.Add(DotnetIndex.Setting, setting);
+            }
 
             // The build layer first, and whole: this is what the repository *is*, not
             // what the walk reached, so a run stopped early by `--max-files` still says
             // which projects exist and what they depend on.
-            solution.Build.Emit(sink);
+            target.Build.Emit(sink.Add);
 
-            foreach (var project in solution.Projects)
+            foreach (var project in target.Projects)
             {
                 if (indexer.Exhausted)
                 {
@@ -111,7 +228,7 @@ internal static class Program
                     continue;
                 }
 
-                indexer.Index(compilation, _ =>
+                indexer.Index(compilation, project.Roslyn, _ =>
                 {
                     // Every couple of seconds, not every file: a hundred thousand
                     // progress lines is not progress.
@@ -136,7 +253,7 @@ internal static class Program
             walking.Stop();
             files = indexer.Files;
 
-            Report(options, sink, indexer, walking.Elapsed);
+            Report(options, sink, indexer, target.Build, walking.Elapsed);
         }
 
         if (connection is not null && options.Smoke && files > 0)
@@ -144,8 +261,34 @@ internal static class Program
             Smoke(connection, indexer);
         }
 
+        // **The same reading a project that would not build gets** — the load layer checks
+        // its own skips before the walk, and this is the skip only the walk can see, so it
+        // is checked here rather than beside that one. A run that left a project's source
+        // out is not a complete index, and `--strict` is what makes that a check rather
+        // than a line somebody reads.
+        if (options.Strict && indexer.DuplicateAssemblies.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"--strict: {indexer.DuplicateAssemblies.Count} project(s) were left out of "
+                + "this index because another project produces the same assembly — "
+                + string.Join(", ", indexer.DuplicateAssemblies));
+            return 1;
+        }
+
         return 0;
     }
+
+    /// <summary>This indexer's version, as the assembly records it.</summary>
+    /// <remarks>
+    /// Read rather than written down, so <c>config.Setting {dimension = "producer"}</c>
+    /// cannot drift from the package a consumer would go and fetch.
+    /// </remarks>
+    private static string Version =>
+        typeof(Program).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion.Split('+')[0]
+        ?? "unknown";
 
     /// <summary>Closes every one of them when the run ends, however it ends.</summary>
     /// <remarks>
@@ -165,47 +308,14 @@ internal static class Program
         }
     }
 
-    /// <summary>
-    /// What the writer threads write to: one Fjord connection each, or one Glean batch
-    /// writer each. Null means the run cannot start, and why has been printed.
-    /// </summary>
+    /// <summary>One write target per connection.</summary>
     /// <remarks>
-    /// <b>An empty output directory is a requirement, not a courtesy.</b> Glean's loader
-    /// takes every file it finds, so batches left over from an earlier run would be loaded
-    /// beside this one's — a corpus that is neither run, silently. Since each block writes
-    /// its own file this is the only place the question can be asked.
+    /// A list rather than one, because a producer with several writers holds a connection
+    /// each — the client issues streams sequentially over one socket, so concurrency is
+    /// sockets.
     /// </remarks>
-    private static List<IBlockTarget>? Targets(
-        Options options,
-        IReadOnlyList<FjordConnection> connections)
-    {
-        if (options.GleanOut is null)
-        {
-            return [.. connections.Select(IBlockTarget (connection) => new FjordTarget(connection))];
-        }
-
-        Directory.CreateDirectory(options.GleanOut);
-
-        if (Directory.EnumerateFiles(options.GleanOut, "*.json").Any())
-        {
-            Console.Error.WriteLine(
-                $"{options.GleanOut} already holds batch files; glean write would load them "
-                + "with this run's, so empty it first");
-            return null;
-        }
-
-        Console.WriteLine($"writing Glean JSON batches to {options.GleanOut}, "
-            + $"{options.Writers} writer(s)");
-        Console.WriteLine($"  schema {GleanFacts.Namespace}.{GleanFacts.Version}, "
-            + "one file per block, every reference nested");
-        Console.WriteLine();
-
-        return
-        [
-            .. Enumerable.Range(0, options.Writers).Select(
-                IBlockTarget (writer) => new GleanTarget(CodeIndex.Schema, options.GleanOut, writer)),
-        ];
-    }
+    private static List<IBlockTarget> Targets(IReadOnlyList<FjordConnection> connections) =>
+        [.. connections.Select(IBlockTarget (connection) => new FjordTarget(connection))];
 
     /// <summary>One connection per writer thread.</summary>
     /// <remarks>
@@ -222,6 +332,61 @@ internal static class Program
     /// for byte gets one writer, whatever <c>--writers</c> says.
     /// </para>
     /// </remarks>
+    /// <summary>Create the database this run writes to, if <c>--schema</c> was given and it
+    /// is not there.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Before the connection, because the connection is what fails.</b> A session binds
+    /// to a database at the handshake, so a missing one is <c>UnknownDatabase</c> at the
+    /// first frame — and for a checkout compiling to several frameworks that arrived after
+    /// the whole design-time load, since the names are not known until then. A
+    /// 213-project repository spent 482 seconds reaching that error.
+    /// </para>
+    /// <para>
+    /// <b>Asking is a connection of its own, on no database.</b> There is no "does this
+    /// exist" frame; the way to find out is to bind to it, so this tries and reads the
+    /// refusal. A create that loses a race with another writer is refused the same way and
+    /// is equally fine — both mean the database is there now, which is all this needs.
+    /// </para>
+    /// </remarks>
+    private static void Ensure(Options options)
+    {
+        if (options.Schema is not { } schema)
+        {
+            return;
+        }
+
+        try
+        {
+            using var probe = FjordConnection.Connect(
+                options.Address, DotnetIndex.Schema, SessionMode.ReadOnly);
+            return;
+        }
+        catch (FjordServerException)
+        {
+            // Not there, or not answerable — either way the create below is what decides.
+        }
+
+        var source = File.ReadAllText(schema);
+
+        // A session that names no database, because the one being created cannot be bound
+        // to yet: `CONTROL` carries the name in the frame for exactly this.
+        using var control = FjordConnection.ConnectUnbound(
+            options.Address, DotnetIndex.Schema, SessionMode.ReadWrite);
+
+        try
+        {
+            var instance = control.CreateDatabase(options.Address.Database, source);
+            Console.WriteLine($"  created {options.Address.Database} ({instance})");
+        }
+        catch (FjordServerException refused)
+        {
+            // Lost a race, or cannot be created at all. The connection below reports the
+            // second case properly; the first is not a failure.
+            Console.WriteLine($"  {options.Address.Database}: {refused.ServerMessage.Split('\n')[0]}");
+        }
+    }
+
     private static List<FjordConnection> Connect(Options options)
     {
         if (options.DryRun)
@@ -232,10 +397,13 @@ internal static class Program
         }
 
         var writers = options.Emit is null ? options.Writers : 1;
-        if (options.Emit is not null && options.Writers > 1)
+        if (options.Emit is not null && (options.Writers > 1 || options.Jobs > 1))
         {
-            Console.WriteLine("  --emit: one writer, so the file is a deterministic run of blocks");
+            Console.WriteLine(
+                "  --emit: one writer and one walker, so the file is a deterministic run of blocks");
         }
+
+        Ensure(options);
 
         Console.WriteLine($"connecting to {options.Address}, {writers} writer(s)");
 
@@ -247,7 +415,7 @@ internal static class Program
         {
             connections.Add(FjordConnection.Connect(
                 options.Address,
-                CodeIndex.Schema,
+                DotnetIndex.Schema,
                 SessionMode.ReadWrite,
                 assertSchema: true));
         }
@@ -255,36 +423,30 @@ internal static class Program
         return connections;
     }
 
-    private static void Report(Options options, FactSink sink, Indexer indexer, TimeSpan elapsed)
+    private static void Report(
+        Options options,
+        FactSink sink,
+        Indexer indexer,
+        ProjectIndex projects,
+        TimeSpan elapsed)
     {
         Console.WriteLine();
         Console.WriteLine($"indexed {Count(indexer.Files)} file(s) in {elapsed.TotalSeconds:F1}s");
 
-        foreach (var predicate in CodeIndex.Predicates)
+        foreach (var predicate in DotnetIndex.Predicates)
         {
-            Console.WriteLine($"  {CodeIndex.NameOf(predicate),-20}{Count(sink.Facts[predicate]),14}");
+            Console.WriteLine($"  {DotnetIndex.NameOf(predicate),-32}{Count(sink.Facts[predicate]),14}");
         }
 
         Console.WriteLine($"  {"total",-20}{Count(sink.Total),14} facts in {Count(sink.Blocks)} blocks");
 
         if (sink.Bytes > 0)
         {
-            // `json` on the Glean path and `encoded` on ours, because they are not the
-            // same measurement: one is a batch file including every nested target spelled
-            // out again, the other is the wire encoding of the block.
-            var what = options.GleanOut is null ? "encoded" : "json";
-
-            Console.WriteLine($"  {what,-20}{Megabytes(sink.Bytes),14} MB"
+            Console.WriteLine($"  {"encoded",-20}{Megabytes(sink.Bytes),14} MB"
                 + $"  ({(double)sink.Bytes / Math.Max(sink.Total, 1):F0} bytes/fact)");
         }
 
-        if (options.GleanOut is not null)
-        {
-            Console.WriteLine($"  {"batches",-20}{Count(sink.Blocks),14} file(s) in {options.GleanOut}");
-            Console.WriteLine($"  {"",-20}{"",14}  not interned yet: load them with glean write");
-        }
-
-        if (!options.DryRun && options.GleanOut is null)
+        if (!options.DryRun)
         {
             // Created counts every fact written, nested targets included; deduped those
             // already there. A million references naming ten thousand declarations is
@@ -303,9 +465,10 @@ internal static class Program
         }
 
         {
-            Console.WriteLine($"  {"gate wait",-20}{indexer.GateWait.TotalSeconds,14:F1}s"
-                + $"  (walkers blocked on the gate)");
-            Console.WriteLine($"  {"gate held",-20}{indexer.GateHeld.TotalSeconds,14:F1}s");
+            // The successor to `gate wait`/`gate held`. The walk no longer has a gate; what
+            // it has is one lock per predicate, and this is what they cost together.
+            Console.WriteLine($"  {"contended",-20}{sink.Contended.TotalSeconds,14:F1}s"
+                + $"  ({Count(sink.Contentions)} of {Count(sink.Total)} facts waited for a batch)");
         }
 
         var rate = sink.Total / Math.Max(elapsed.TotalSeconds, 0.001);
@@ -316,19 +479,98 @@ internal static class Program
             + $"{Count(indexer.External)} to declarations outside the index, "
             + $"{Count(indexer.Unresolved)} unresolved");
 
+        if (indexer.ReferenceAssemblies > 0)
+        {
+            // Said out loud because it is a decision about the corpus and not a detail:
+            // a reader comparing file counts between two runs, or wondering why a `ref/`
+            // tree has no definitions in it, is owed the reason here rather than in a
+            // doc comment.
+            Console.WriteLine($"  {Count(indexer.ReferenceAssemblies)} reference assembly(s) "
+                + "left unwalked: the implementation beside each one declares the same API");
+        }
+
+        if (indexer.DuplicateAssemblies.Count > 0)
+        {
+            // Named individually, because this is source somebody wrote that is not in the
+            // index — where a reference assembly is a restatement of source that is. A
+            // reader has to be able to see *which* project, to decide whether the one that
+            // was kept is the one they meant.
+            Console.WriteLine(
+                $"  {Count(indexer.DuplicateAssemblies.Count)} project(s) left unwalked: "
+                + "another project already produces their assembly, and one database "
+                + "cannot hold two");
+
+            foreach (var project in indexer.DuplicateAssemblies)
+            {
+                Console.WriteLine($"    {project}");
+            }
+        }
+
         if (indexer.Unattributed > 0)
         {
             // Shared source, or a checkout with no project files under `--source`. Said
-            // out loud because a silent zero for `src.ProjectSource` looks like a bug in
-            // the schema rather than a fact about the repository.
+            // out loud because a silent zero for `msbuild.SourceFileToProject` looks like
+            // a bug in the schema rather than a fact about the repository.
             Console.WriteLine($"  {Count(indexer.Unattributed)} file(s) no project compiles "
                 + "(shared source, or outside every project directory)");
         }
 
-        if (indexer.Conflicts > 0)
+        if (projects.Unlinked.Count > 0)
         {
-            Console.WriteLine($"  {Count(indexer.Conflicts)} declaration key(s) reached with two kinds; "
-                + "the first won (see Indexer._kinds)");
+            // A project the solution lists and this index cannot key — its path climbs out
+            // of `--root`, so there is no `src.File` for an edge to point at. Counted here
+            // because both of its solution edges are missing, and a database holding part
+            // of a solution's membership looks exactly like one holding all of it.
+            Console.WriteLine($"  {Count(projects.Unlinked.Count)} project(s) the solution "
+                + "lists have no project fact, so no solution edge names them "
+                + $"({string.Join(", ", projects.Unlinked)})");
+        }
+
+        foreach (var dropped in Dropped(indexer))
+        {
+            Console.WriteLine($"  {dropped}");
+        }
+    }
+
+    /// <summary>
+    /// What this run could not express, one line per cause.
+    /// </summary>
+    /// <remarks>
+    /// <b>Three causes, so one line cannot carry them.</b> A signature naming a type with
+    /// no <c>csharp.AType</c> alternative is one, a declaration kind this layer has no
+    /// entity for at all is another, and a symbol this producer cannot spell a
+    /// <c>src.Symbol</c> for is the third. Attributing the whole count to the first sends
+    /// somebody looking for a <c>dynamic</c> that is not there, which is exactly the
+    /// silence the counter exists to break — and so does naming one form of the second
+    /// cause when it has two: an event, and an <c>extension</c> block, whose members go
+    /// with it. The third is the one whose loss depends on where it happened — a
+    /// declaration keeps its entity and its span, a reference keeps only its
+    /// <c>csharp</c>-layer occurrence, and a relation edge is gone entirely — so the line
+    /// points at <see cref="Indexer.Unspellable"/>, which sets that out, rather than
+    /// stating the mildest of the three as though it were all of them.
+    /// </remarks>
+    internal static IEnumerable<string> Dropped(Indexer indexer)
+    {
+        if (indexer.Unspellable > 0)
+        {
+            yield return $"{Count(indexer.Unspellable)} spelling(s) not made: a shape this "
+                + "producer has no `src.Symbol` for (a declaration keeps its entity and "
+                + "span, a reference its `csharp`-layer occurrence, a relation edge "
+                + "nothing)";
+        }
+
+        if (indexer.InexpressibleTypes > 0)
+        {
+            yield return $"{Count(indexer.InexpressibleTypes)} declaration(s) dropped: "
+                + "a type this layer cannot express (`dynamic`, a function pointer, or a "
+                + "name that did not resolve)";
+        }
+
+        if (indexer.InexpressibleKinds > 0)
+        {
+            yield return $"{Count(indexer.InexpressibleKinds)} declaration(s) dropped: "
+                + "a kind this layer has no entity for at all (an event, or an "
+                + "`extension` block)";
         }
     }
 
@@ -338,59 +580,100 @@ internal static class Program
     /// <remarks>
     /// Three questions, chosen for what they cost rather than for what they mean: a scan
     /// of a small predicate, a seek into the search index, and the join that reaches
-    /// through a reference. The last one is the interesting number — <c>src.Ref</c>'s
-    /// key begins with a position, so finding every use of a declaration reads the
-    /// predicate rather than narrowing into it, which is exactly the shape of argument
-    /// <c>src.SearchByName</c> exists to answer at the declaration level.
+    /// through a reference. The last one is the interesting number — a cross-reference
+    /// keyed by the file it is in reads the whole table to answer "every use of this",
+    /// and one keyed by what it points at seeks. Both keyings are stored, which is the
+    /// whole argument for a derived predicate.
     /// </remarks>
-    private static void Smoke(FjordConnection connection, Indexer indexer)
+    /// <summary>Rows each smoke query prints, and therefore the most any of them reads.</summary>
+    private const int Sample = 5;
+
+    /// <summary>
+    /// What a smoke run demonstrates: a description and the sigla behind it, for a
+    /// repository whose walk found <paramref name="sample"/> to ask about.
+    /// </summary>
+    /// <remarks>
+    /// <b>Separate from the printing so that something can run them.</b> A query here is
+    /// only ever executed after an index run, and a refusal only ever reaches a person
+    /// reading the tail of one — which is how a query with a type error in it shipped, was
+    /// printed as `refused (BadQuery)` on every run for a release, and was noticed by
+    /// somebody reading output rather than by a red suite.
+    /// </remarks>
+    internal static IEnumerable<(string What, string Sigla)> SmokeQueries(string? sample)
     {
-        var sample = indexer.SampleName;
+        yield return ("every namespace, which is a scan",
+            "N where csharp.Namespace {name = M, containingNamespace = _}; csharp.Name N; M = csharp.Name N");
 
-        Console.WriteLine();
-        Console.WriteLine("querying it back");
+        yield return ("every assembly the repository builds, which is the build layer",
+            "A where msbuild.Assembly {name = A}");
 
-        Run("every namespace, which is a scan", "N where src.Module {name = N}");
-
-        Run("every assembly the repository builds, which is the build layer",
-            "A where src.Assembly A");
+        yield return ("what a project compiles, which is a seek keyed by the project file",
+            "{project = P, src = S} where "
+            + "F = src.File P; Q = msbuild.Project {file = F}; "
+            + "msbuild.ProjectToSourceFile {project = Q, src = G}; G = src.File S");
 
         if (sample is not null)
         {
-            Run($"declarations named `{sample}`, which is a seek",
-                $"{{kind = D.value, line = D.line, name = D.name}} "
-                + $"where src.SearchByName {{name = \"{sample}\", to = D}}");
+            yield return ($"the definitions named `{sample}`, which is a seek into the search index",
+                $"{{name = L}} where csharp.NameLowerCase {{nameLowercase = L, name = N}}; "
+                + $"N = csharp.Name \"{sample}\"");
 
-            Run($"uses of `{sample}`, which is a join",
-                $"{{line = R.at.line, col = R.at.col}} where R = src.Ref {{to = D}}; "
-                + $"src.SearchByName {{name = \"{sample}\", to = D}}");
-
-            // Into the declaration graph and out the other side: a name, the
-            // declaration it reaches, and a seek into a predicate keyed by that
-            // declaration. `src.Param`'s key is (decl, index, name), so this is one seek
-            // and the parameters come back in order.
-            if (indexer.SampleMethod is { } method)
-            {
-                Run($"the parameters of `{method}`, which is a seek keyed by a declaration",
-                    $"{{at = P.index, name = P.name, type = P.value}} "
-                    + $"where src.SearchByName {{name = \"{method}\", to = D}}; "
-                    + $"P = src.Param {{decl = D}}");
-            }
-
-            // Two references followed — declaration to module to file — and the result
-            // used as the key of a third predicate. No string is compared: the file is
-            // an id by the time `src.Line` is seeked.
+            // **The join that reaches through a reference**, and the one this schema
+            // changes the cost of: `EntityRef` leads with the target, so every use of a
+            // definition is a seek rather than a read of the whole cross-reference table
+            // — which a cross-reference keyed by its own position cannot do. Both steps
+            // that reach the definition lead with what is bound, so the whole chain is
+            // seeks: over `dotnet/runtime`'s CoreLib this examines two rows to find the
+            // symbol, two to reach the definition, and one per answer thereafter.
             //
-            // **The conjuncts are in this order because the field access needs it.**
-            // `reorder` is free to run them either way round, but `D.module.file` is
-            // typechecked where it is written, and a variable no earlier conjunct has
-            // bound has no type there to take a field of.
-            Run($"the source of the file declaring `{sample}`, which is a fetch then a seek",
-                $"{{line = L.line, text = L.value}} "
-                + $"where src.SearchByName {{name = \"{sample}\", to = D}}; "
-                + $"L = src.Line {{file = D.module.file}}");
+            // **A `src.Symbol` field holds a reference to the symbol fact and not the
+            // string in it**, so `src.Symbol S` against an `S` already bound by
+            // `SymbolOf` asks for a fact whose *string key* is a fact — which the
+            // typechecker refuses, and refuses at the point the smoke output prints
+            // rather than anywhere a test would see. `SymbolByName` is the way in from a
+            // name, because the name is the thing this query is given.
+            yield return ($"every use of `{sample}`, which is a seek because the target leads",
+                $"{{file = P, at = X.use.start}} where "
+                + $"codemarkup.SymbolByName {{name = \"{sample}\", symbol = S}}; "
+                + $"csharp.DefinitionBySymbol {{symbol = S, definition = D}}; "
+                + $"X = csharp.EntityRef {{target = D, file = F}}; F = src.File P");
+
+            // A declaration, the line it is written on, and the text of that line: the
+            // search index carries the line number in its key, so the line table is
+            // reached by its own key and answers one row.
+            //
+            // **A `src.FileLine {file = F}` seek is a prefix over every line of the
+            // file**, so pairing it with anything that binds only the file is a cross
+            // product — every declaration in a file against every line of it, which is
+            // tens of millions of rows on a real repository and looks like a join in the
+            // query's shape. Reaching the line from `csharp.DefinitionLocation` instead
+            // would need the greatest `src.FileLineAt.start` at or below a definition's
+            // byte offset, and sigla has no descending seek: the line number in this key
+            // is what makes it a seek at all.
+            yield return ($"the line declaring a definition, which is a seek keyed by file and line",
+                "{name = N, line = Ln, text = L.value} where "
+                + "codemarkup.SearchEntry {name = N, file = F, line = Ln}; "
+                + "L = src.FileLine {file = F, line = Ln}");
         }
 
+    }
+
+    private static void Smoke(FjordConnection connection, Indexer indexer)
+    {
+        Console.WriteLine();
+        Console.WriteLine("querying it back");
+
+        foreach (var (what, sigla) in SmokeQueries(indexer.SampleName))
+        {
+            Run(what, sigla);
+        }
+
+        // **Five rows and a total, and neither reads the result.** A smoke query is a
+        // demonstration whose size nobody chose: one of these once answered 109,720,432
+        // rows, and collecting them to print five killed the run at 20.6 GB. The count
+        // executes the query without encoding a row, and the sample is one bounded page —
+        // so what this prints costs the same whether the answer has five rows or a
+        // hundred million.
         void Run(string what, string sigla)
         {
             Console.WriteLine();
@@ -401,20 +684,22 @@ internal static class Program
 
             try
             {
-                var result = connection.Query(sigla);
+                var total = connection.CountRows(sigla);
                 started.Stop();
 
-                foreach (var row in result.Rows.Take(5))
+                var page = connection.Page(sigla, limit: Sample);
+
+                foreach (var row in page.Rows)
                 {
-                    Console.WriteLine($"    {Render(row, result.Shape)}");
+                    Console.WriteLine($"    {Render(row, page.Shape)}");
                 }
 
-                if (result.Rows.Count > 5)
+                if (total > page.Rows.Count)
                 {
-                    Console.WriteLine($"    ... and {Count(result.Rows.Count - 5)} more");
+                    Console.WriteLine($"    ... and {Count(total - page.Rows.Count)} more");
                 }
 
-                Console.WriteLine($"    {Count(result.Rows.Count)} row(s) in {started.Elapsed.TotalSeconds:F2}s");
+                Console.WriteLine($"    {Count(total)} row(s) in {started.Elapsed.TotalSeconds:F2}s");
             }
             catch (FjordServerException failure)
             {

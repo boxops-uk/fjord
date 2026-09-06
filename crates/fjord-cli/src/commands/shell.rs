@@ -1041,7 +1041,7 @@ fn predicate_line(schema: &Schema, index: usize) -> String {
 
 fn help(out: &mut impl Write) -> Result<(), CliError> {
     writeln!(out, "  <query>          run a sigla query, e.g.")?;
-    writeln!(out, "                     X where src.File X")?;
+    writeln!(out, "                     X where code.File X")?;
     writeln!(out, "                     {{file = F, line = L}} where …")?;
 
     for command in &COMMANDS {
@@ -1263,7 +1263,7 @@ mod tests {
 
         let paged = {
             let mut repl = repl(&serving);
-            let mut all = paths(&typed(&mut repl, "F where src.File F"));
+            let mut all = paths(&typed(&mut repl, "F where code.File F"));
             let mut pages = 1;
 
             while repl.held.is_some() {
@@ -1282,7 +1282,7 @@ mod tests {
         let whole = {
             let mut repl = repl(&serving);
             repl.page = ROWS * 2;
-            paths(&typed(&mut repl, "F where src.File F"))
+            paths(&typed(&mut repl, "F where code.File F"))
         };
 
         assert_eq!(
@@ -1299,7 +1299,7 @@ mod tests {
         let serving = serving(220);
         let mut repl = repl(&serving);
 
-        let first = typed(&mut repl, "F where src.File F");
+        let first = typed(&mut repl, "F where code.File F");
         assert!(first.contains(":more"), "{first}");
 
         while repl.held.is_some() {
@@ -1328,7 +1328,7 @@ mod tests {
         );
         assert!(refused.contains('^'), "and the caret: {refused}");
 
-        let after = typed(&mut repl, "F where src.File F");
+        let after = typed(&mut repl, "F where code.File F");
         assert_eq!(paths(&after).len(), 3, "and the next query still runs");
     }
 
@@ -1340,24 +1340,24 @@ mod tests {
         let mut repl = repl(&serving);
 
         let all = typed(&mut repl, ":schema");
-        assert!(all.contains("schema src {"), "it is source: {all}");
+        assert!(all.contains("schema code {"), "it is source: {all}");
         assert!(
             all.contains("fjord.db"),
             "including what the server answers itself: {all}"
         );
 
-        let one = typed(&mut repl, ":schema src.File");
-        assert!(one.contains("src.File"), "{one}");
-        assert!(!one.contains("src.Decl"), "an exact name is not a prefix");
+        let one = typed(&mut repl, ":schema code.File");
+        assert!(one.contains("code.File"), "{one}");
+        assert!(!one.contains("code.Decl"), "an exact name is not a prefix");
 
-        let namespace = typed(&mut repl, ":schema src.");
-        assert!(namespace.contains("src.File") && namespace.contains("src.Decl"));
+        let namespace = typed(&mut repl, ":schema code.");
+        assert!(namespace.contains("code.File") && namespace.contains("code.Decl"));
 
         let nothing = typed(&mut repl, ":schema nope.");
         assert!(nothing.contains("no predicate matches"), "{nothing}");
 
         // The psql spelling reaches the same place.
-        assert_eq!(typed(&mut repl, "\\d src.File"), one);
+        assert_eq!(typed(&mut repl, "\\d code.File"), one);
     }
 
     /// **`:plan` and `:type` answer without running anything**, which is what a client
@@ -1367,11 +1367,11 @@ mod tests {
         let serving = serving(3);
         let mut repl = repl(&serving);
 
-        let plan = typed(&mut repl, ":plan F where src.File F");
-        assert!(plan.contains("src.File"), "{plan}");
+        let plan = typed(&mut repl, ":plan F where code.File F");
+        assert!(plan.contains("code.File"), "{plan}");
         assert!(plan.contains("scan") || plan.contains("seek"), "{plan}");
 
-        let ty = typed(&mut repl, ":type F where src.File F");
+        let ty = typed(&mut repl, ":type F where code.File F");
         assert!(ty.contains(": str"), "{ty}");
 
         // Neither ran: the result the pager holds is still nothing.
@@ -1395,7 +1395,7 @@ mod tests {
         assert!(typed(&mut repl, ":limit 0").contains("takes a row count"));
         assert!(typed(&mut repl, ":limit lots").contains("takes a row count"));
 
-        let first = typed(&mut repl, "F where src.File F");
+        let first = typed(&mut repl, "F where code.File F");
         assert_eq!(paths(&first).len(), 3, "three rows, then an invitation");
         assert!(first.contains(":more for the next 3"), "{first}");
     }
@@ -1406,7 +1406,7 @@ mod tests {
         let serving = serving(2);
         let mut repl = repl(&serving);
 
-        let rows = typed(&mut repl, "{path = F} where src.File F");
+        let rows = typed(&mut repl, "{path = F} where code.File F");
 
         let objects: Vec<serde_json::Value> = rows
             .lines()
@@ -1424,7 +1424,7 @@ mod tests {
         // And the table is still a command away, for a person reading rather than
         // piping.
         assert!(typed(&mut repl, ":format table").contains("table"));
-        let table = typed(&mut repl, "{path = F} where src.File F");
+        let table = typed(&mut repl, "{path = F} where code.File F");
         assert!(table.contains("PATH"), "{table}");
 
         assert!(typed(&mut repl, ":format sideways").contains("takes jsonl"));
@@ -1442,7 +1442,7 @@ mod tests {
         let serving = serving(1);
         let mut repl = repl(&serving);
 
-        let query = "{name = D.name, module = D.module} where src.Decl D";
+        let query = "{name = R.to.name, decl = R.from} where code.Ref R";
         let object = |rows: &str| -> serde_json::Value {
             rows.lines()
                 .find(|line| line.starts_with('{'))
@@ -1454,9 +1454,7 @@ mod tests {
         // expansion costs something nobody has asked for yet.
         let plain = object(&typed(&mut repl, query));
         assert!(
-            plain["module"]
-                .as_str()
-                .is_some_and(|id| id.starts_with('#')),
+            plain["decl"].as_str().is_some_and(|id| id.starts_with('#')),
             "unexpanded, a reference is an id: {plain}"
         );
 
@@ -1464,20 +1462,20 @@ mod tests {
 
         let deep = object(&typed(&mut repl, query));
         assert_eq!(
-            deep["module"]["name"], "m00000",
-            "the module's own fields, named from the schema: {deep}"
+            deep["decl"]["name"], "d00000",
+            "the declaration's own fields, named from the schema: {deep}"
         );
         assert_eq!(
-            deep["module"]["file"], "f00000.py",
+            deep["decl"]["file"], "f00000.py",
             "and its file is the path, not the id: {deep}"
         );
 
-        // One hop reaches the module and stops.
+        // One hop reaches the declaration and stops.
         assert!(typed(&mut repl, ":expand 1").contains("one hop"));
         let shallow = object(&typed(&mut repl, query));
-        assert_eq!(shallow["module"]["name"], "m00000");
+        assert_eq!(shallow["decl"]["name"], "d00000");
         assert!(
-            shallow["module"]["file"]
+            shallow["decl"]["file"]
                 .as_str()
                 .is_some_and(|id| id.starts_with('#')),
             "the second hop is not taken: {shallow}"
@@ -1495,10 +1493,10 @@ mod tests {
         let serving = serving(220);
         let mut repl = repl(&serving);
 
-        let _ = typed(&mut repl, "F where src.File F");
+        let _ = typed(&mut repl, "F where code.File F");
         assert!(repl.held.is_some());
 
-        let second = typed(&mut repl, "F where src.File F");
+        let second = typed(&mut repl, "F where code.File F");
         assert!(second.contains(":more"), "the new result is the held one");
 
         let cancelled = typed(&mut repl, ":cancel");
@@ -1518,7 +1516,7 @@ mod tests {
         let refused = typed(&mut repl, ":connect nope");
         assert!(!refused.contains("now connected"), "{refused}");
 
-        let after = typed(&mut repl, "F where src.File F");
+        let after = typed(&mut repl, "F where code.File F");
         assert_eq!(paths(&after).len(), 3, "the old database still answers");
         assert_eq!(repl.database, "code", "and it is still the one named");
     }
@@ -1554,8 +1552,8 @@ mod tests {
         let serving = serving(2);
         let mut repl = repl(&serving);
 
-        let rows = typed(&mut repl, ":facts src.File");
-        assert!(rows.contains("X where src.File X"), "{rows}");
+        let rows = typed(&mut repl, ":facts code.File");
+        assert!(rows.contains("X where code.File X"), "{rows}");
         assert_eq!(paths(&rows).len(), 2, "{rows}");
 
         assert!(typed(&mut repl, ":facts").contains("needs a predicate"));

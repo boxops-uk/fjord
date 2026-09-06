@@ -12,15 +12,20 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="$root/clients/dotnet/golden/blocks.txt"
 unions="$root/clients/dotnet/golden/unions.txt"
+blobs="$root/clients/dotnet/golden/bytes.txt"
 
 mkdir -p "$(dirname "$out")"
 
 dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --golden "$out"
-# A second corpus, over a schema of its own: a union in `schemas/code.sigla` would move
+# A second corpus, over a schema of its own: a union tag past a varint byte would move
 # that schema's fingerprint and every block above with it.
 dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --golden-unions "$unions"
+# A third, for the same reason: a `bytes` payload no `string` could hold would move that
+# schema's fingerprint and every block above with it.
+dotnet run --project "$root/clients/dotnet/Boxops.Fjord.Demo" -- --golden-bytes "$blobs"
 
 echo
 echo "now check the Rust side still agrees:"
 echo "  cargo test -p fjord-client byte_identical"
 echo "  cargo test -p fjord-client unions_are_byte_identical"
+echo "  cargo test -p fjord-client bytes_are_byte_identical"

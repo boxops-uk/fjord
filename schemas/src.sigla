@@ -1,0 +1,205 @@
+# The source layer: the file, span and symbol primitives the other schemas build on.
+#
+# Nothing here needs a compiler — a producer that can only read files can fill all of it.
+# The language layers (`csharp`, `typescript`, `msbuild`, `npm`, `bundle`) and `codemarkup`
+# all import this file so that a fact in one and a fact in another can refer to the same
+# file, and the same symbol, as a type rather than as a matching string.
+#
+# Every predicate leads with `file`, so a file's lines, styles and digest are each a single
+# prefix seek, and `line` trails so a window is a range on the last key field.
+
+schema src {
+
+  # ======================================================================================
+  # Identities
+  # ======================================================================================
+
+  # A path relative to the index root, interned once. Every reference to a file is a
+  # `FactId` to one of these, so a path is stored once however many facts mention it.
+  predicate File : string
+
+  # A global name for a thing. The cross-database join key: unlike a `FactId`, which is a
+  # per-database sequence ([I11](invariants.html#i11)), a symbol means the same thing in
+  # every database that mints it the same way.
+  #
+  # Spelled as SCIP: a scheme token, a package coordinate — manager, name, version — then
+  # the descriptors, suffix-encoded (`/` a namespace, `#` a type, `.` a term, `(…).` a
+  # method, `(…)` a parameter, `[…]` a type parameter), each name ASCII-simple or
+  # backtick-escaped.
+  #
+  #     scip-csharp-2 nuget Newtonsoft.Json 13.0.3 Newtonsoft/Json/JsonConvert#SerializeObject().
+  #     scip-typescript npm @angular/core 17.0.0 `src/lib`/Component#
+  #
+  # The scheme token comes first so the string space is partitioned by producer, and
+  # `..`-prefix matching over the whole string is a package or namespace search.
+  #
+  # ## The scheme token is the producer's, and a join is within one scheme
+  #
+  # `config.Setting {dimension = "symbol-scheme"}` says which scheme(s) a database holds,
+  # and a fan-out checks it before trusting a string match. That check is load-bearing
+  # rather than defensive, because **two conformant producers of one language can disagree**
+  # and one cannot be repaired into the other: nothing downstream can recover a namespace a
+  # producer did not write, or a signature from an ordinal.
+  #
+  # The reference C# indexer, `scip-dotnet`, is the live example. Verified against its own
+  # checked-in snapshots, it emits `Model/DiffPaneModel#` for
+  # `DiffPlex.DiffBuilder.Model.DiffPaneModel` — **the innermost namespace only**, since a
+  # namespace descriptor is attached to the package rather than to its parent — so `A.B.T`
+  # and `C.B.T` collide inside one package. It also writes the package as `. .` for the code
+  # being indexed, by default and on purpose, which collides across repositories. Both are
+  # fine for its own purpose and neither is usable as the key a cross-database join seeks,
+  # so this schema's producer writes spec-conformant symbols under **its own token** and an
+  # ingested `scip-dotnet` index keeps that one. A string claiming a scheme it does not match
+  # byte for byte would be worse than either.
+  #
+  # ## A method's overload disambiguator, and what it costs
+  #
+  # SCIP leaves the disambiguator to the indexer. `scip-dotnet` counts same-named members in
+  # `ContainingType.GetMembers()` order — `Overload1().`, then `Overload1(+1).` — which for
+  # a partial class follows whichever order the compiler was handed the files. This producer
+  # keeps that format and counts a **deterministic** order instead, same-named members
+  # sorted by `docId`, because a sealed identity hashes the facts and two indexes of one
+  # commit must not disagree.
+  #
+  # The cost is stated rather than hidden: an ordinal is **not stable across an edit that
+  # inserts an overload**. Anything needing that keys on the language layer's structural
+  # entity, which never carries one — `csharp.Method` trails `docId`, Roslyn's own signature
+  # encoding — and reaches the symbol through `csharp.SymbolOf`.
+  predicate Symbol : string
+
+  # ======================================================================================
+  # Shared value types
+  # ======================================================================================
+  #
+  # These are structural: the name is inlined and does not enter the canonical form, so a
+  # schema that declares its own `Bool` and one that imports this one fingerprint the same.
+
+  type Bool = { false_ = 0 | true_ = 1 }
+
+  type MaybeString = { nothing = 0 | just : string = 1 }
+  type MaybeInt    = { nothing = 0 | just : int    = 1 }
+  type MaybeFile   = { nothing = 0 | just : File   = 1 }
+  type MaybeSymbol = { nothing = 0 | just : Symbol = 1 }
+
+  # A byte offset and a byte length, both zero-based, into a file's UTF-8 bytes.
+  type ByteSpan = { start : int, length : int }
+
+  # A span in a named file.
+  type Location = { file : File, span : ByteSpan }
+
+  # A line/column point and a line/column range, both one-based, for producers and
+  # consumers that speak in editor coordinates. The column unit is whatever
+  # `config.Setting "position-encoding"` says it is.
+  type Loc   = { line : int, col : int }
+  type Range = { lineBegin : int, colBegin : int, lineEnd : int, colEnd : int }
+
+  # The language of a file's contents. `other` carries the name of anything not listed;
+  # the numbered alternatives are frozen ([I10](invariants.html#i10)), so a new language
+  # is appended and never renumbered.
+  type Language =
+    { other      : string = 0
+    | csharp             = 1
+    | typescript         = 2
+    | javascript         = 3
+    | tsx                = 4
+    | jsx                = 5
+    | rust               = 6
+    | python             = 7
+    | java               = 8
+    | cpp                = 9
+    | c                  = 10
+    | go                 = 11
+    | json               = 12
+    | yaml               = 13
+    | markdown           = 14
+    | css                = 15
+    | html               = 16
+    | sql                = 17
+    | shell              = 18
+    | xml                = 19
+    | proto              = 20
+    }
+
+  # ======================================================================================
+  # File facts
+  # ======================================================================================
+
+  # What language a file is written in.
+  predicate FileLanguage : { file : File } -> { language : Language }
+
+  # A content hash of the file's bytes, as lowercase hex. The producer picks the algorithm
+  # and records it in `config.Setting "digest"`.
+  predicate FileDigest : { file : File } -> { digest : string }
+
+  # Where the file came from: a repository identifier and the revision indexed.
+  predicate FileOrigin : { file : File } -> { repo : string, revision : string }
+
+  # A file's size, in bytes and in lines, and whether its last byte is a newline.
+  #
+  # `lines` counts lines, so a file ending in a newline has no empty final line: "a\nb\n"
+  # is two lines, and so is "a\nb". `endsInNewline` is what tells the two apart.
+  predicate FileInfo : { file : File } -> { bytes : int, lines : int, endsInNewline : Bool }
+
+  # One line of a file, one-based, with its text and its position.
+  #
+  # `text` excludes the line terminator. `start` is the byte offset of the line's first
+  # byte, `bytes` its length excluding the terminator, and `cstart` the same start counted
+  # in the unit `config.Setting "position-encoding"` names — so a client that speaks UTF-16
+  # can seek without re-scanning the file.
+  #
+  # This is one fact per line rather than an array per file so that showing lines 400-450
+  # is a range seek on `line` rather than a whole-file fetch.
+  predicate FileLine : { file : File, line : int } -> { text : string, start : int, bytes : int, cstart : int }
+
+  # The reverse of `FileLine.start`: which line a byte offset begins.
+  #
+  # Keyed on `start` so that resolving a `ByteSpan` to a line is one seek rather than a scan.
+  # There is no descending seek and no `LIMIT` in sigla, so the shape is a **range upward**
+  # with a client-side limit of 1 — and the bound is a comparison statement, not `..`, which
+  # is the string-prefix operator. An integer range is `S >= n`, which the level that
+  # captures `S` folds into the seek:
+  #
+  #   S, L where src.FileLineAt {file = F, start = S, line = L}; S >= 12345
+  #
+  # **Project `S` as well as `L`, because it is what tells the first two cases apart.** An
+  # offset **at** a line's start answers that line, and the row comes back with `S` equal to
+  # the offset — the last line's start included, which is an exact hit like any other. An
+  # offset **mid-line** answers the line *after* it, with `S` greater than the offset, so the
+  # answer is `L - 1`. A consumer holding only `L` cannot tell which rule to apply and is one
+  # line wrong at every line start. The third case is the one that bites: an offset
+  # **strictly past** the last line's start answers no row at all, and the consumer falls
+  # back to `FileInfo.lines`.
+  predicate FileLineAt : { file : File, start : int, line : int }
+
+  # Syntax highlighting for one line, as an opaque payload. Held per line so a viewer
+  # fetches only the window it is drawing.
+  #
+  # **The schema does not say what is in these bytes**, and that is the design. A
+  # highlighter's vocabulary is a presentation concern with its own lifecycle, so pinning
+  # one here would make every new token kind a Breaking edit to a predicate every published
+  # index carries — and styles are regenerable where the facts beside them are not.
+  #
+  # What a database holds is declared in `config.Setting {dimension = "style-encoding"}`,
+  # and a consumer that does not recognise the value renders the line plain. **fjord ships
+  # no codec and defines no vocabulary** — a producer writes whatever its tokeniser already
+  # emits, and names it.
+  #
+  # The .NET indexer is the worked example: `--styles` writes `roslyn-lsp-1`, which is LSP
+  # `SemanticTokens.data` — `[deltaLine, deltaStart, length, tokenType, tokenModifiers]` per
+  # token, varint-packed — over a legend of Roslyn's own `ClassificationTypeNames`. Nothing
+  # about it is fjord's: a consumer that speaks LSP reads it already, and Monaco takes the
+  # decoded array unchanged. A producer for another language names its own encoding and its
+  # own legend, and this predicate does not change.
+  #
+  # **The columns inside the payload count in the encoding's unit, not this database's.**
+  # `config.Setting {dimension = "position-encoding"}` declares the unit for the offsets and
+  # columns *this schema declares*; what an opaque payload counts in is named by
+  # `style-encoding`, together with the format and the legend. `roslyn-lsp-1` is LSP's own
+  # unit — UTF-16 code units, which is `FileLine.cstart`'s unit and **not** `start`'s, the
+  # unit a `ByteSpan` counts in. A consumer drawing a style run over a span therefore
+  # converts through that line's `start`/`cstart` pair rather than assuming the two agree.
+  #
+  # Absent means "not tokenised", so an index with no highlighter is a complete index and
+  # needs no sentinel.
+  predicate FileLineStyles : { file : File, line : int } -> { styles : bytes }
+}

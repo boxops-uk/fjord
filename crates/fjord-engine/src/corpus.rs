@@ -722,6 +722,66 @@ pub const CORPUS: &[Entry] = &[
          and a union cannot",
     ),
     entry(
+        "X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}",
+        Supported("20; 40; 10; 30"),
+        "**a union-typed variable shared by two generators** — the first mention \
+         binds a variable to a union, the second asks `unify` to compare a union \
+         with a union, and the two are separately allocated `Arc`s",
+    ),
+    entry(
+        "X where test.Tagged {what = {num = W}, id = X}; test.Label {id = _, what = {num = W}}",
+        Supported("10; 30"),
+        "the same join written the way a consumer writes it without the arm above \
+         — one query per alternative, narrowing both sides — which must keep \
+         answering what it answers today",
+    ),
+    // ---- bytes, and the `0x…` literal ----------------------------------------
+    entry(
+        "X where test.Blob {digest = X}",
+        Supported("0x; 0x00; 0x00ff; 0x80c0"),
+        "**a `bytes` key field**, scanned: the payloads hold a NUL, the escape byte \
+         and two UTF-8 continuation bytes, so these are four rows no `string` \
+         predicate could have held — and the order is `memcmp` over the payload",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0x00ff}",
+        Supported("test.Blob#3"),
+        "**the `0x…` literal as a seek constant**, which is the reason the literal is \
+         not deferred: without it a digest lookup is inexpressible and \
+         `print::literal` is the one place the printer emits text sigla cannot parse",
+    ),
+    entry(
+        "X where test.Blob {digest = X}; X = 0x80c0",
+        Supported("0x80c0"),
+        "the same constant reached by a **bind** rather than spliced into the key — \
+         a `bytes` value folds like any other scalar",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0x}",
+        Diagnosed(Code::LitBytesEmpty),
+        "`0x` with no digits: lexed as one token and rejected by name, which is what \
+         a permissive lexer buys over a caret between two tokens",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0xfff}",
+        Diagnosed(Code::LitBytesOddDigits),
+        "an **odd** digit count — a byte is two digits, and guessing which end to pad \
+         is a guess that silently answers a different question",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = 0xzz}",
+        Diagnosed(Code::LitBytesDigit),
+        "not a hex digit. The lexer's regex takes the whole run so the diagnostic has \
+         the literal to point at",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = \"00ff\"}",
+        Diagnosed(Code::RejectTypeMismatch),
+        "a **string** against a `bytes` field: the two are different types and no \
+         query can compare them, which is why `bytes` sorting after a union rather \
+         than beside a string is unobservable",
+    ),
+    entry(
         "X where X = never",
         Supported(""),
         "**the empty pattern**: a level with no alternative to open, which is \
@@ -1335,6 +1395,15 @@ mod tests {
         );
     }
 
+    /// **A fingerprint that moves refuses every cursor in flight against it.**
+    ///
+    /// A resume token carries the fingerprint of the plan that issued it and
+    /// [`Executor::resume`](crate::iter::Executor::resume) refuses a cursor whose
+    /// does not match, so an entry changing here is a query whose pages stop
+    /// resuming across the deploy. That is the safe direction and it is not free,
+    /// which is why the list is checked in: a plan-shape change that moves a
+    /// fingerprint has to say which queries it moved and why, rather than being
+    /// noticed by a client.
     #[test]
     fn every_supported_entrys_plan_fingerprint_is_stable() {
         use crate::compile::Compilation;
@@ -1382,18 +1451,18 @@ mod tests {
             "537febb51776ac0e",
             "bf7f4da079aa8760",
             "9fdd3e823c7f9ad3",
-            "d6d91409bcbcf1b7",
+            "ac9e84cd6f2470b4",
             "d6db97d05b158f41",
             "5c24b3eb080617e6",
             "1e1c5619833194a7",
-            "5a2d66dc40df5089",
-            "5a2d66dc40df5089",
+            "726e41f65bf6b640",
+            "726e41f65bf6b640",
             "f36ba4c7fdd56959",
             "97f44414433a7172",
             "e229f3eab3c43fed",
             "fb6b77ec9cbd6edc",
             "aa5f81506112a81a",
-            "6a908ca81cfe84bd",
+            "ad7555e41e5adf50",
             "df98ffd6b9ef26eb",
             "2492014dd8bca10c",
             "b1a21a89a4c3e1ff",
@@ -1425,6 +1494,11 @@ mod tests {
             "ba404d0af13e7043",
             "ba404d0af13e7043",
             "8380b2573bfefefe",
+            "04c12d148fe1ff53",
+            "d893681e33a2b227",
+            "85ed77c455b6e09d",
+            "1fc936d8e6cfee45",
+            "3b926e76df4bcaac",
             "403111a87c66ed0a",
             "86b6587a68dba1a4",
             "98b0463566dbd32a",
@@ -1432,8 +1506,8 @@ mod tests {
             "84bee93b29cc8aaf",
             "022de69dabfcd016",
             "600faa6ab5bc327f",
-            "958498fd4564f540",
-            "958498fd4564f540",
+            "54db76ab3d741bb9",
+            "54db76ab3d741bb9",
             "2dd142da1c9d558f",
             "2dd142da1c9d558f",
             "6f0a934d9fb9e1f1",
@@ -1442,10 +1516,10 @@ mod tests {
             "87f4cde294e3d5f9",
             "20c6e0ccd33651e3",
             "7d9081f6358f8445",
-            "10fb47580e274181",
+            "63f9674bea661d04",
             "1a06fae56554c5c3",
             "6ec539c285ca3870",
-            "958498fd4564f540",
+            "54db76ab3d741bb9",
             "3db4a2f29bc37327",
             "6645e951bdd44fc4",
             "49fad4cae8ee0b02",
@@ -1815,6 +1889,16 @@ mod tests {
         match value {
             Value::Int(n) => n.to_string(),
             Value::Str(s) => s.clone(),
+            // `0x…`, the literal a reader would have typed — the same spelling
+            // `print::literal` emits, so a row in this table is a value somebody can
+            // paste back into a query.
+            Value::Bytes(payload) => format!(
+                "0x{}",
+                payload
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ),
             Value::FactRef(id) => {
                 let name = schema
                     .get(id.predicate())

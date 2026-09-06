@@ -9,23 +9,34 @@
 //! implementation" true rather than aspirational. Everything below delegates the actual
 //! work to `fjord-store`; what lives here is *when* it is safe to do it.
 //!
-//! # The two hazards, and where each is answered
+//! # The three hazards, and where each is answered
 //!
 //! **A second handle on a store this process already holds.** `ops-I1` gives the server
 //! every database under its root, so the offline `finish`'s first act — open the
 //! directory — is exactly what the server must not do. It passes the handle it has:
 //! [`Catalog::finish_held`].
 //!
+//! **A directory that is not a database yet.** `ops-I7` makes a sidecar what turns a
+//! directory into a database, and a copy into a live store root delivers the sidecar and
+//! the tables in whatever order it likes — so every open here goes through
+//! [`Entry::open_store`], which refuses a directory holding no store rather than
+//! creating one in it, and refuses a store that does not hold the facts its sealed
+//! sidecar records. Neither is a repair: fjall's recovery deletes what a copy has not
+//! delivered, and only publishing the instance directory under one rename keeps a bind
+//! out of the window at all. See [`open_entry`].
+//!
 //! **A database pulled out from under a session.** `remove` closes the store, and a
 //! query running against a closed store is a fault the client did not cause. So a
-//! database is taken out of the map *first* — no new session can bind it — and removed
-//! only if this registry turns out to hold the last reference. If a session still has
-//! it, the entry goes back and the request is refused by name, which is what psql does
-//! and for the same reason.
+//! database is taken out of the map *first* — and, since [`Registry::bind`] opens what
+//! the map does not hold, both halves run under that instance's
+//! [gate](Registry::gates), which is what makes "out of the map" mean "no new session
+//! can bind it". It is deleted only if this registry turns out to hold the last
+//! reference; if a session still has it, the entry goes back and the request is
+//! refused by name, which is what psql does and for the same reason.
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, PoisonError, RwLock},
+    sync::{Arc, Mutex, PoisonError, RwLock},
 };
 
 use fjord_schema::{
@@ -36,8 +47,8 @@ use fjord_schema::{
 use fjord_store_fjall::{
     catalog::{Catalog, Entry, Finished, Intent, Listing, Selector},
     error::CatalogError,
+    meta::Meta,
     schema_doc,
-    store::FjallDb,
 };
 
 use fjord_wire::protocol::{Control, ControlOp, ControlReply};
@@ -165,19 +176,6 @@ impl Schemas {
 
         Ok(Arc::new(served))
     }
-
-    /// The schema of a database named in the root but not open here.
-    ///
-    /// Takes the resolved [`Entry`] rather than a name, so that a caller which has
-    /// already chosen among a name's instances cannot re-resolve and drift onto
-    /// another one.
-    ///
-    /// # Errors
-    ///
-    /// Whatever [`of`](Schemas::of) reports.
-    pub fn of_entry(&self, entry: &Entry) -> Result<Arc<Schema>, CatalogError> {
-        self.of(&entry.path, entry.meta.schema_fingerprint)
-    }
 }
 
 /// Mark every predicate in the reserved namespace **virtual**.
@@ -206,6 +204,22 @@ pub struct Registry {
     /// Sorted, so a listing derived from it is stable; behind a lock, so a `create`
     /// can add to it while connections are being served.
     open: RwLock<BTreeMap<String, Arc<Database>>>,
+    /// One gate per instance id: everything that opens an instance, or destroys one,
+    /// holds that instance's gate while it does.
+    ///
+    /// Fjall takes the store directory exclusively, so a burst of binds on a cold
+    /// instance would not open it N times — the losers would be *refused*, and a
+    /// client would see a database that binds or does not depending on who else was
+    /// binding it. And a delete that does not hold it is a delete a bind can undo
+    /// half-way through, since [`bind`](Registry::bind) opens what the map does not
+    /// hold.
+    ///
+    /// **A key is minted only for an instance [`Catalog::resolve`] returned**, which
+    /// is the bound worth having: the map grows with the instances this root has held
+    /// since startup and not with the names clients ask for, so no client can add to
+    /// it by naming a database that is not there. Nothing removes a key — a gate
+    /// outlives the instance it was minted for.
+    gates: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     /// This server's counters.
     ///
     /// Here because the registry is already *the* per-server shared value — every
@@ -229,9 +243,16 @@ impl Registry {
     ///
     /// A database that cannot be opened becomes a **problem in the listing** rather
     /// than a failure to start: it still appears in `list` (`ops-I7` reads its
-    /// sidecar), a handshake to it says there is no such database, and the other nine
-    /// are served. A server that refuses to start because one directory is corrupt is
-    /// a server that cannot be used to find out which one.
+    /// sidecar), a handshake to it is refused by name and says what could not be
+    /// read, and the other nine are served. A server that refuses to start because
+    /// one directory is corrupt is a server that cannot be used to find out which one.
+    ///
+    /// The listing records the scan; it does not settle anything.
+    /// [`bind`](Registry::bind) opens what it does not find here, so an instance
+    /// published after this ran — or one whose copy into the root was still in flight
+    /// while it ran, and has since landed — is served when a session next asks for it,
+    /// and nothing has to be restarted. A copy that is **still** in flight is refused
+    /// there as it is here, by [`open_entry`], and re-tried on the next bind.
     ///
     /// A schema this server could not read is the same kind of problem as a store it
     /// could not open, and is treated the same way — the database is listed and not
@@ -249,21 +270,7 @@ impl Registry {
         let mut open = BTreeMap::new();
 
         for entry in &listing.entries {
-            let opened = FjallDb::open(&entry.path)
-                .map_err(CatalogError::from)
-                .and_then(|db| {
-                    let schema = schemas.of(&entry.path, entry.meta.schema_fingerprint)?;
-                    Ok(Database::new(
-                        entry.name(),
-                        &entry.meta.instance,
-                        db,
-                        schema,
-                        entry.status(),
-                        entry.meta.content_fingerprint,
-                    ))
-                });
-
-            match opened {
+            match open_entry(&schemas, entry) {
                 Ok(database) => {
                     open.insert(entry.meta.instance.clone(), Arc::new(database));
                 }
@@ -278,6 +285,7 @@ impl Registry {
                 schemas,
                 identity,
                 open: RwLock::new(open),
+                gates: Mutex::new(BTreeMap::new()),
                 stats: Arc::new(ServerStats::default()),
             },
             listing,
@@ -379,17 +387,112 @@ impl Registry {
     /// authoritative state on disk, so a database created a moment ago by the offline
     /// path is bindable without this server having noticed it.
     ///
+    /// **A miss in the open map is not an absence**, so what resolution chose is
+    /// opened here rather than refused. The map holds what the startup scan found and
+    /// what `create` has added; the root holds whatever has been published into it
+    /// since. Refusing on a miss leaves an instance synced into a live root listed and
+    /// unbindable — and, when it is a *newer* instance of a name already being served,
+    /// takes that name out entirely, because resolution ranks the new one first and
+    /// the map has never seen it.
+    ///
+    /// **Blocking**: on a miss this opens a store, which replays its journals. Every
+    /// caller reaches it through [`blocking::run`](crate::blocking::run).
+    ///
     /// # Errors
     ///
     /// Whatever resolution reports — an unknown name, an unknown instance, or an
-    /// ambiguity the caller must settle — and [`ServerError::UnknownDatabase`] for one
-    /// the root holds but this server could not open.
+    /// ambiguity the caller must settle — and [`ServerError::Unservable`] for one the
+    /// root holds and this server cannot open.
     pub fn bind(&self, address: &str) -> Result<Arc<Database>, ServerError> {
         let selector = Selector::parse(address)?;
         let entry = self.catalog.resolve(&selector, Intent::Read)?;
 
-        self.by_instance(&entry.meta.instance)
-            .ok_or_else(|| ServerError::UnknownDatabase(address.to_owned()))
+        if let Some(database) = self.by_instance(&entry.meta.instance) {
+            return Ok(database);
+        }
+
+        self.attach(address, &entry)
+    }
+
+    /// Open the instance resolution chose, and serve it from here on.
+    ///
+    /// Takes the resolved [`Entry`] rather than the address, so that the instance
+    /// opened is the one that was ranked: re-resolving under the gate could land on
+    /// a newer one that appeared while this bind waited, and publish a handle for a
+    /// database the caller was never told about.
+    ///
+    /// # Errors
+    ///
+    /// [`ServerError::Unservable`] for an instance this server cannot open, and
+    /// [`ServerError::Catalog`] carrying [`CatalogError::NoSuchInstance`] for one that
+    /// has been deleted since it was resolved.
+    fn attach(&self, address: &str, entry: &Entry) -> Result<Arc<Database>, ServerError> {
+        let gate = self.gate(&entry.meta.instance);
+        let _opening = gate.lock().unwrap_or_else(PoisonError::into_inner);
+
+        // **Read again under the gate.** Whoever held it may have been opening this
+        // very instance, and fjall holds a store directory exclusively — so the loser
+        // of that race must take the handle the winner published rather than be
+        // refused by a lock this server itself is holding.
+        if let Some(database) = self.by_instance(&entry.meta.instance) {
+            return Ok(database);
+        }
+
+        // **An instance `remove` deleted is absent, not half-delivered.** Both
+        // conditions reach [`open_entry`] as a directory with no store in it, and
+        // there the answer is [`CatalogError::NoStore`] — "a copy has not finished",
+        // which is the wrong sentence for a database the operator asked to be rid of
+        // and would tell them to wait for something that is never coming. Asking here
+        // is enough because `remove` holds this gate across the delete: nothing can be
+        // part-way through one.
+        if !entry.path.is_dir() {
+            return Err(CatalogError::NoSuchInstance {
+                name: entry.name().to_owned(),
+                instance: entry.meta.instance.clone(),
+            }
+            .into());
+        }
+
+        match open_entry(&self.schemas, entry) {
+            Ok(database) => {
+                let database = Arc::new(database);
+
+                self.write()
+                    .insert(entry.meta.instance.clone(), Arc::clone(&database));
+
+                Ok(database)
+            }
+
+            // **The startup scan's treatment, where there is no listing to put a
+            // problem in.** The request is refused by name and every other database is
+            // untouched — but a refusal by name alone is the same sentence a name that
+            // is genuinely absent gets, so the reason is written to the server's log as
+            // well as returned. One line per failed open: nothing here caches a
+            // failure, so a corrupt instance is re-opened, and re-reported, every time
+            // a session asks for it.
+            Err(problem) => {
+                eprintln!(
+                    "cannot open `{address}` (instance {}): {problem}",
+                    entry.meta.instance
+                );
+
+                Err(ServerError::Unservable {
+                    address: address.to_owned(),
+                    instance: entry.meta.instance.clone(),
+                    source: Box::new(problem),
+                })
+            }
+        }
+    }
+
+    /// The gate for one instance id, minted if this is the first caller to reach it.
+    ///
+    /// Held only long enough to clone the `Arc` out: the open — or the delete — happens
+    /// under the inner lock, so one cold instance never blocks a bind of another.
+    fn gate(&self, instance: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.gates.lock().unwrap_or_else(PoisonError::into_inner);
+
+        Arc::clone(gates.entry(instance.to_owned()).or_default())
     }
 
     /// The database with this exact instance id, if this server opened it.
@@ -412,11 +515,19 @@ impl Registry {
 
     /// Carry out a lifecycle request.
     ///
+    /// **Takes the `Arc` rather than a reference to it**, because each of the three
+    /// hands the registry itself to the blocking pool: the store one opens or deletes is
+    /// opened or deleted under that instance's [gate](Registry::gates), and a gate held
+    /// across an `.await` would be a lock held across a suspend.
+    ///
     /// # Errors
     ///
     /// Whatever the catalog reports, or [`ServerError::InUse`] for a database a
     /// session still holds.
-    pub async fn execute(&self, request: &Control) -> Result<ControlReply, ServerError> {
+    pub async fn execute(
+        self: Arc<Registry>,
+        request: &Control,
+    ) -> Result<ControlReply, ServerError> {
         match request.op {
             ControlOp::Create => self.create(&request.database, &request.schema).await,
             ControlOp::Finish => {
@@ -447,9 +558,11 @@ impl Registry {
     /// # Errors
     ///
     /// [`ServerError::Protocol`] if `source` is empty or does not lower.
-    async fn create(&self, name: &str, source: &str) -> Result<ControlReply, ServerError> {
-        let catalog = self.catalog.clone();
-
+    async fn create(
+        self: Arc<Registry>,
+        name: &str,
+        source: &str,
+    ) -> Result<ControlReply, ServerError> {
         if source.trim().is_empty() {
             return Err(ServerError::Protocol(
                 "create needs a schema: pass one with `--schema <file>`".to_owned(),
@@ -462,41 +575,49 @@ impl Registry {
 
         let wanted = name.to_owned();
 
-        let (entry, db) = blocking::run(move || {
-            let entry = catalog.create(&wanted, &schema)?;
-            let db = FjallDb::open(&entry.path)?;
-            Ok((entry, db))
+        blocking::run(move || {
+            let entry = self.catalog.create(&wanted, &schema)?;
+
+            // **Opened through the gate, not here.** [`Catalog::create`] publishes the
+            // instance directory with one rename, so a bind can resolve it before this
+            // line — and fjall holds a store directory exclusively, so a second open
+            // is refused rather than slow: an operator would be told `Locked` about a
+            // `create` that in fact succeeded and is being served. Through the gate,
+            // whichever of the two gets there first publishes the handle and the other
+            // takes it.
+            //
+            // It also means a fresh database is served from its own embedded schema
+            // copy rather than from the text this client sent — the same thing on the
+            // happy path, and the difference is a database served, once, through a copy
+            // nothing ever read back.
+            //
+            // **What it must not also mean is a bind's answer.** `attach` refuses an
+            // instance it cannot open the way a session naming a missing database is
+            // refused, and code 2 in reply to a `create` says the database this server
+            // has just made and left under the root does not exist.
+            self.attach(&wanted, &entry)
+                .map_err(|failed| created_not_opened(&wanted, failed))?;
+
+            Ok(ControlReply::Created {
+                instance: entry.meta.instance,
+            })
         })
-        .await?;
-
-        // **Served from its own embedded copy, immediately.** Not from the schema it
-        // was created with, which would be the same thing on the happy path and would
-        // let a database be served — once, until the next restart — through a copy
-        // nothing had ever read back.
-        let schema = self
-            .schemas
-            .of(&entry.path, entry.meta.schema_fingerprint)?;
-
-        let database = Arc::new(Database::new(
-            entry.name(),
-            &entry.meta.instance,
-            db,
-            schema,
-            entry.status(),
-            // Freshly created: Writable, with no content fingerprint to have.
-            None,
-        ));
-
-        self.write().insert(entry.meta.instance.clone(), database);
-
-        Ok(ControlReply::Created {
-            instance: entry.meta.instance,
-        })
+        .await
     }
 
     /// Seal a database, and stop taking writes for it.
+    ///
+    /// **One path, through the handle this server holds.** A database the root lists
+    /// and this server has not opened is opened here first rather than sealed offline,
+    /// because the offline path opens the store itself: a bind reaching the same
+    /// instance beside it is refused by fjall's lock, and one that reaches it in the
+    /// gap between that seal releasing the directory and its sidecar landing can still
+    /// read the pre-seal status and publish a `Writable` handle on a database that is
+    /// now `Complete` — which every `ops-I2` gate then reads. Sealing through the
+    /// handle this process has is what `ops-I1` asks of it anyway, and leaves no second
+    /// open to race.
     async fn finish(
-        &self,
+        self: Arc<Registry>,
         address: &str,
         allow_zero_facts: bool,
     ) -> Result<ControlReply, ServerError> {
@@ -509,25 +630,15 @@ impl Registry {
         let entry = self.catalog.resolve(&selector, Intent::Write)?;
         let exact = entry.selector();
 
-        let Some(database) = self.by_instance(&entry.meta.instance) else {
-            // A database the root holds but this server never opened — one whose store
-            // or whose schema copy could not be read at startup. There is no handle to
-            // pass, so the offline path is not merely allowed here; it is the only
-            // correct one, and it reads that database's own schema rather than this
-            // server's, since the content fingerprint is over the facts *it* holds.
-            let catalog = self.catalog.clone();
+        let database = match self.by_instance(&entry.meta.instance) {
+            Some(database) => database,
+            None => {
+                let registry = Arc::clone(&self);
+                let opening = entry.clone();
+                let named = address.to_owned();
 
-            // Read for its **check** rather than for its result: `Catalog::finish` reads
-            // the embedded copy itself now, and this is what still refuses a database
-            // whose copy disagrees with the fingerprint its sidecar records. Sealing that
-            // would record an `ops-I4` identity over content described by a schema one of
-            // whose two statements has been edited.
-            self.schemas.of_entry(&entry)?;
-
-            let sealed =
-                blocking::run(move || Ok(catalog.finish(&exact, allow_zero_facts)?)).await?;
-
-            return Ok(finished(&sealed));
+                blocking::run(move || registry.attach(&named, &opening)).await?
+            }
         };
 
         // **The seal takes the barrier exclusively**, and that is what makes `ops-I2`
@@ -560,41 +671,55 @@ impl Registry {
     ///
     /// The order is the whole of it, and it is the same shape as
     /// [`Catalog::remove`]'s rename-then-delete one level down: make it unreachable
-    /// first, destroy it second.
-    async fn remove(&self, address: &str) -> Result<ControlReply, ServerError> {
+    /// first, destroy it second. Unreachable means what it says only while nothing can
+    /// reach it again, and [`bind`](Registry::bind) opens what the map does not hold —
+    /// so both halves run under the instance's [gate](Registry::gates).
+    async fn remove(self: Arc<Registry>, address: &str) -> Result<ControlReply, ServerError> {
         // `Intent::Sole` rather than `Read`: a delete must not rank and commit, so
         // `rm code` where `code` holds three instances is a question, not a guess.
         let selector = Selector::parse(address)?;
         let entry = self.catalog.resolve(&selector, Intent::Sole)?;
         let instance = entry.meta.instance.clone();
+        let exact = entry.selector();
+        let named = address.to_owned();
 
-        {
-            let mut open = self.write();
+        blocking::run(move || {
+            // **Held across both halves.** Without it a bind that resolved this
+            // instance a moment ago opens it while `catalog.remove` is still
+            // re-resolving, and leaves a handle in the map on a directory that is about
+            // to be gone — a session bound to a deleted store. With it, a bind either
+            // gets here first and publishes a handle the removal below then finds, or
+            // gets here after and finds no directory to open.
+            let gate = self.gate(&instance);
+            let _closing = gate.lock().unwrap_or_else(PoisonError::into_inner);
 
-            if let Some(database) = open.remove(&instance) {
-                match Arc::try_unwrap(database) {
-                    // The last reference, so the fjall handle closes right here —
-                    // before anything deletes the directory it is holding.
-                    Ok(database) => drop(database),
+            {
+                let mut open = self.write();
 
-                    // A session still has it. Put it back: a query that is running is
-                    // not a reason to hand a client a half-deleted database, and the
-                    // caller can ask again once the session has gone. Reported by the
-                    // address the caller used, since that is what they can act on.
-                    Err(shared) => {
-                        open.insert(instance, shared);
-                        return Err(ServerError::InUse(address.to_owned()));
+                if let Some(database) = open.remove(&instance) {
+                    match Arc::try_unwrap(database) {
+                        // The last reference, so the fjall handle closes right here —
+                        // before anything deletes the directory it is holding.
+                        Ok(database) => drop(database),
+
+                        // A session still has it. Put it back: a query that is running
+                        // is not a reason to hand a client a half-deleted database, and
+                        // the caller can ask again once the session has gone. Reported
+                        // by the address the caller used, since that is what they can
+                        // act on.
+                        Err(shared) => {
+                            open.insert(instance, shared);
+                            return Err(ServerError::InUse(named));
+                        }
                     }
                 }
             }
-        }
 
-        let catalog = self.catalog.clone();
-        let exact = entry.selector();
+            self.catalog.remove(&exact)?;
 
-        blocking::run(move || Ok(catalog.remove(&exact)?)).await?;
-
-        Ok(ControlReply::Removed)
+            Ok(ControlReply::Removed)
+        })
+        .await
     }
 
     /// A poisoned lock is recovered from rather than propagated.
@@ -612,6 +737,94 @@ impl Registry {
     }
 }
 
+/// Open one instance directory and read the schema and the status it will be served
+/// with.
+///
+/// The **one** place this server opens a store: the startup scan and
+/// [`Registry::attach`] both come through here, so a database that appears under a live
+/// root is admitted on exactly the terms the scan would have admitted it on — and
+/// refused on the same ones.
+///
+/// **The open is an open-*existing*, and that is what makes opening on demand safe.**
+/// [`Entry::open_store`] refuses a directory that holds no store instead of creating
+/// one in it, so an instance whose sidecar a copy has delivered and whose tables it
+/// has not is refused by name rather than served. The alternative — which is what
+/// [`FjallDb::open`](fjord_store_fjall::store::FjallDb::open) does, being also the
+/// create path — is a fresh empty keyspace stamped into the directory the copy is
+/// still writing, answering zero rows as `Complete` while the sidecar beside it
+/// records the count the finished database will hold. Resolving an [`Entry`] rather
+/// than a path buys nothing against that: the entry's `path` *is* the copy's target.
+///
+/// Nothing caches the refusal, so the next bind after the copy lands opens it.
+///
+/// **One level of that window is past the presence check, and what catches it there is
+/// the sidecar's own fact count.** fjall's create-or-recover recurs per keyspace, and a
+/// recovery *deletes* a keyspace directory whose `current` manifest a copy has not
+/// delivered — so a store can be present, open, and hold fewer facts than the sealed
+/// sidecar beside it records. [`Entry::open_store`] counts and refuses
+/// ([`CatalogError::FactsDoNotMatch`]), which converts a wrong answer served for the
+/// life of the process into a refusal and **repairs nothing**: the delete happened
+/// inside the open, before there was anything to compare. Only publishing the instance
+/// directory under one rename removes that window —
+/// [operations](../../../website/content/operations.md#publish-by-rename-required-for-a-live-root)
+/// requires it for a live root, and `Catalog::create` is what already does it.
+///
+/// **Status and content identity come off the sidecar once the store is open**, never
+/// from the [`Entry`] a caller resolved earlier. [`Database::writable`] is stamped once
+/// from this status and nothing re-reads it, so a seal landing between the resolve and
+/// this open would publish a `Writable` handle on a `Complete` database — and every
+/// `ops-I2` gate reads that stamp for the life of the handle, which the open map makes
+/// the life of the process.
+///
+/// The read is authoritative where it is because fjall holds the directory exclusively
+/// from the line above, and the only seal that can reach an instance under a root this
+/// server owns is [`Catalog::finish_held`] — which seals through the handle this server
+/// already has, and so holds that directory across the sidecar write. `ops-I1`'s root
+/// lock is what keeps another process from being the one sealing it. Re-reading one
+/// *instance's* own sidecar cannot drift onto another the way re-resolving a **name**
+/// can: the path pins it.
+fn open_entry(schemas: &Schemas, entry: &Entry) -> Result<Database, CatalogError> {
+    let db = entry.open_store()?;
+    let meta = Meta::read(&entry.path)?;
+    let schema = schemas.of(&entry.path, meta.schema_fingerprint)?;
+
+    Ok(Database::new(
+        &meta.name,
+        &meta.instance,
+        db,
+        schema,
+        meta.status,
+        meta.content_fingerprint,
+    ))
+}
+
+/// Restate a failed open as a **failed `create`**, and leave everything else alone.
+///
+/// Neither refusal the open can produce is an honest answer to a `create`, which has
+/// just published the instance the open then refused.
+/// [`CatalogError::NoSuchInstance`] answers
+/// [`ErrorCode::UnknownDatabase`](fjord_wire::protocol::ErrorCode::UnknownDatabase),
+/// because an instance that names nothing is nothing to bind.
+/// [`ServerError::Unservable`] answers that code for a fault that will not clear and
+/// [`ErrorCode::InUse`](fjord_wire::protocol::ErrorCode::InUse) for one that will — a
+/// held store, a copy still delivering — and *both* of those describe a database
+/// somebody else is publishing rather than one this server just did. The
+/// catch-all arm is not a third case — it is there because the open's error type is
+/// the whole of [`ServerError`], and rewording anything that is not one of those two
+/// would be this function guessing.
+fn created_not_opened(database: &str, failed: ServerError) -> ServerError {
+    match failed {
+        ServerError::Unservable { .. }
+        | ServerError::Catalog(CatalogError::NoSuchInstance { .. }) => {
+            ServerError::CreatedNotOpened {
+                database: database.to_owned(),
+                detail: failed.to_string(),
+            }
+        }
+        other => other,
+    }
+}
+
 fn finished(sealed: &Finished) -> ControlReply {
     ControlReply::Finished {
         fingerprint: sealed.fingerprint,
@@ -624,6 +837,7 @@ fn finished(sealed: &Finished) -> ControlReply {
 #[cfg(test)]
 mod tests {
     use fjord_schema::schema::{Predicate, PredicateId, PredicateTy};
+    use fjord_store_fjall::meta::Status;
     use lasso::Rodeo;
 
     use super::*;
@@ -729,6 +943,199 @@ mod tests {
             "the listing is one of them"
         );
         assert!(stored.virtuals().is_empty(), "the stored schema has none");
+    }
+
+    /// A registry serving whatever is in `root` **now**, and a catalog over the same
+    /// root for putting things there behind its back — which is how an instance ends up
+    /// cold: published after the scan, so an open of it is an open on demand.
+    fn serving(root: &std::path::Path) -> (Registry, Catalog) {
+        let (registry, _listing) = Registry::open(
+            Catalog::open(root).expect("a store root"),
+            Schemas::default(),
+        )
+        .expect("a registry");
+
+        (registry, Catalog::open(root).expect("a store root"))
+    }
+
+    /// **An on-demand open stamps the status on the disk it opened, not the status it
+    /// resolved** ([`ops-I2`](../../../website/content/invariants.md)).
+    ///
+    /// The window is a whole `finish` — a scan of the database and an fsync — and what
+    /// falls into it is not transient: the handle goes into the open map, so a
+    /// `Writable` stamp on a `Complete` database is what every later session for that
+    /// name takes, and all three `ops-I2` gates read that one flag. A ReadWrite session
+    /// would be admitted to a sealed database, and its blocks accepted, after the
+    /// `ops-I4` identity had been computed and reported to a client.
+    ///
+    /// Stated by hand as resolve → seal → open, because that is the interleaving: a
+    /// burst of binds racing a `finish` produces it about once in 150 rounds, which is
+    /// not a test.
+    #[test]
+    fn an_on_demand_open_stamps_the_status_on_disk_and_not_the_one_it_resolved() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let (registry, catalog) = serving(&dir.path().join("store"));
+
+        let published = catalog.create("sealme", &stored()).expect("a database");
+        assert_eq!(registry.len(), 0, "nothing was open when it was published");
+
+        // What a bind holds between resolving a name and opening what it chose.
+        let selector = Selector::parse("sealme").expect("a selector");
+        let resolved = catalog
+            .resolve(&selector, Intent::Read)
+            .expect("it resolves");
+        assert!(
+            resolved.status().is_writable(),
+            "resolved while it was still writable"
+        );
+
+        let sealed = catalog
+            .finish(&resolved.selector(), true)
+            .expect("it seals");
+        assert_eq!(
+            Meta::read(&published.path).expect("a sidecar").status,
+            Status::Complete,
+            "the sidecar records the seal"
+        );
+
+        let bound = registry.attach("sealme", &resolved).expect("it opens");
+
+        assert!(
+            !bound.writable(),
+            "a handle published on a sealed database must take no writes"
+        );
+        assert_eq!(
+            bound.content_fingerprint(),
+            Some(sealed.fingerprint),
+            "and reports the identity the seal computed, not none"
+        );
+    }
+
+    /// **A bind that resolved an instance a `remove` then deleted finds it gone**, and
+    /// is told so in those words.
+    ///
+    /// The directory is not there, so the open refuses it either way — but a deleted
+    /// instance and one whose copy into the root has not finished are the same shape
+    /// from inside [`open_entry`], and [`CatalogError::NoStore`]'s "a copy has not
+    /// finished" would tell an operator to wait for a database they asked to be rid
+    /// of. Which of the two it is is knowable only here, under the gate `remove`
+    /// holds.
+    #[tokio::test]
+    async fn a_bind_that_resolved_a_removed_instance_finds_it_gone() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let (registry, catalog) = serving(&dir.path().join("store"));
+        let registry = Arc::new(registry);
+
+        catalog.create("gone", &stored()).expect("a database");
+
+        let selector = Selector::parse("gone").expect("a selector");
+        let resolved = catalog
+            .resolve(&selector, Intent::Read)
+            .expect("it resolves");
+
+        let removed = Arc::clone(&registry)
+            .execute(&Control {
+                op: ControlOp::Remove,
+                database: "gone".to_owned(),
+                schema: String::new(),
+                allow_zero_facts: false,
+            })
+            .await
+            .expect("it is removed");
+        assert_eq!(removed, ControlReply::Removed);
+
+        let Err(refused) = registry.attach("gone", &resolved) else {
+            panic!("an instance that has been deleted must not open");
+        };
+
+        assert!(
+            matches!(
+                &refused,
+                ServerError::Catalog(CatalogError::NoSuchInstance { instance, .. })
+                    if instance == &resolved.meta.instance
+            ),
+            "it is refused as absent, naming the instance: {refused}"
+        );
+        assert!(
+            !resolved.path.exists(),
+            "and nothing was resurrected at {}",
+            resolved.path.display()
+        );
+        assert!(registry.is_empty(), "with no handle left behind");
+    }
+
+    /// **`remove` does not begin while an open of the same instance is under way.**
+    ///
+    /// The other half of the claim above, and the one the module charter makes: taking
+    /// an instance out of the map is only "unreachable" while nothing can put it back.
+    /// A bind that got to the gate first must be finished — its handle in the map,
+    /// where the removal below finds it and refuses or closes it — before anything
+    /// renames the directory it is holding.
+    ///
+    /// Stated by holding the gate a bind mid-open holds, because that is the only point
+    /// where the two meet: what a bind is doing in there is a store open, and there is
+    /// no stopping one half-way. The wait is an observation window rather than a
+    /// deadline — `remove` past the gate is a rename and an unlink.
+    #[tokio::test]
+    async fn a_remove_does_not_begin_while_an_open_of_the_same_instance_is_under_way() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let root = dir.path().join("store");
+
+        // Warm rather than cold, so the map removal has something to take out.
+        let published = Catalog::open(&root)
+            .expect("a store root")
+            .create("busy", &stored())
+            .expect("a database");
+        let (registry, _catalog) = serving(&root);
+        let registry = Arc::new(registry);
+        assert_eq!(registry.len(), 1, "the scan opened it");
+
+        // The stand-in bind runs on a thread of its own, which is also where every real
+        // holder of this gate is: it is a `std::sync::Mutex`, and the open it guards is
+        // on the blocking pool.
+        let (taken, held) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let opening = {
+            let gate = registry.gate(&published.meta.instance);
+
+            std::thread::spawn(move || {
+                let _opening = gate.lock().expect("a fresh gate");
+                taken.send(()).expect("the test is waiting for it");
+                wait.recv().expect("the test releases it");
+            })
+        };
+        held.recv().expect("the gate is held");
+
+        let removing = tokio::spawn({
+            let registry = Arc::clone(&registry);
+            async move { registry.remove("busy").await }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+        assert!(
+            registry.by_instance(&published.meta.instance).is_some(),
+            "the instance is still served: `remove` has not passed the gate"
+        );
+        assert!(
+            published.path.is_dir(),
+            "and its directory is untouched at {}",
+            published.path.display()
+        );
+
+        release.send(()).expect("the holder is waiting");
+        opening.join().expect("the holder");
+
+        assert_eq!(
+            removing
+                .await
+                .expect("the remove task")
+                .expect("it removes"),
+            ControlReply::Removed,
+            "and it runs to completion once the gate is free"
+        );
+        assert!(!published.path.exists(), "the directory is gone");
+        assert!(registry.is_empty(), "and so is the handle");
     }
 
     /// A server's own schema is the catalogue and nothing else — which is what a session

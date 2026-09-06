@@ -6,9 +6,9 @@ taken so they are not re-litigated. The design of record is the
 ([`web/`](web/README.md), the pages with the engine running in them) at
 <https://boxops-uk.github.io/fjord/> on every push to main, and shipped with each release as
 an attested `fjord-docs-site.tar.gz` beside the binaries; the working contract is
-[`AGENTS.md`](AGENTS.md); what has been measured is
-[`bench/FINDINGS.md`](bench/FINDINGS.md). The history of how the system was built lives in
-git, where it can be cited by commit.
+[`AGENTS.md`](AGENTS.md); what *was* measured is
+[`bench/FINDINGS.md`](bench/FINDINGS.md), a register closed until a 1.0 pass. The history
+of how the system was built lives in git, where it can be cited by commit.
 
 **Definition of done, everywhere:** a task ends in a green test (prefer a property), and
 every invariant a piece of work touches has its guard un-ignored and passing before the work
@@ -21,7 +21,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 |---|---|---|
 | [File ingestion](#file-ingestion--fjord-write) | designed; format built and shared with the wire | nothing — the interning primitive it needed exists |
 | [Stored derivation](#stored-derivation) | designed; two rules banked | the [re-derivation decision](#the-open-decision-re-derivation-vs-i11) |
-| [The read-path benchmark](#the-read-path-benchmark-against-glean) | planned, with predictions | a quiet machine and the indexed corpus |
+| [The read-path benchmark](#the-read-path-benchmark) | instruments exist; the corpus and the question set do not | Run 7 |
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
 | [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
 | [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not. [Movement 0](#movement-0--semantics-and-seams) is green through 0e | nothing — [Movement 1](#movement-1--the-relation-store-and-the-overlay) is next, and unblocked |
@@ -40,18 +40,41 @@ runtime waits on it.
 (`fjord-wire::block` — sync marker, magic, fixed-width header fields, CRC over header and
 payload, the predicate **named** rather than numbered) and *a file and a socket carry the
 same bytes* is a test, not an intention (`tests/one_encoding.rs`). The ten-`0xFF` sync marker
-is unreachable inside a payload **by the encoding rather than by luck** — UTF-8 never uses
-`0xF8`–`0xFF`, a varint's final byte is below `0x80`, and the header's `count`/`length` are
-capped to keep a zero top byte — so a scan from any offset finds boundaries and nothing else,
-and validation (magic, then CRC) is for torn writes and flipped bits, not disambiguation.
-This splittability is a real advantage over Glean, whose binary `Batch` is one opaque
-sequential blob that cannot be split, so it parallelises across batches and pushes the
-chunking decision onto the producer.
+is **rare inside a payload, not unreachable** — UTF-8 never uses `0xF8`–`0xFF`, a varint's
+final byte is below `0x80`, and the header's `count`/`length` are capped to keep a zero top
+byte, so no *string, varint or header* can make one; but a `bytes` payload is written raw and
+unescaped, and ten `0xFF` inside a blob are ordinary data. **No fixed marker can be
+structurally impossible in a family that carries arbitrary bytes**, and escaping the payload
+would cost the property this format exists for. So validation (magic, then CRC) is
+disambiguation *as well as* a check for torn writes and flipped bits: a scan finds candidates,
+and `fjord_wire::find_block` is what turns them into boundaries. This splittability is a real
+advantage over Glean, whose binary `Batch` is one opaque sequential blob that cannot be split,
+so it parallelises across batches and pushes the chunking decision onto the producer.
 
 **What is left is the pipeline:** the file envelope (header: magic, format version,
 producing-schema fingerprint; optional footer of block offsets), the splitter (seek anywhere
-→ scan to next sync → hand blocks to workers, checked from *every* offset of a multi-block
-file), and a pool of workers that decode blocks and `intern_block` them concurrently.
+→ `find_block` to the next *validated* boundary → hand blocks to workers, checked from
+*every* offset of a multi-block file), and a pool of workers that decode blocks and
+`intern_block` them concurrently.
+
+**The splitter owes an answer on `Scan::damaged`, and it is not "ignore it".** A validated
+scan cannot distinguish a damaged block from a false candidate — both are a marker whose
+header fails — so scanning past one scans past the other, and a corruption `decode_block`
+would have *reported* becomes a file that quietly holds fewer facts. `find_block` returns the
+skipped candidate alongside the boundary for exactly this reason; the pipeline has to decide
+whether a damaged block fails the write, is logged, or is skipped on purpose. A footer of
+block offsets sidesteps the question entirely for files this writer produced — the chain is
+exact and no payload byte is ever weighed as a boundary — which is an argument for making the
+footer required rather than optional.
+
+**The scan's double CRC pass is deliberate, and stays until a caller measures it.**
+`find_block` checksums the whole declared payload to accept a boundary and `decode_block`
+checksums it again, so a scan-then-decode reads up to 64 MiB per block twice. Handing the
+validated header out of the scan to save the second pass would mean a decode that trusts a
+CRC it did not compute — the one thing the CRC is there to prevent — bought on a path with no
+production caller. The pipeline above should not scan at all except to recover, so the pass to
+remove is the first one, by not scanning; if a measurement ever says otherwise, it is an NFR
+this item owes a guard for.
 
 **Two acceptance criteria are inherited rather than owed** — shuffle-invariance
 (`writer_count_and_write_order_do_not_change_the_database`) and deterministic rejection under
@@ -142,22 +165,21 @@ be read as promising it.
 
 ---
 
-## The read-path benchmark against Glean
+## The read-path benchmark
 
-The write paths are measured and within 8% on equal footing
-([findings §15–§17](bench/FINDINGS.md)); the read paths are not. The suite is
-[`bench/glean-read-path.md`](bench/glean-read-path.md): sixteen query families over two rungs
-(in-process, and over each system's wire), the same 18.3M-fact corpus both systems already
-hold from one Roslyn walk, reporting **work done beside every timing** — Glean's
-`facts_searched` against our `Profile.examined` — because that separates *did more work* from
-*did the same work slower*.
+The write paths are measured; the read paths are not, and what exists is a set of
+instruments rather than a suite: `examples/engine.rs` prices the machine's own operations,
+`examples/breakdown.rs` splits a query into its phases, and the workload catalogue in
+`workload.rs` states one access class per entry — a point fold, a range seek, the smallest
+scan, a fetch per row, the pair that prices key field order, a residual, a nested key, two
+fetches, a union leading a key, an opaque payload.
 
-Three predictions it exists to check, each from a design document rather than a hope: the
-scan curve against database size (2.4 GB against 886 MB for the same facts); what a value
-read costs us (a second point read per row, I6, against Glean's inline value — the sharpest
-prediction); and what a missing feature costs (transitive closure as one recursive Angle
-query against a client-side loop of round trips — the strongest argument for building
-recursion).
+**What is owed is the corpus and the choosing.** Every figure in
+[`bench/FINDINGS.md`](bench/FINDINGS.md) was measured over predicates that no longer exist,
+and the fixture the instruments now resolve against is the language fixture rather than a
+workload one — it carries no search index and nothing per line, which is what two of the
+retired workloads measured. Run 7 owns both halves: which questions get asked, and a corpus
+shaped to ask them.
 
 It also closes a long-carried item: `bench/baselines/<host>.json` and a `--json` flag on the
 instruments, so a number can be re-run rather than re-argued.
@@ -250,6 +272,31 @@ carries **JSON of the constructs, not a rendered string**, because a page that
 receives structure can lay it out and a page that receives text can only print
 it.
 
+### A transport a browser can open
+
+**Unbuilt, and it is the one thing between the browser application and a real database.** A
+browser cannot open a Unix socket or raw TCP, which is the whole of the client crate's
+`Transport`. The answer of record is a **WebSocket listener carrying the same frames** — one
+protocol, one codec, one set of goldens, rather than a second JSON-shaped surface — default-closed
+the way `--listen-tcp` is (`ops-I10`). W11's fourth criterion assumes it exists; it does not, and
+`grep -rni 'websocket|tungstenite|ws://'` over the tree returns prose only.
+
+The test side is ready: the socket battery is transport-generic and runs over Unix and TCP, so a
+third door is one `Over` arm and one `Client::connect` arm rather than a second battery. What is
+left is **four decisions, not one implementation**:
+
+1. **A dependency.** RFC 6455 is a handshake, masking and close frames — `tokio-tungstenite`, or
+   hand-rolled against the one thing we need.
+2. **How a fjord frame maps onto a WebSocket message** — one frame per binary message, or the
+   frame stream inside a message stream. This is a *wire-format* decision, and what the .NET
+   golden means depends on it.
+3. **The public surface.** `serve_on` grows a third door and the CLI a flag, and it must be
+   default-closed like TCP, which is `ops-I10` rather than a preference.
+4. **`Accepting` cannot host it as it stands.** Its contract is an `AsyncRead`/`AsyncWrite` pair
+   per accepted connection; a WebSocket connection needs an HTTP upgrade completed first and is
+   message-framed rather than a byte stream. That is an adapter, or a fourth associated item — not
+   a fifth `impl Accepting`.
+
 ### Movement 1 — the seam becomes a crate, and each implementation its own ✅
 
 Three crates replace `fjord-store`. It keeps its name and becomes **the
@@ -319,7 +366,7 @@ typechecking, which is the clearest statement that these are the same phases
 the server runs.
 
 **The samples moved into the crate.** `fjord_inspect::SAMPLES` and `SCHEMA`
-(the repository's own `schemas/code.sigla`, embedded) are what the page opens
+(the repository's own `schemas/demo.sigla`, embedded) are what the page opens
 with, and `every_sample_compiles_clean` is what makes them claims rather than
 decoration. The page invented its own examples once; all of them were missing
 the head a query requires.
@@ -450,7 +497,7 @@ the scan, resume equals uninterrupted — runs against the traced build.
 #### The database in the page
 
 `MemStore` is wasm-clean already; what is missing is facts — and, it turns out,
-a schema. `schemas/code.sigla` has **no union and no nested record**, so a
+a schema. The sample schema then had **no union and no nested record**, so a
 select (`.what.func?`), a union pattern, a discriminant residual and a nested
 record key have nothing to bind against. A union in a *leading* key field is a
 seek and behind another field is a residual — the same query shape, two costs —
@@ -468,7 +515,7 @@ screen and chosen so every shape the language has appears exactly once:
 | `code.Ref { from : Decl, to : Decl }` | a reference that is **not** leading (a fact-id compare as a residual rather than a seek), and a **two-hop chain** through `from.file` |
 | `code.Span { decl : Decl, at : { line : int, col : int } }` | a **nested record** inside a key |
 | `code.Kind { decl : Decl, what : kind }` | a **union behind** another field — matched by a residual on the discriminant |
-| `code.KindOf { what : kind, decl : Decl }` | the same fact in the other key order, so the union **leads** and the tag is a seek. The pattern `code.sigla` already uses for `Attribute`/`AttributeOf`, and for the same reason: the leading run is what a query narrows on |
+| `code.KindOf { what : kind, decl : Decl }` | the same fact in the other key order, so the union **leads** and the tag is a seek. The pattern `codemarkup.sigla` uses for `Relation`/`RelationOf`, and for the same reason: the leading run is what a query narrows on |
 
 with `kind` declared as `{ type : string = 5 | func : int = 2 }` — two
 alternatives, tags **neither contiguous, nor starting at zero, nor in
@@ -681,8 +728,8 @@ Three things this turned up:
   is the one view in the original list nothing has needed yet.
 - **A schema handle, if a bigger schema ever makes it hurt.** `compile` re-reads
   the schema on every keystroke, because the module holds no state — two strings
-  in, JSON out, and no handle a page has to free. Measured on
-  `schemas/code.sigla`: 700–800 µs warm for the whole round trip, which is a
+  in, JSON out, and no handle a page has to free. Measured on the sample
+  schema: 700–800 µs warm for the whole round trip, which is a
   tenth of a frame, so the statelessness is worth keeping until it is not.
 - **Size.** 258 KB is the whole front end plus the schema language; `wasm-opt
   -Oz` takes 34 KB off it and `web/`'s dev-dependencies now carry binaryen so
@@ -701,6 +748,16 @@ Three things this turned up:
 - **Ingest stays impossible in a browser**, and that is not a gap: interning
   needs a real backend and durable id claims.
 
+
+## Gates worth extending
+
+Not absences in the product — absences in what the product's own checks can see.
+
+| Gate | What it does not cover |
+|---|---|
+| `RUSTDOCFLAGS="-D warnings" cargo doc` | Only the four **published** crates, which is why a broken intra-doc link in `fjord-encoding` survived a release and why one in `fjord-wire` — published, and therefore gated — went red for hours before a gate run caught it. `cargo doc --workspace --no-deps --keep-going` fails seven more crates with roughly thirty findings between them: `fjord-engine`, `fjord-ingest`, `fjord-store-fjall`, `fjord-inspect`, `fjord-server` and `fjord-cli` among them. Worth clearing in one pass and then requiring, because the class is invisible until the day a crate is published |
+| A **predicate count** stated in prose | Nothing computes one, which is how `138 predicates in 9 files` survived the edit that made it 136 — in the `## Unreleased` section, describing the tree rather than a shipped release. Two shapes were considered and neither is free: sweeping the changelog's unreleased section for retired *names* is the wrong instrument (tried — ten findings, all of them the section legitimately *announcing* a retirement, and none of them the stale number), and computing composite counts inside `check-docs.py` would re-implement import resolution in a gate whose charter is the standard library. The right home is `crates/fjord-cli/tests/schemas.rs`, which already resolves every shipped schema to check its fingerprint and so knows each count for free; what it owes is the comparison against the docs, and the hard part there is tying a number in prose to the schema it is about |
+| `scripts/check-docs.py`'s retired-name sweep | A hard-coded list of names somebody remembered to add. The check its own commit title claims — *the book names predicates the tree declares* — would extract `ns.Predicate` from the book, compare against `schemas/`, and allowlist the deliberate negatives; a list cannot catch the next retirement, only the last one |
 
 ## Operational gaps
 
@@ -722,6 +779,11 @@ Each is a *specified* absence with the seam that keeps it cheap — none is an o
 | Fair cross-database write scheduling, fair fan-out merge | Both arrive with multi-database work; the fairness that exists is the other axis (`outbound` interleaves streams within a connection) |
 | fjall keyspace tuning | **Measure, do not assume.** Options are fixed at creation, so a comparison builds a database per setting; needs a real-scale corpus. Until then fjall's defaults are the answer |
 | `hasRefs` precomputed per predicate | Consulted before walking a fact's references; prerequisite for cheap expansion, not an alternative to it |
+| An open map that only ever grows — **nothing closes an instance** | A bind opens what the map does not hold, and the map never loses an entry: every instance this server has served keeps its fjall handle, its memtables and its journals until the process ends. The shape that makes it matter is the one `schemas/index.sigla` recommends — one composed database per repository, republished per commit, with a fan-out across repositories — where a long-lived server accumulates one open instance per commit it has been asked for, of which exactly one is current. Two decisions, not one: a cap on concurrently-open databases, and *when* a served instance may be closed. The seam kept is `Registry::gates`, which is already the exclusion an evictor needs against a bind |
+| Negative caching of a failed open | Nothing caches a refusal, so a corrupt instance is re-opened and re-reported on every bind that resolves to it. A **held** store is the expensive one: fjall retries the directory lock twice at 100 ms before giving up — measured at 202 ms of a blocking-pool thread — plus one uncached log line, per bind. `InUse` is the honest code for it and invites exactly the retry loop that makes it an I/O and log amplifier. Not built because a cache is a decision about *how long*, and the two answers differ: a corrupt directory stays corrupt until somebody fixes it, a held one until the holder lets go |
+| A sidecar this build cannot read is answered as an **absent name** | `Catalog::resolve` builds its candidate list from sidecars that parsed, so a corrupt or future-version `FJORD_META` takes its instance out of the list and a bind is refused with "no database named `x` in this store root" — while `fjord.db.List` reports that same directory as a *problem* under that name, because `list` keeps what `resolve` drops. Pre-existing, and the same "sends somebody looking in the wrong place" shape the half-delivered refusal was: `CatalogError::NoStore`'s neighbour is the variant that could say it properly, and saying it means `resolve` carrying its rejects rather than discarding them |
+| The last of the mid-copy window — a bind **damages** the artifact, and only the publish contract keeps it out | An instance whose fjall `version` marker has arrived and one of whose per-keyspace `current` manifests has not is past the store-presence guard. fjall's create-or-recover recurs per keyspace, and a recovery `remove_dir_all`s a keyspace holding no manifest of its own (`fjall-3.1.8/src/recovery.rs`, "Deleting uninitialized keyspace") — so the open **deletes files the copy had already delivered**, and the copy then finishes owing nothing more while the published artifact is permanently unopenable: a fresh reader of it fails with `Io(NotFound)`. A bind is what discovers this, unattended, on any client's handshake. What the fact-count check buys is that no client is *served* a wrong answer any more — the store's count is compared against the sealed sidecar's and the bind refused by name — and it buys nothing else: the delete happened inside the open, before there was anything to compare. One shape it cannot see, measured: a deleted `entities` tree leaves the count intact — the recovered store holds every fact the sidecar records — and the first row read then fails loudly with `DanglingFactId` rather than answering. Every shape where the recovered store holds *fewer* facts is refused by name, a lost `keyspaces/0` manifest included: that one deletes every keyspace, so the count is zero against a sidecar recording three. **fjall 3.1.8 has no open that neither creates nor recovers** — no read-only or `create_if_missing` option exists, `Database::recover` *is* the deleting path, and the keyspace name-to-id map that an existence check would have to recur through lives inside `keyspaces/0`, an LSM tree readable only by opening the database. So the contract carries this: [operations](website/content/operations.md#publish-by-rename-required-for-a-live-root) now **requires** publishing by rename for a live root, which is what `Catalog::create` already does on the same disk. A `db verify` (the row above) is what would let an operator check a delivered artifact instead of discovering it on a bind |
+| Verifying the content **fingerprint** at a first open, not just the count | The count a first open of a `Complete` instance now checks is the cheap fifth of `db verify`: measured in a release build over a sealed database of 100,000 facts, 96 ms against 445 ms for the full identity walk, on an open of the same database that costs 784 ms by itself — so the count is 12% on top of an open a bind already pays and the walk is 57%. fjall's `O(1)` `approximate_len` is not the cheaper option it looks like: a sealed database's journal is never truncated, every open replays it into a memtable whose facts the tables also hold, and the count sums both — measured at exactly double at 5, 2000, 20000 and 100000 facts. What the fingerprint would add over the count is every divergence that keeps the row *count* right, an `entities` tree deleted included; what would make it affordable is a per-predicate digest recorded at seal, so a first open could check one tree at a time and check the rest lazily, or `db verify` run once at publish time by whoever publishes |
 
 ### A defect, not a gap — a cursor does not name the world it was made in
 

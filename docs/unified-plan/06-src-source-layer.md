@@ -89,13 +89,12 @@ consumers to protect, so the schema gets the shape it should have rather than a 
 a deprecation note nobody would act on. Two line tables in one namespace would mean a producer must
 choose and a reader must ask which one it got, forever.
 
-The migration is bounded and every site is known:
+The migration is bounded and every site is known. It was seven; `fjord-viewer` held two of them
+and has been retired ([D11](OPEN-QUESTIONS.md)), so it is five:
 
 | Site | What changes |
 |---|---|
 | `clients/dotnet/.../Indexer.cs:324,331`, `CodeIndex.cs:378` | emits `FileLine`, and must now compute `start` (UTF-8 bytes), `bytes` and `cstart` (UTF-16 code units) per line — it already counts UTF-16 for columns (`GleanFacts.cs:297`) |
-| `crates/fjord-viewer/src/query.rs:187-197` | `file_text` reads `FileLine` and projects `text` — W11 |
-| `crates/fjord-viewer/tests/over_a_real_index.rs:199,209` | the fixture writes the richer value |
 | `crates/fjord-cli/src/workload.rs:193,232` | two workload queries |
 | `crates/fjord-cli/examples/loadgen.rs:272,347` | the generated corpus |
 | `crates/fjord-client/tests/byte_identical_with_dotnet.rs:75` | the independently-stated schema |
@@ -105,30 +104,53 @@ The migration is bounded and every site is known:
 corpus; `FileLine`'s value is four fields where it was one, so the corpus's size and its per-row
 read cost both move. §1's line-table figures are re-run with R7's list (W13).
 
-**D3 · `styles` ships as a `string` in v1.** The run-length encoding is ASCII — a decimal length
-then a single-letter kind, `"2p6k1p12s"`, a trailing `plain` run omitted, an unrecognised letter read
-as `plain`. That last rule is why the vocabulary is **not** a sigla union: inside an opaque payload
-a new kind costs nothing, where a union alternative would be a Breaking edit to a predicate every
-published index carries (I10). `config.Setting {dimension = "style-vocabulary"}` (W7) states which
-revision was written. When W3 lands, `styles` becomes a packed varint table and **this one
-predicate's fingerprint moves** — which is the third reason it is a predicate of its own.
+**D3 · `styles` ships as a `string` in v1 — superseded by [D13](OPEN-QUESTIONS.md).** This shipped
+a run-length ASCII encoding of fjord's own kind table (`"2p6k1p12s"`, a trailing `plain` run
+omitted, an unrecognised letter read as `plain`) and planned a packed varint table once W3 landed.
+D13 keeps the reasoning and throws away the vocabulary: `styles` is **`bytes`**, the schema says
+nothing about the contents, and `config.Setting {dimension = "style-encoding"}` (W7) names the byte
+format and its token legend together. Both fingerprint moves happen in one edit rather than two.
+Everything the run-length form bought is still bought one layer up — a new token kind costs nothing
+because it never enters a sigla union (I10), and an unrecognised *encoding* renders those lines
+plain where an unrecognised *letter* used to.
 
 ## Two consumer recipes that must be written down, because the shapes are sharp
 
 **`FileLineAt` — offset → line.** Keyed `{file, start, line}`, all key. There is no descending seek
-and no `LIMIT` in sigla, so the shape is a range upward bounded by the client:
-`{file = F, start = X..}` with a client-side limit of 1.
+and no `LIMIT` in sigla, so the shape is a range upward bounded by the client — and the bound is a
+**comparison statement, not `..`**. `..` is the string-prefix operator; an integer range is `S >= n`,
+which the level that captures `S` folds into the seek:
 
-- Exact hit: the returned row **is** the answer.
-- Mid-line `X`: the returned row is the line *after* the one containing `X`, so the answer is
-  `line - 1` — arithmetic on a row already in hand, no second seek.
-- **`X` at or past the last line's start: the range is empty.** The consumer must fall back to
+```
+S, L where src.FileLineAt {file = F, start = S, line = L}; S >= 12345
+```
+
+with a client-side limit of 1. **`S` is projected because it is what distinguishes the first two
+cases**: the row alone does not say which it is, and a consumer holding only the line number is one
+line wrong at every line start.
+
+- Exact hit — `S` equals the offset: the returned row **is** the answer, and **the last line's
+  start is an exact hit like any other**, because the range upward from it finds it.
+- Mid-line `X` — `S` greater than the offset: the returned row is the line *after* the one
+  containing `X`, so the answer is `line - 1` — arithmetic on a row already in hand, no second
+  seek.
+- **`X` strictly past the last line's start: the range is empty.** The consumer must fall back to
   `FileInfo.lines`, and that fallback is not optional — it is the common case for a reference in the
   last line of a file. Issue #39 does not state it.
 
-**A window.** `FileLine {file = F, line = a..b}` is a range on the last key field: 0.4–1.4 ms for a
-100 line window at any offset in a 500,000 line file, which rests on the `SeekKeyPart::Range`
-planner fix already in the tree.
+Both the issue and this document's first draft said "at *or* past", and the "at" half of that is
+wrong. All three cases are pinned by `offset_to_line_has_three_cases_and_the_third_is_empty`
+(`crates/fjord-cli/tests/source_layer.rs`), which is where to read the boundary rather than here.
+
+**A window.** A range on the last key field, written the same way:
+
+```
+X.value where X = src.FileLine {file = F, line = L}; L >= 400; L < 450
+```
+
+It rests on the range-part planner fix already in the tree (`SeekKeyPart`). The lesson from the run
+that motivated it is that a bounded window costs a seek and the page it draws rather than the file
+— the figures themselves are in the measurement register, which is closed until a 1.0 pass.
 
 ## Acceptance criteria
 
@@ -154,14 +176,17 @@ planner fix already in the tree.
 5. **The two recipes are corpus'd, edge cases included.** Three queries, each with expected rows:
    offset exactly at a line start; offset mid-line; **offset past the last line's start, asserting
    zero rows**, with the `FileInfo` fallback shown in the test and in the schema comment.
-6. **The window's cost claim is measured, not asserted.** A bench or a counted test showing a
-   100 line window on a large synthetic file reads the window and not the offset — the same
-   construction `iter::a_bounded_seek_reads_the_window_and_not_the_offset` already uses. Recorded in
-   `bench/FINDINGS.md` with the corpus size.
-7. **The style encoding has a decoder and a property.** A round-trip test over generated
-   `(length, kind)` run lists: encode → decode → equal, including the omitted trailing `plain` run
-   and an unrecognised letter reading as `plain`. It lives wherever the first consumer does (W11);
-   the *format* is specified in the schema comment and the book.
+6. **The window's cost claim is measured, not asserted** — **re-cut**: the counted test is the
+   whole of it. `iter::a_bounded_seek_reads_the_window_and_not_the_offset` asserts ten reads for a
+   ten-row window against a table that starts it late, which is the claim; a *scale* figure over a
+   real corpus belongs to R7's pass, because `bench/FINDINGS.md` is closed and adding one entry to
+   a closed register would be the only number in it a reader could mistake for current.
+7. **The style payload has a producer, a property and a declared name** — re-cut by
+   [D13](OPEN-QUESTIONS.md), which moved the format out of fjord. There is no fjord codec to
+   round-trip, so the property belongs to whoever writes the bytes: the .NET indexer's
+   `SemanticTokensTests` covers the overlapping, line-crossing and whitespace cases against
+   Roslyn's real output. What this side owes is the *contract* — `bytes` in the declaration, no
+   vocabulary in the comment, and `style-encoding` in `config`'s reserved list.
 8. **`sample_schema.rs` moves with it**: the predicate count assertion, the `KEY_ORDER` table, and
    the resolving reader from W4. `cargo test -p fjord-cli` green.
 9. **The .NET side and the goldens.** The re-pasted constant in both C# files, the indexer emitting

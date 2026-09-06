@@ -1,0 +1,96 @@
+# The MSBuild layer: the solution and project graph a build evaluates, and the references
+# between projects.
+#
+# A project is identified by its project file alone. Everything MSBuild *evaluated* — target
+# framework, SDK, output type — is on the value side, so re-evaluating one project under a
+# different SDK does not mint a second project, and a consumer holding a `.csproj` path can
+# name it without knowing the other six fields.
+#
+# This layer does not import `csharp` and `csharp` does not import it: an MSBuild solution
+# compiles F# and VB as readily as C#, and the join from a declaration to the project that
+# compiled it goes through `src.File`.
+#
+# Field order is key order, and every reverse question is its own predicate.
+
+schema msbuild {
+
+  import src
+
+  # ---- the artifacts a repository contains ---------------------------------------------
+
+  # A `.sln` that exists in the repository.
+  predicate Solution : { file : src.File }
+
+  # An evaluated MSBuild project, identified by its project file. The value is what MSBuild
+  # resolved for the configuration this database was built under — `config.Setting
+  # {dimension = "framework"}` and friends record what that was, because a project resolved
+  # *nearest-compatible* records its own target here and not the resolution root.
+  #
+  # Every field is optional because MSBuild may leave it unset.
+  predicate Project :
+    { file : src.File }
+    -> { platformTarget  : src.MaybeString
+       , targetFramework : src.MaybeString
+       , sdk             : src.MaybeString
+       , outputType      : src.MaybeString
+       , assemblyName    : src.MaybeString
+       , rootNamespace   : src.MaybeString
+       }
+
+  # An assembly a project in this graph **produces** — a string identity, as a file is a
+  # path. Only that: nothing here names an assembly referenced from *outside* the graph,
+  # so an `Assembly` fact always has a `Compilation` behind it and never stands for a
+  # framework DLL. A reference list from a design-time build is every resolved assembly,
+  # some hundreds per project, with nothing in it separating a `<Reference>` somebody
+  # wrote from the framework's own — keying those on a file name would mint identities no
+  # consumer could tell apart from these.
+  predicate Assembly : { name : string }
+
+  # A NuGet package. A compound identity, because a package is its name and its version and
+  # neither alone; `name` leads, so "every version of `Newtonsoft.Json` here" is a range.
+  predicate Package : { name : string, version : string }
+
+  # ---- containment ---------------------------------------------------------------------
+
+  # A solution's projects, and the reverse. Both directions are stored, because neither is
+  # derivable in a seek from the other.
+  predicate SolutionToProject : { solution : Solution, project : Project }
+  predicate ProjectToSolution : { project : Project, solution : Solution }
+
+  # A source file an evaluated project compiled. `project` leads: "this project's files".
+  predicate ProjectToSourceFile : { project : Project, src : src.File }
+
+  # The reverse — which project compiled this file. The join a code viewer makes on every open,
+  # from a `src.File` it got out of the semantic layer or out of a search hit.
+  predicate SourceFileToProject : { src : src.File, project : Project }
+
+  # ---- references: the graph that was missing ------------------------------------------
+
+  # A `<ProjectReference>`: `from` builds against `to`. `from` leads: "what does this project
+  # depend on". Key-only — a reference has no attributes worth a point read.
+  predicate ProjectReference : { from : Project, to : Project }
+
+  # The reverse — who depends on this project, the direction that decides whether a change is
+  # safe. A separate predicate so that both fan-outs are seeks.
+  predicate ProjectReferencedBy : { to : Project, from : Project }
+
+  # A `<PackageReference>`: which package a project asks for, and the version *range* it wrote
+  # (the resolved version is in the `Package` identity; the range is what the file said, and the
+  # two differ under central package management or a floating version).
+  predicate PackageReference : { project : Project, package : Package } -> { range : src.MaybeString }
+
+  # The reverse — which projects use this package, keyed package-first. The question asked the
+  # day a CVE lands.
+  predicate PackageDependent : { package : Package, project : Project }
+
+  # ---- what a build produces -----------------------------------------------------------
+
+  # A project, a target framework, and the assembly the pair produces. `assembly` leads,
+  # because the question this answers is the one a stack trace poses: which project produced
+  # `Company.Domain.dll`?
+  predicate Compilation : { assembly : Assembly, framework : string, project : Project }
+
+  # The same crossing from the project's side, for the panel that opens on a project.
+  predicate ProjectCompilation : { project : Project, framework : string } -> { assembly : Assembly }
+
+}

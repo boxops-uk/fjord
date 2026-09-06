@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- A reference assembly throws null rather than initialising anything. -->
+    <NoWarn>$(NoWarn);CS8597</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- What marks a reference assembly, spelled the way `dotnet/runtime` spells it: an
+         assembly attribute the build adds, not one written in a source file. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.ReferenceAssemblyAttribute" />
+  </ItemGroup>
+</Project>

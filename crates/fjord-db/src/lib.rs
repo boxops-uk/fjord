@@ -50,17 +50,30 @@
 //!
 //! A **producer** has to state the schema itself and assert it, because it is about to
 //! encode facts against it — and a disagreement discovered at the handshake is a refused
-//! connection rather than a database full of rows nobody can read back. Read one from a
-//! `.sigla` file with [`read_schema`]:
+//! connection rather than a database full of rows nobody can read back.
 //!
-//! ```no_run
+//! A schema is one or more `.sigla` files: an `import` names another namespace, and what
+//! a producer needs is the **union**. So the reader takes the set, the entry first, and
+//! follows the imports through it — which is what lets a producer embed its schema with
+//! `include_str!` and touch no filesystem at all:
+//!
+//! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let source = std::fs::read_to_string("schemas/code.sigla")?;
-//! let schema = fjord_db::read_schema("code.sigla", &source)?;
-//! # let _ = schema;
+//! // In a real producer these are `include_str!`s.
+//! let entry = "schema app { import base\n predicate Use : { of : base.Thing } }";
+//! let base = "schema base { predicate Thing : string }";
+//!
+//! let schema = fjord_db::read_schema([("app.sigla", entry), ("base.sigla", base)])?;
+//!
+//! assert_eq!(schema.len(), 2);
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! The list's **order is the search order**: where two sources claim one import name,
+//! the first wins. Reading from disk instead is
+//! [`fjord_schema::syntax::resolve::resolve`], which searches directories in the same
+//! way.
 //!
 //! # A reference is the whole target fact
 //!
@@ -103,20 +116,25 @@ pub use fjord_wire::{
     Desc, ErrorCode, Mode, ProfileStep, QueryProfile, WireFact, WireRef, WireValue,
 };
 
-/// Read a schema from `.sigla` source.
+/// Read a schema from `.sigla` sources, **the entry first**, following its imports
+/// through the rest.
 ///
-/// `name` is what diagnostics call the file. The error is the rendered diagnostics, so it
-/// says which line rather than that something was wrong.
+/// Each source is `(name, text)`, where the name is what diagnostics call it and what an
+/// `import` matches against — `base` is answered by a source named `base` or
+/// `base.sigla`. The list's order is the search order.
 ///
-/// **Imports are not followed here.** This lowers one block of source; a schema that spans
-/// files is resolved by [`fjord_schema::syntax::resolve`], which needs to know the
-/// directories to search and is therefore the caller's decision.
+/// **This touches no filesystem**, which is what lets a producer embed its schema with
+/// `include_str!` and a browser build open one with an `import` in it. Reading from disk
+/// is [`fjord_schema::syntax::resolve::resolve`].
 ///
 /// # Errors
 ///
-/// The diagnostics, rendered, if the source does not parse or does not lower.
-pub fn read_schema(name: &str, source: &str) -> Result<Schema, String> {
-    fjord_schema::syntax::read(name, source)
+/// The rendered reason: an empty list, an import nothing in the set answers, a syntax
+/// error in any source, or a redeclaration across the union.
+pub fn read_schema<'a>(
+    sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<Schema, String> {
+    fjord_schema::syntax::resolve::resolve_from(sources).map(|resolved| resolved.schema)
 }
 
 /// **The README, compiled.**

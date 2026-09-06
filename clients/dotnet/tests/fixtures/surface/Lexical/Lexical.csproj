@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Surface.Lexical</RootNamespace>
+
+    <!-- 7.1 (application startup) is a *declaration* row, so the entry point has to be a real
+         entry point rather than an ordinary static method: a class library would index the
+         same `Main` with nothing marking it as the one the runtime calls. Three classes here
+         declare a signature that qualifies, which is CS0017 unless one of them is named. -->
+    <OutputType>Exe</OutputType>
+    <StartupObject>Surface.Lexical.Concepts.LexEntryPoint</StartupObject>
+
+    <!-- 6.5.9 (the nullable directive) is only observable against an *off* baseline. With the
+         project-wide setting enabled, every `#nullable disable` region would be the odd one
+         out and a plain `string` under `#nullable enable` would be indistinguishable from the
+         default — which is the whole fact the directive rows exist to pin. -->
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+</Project>
