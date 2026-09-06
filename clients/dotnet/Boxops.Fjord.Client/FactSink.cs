@@ -84,7 +84,7 @@ public sealed class FactSink : IDisposable
     /// <para>
     /// A writer that fails silently is a partial index that looks complete, so the failure
     /// is latched and the queue is closed — which unblocks any producer parked on a full
-    /// queue and makes the next <see cref="Flush"/> throw rather than hang.
+    /// queue and makes the next <see cref="Enqueue"/> throw rather than hang.
     /// </para>
     /// <para>
     /// <b>Throwing there rather than only at the end is the whole point, and it was
@@ -271,16 +271,15 @@ public sealed class FactSink : IDisposable
             contended = true;
         }
 
+        List<FjordFact>? full;
+
         try
         {
             var batch = _pending[predicate];
             batch.Add(fact);
             Interlocked.Increment(ref Facts[predicate]);
 
-            if (batch.Count >= _batch)
-            {
-                Flush(predicate);
-            }
+            full = batch.Count >= _batch ? Detach(predicate) : null;
         }
         finally
         {
@@ -291,40 +290,75 @@ public sealed class FactSink : IDisposable
         {
             Interlocked.Increment(ref _contentions);
         }
+
+        // **Handed over with the lock released**, which is the whole of why the two steps
+        // are separate. The queue is bounded, so this blocks whenever the writers are
+        // behind — and blocking here while holding the predicate's lock made one walker's
+        // wait every walker's: each of the others producing that predicate queued up
+        // behind a thread that was itself waiting for a writer. Measured over 5.8M facts,
+        // `queueing` was 12.8% of a walker's time and `contended` 48%, and the second is
+        // mostly the first seen from the other side.
+        //
+        // **Two threads may hand over the same predicate's batches out of order**, and
+        // that is sound: `writer_count_and_write_order_do_not_change_the_database` is
+        // asserted, and `ops-I4` is order-independent by construction. The one consumer
+        // that needs a deterministic run of blocks is `--emit`, which forces one walker
+        // and one writer and so never reaches this.
+        if (full is not null)
+        {
+            Enqueue(predicate, full);
+        }
     }
 
     public void FlushAll()
     {
         for (var predicate = 0u; predicate < _pending.Length; predicate++)
         {
+            List<FjordFact>? full;
+
             lock (_locks[predicate])
             {
-                Flush(predicate);
+                full = Detach(predicate);
+            }
+
+            if (full is not null)
+            {
+                Enqueue(predicate, full);
             }
         }
     }
 
     /// <summary>
-    /// Detach the pending block and hand it to the writer. Never writes here.
+    /// Take the pending block, leaving a fresh one behind. Hands nothing to a writer.
     /// </summary>
     /// <remarks>
-    /// <b>Called with this predicate's lock held</b>, by <see cref="Add"/> or
-    /// <see cref="FlushAll"/>: it swaps the list, and a swap racing an append is a fact
-    /// written into a batch a writer has already taken.
+    /// <b>Called with this predicate's lock held</b>, and it is the only part that needs
+    /// to be: a swap racing an append is a fact written into a batch a writer has already
+    /// taken. A fresh list rather than <c>Clear()</c>, because the writer owns the one
+    /// handed over until it has encoded and sent it.
     /// </remarks>
-    private void Flush(uint predicate)
+    private List<FjordFact>? Detach(uint predicate)
     {
         var batch = _pending[predicate];
 
         if (batch.Count == 0)
         {
-            return;
+            return null;
         }
 
-        // A fresh list rather than Clear(): the writer thread owns the one we hand over
-        // until it has encoded and sent it, and clearing it here would race that.
         _pending[predicate] = new List<FjordFact>(_batch);
 
+        return batch;
+    }
+
+    /// <summary>Hand a detached block to the writers, waiting if they are behind.</summary>
+    /// <remarks>
+    /// <b>Called with no lock held.</b> The bound on the queue is the backpressure, so
+    /// this is where a walk waits when the writers cannot keep up — and it must be the
+    /// only thing waiting, not a lock every producer of that predicate needs.
+    /// </remarks>
+    private void Enqueue(uint predicate, List<FjordFact> batch)
+    {
         var started = Stopwatch.GetTimestamp();
         try
         {
