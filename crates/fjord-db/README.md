@@ -4,7 +4,7 @@ A client for **Fjord DB** — an embedded, immutable **fact database**.
 
 ```toml
 [dependencies]
-fjord-db = "0.1.0"
+fjord-db = "0.2.0"
 ```
 
 A database is built once — schema, then facts — sealed, and thereafter only read. Facts are
@@ -81,7 +81,7 @@ same facts twice writes nothing, which is what makes retrying a dropped connecti
 
 ## Status
 
-`0.1.0`, and honest about it: no authentication (the transport is the trust boundary), no
+`0.2.0`, and honest about it: no authentication (the transport is the trust boundary), no
 stored derivation, no ingestion from files. The [status
 page](https://boxops-uk.github.io/fjord/status) has the full inventory, and the [design
 book](https://boxops-uk.github.io/fjord/) it belongs to runs the engine in the page.
