@@ -396,6 +396,23 @@ pub struct Reference {
     pub length: i64,
 }
 
+/// A reference whose target is **file-local** — a parameter, a local, a lambda
+/// binding: anything the producer has no global name for.
+///
+/// Span to span inside one file, and that is not a shortcut. A SCIP `local` id is
+/// an occurrence ordinal, so it names a different variable in every file and moves
+/// whenever one is edited; giving these symbols would mint identities that look
+/// global and are not. They are also the majority of the references in a real
+/// corpus, so a code view that skipped them would leave most of its text dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LocalReference {
+    pub start: i64,
+    pub length: i64,
+    /// Where the thing it names is declared, in the same file.
+    pub target_start: i64,
+    pub target_length: i64,
+}
+
 /// A search hit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Hit {
@@ -550,6 +567,35 @@ pub fn xrefs(path: &str) -> Result<Vec<Reference>, String> {
     )?;
 
     let mut found: Vec<Reference> = rows.iter().filter_map(|row| reference(row, path)).collect();
+
+    found.sort_by_key(|found| found.start);
+    Ok(found)
+}
+
+/// Every file-local reference in one file, in position order.
+pub fn local_xrefs(path: &str) -> Result<Vec<LocalReference>, String> {
+    let rows = crate::corpus::values(
+        &format!(
+            "{{span = SP, target = TG}} where F = src.File {file}; \
+             codemarkup.FileLocalXRef {{file = F, span = SP, target = TG, role = R}}",
+            file = literal(path)
+        ),
+        FILE_CAP,
+    )?;
+
+    let mut found: Vec<LocalReference> = rows
+        .iter()
+        .filter_map(|row| {
+            let span = field(row, "span")?;
+            let target = field(row, "target")?;
+            Some(LocalReference {
+                start: as_int(field(span, "start")?)?,
+                length: as_int(field(span, "length")?)?,
+                target_start: as_int(field(target, "start")?)?,
+                target_length: as_int(field(target, "length")?)?,
+            })
+        })
+        .collect();
 
     found.sort_by_key(|found| found.start);
     Ok(found)

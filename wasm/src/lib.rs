@@ -423,3 +423,79 @@ impl From<codeview::Hit> for Hit {
         }
     }
 }
+
+/// **One file's references, shaped for hit-testing.**
+///
+/// A code view asks "what is under the cursor" on every mouse move, and there are
+/// hundreds of references in a file. Answering that with an array of objects means
+/// hundreds of boundary crossings per move, because each field of a `wasm_bindgen`
+/// struct is a getter that crosses — so this is the flat shape instead: two typed
+/// arrays and a parallel list of names, fetched once when the file opens. The
+/// search is then a binary search over an `Int32Array`, entirely in the page.
+#[wasm_bindgen]
+pub struct FileRefs {
+    spans: Vec<i32>,
+    symbols: Vec<String>,
+    locals: Vec<i32>,
+}
+
+#[wasm_bindgen]
+impl FileRefs {
+    /// `[start, length]` per reference, ordered by `start` — so a binary search
+    /// over even indices finds the span a byte offset falls in.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn spans(&self) -> Vec<i32> {
+        self.spans.clone()
+    }
+
+    /// The symbol each span names, parallel to `spans` — entry `n` belongs to the
+    /// span at `spans[n * 2]`.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn symbols(&self) -> Vec<String> {
+        self.symbols.clone()
+    }
+
+    /// `[start, length, targetStart, targetLength]` per **file-local** reference,
+    /// ordered by `start`. These have no symbol: the answer is a span in this same
+    /// file, which is what a jump to a parameter's declaration needs.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn locals(&self) -> Vec<i32> {
+        self.locals.clone()
+    }
+}
+
+/// Every reference in one file — global and file-local — ready to hit-test.
+///
+/// # Errors
+/// If no corpus is loaded, or either query fails.
+#[wasm_bindgen]
+pub fn refs(path: &str) -> Result<FileRefs, JsError> {
+    let global = codeview::xrefs(path).map_err(|problem| JsError::new(&problem))?;
+    let local = codeview::local_xrefs(path).map_err(|problem| JsError::new(&problem))?;
+
+    let mut spans = Vec::with_capacity(global.len() * 2);
+    let mut symbols = Vec::with_capacity(global.len());
+
+    for found in global {
+        spans.push(found.start as i32);
+        spans.push(found.length as i32);
+        symbols.push(found.symbol);
+    }
+
+    let mut locals = Vec::with_capacity(local.len() * 4);
+    for found in local {
+        locals.push(found.start as i32);
+        locals.push(found.length as i32);
+        locals.push(found.target_start as i32);
+        locals.push(found.target_length as i32);
+    }
+
+    Ok(FileRefs {
+        spans,
+        symbols,
+        locals,
+    })
+}

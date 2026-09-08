@@ -14,6 +14,7 @@ import { TreeList } from '@astryxdesign/core/TreeList'
 import type { TreeListItemData } from '@astryxdesign/core/TreeList'
 import { type Blob, type Corpus, loadCorpus } from './corpus'
 import { paint } from './highlight'
+import { byteOffsetOf, positionAt, spanAt } from './xref'
 
 /**
  * **A code browser over a real index**, with nothing behind it but a static file.
@@ -89,6 +90,21 @@ export function Browse() {
     () => (corpus && symbol ? corpus.references(symbol) : []),
     [corpus, symbol],
   )
+
+  /**
+   * This file's references, flat — fetched once per file, hit-tested per move.
+   *
+   * **Each getter is read exactly once here**, because a `wasm_bindgen` getter
+   * returning a `Vec` copies it out of linear memory on every access. Holding the
+   * `FileRefs` handle and reading `.spans` inside the mouse handler would copy two
+   * thousand integers per mouse move, which is the cost this flat shape exists to
+   * avoid.
+   */
+  const fileRefs = useMemo(() => {
+    if (!corpus || !path) return null
+    const held = corpus.refs(path)
+    return { spans: held.spans, symbols: held.symbols, locals: held.locals }
+  }, [corpus, path])
   const hits = useMemo(
     () => (corpus && term.trim() ? corpus.search(term.trim()) : []),
     [corpus, term],
@@ -107,6 +123,50 @@ export function Browse() {
   }, [at, blob, outline, path, symbol])
 
   /**
+   * What a point in the code names: a symbol, a declaration in this same file, or
+   * nothing. **Global references are asked first**, because a local one covering
+   * the same text would be the narrower, less useful answer — a parameter's own
+   * declaration site is also a use of its type.
+   */
+  const resolve = (x: number, y: number): Jump | null => {
+    if (!view.current || !blob || !fileRefs) return null
+
+    const at = positionAt(view.current, x, y)
+    if (!at) return null
+
+    const offset = byteOffsetOf(blob, at.line, at.column)
+    if (offset === null) return null
+
+    const global = spanAt(fileRefs.spans, 2, offset)
+    if (global !== -1) return { kind: 'symbol', symbol: fileRefs.symbols[global] }
+
+    const local = spanAt(fileRefs.locals, 4, offset)
+    if (local !== -1) return { kind: 'local', start: fileRefs.locals[local * 4 + 2] }
+
+    return null
+  }
+
+  const follow = (jump: Jump) => {
+    if (jump.kind === 'local') {
+      // Its declaration is a span in this same file, which is the whole reason
+      // these carry no symbol.
+      if (path) setAt({ path, start: jump.start })
+      return
+    }
+
+    setSymbol(jump.symbol)
+
+    // A symbol with no definition here is ordinary — `System.String` is named by
+    // this index and declared outside it — so the uses panel still answers for it
+    // and the view simply does not move.
+    const [declared] = corpus?.definitions(jump.symbol) ?? []
+    if (declared) {
+      setPath(declared.path)
+      setAt({ path: declared.path, start: declared.start })
+    }
+  }
+
+  /**
    * **Bring the highlighted line into view.**
    *
    * Highlighting a line a thousand lines down and leaving the reader at the top
@@ -116,12 +176,27 @@ export function Browse() {
    */
   const view = useRef<HTMLDivElement>(null)
   const target = highlighted[0]
+  /** Whether something under the cursor can be followed — the only affordance a
+   *  hit-tested link has, since nothing wraps it in an element to style. */
+  const [overLink, setOverLink] = useState(false)
+  const pending = useRef(0)
 
   useEffect(() => {
     if (!target || !view.current) return
-    view.current
-      .querySelector(`[data-line="${target}"]`)
-      ?.scrollIntoView({ block: 'center' })
+
+    const line = view.current.querySelector(`[data-line="${target}"]`)
+    if (!line) return
+
+    // **The code pane, not the document.** `scrollIntoView` scrolls every
+    // scrollable ancestor, which here includes the page — so jumping to a line
+    // also scrolls the site header away, and the reader loses the frame around
+    // what they just asked for.
+    const scroller = scrollableAround(line)
+    if (!scroller) return
+
+    const box = line.getBoundingClientRect()
+    const frame = scroller.getBoundingClientRect()
+    scroller.scrollTop += box.top - frame.top - (frame.height - box.height) / 2
   }, [target, path])
 
   if (failure) {
@@ -203,7 +278,26 @@ export function Browse() {
       }
       content={
         <LayoutContent isScrollable padding={0}>
-          <VStack ref={view} gap={0}>
+          <VStack
+            ref={view}
+            gap={0}
+            style={{ cursor: overLink ? 'pointer' : undefined }}
+            onClick={(event) => {
+              const jump = resolve(event.clientX, event.clientY)
+              if (jump) follow(jump)
+            }}
+            onMouseMove={(event) => {
+              // Coalesced to a frame: a caret lookup per pixel is work nobody
+              // sees, and the answer cannot change faster than a repaint.
+              const { clientX, clientY } = event
+              if (pending.current) return
+              pending.current = requestAnimationFrame(() => {
+                pending.current = 0
+                setOverLink(resolve(clientX, clientY) !== null)
+              })
+            }}
+            onMouseLeave={() => setOverLink(false)}
+          >
           {painted && path ? (
             // `width="100%"` so a short file still fills the pane rather than
             // shrinking to its longest line. It costs nothing: the block's own
@@ -298,6 +392,20 @@ export function Browse() {
     />
   )
 }
+
+/** The nearest ancestor that actually scrolls vertically, or `null`. */
+function scrollableAround(node: Element): Element | null {
+  for (let at = node.parentElement; at; at = at.parentElement) {
+    const overflow = getComputedStyle(at).overflowY
+    if ((overflow === 'auto' || overflow === 'scroll') && at.scrollHeight > at.clientHeight) {
+      return at
+    }
+  }
+  return null
+}
+
+/** What following a point in the code does. */
+type Jump = { kind: 'symbol'; symbol: string } | { kind: 'local'; start: number }
 
 /**
  * Which line a byte offset falls on, one-based.

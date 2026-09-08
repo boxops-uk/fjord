@@ -14,6 +14,7 @@
 import init, {
   type Blob,
   type Definition,
+  type FileRefs,
   type Hit,
   type Reference,
   definitions,
@@ -22,12 +23,13 @@ import init, {
   open,
   outline,
   references,
+  refs,
   search,
   xrefs,
 } from './wasm/fjord_wasm.js'
 import wasmUrl from './wasm/fjord_wasm_bg.wasm?url'
 
-export type { Blob, Definition, Hit, Reference }
+export type { Blob, Definition, FileRefs, Hit, Reference }
 
 /** What a load answered — the shape `fjord_inspect::corpus::Loaded` serialises to. */
 type Loaded = {
@@ -46,6 +48,8 @@ export type Corpus = {
   open: (path: string) => Blob
   outline: (path: string) => Definition[]
   xrefs: (path: string) => Reference[]
+  /** One file's references, flat, for hit-testing what is under the cursor. */
+  refs: (path: string) => FileRefs
   definitions: (symbol: string) => Definition[]
   references: (symbol: string) => Reference[]
   search: (prefix: string) => Hit[]
@@ -101,6 +105,7 @@ export function loadCorpus(): Promise<Corpus> {
       open,
       outline,
       xrefs,
+      refs,
       definitions,
       references,
       search,
