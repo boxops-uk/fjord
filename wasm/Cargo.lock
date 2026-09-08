@@ -102,6 +102,7 @@ dependencies = [
  "fjord-schema",
  "fjord-store",
  "fjord-store-mem",
+ "fjord-wire",
  "serde",
  "serde_json",
  "tokio-util",

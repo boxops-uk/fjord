@@ -24,7 +24,7 @@
 //! `(name, text)` and gets the union, with `--no-default-features` making "no
 //! filesystem" a compile error rather than a promise.
 
-use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::prelude::{JsError, wasm_bindgen};
 
 /// Lex `source` as sigla and answer the [token view](fjord_inspect::Tokens) as
 /// JSON.
@@ -190,4 +190,236 @@ pub fn samples() -> String {
 #[must_use]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
+}
+
+// ======================================================================================
+// The code browser's client surface
+// ======================================================================================
+//
+// **Typed, not JSON.** Everything above answers a string a page must `JSON.parse`,
+// which is right for a panel that shows one answer and wrong for a browser that
+// redraws on every scroll: parsing a document to reach numbers the engine already
+// had is work nobody asked for. These are `wasm_bindgen` types instead, so
+// `wasm-bindgen` writes the `.d.ts` and TypeScript sees a real interface.
+//
+// **And the blob is a handle rather than a copy.** A file is opened once and stays
+// in the module; the page pulls the lines it is drawing. A windowed viewer draws
+// forty lines of a thousand, so shipping the thousand across the boundary to draw
+// forty is the cost this shape exists to avoid.
+
+use fjord_inspect::codeview;
+
+/// A definition — an outline row, or where a symbol is declared.
+#[wasm_bindgen(getter_with_clone)]
+pub struct Definition {
+    pub symbol: String,
+    pub path: String,
+    /// A byte offset into the file, in the unit `position-encoding` names.
+    pub start: i32,
+    pub length: i32,
+    /// The union alternative's name — `class_`, `method_` — or an `other` payload.
+    pub kind: String,
+    pub name: String,
+}
+
+/// A span in a file that names a symbol.
+#[wasm_bindgen(getter_with_clone)]
+pub struct Reference {
+    pub symbol: String,
+    pub path: String,
+    pub start: i32,
+    pub length: i32,
+}
+
+/// A search hit.
+#[wasm_bindgen(getter_with_clone)]
+pub struct Hit {
+    pub name: String,
+    pub symbol: String,
+    pub kind: String,
+    pub path: String,
+    pub line: i32,
+}
+
+/// **One file, held in the module.** Opened once; the page pulls what it draws.
+#[wasm_bindgen]
+pub struct Blob {
+    inner: codeview::Blob,
+}
+
+#[wasm_bindgen]
+impl Blob {
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn path(&self) -> String {
+        self.inner.path.clone()
+    }
+
+    /// How many lines the file has.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn lines(&self) -> usize {
+        self.inner.lines.len()
+    }
+
+    /// What the database says its style payloads are, or `undefined` where it says
+    /// nothing this build can read — in which case every line's runs are empty and
+    /// the file renders plain, which is what the schema asks for.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn encoding(&self) -> Option<String> {
+        self.inner.encoding.map(|encoding| {
+            match encoding {
+                codeview::StyleEncoding::RoslynLsp1 => "roslyn-lsp-1",
+                codeview::StyleEncoding::ScipSyntax1 => "scip-syntax-1",
+            }
+            .to_owned()
+        })
+    }
+
+    /// One line's text, **one-based** as every line number in the schema is.
+    #[must_use]
+    pub fn text(&self, line: usize) -> Option<String> {
+        self.at(line).map(|held| held.text.clone())
+    }
+
+    /// The byte offset of a line's first byte.
+    #[must_use]
+    pub fn start(&self, line: usize) -> Option<i32> {
+        self.at(line).map(|held| held.start as i32)
+    }
+
+    /// One line's colour runs, flat: **four numbers per run** — start, length, kind,
+    /// modifiers — in order and non-overlapping.
+    ///
+    /// A `Uint32Array` rather than an array of objects because a large file has
+    /// thousands of runs and a page redraws them on every scroll: one allocation
+    /// instead of one per run. `start` and `length` count in the *encoding's* unit,
+    /// which `encoding` names and which is not always this database's.
+    #[must_use]
+    pub fn runs(&self, line: usize) -> Vec<u32> {
+        self.at(line).map_or_else(Vec::new, |held| {
+            held.runs
+                .iter()
+                .flat_map(|run| [run.start, run.length, run.kind, run.modifiers])
+                .collect()
+        })
+    }
+
+    fn at(&self, line: usize) -> Option<&fjord_inspect::codeview::BlobLine> {
+        self.inner.lines.get(line.checked_sub(1)?)
+    }
+}
+
+/// Every file in the loaded index.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn files() -> Result<Vec<String>, JsError> {
+    codeview::files().map_err(|problem| JsError::new(&problem))
+}
+
+/// Open one file: its lines, and each line's colour runs already resolved.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn open(path: &str) -> Result<Blob, JsError> {
+    codeview::blob(path)
+        .map(|inner| Blob { inner })
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// The definitions declared in one file, in position order.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn outline(path: &str) -> Result<Vec<Definition>, JsError> {
+    codeview::outline(path)
+        .map(|found| found.into_iter().map(Definition::from).collect())
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// Every reference in one file, in position order — what a renderer splices links
+/// over the text with.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn xrefs(path: &str) -> Result<Vec<Reference>, JsError> {
+    codeview::xrefs(path)
+        .map(|found| found.into_iter().map(Reference::from).collect())
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// Where a symbol is defined. More than one is legitimate — a C# partial class is
+/// declared in two files.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn definitions(symbol: &str) -> Result<Vec<Definition>, JsError> {
+    codeview::definitions(symbol)
+        .map(|found| found.into_iter().map(Definition::from).collect())
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// Every use of a symbol across the whole index.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn references(symbol: &str) -> Result<Vec<Reference>, JsError> {
+    codeview::references(symbol)
+        .map(|found| found.into_iter().map(Reference::from).collect())
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// Case-insensitive prefix search over the name index.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn search(prefix: &str) -> Result<Vec<Hit>, JsError> {
+    codeview::search(prefix)
+        .map(|found| found.into_iter().map(Hit::from).collect())
+        .map_err(|problem| JsError::new(&problem))
+}
+
+impl From<codeview::Definition> for Definition {
+    fn from(found: codeview::Definition) -> Self {
+        Self {
+            symbol: found.symbol,
+            path: found.path,
+            start: found.start as i32,
+            length: found.length as i32,
+            kind: found.kind,
+            name: found.name,
+        }
+    }
+}
+
+impl From<codeview::Reference> for Reference {
+    fn from(found: codeview::Reference) -> Self {
+        Self {
+            symbol: found.symbol,
+            path: found.path,
+            start: found.start as i32,
+            length: found.length as i32,
+        }
+    }
+}
+
+impl From<codeview::Hit> for Hit {
+    fn from(found: codeview::Hit) -> Self {
+        Self {
+            name: found.name,
+            symbol: found.symbol,
+            kind: found.kind,
+            path: found.path,
+            line: found.line as i32,
+        }
+    }
 }

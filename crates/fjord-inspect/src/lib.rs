@@ -23,6 +23,8 @@
 //! `dependency_closure` in `fjord-store`.
 
 /// What a schema declares — what everything after parsing resolves against.
+/// The questions a code browser asks, answered in Rust rather than in the page.
+pub mod codeview;
 /// A real code index loaded from an image, queried in the page.
 pub mod corpus;
 /// The database as a table: every row, as bytes and as a fact.

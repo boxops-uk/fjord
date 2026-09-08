@@ -161,6 +161,26 @@ pub fn rows(query: &str) -> Rows {
     })
 }
 
+/// Run `query` over the loaded corpus and answer each row's **decoded value**.
+///
+/// The rows [`rows`] renders, before rendering: `Value` rather than
+/// `serde_json::Value`, because [`crate::codeview`] destructures fields out of them
+/// and going through JSON to do that would parse a document to reach numbers the
+/// engine already had.
+///
+/// `Err` carries what a caller can show — a query that did not compile, or a fault
+/// while running. There is no corpus-not-loaded arm: that is an `Err` too, and one
+/// message covers it.
+pub fn values(query: &str, cap: usize) -> Result<Vec<fjord_encoding::tuple::Value>, String> {
+    LOADED.with_borrow(|slot| {
+        let Some(corpus) = slot else {
+            return Err("no corpus is loaded — fetch the image and load it first".to_owned());
+        };
+
+        crate::rows::values_over(&corpus.schema, query, corpus.store.clone(), cap)
+    })
+}
+
 /// The same answer, already JSON.
 #[must_use]
 pub fn rows_json(query: &str) -> String {

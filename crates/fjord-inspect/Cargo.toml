@@ -24,6 +24,9 @@ codespan-reporting = "0.13.1"
 # other one.
 fjord-engine = { path = "../fjord-engine", features = ["trace"] }
 fjord-schema = { path = "../fjord-schema" }
+# The varint codec, for decoding a style payload — restating LEB128 here would be a
+# second statement of a format the tree already owns.
+fjord-wire = { path = "../fjord-wire" }
 # The seam and the in-memory implementation: the site's database is a `MemStore`
 # holding facts written through the seam's one encoder. Never the fjall backend
 # — `dependency_closure` says so.

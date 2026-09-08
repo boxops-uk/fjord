@@ -49,6 +49,17 @@ internal static class Provenance
         // travels beside it rather than instead of it, and `cstart` is how a consumer that
         // counts code units converts.
         Say("position-encoding", "utf8");
+
+        // **Only when styles are written, and never otherwise.** `src.FileLineStyles` is
+        // an opaque payload whose format and vocabulary this value is the only statement
+        // of, so a database that writes styles and does not say this holds highlighting
+        // no consumer can identify — every one of them renders the file plain, which is
+        // exactly what an index with no highlighter looks like. Claiming the encoding
+        // when nothing wrote a style fact would be the opposite lie.
+        if (options.Styles)
+        {
+            Say("style-encoding", SemanticTokens.Encoding);
+        }
         Say("symbol-scheme", ScipSymbols.Scheme);
         Say("language", "csharp");
         Say("producer", $"boxops-fjord-indexer/{version}");

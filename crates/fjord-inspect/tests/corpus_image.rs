@@ -71,4 +71,112 @@ fn a_real_index_loads_from_its_image_and_answers() {
             answered.examined_total
         );
     }
+
+    // ---- the code browser's own questions, over the same corpus ----------------
+
+    use fjord_inspect::codeview;
+
+    let files = codeview::files().expect("files answers");
+    assert!(!files.is_empty(), "the index holds no files");
+    println!(
+        "\nfiles: {} — {:?}",
+        files.len(),
+        &files[..3.min(files.len())]
+    );
+
+    // The largest file, because the interesting failures are about size and order.
+    let (path, blob) = files
+        .iter()
+        .map(|path| (path.clone(), codeview::blob(path).expect("a blob answers")))
+        .max_by_key(|(_, blob)| blob.lines.len())
+        .expect("some file is largest");
+
+    println!(
+        "blob {path}: {} lines, encoding {:?}",
+        blob.lines.len(),
+        blob.encoding
+    );
+
+    assert!(!blob.lines.is_empty(), "{path} has no lines");
+    assert_eq!(
+        blob.encoding,
+        Some(codeview::StyleEncoding::RoslynLsp1),
+        "the .NET indexer writes roslyn-lsp-1"
+    );
+
+    // **Lines arrive in order and none is missing.** A blob assembled from two
+    // seeks and a zip can silently drop or reorder, and either renders as a file
+    // that is subtly not the file.
+    for (at, line) in blob.lines.iter().enumerate() {
+        assert_eq!(
+            line.line,
+            at as i64 + 1,
+            "{path} line {} arrived at position {at}",
+            line.line
+        );
+    }
+
+    // **Every run lies inside the line it colours**, and runs do not overlap. A
+    // delta resolved wrongly produces runs that pile up or run off the end, and
+    // both look plausible until you draw them.
+    let mut coloured = 0;
+    for line in &blob.lines {
+        let width = line.text.chars().map(char::len_utf16).sum::<usize>() as u32;
+        let mut previous_end = 0;
+
+        for run in &line.runs {
+            assert!(
+                run.start >= previous_end,
+                "{path}:{} run at {} overlaps the one ending at {previous_end}",
+                line.line,
+                run.start
+            );
+            assert!(
+                run.start + run.length <= width,
+                "{path}:{} run {}..{} runs past the line's {width} units",
+                line.line,
+                run.start,
+                run.start + run.length
+            );
+            previous_end = run.start + run.length;
+        }
+
+        coloured += line.runs.len();
+    }
+    println!("  {coloured} coloured runs, all within their lines and in order");
+    assert!(coloured > 0, "{path} decoded no runs at all");
+
+    let outline = codeview::outline(&path).expect("an outline answers");
+    println!("  outline: {} definitions", outline.len());
+    assert!(!outline.is_empty(), "{path} declares nothing");
+
+    let xrefs = codeview::xrefs(&path).expect("xrefs answer");
+    println!("  xrefs: {} references", xrefs.len());
+
+    // Go to definition, then find references, on a real symbol from the outline.
+    let symbol = &outline[0].symbol;
+    let definitions = codeview::definitions(symbol).expect("definitions answer");
+    let references = codeview::references(symbol).expect("references answer");
+
+    println!(
+        "  {} → {} definition(s), {} reference(s)",
+        outline[0].name,
+        definitions.len(),
+        references.len()
+    );
+    assert!(
+        !definitions.is_empty(),
+        "{symbol} is in the outline but has no definition"
+    );
+
+    let hits = codeview::search("f").expect("search answers");
+    println!("  search \"f\": {} hit(s)", hits.len());
+    assert!(!hits.is_empty(), "nothing in this index starts with f");
+    for hit in &hits {
+        assert!(
+            hit.name.to_lowercase().starts_with('f'),
+            "{:?} is not a prefix hit for \"f\"",
+            hit.name
+        );
+    }
 }

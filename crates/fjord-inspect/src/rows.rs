@@ -159,6 +159,62 @@ pub fn run_over(schema: &Schema, query: &str, store: fjord_store_mem::MemStore) 
     }
 }
 
+/// The same run, answering **decoded values** rather than rendered rows.
+///
+/// [`run_over`]'s sibling for a caller that is going to destructure the rows rather
+/// than show them — [`crate::codeview`] above all. Rendering to JSON and reading the
+/// fields back out is the shape this exists to avoid.
+///
+/// Errors rather than carrying diagnostics in the answer, because a caller
+/// destructuring fields has no use for a partial one: the message is what it shows.
+///
+/// `cap` is the caller's, not [`ROW_CAP`]: that number sizes a table a reader
+/// scrolls, and a blob of a thousand-line file is not one. A run that reaches the
+/// cap stops there rather than reporting it, so a caller passes a bound it knows
+/// covers the question it asked.
+pub fn values_over(
+    schema: &Schema,
+    query: &str,
+    store: fjord_store_mem::MemStore,
+    cap: usize,
+) -> Result<Vec<fjord_encoding::tuple::Value>, String> {
+    let mut compilation = Compilation::new(query, schema);
+
+    let Some(plan) = compilation.plan() else {
+        return Err(compilation
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>()
+            .join("; "));
+    };
+
+    let interner = compilation.interner();
+    let mut profile = Profile::for_plan(&plan);
+    let executor = Executor::new(store, plan);
+
+    let answered = executor
+        .enumerate_profiled(
+            Vec::new(),
+            |mut values: Vec<fjord_encoding::tuple::Value>, mut row| {
+                values.push(row.to_value(interner)?);
+
+                Ok(if values.len() >= cap {
+                    Stream::Suspend(values)
+                } else {
+                    Stream::Continue(values)
+                })
+            },
+            &CancellationToken::new(),
+            &mut profile,
+        )
+        .map_err(|fault| fault.to_string())?;
+
+    Ok(match answered {
+        Iteratee::Done(values) | Iteratee::Suspended(values, _) => values,
+    })
+}
+
 /// A fault raised while *running*, as a diagnostic with nothing to point at.
 ///
 /// The executor's errors are about the plan or the store rather than about a

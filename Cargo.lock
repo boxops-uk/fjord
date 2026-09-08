@@ -658,6 +658,7 @@ dependencies = [
  "fjord-schema",
  "fjord-store",
  "fjord-store-mem",
+ "fjord-wire",
  "proptest",
  "serde",
  "serde_json",
