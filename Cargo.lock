@@ -560,6 +560,7 @@ dependencies = [
  "fjord-server",
  "fjord-store",
  "fjord-store-fjall",
+ "fjord-store-mem",
  "fjord-wire",
  "libmimalloc-sys",
  "mimalloc",
@@ -739,6 +740,7 @@ dependencies = [
  "fjord-encoding",
  "fjord-schema",
  "fjord-store",
+ "fjord-wire",
 ]
 
 [[package]]

@@ -7,6 +7,7 @@
 
 pub mod create;
 pub mod describe;
+pub mod export;
 pub mod finish;
 pub mod list;
 pub mod query;

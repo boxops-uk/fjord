@@ -138,6 +138,7 @@ dependencies = [
  "fjord-encoding",
  "fjord-schema",
  "fjord-store",
+ "fjord-wire",
 ]
 
 [[package]]
@@ -146,6 +147,16 @@ version = "0.2.0"
 dependencies = [
  "fjord-inspect",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "fjord-wire"
+version = "0.2.0"
+dependencies = [
+ "fjord-schema",
+ "lasso",
+ "memchr",
+ "thiserror",
 ]
 
 [[package]]

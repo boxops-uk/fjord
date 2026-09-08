@@ -135,6 +135,36 @@ pub fn database(schema: &str) -> String {
     fjord_inspect::database_json(schema)
 }
 
+/// **Load a code index into the page** — a store image, keyed against `schema`.
+///
+/// The image is what `fjord export` writes: every row of a real database with the
+/// id it already has. Nothing here interns anything, because nothing compiled to
+/// WebAssembly can — the write funnel reaches the fjall backend by name.
+///
+/// Answers a JSON report rather than throwing: a refused image is an ordinary
+/// thing for a page to have to show, and the commonest reason is a schema that
+/// has moved since the asset was built.
+#[wasm_bindgen]
+#[must_use]
+pub fn load_corpus(image: &[u8], schema: &str) -> String {
+    fjord_inspect::corpus::load_json(image, schema)
+}
+
+/// What is loaded, without loading anything.
+#[wasm_bindgen]
+#[must_use]
+pub fn corpus_status() -> String {
+    fjord_inspect::corpus::loaded_json()
+}
+
+/// Run `query` against the loaded corpus, and answer the rows with what reading
+/// them cost — [`run`]'s answer, over the index rather than the demo database.
+#[wasm_bindgen]
+#[must_use]
+pub fn corpus_run(query: &str) -> String {
+    fjord_inspect::corpus::rows_json(query)
+}
+
 /// The schema the site opens with — `schemas/demo.sigla`, the database in the
 /// page rather than the code index `schemas/dotnet.sigla` describes.
 #[wasm_bindgen]

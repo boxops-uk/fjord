@@ -87,6 +87,25 @@ fn empty(diagnostics: Vec<DiagnosticView>) -> Rows {
 }
 
 fn run(schema: &Schema, query: &str) -> Rows {
+    let store = match crate::demo::store(schema) {
+        Ok(store) => store,
+        // Only reachable if the schema in the page and the facts in this crate
+        // disagree — a bug here rather than a caller's mistake, and one that
+        // must not look like "this query answers nothing".
+        Err(fault) => return empty(vec![fault_view(&fault.to_string())]),
+    };
+
+    run_over(schema, query, store)
+}
+
+/// The same run, over a store the caller brought.
+///
+/// The demo database is one store among possible ones: a corpus loaded from an
+/// image ([`crate::corpus`]) is another, and both are a `MemStore` the same
+/// executor walks. Split out rather than duplicated so the page's profile, row
+/// cap and diagnostics are the same in both.
+#[must_use]
+pub fn run_over(schema: &Schema, query: &str, store: fjord_store_mem::MemStore) -> Rows {
     let mut compilation = Compilation::new(query, schema);
     let Some(plan) = compilation.plan() else {
         // A query that does not compile answers nothing, and *why* is the only
@@ -98,13 +117,6 @@ fn run(schema: &Schema, query: &str) -> Rows {
 
     let render = |value: &fjord_encoding::tuple::Value| crate::value::json(value, schema);
 
-    let store = match crate::demo::store(schema) {
-        Ok(store) => store,
-        // Only reachable if the schema in the page and the facts in this crate
-        // disagree — a bug here rather than a caller's mistake, and one that
-        // must not look like "this query answers nothing".
-        Err(fault) => return empty(vec![fault_view(&fault.to_string())]),
-    };
     let mut profile = Profile::for_plan(&plan);
     let executor = Executor::new(store, plan);
 

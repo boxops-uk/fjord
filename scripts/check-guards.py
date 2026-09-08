@@ -102,6 +102,10 @@ EXPECTED_NON_GUARDS = {
     "crashing_finisher_child_process",
     "print_the_union_schema_fingerprint",
     "print_the_bytes_schema_fingerprint",
+    # Loads an exported store image of a real index. The image is built by
+    # indexing a checkout — MSBuild, a server and a minute — so it is named by an
+    # environment variable and run on purpose, not carried in the repository.
+    "a_real_index_loads_from_its_image_and_answers",
 }
 
 GUARD = re.compile(r"^guard: (?P<claim>.+?), owned by Movement (?P<owner>\d+)$")

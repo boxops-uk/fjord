@@ -22,6 +22,9 @@
 //! `fjord-schema`, and **never** `fjord-store-fjall` — checked by
 //! `dependency_closure` in `fjord-store`.
 
+/// What a schema declares — what everything after parsing resolves against.
+/// A real code index loaded from an image, queried in the page.
+pub mod corpus;
 /// The database as a table: every row, as bytes and as a fact.
 pub mod database;
 /// The database the site queries: its schema, and its facts.
@@ -36,7 +39,6 @@ pub mod plan;
 pub mod rows;
 /// What the site opens with — a schema, and queries over it.
 pub mod samples;
-/// What a schema declares — what everything after parsing resolves against.
 pub mod schema;
 /// The lexer's answer: what each token is, and where.
 pub mod tokens;
@@ -49,6 +51,7 @@ pub mod value;
 /// What every view says the same way — a span, and a diagnostic.
 pub mod view;
 
+pub use corpus::{Loaded, load, load_json, loaded, loaded_json};
 pub use database::{Database, PredicateRows, RowBytes, database, database_json};
 pub use demo::SCHEMA;
 pub use fuzzy::{FuzzyStep, FuzzyWalk, fuzzy, fuzzy_json};
