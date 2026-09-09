@@ -145,8 +145,7 @@ export function rectOf(
   length: number,
 ): DOMRect | null {
   const holder = root.querySelector(`[data-line="${line}"]`)
-  const node = holder?.firstChild
-  if (!node || node.nodeType !== Node.TEXT_NODE) return null
+  if (!holder) return null
 
   const lineStart = blob.start(line)
   const text = blob.text(line)
@@ -160,9 +159,20 @@ export function rectOf(
   if (from === null || to === null) return null
 
   const range = document.createRange()
-  range.setStart(node, Math.min(from, node.textContent?.length ?? from))
-  range.setEnd(node, Math.min(to, node.textContent?.length ?? to))
-
+  const set = (pos: number, apply: (node: Node, offset: number) => void): boolean => {
+    let left = pos
+    const walk = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT)
+    while (walk.nextNode()) {
+      const node = walk.currentNode as Text
+      if (left <= node.data.length) {
+        apply(node, left)
+        return true
+      }
+      left -= node.data.length
+    }
+    return false
+  }
+  if (!set(from, range.setStart.bind(range)) || !set(to, range.setEnd.bind(range))) return null
   const rect = range.getBoundingClientRect()
   return rect.width === 0 && rect.height === 0 ? null : rect
 }
