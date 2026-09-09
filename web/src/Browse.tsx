@@ -38,6 +38,7 @@ import {
   type Project,
   loadCorpus,
 } from './corpus'
+import { setSearch, useSearch } from './book/router'
 import { paint } from './highlight'
 import { markupSyntax } from './theme'
 import { byteOffsetOf, links, positionAt, rectOf, spanAt } from './xref'
@@ -99,6 +100,51 @@ function PaneHeader({
 }
 
 /**
+ * **Where the page is**: what the middle pane shows, what the right pane is about,
+ * and which byte of the open file is marked.
+ *
+ * `at` is an offset and not a file-and-offset, because a mark only ever means a
+ * byte of the file that is open — every jump that sets one opens the file it is
+ * in, and the pane that highlights it is that file's. Keeping the path beside it
+ * would be a second answer to a question already answered, and a chance for the
+ * two to disagree.
+ */
+type Where = {
+  place: { kind: 'file' | 'dir'; path: string }
+  symbol: string | null
+  at: number | null
+}
+
+/**
+ * The query read as a place. Everything is optional and the root directory is the
+ * absence of all of it, so `/browse` is a URL and not a special case — which is
+ * what makes the first visit and a shared link the same code path.
+ */
+function whereFrom(search: string): Where {
+  const params = new URLSearchParams(search)
+  const file = params.get('file')
+  const at = Number(params.get('at'))
+  return {
+    place: file !== null ? { kind: 'file', path: file } : { kind: 'dir', path: params.get('dir') ?? '' },
+    symbol: params.get('symbol'),
+    // A mark on nothing is not a mark: without a file open there is no pane to put
+    // it in, and `Number('')` is 0, which is a byte.
+    at: file !== null && Number.isInteger(at) && params.get('at') !== null ? at : null,
+  }
+}
+
+/** A place written back as a query — in a fixed order, so the same place is the
+ *  same string and `setSearch` can tell that nothing moved. */
+function searchFor(where: Where): string {
+  const params = new URLSearchParams()
+  if (where.place.kind === 'file') params.set('file', where.place.path)
+  else if (where.place.path !== '') params.set('dir', where.place.path)
+  if (where.symbol !== null) params.set('symbol', where.symbol)
+  if (where.at !== null && where.place.kind === 'file') params.set('at', String(where.at))
+  return params.toString()
+}
+
+/**
  * **A code browser over a real index**, with nothing behind it but a static file.
  *
  * The corpus is `Boxops.Fjord.Client` walked by Roslyn, exported as a store image
@@ -115,32 +161,50 @@ export function Browse() {
   const [corpus, setCorpus] = useState<Corpus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   /**
-   * **What the middle pane is showing** — a file's code, or a directory's contents.
+   * **Where you are is the URL**, and the URL is the only copy of it.
    *
-   * A browser with no file open used to pick one, which meant every visit began in
-   * `BlockTarget.cs` for no reason a reader could name. A repository opens on its
-   * root, and a directory opens on its listing; the code is what a *file* is for.
+   * A browser whose state was React's alone answered every question but the one a
+   * reader asks of a code browser: *send me this*. A file, a directory, the symbol
+   * a pane is about and the byte a jump landed on are all in the query, so a link
+   * is a place, Back undoes a jump, and a reload stays where it was.
+   *
+   * Held as the URL rather than mirrored into it: a mirror is two truths and an
+   * effect to keep them level, and the effect is what would decide — wrongly, and
+   * out of the reader's sight — whether a change was somewhere to come back to.
    */
-  const [place, setPlace] = useState<{ kind: 'file' | 'dir'; path: string }>({
-    kind: 'dir',
-    path: '',
-  })
+  const search = useSearch()
+  // Memoised on the query and not merely derived from it: `place` is a dependency
+  // of the tree's listings, and a fresh object per render would re-seek the index
+  // on every mouse move.
+  const where = useMemo(() => whereFrom(search), [search])
+  const { place, symbol, at } = where
 
   /** The open file, or `null` where a directory is showing. */
   const chosen = place.kind === 'file' ? place.path : null
 
-  const setPath = useCallback((path: string) => setPlace({ kind: 'file', path }), [])
-  const [symbol, setSymbol] = useState<string | null>(null)
-  const [term, setTerm] = useState('')
-  /**
-   * Where the last jump landed. A reference is a *span*, not a file, so
-   * navigating to one and highlighting the file's declaration instead would put
-   * the reader in the right file at the wrong line — which is worse than not
-   * moving, because it looks like it worked.
-   */
-  const [at, setAt] = useState<{ path: string; start: number } | null>(null)
   /** Which panel is open as a sheet, on a screen too narrow to give it a column. */
   const [sheet, setSheet] = useState<'files' | 'outline' | null>(null)
+
+  /**
+   * **Going somewhere**, as one act rather than four setters in a row.
+   *
+   * Every handler here used to set the place, clear the symbol, clear the mark and
+   * shut the sheet, and each of those was a write; against a URL they would have
+   * been four history entries for one click. Stated together they are one entry —
+   * which is also the honest shape, because they are one thing a reader did.
+   *
+   * What is not named is left alone: choosing a use keeps the symbol it is a use
+   * of, and `symbol: null` is how a handler says it means to let go of it.
+   */
+  const go = (next: Partial<Where>) => {
+    setSheet(null)
+    setSearch(searchFor({ ...where, ...next }))
+  }
+
+  /** What the search field holds. A filter over the panel, not a place to come back
+   *  to — and a query string rewritten on every keystroke is a history entry per
+   *  keystroke, which is a Back button that walks a word backwards. */
+  const [term, setTerm] = useState('')
 
   /**
    * Responsive contract, at the frame root — and the shell's own nav is 260 of
@@ -159,6 +223,15 @@ export function Browse() {
 
   useEffect(() => {
     loadCorpus().then(setCorpus, (error: unknown) => setFailure(String(error)))
+  }, [])
+
+  // Its own, the way the workbench titles itself: neither is a page of the book,
+  // so `PageView` never runs for either and the tab would otherwise keep the name
+  // of whatever was read last. It says the page and not the file — the file is in
+  // the URL, and a tab that renamed itself on every jump is a history of a
+  // reader's afternoon rather than a label.
+  useEffect(() => {
+    document.title = 'Code browser · Fjord DB'
   }, [])
 
   const tree = useResizable({
@@ -350,12 +423,12 @@ export function Browse() {
     // A jump wins over a declaration: it is the more specific thing the reader
     // just asked for, and it is the only one that can name a line no outline row
     // does.
-    if (at && at.path === path) return [lineAt(blob, at.start)]
+    if (at !== null) return [lineAt(blob, at)]
     if (!symbol) return []
     return outline
       .filter((found) => found.symbol === symbol)
       .map((found) => lineAt(blob, found.start))
-  }, [at, blob, outline, path, symbol])
+  }, [at, blob, outline, symbol])
 
   /**
    * What a point in the code names: a symbol, a declaration in this same file, or
@@ -458,20 +531,19 @@ export function Browse() {
     if (jump.kind === 'local') {
       // Its declaration is a span in this same file, which is the whole reason
       // these carry no symbol.
-      if (path) setAt({ path, start: jump.start })
+      if (path) go({ at: jump.start })
       return
     }
-
-    setSymbol(jump.symbol)
 
     // A symbol with no definition here is ordinary — `System.String` is named by
     // this index and declared outside it — so the uses panel still answers for it
     // and the view simply does not move.
     const [declared] = corpus?.definitions(jump.symbol) ?? []
-    if (declared) {
-      setPath(declared.path)
-      setAt({ path: declared.path, start: declared.start })
-    }
+    go(
+      declared
+        ? { symbol: jump.symbol, place: { kind: 'file', path: declared.path }, at: declared.start }
+        : { symbol: jump.symbol },
+    )
   }
 
   /**
@@ -584,12 +656,19 @@ export function Browse() {
    * the sheet it was chosen in.
    */
   const files = (
-    <>
-      {/* The field's own edge, rather than a wrapper's: `padding={3}` put it 12
-          in while the names below it start at 8, so the list looked indented
-          from a box it is meant to hang under. Only the inline axis moves —
-          the space above and below the field is not what was wrong. */}
-      <VStack gap={2} paddingBlock={3} paddingInline={2}>
+    /* **The panel's inline edge, carried once for both views.** The panel is
+       `padding={0}` and scrolls, so it clips at its own border box: a row drawn
+       edge to edge loses the inline half of its focus ring, which is 2px at a
+       3px offset and so wants 5. The inset is here rather than on the hits
+       alone because the tree and the hits are the same column — insetting only
+       the one the search shows would step the names sideways as the field is
+       typed into. It is the field's edge too: `padding={3}` put the field 12 in
+       while the names started at 8, and one padding for the panel's contents is
+       what keeps the field a box the list hangs under rather than a box beside
+       it. Only the inline axis is shared — the space above and below the field
+       is the field's own. */
+    <VStack gap={0} paddingInline={2}>
+      <VStack gap={2} paddingBlock={3}>
         {/* The label is hidden rather than dropped: `TextInput` requires one, and
             a placeholder is not a substitute — it names the field only until
             someone types in it, and a screen reader that meets the box after
@@ -615,12 +694,9 @@ export function Browse() {
                 label={hit.name}
                 description={`${hit.path}:${hit.line}`}
                 endContent={<Token size="sm" label={readable(hit.kind)} />}
-                onClick={() => {
-                  setPath(hit.path)
-                  setSymbol(hit.symbol)
-                  setAt(null)
-                  setSheet(null)
-                }}
+                onClick={() =>
+                  go({ place: { kind: 'file', path: hit.path }, symbol: hit.symbol, at: null })
+                }
                 isSelected={hit.symbol === symbol}
               />
             ))}
@@ -635,22 +711,12 @@ export function Browse() {
             expanded,
             place.path,
             open,
-            (file) => {
-              setPath(file)
-              setSymbol(null)
-              setAt(null)
-              setSheet(null)
-            },
-            (dir) => {
-              setPlace({ kind: 'dir', path: dir })
-              setSymbol(null)
-              setAt(null)
-              setSheet(null)
-            },
+            (file) => go({ place: { kind: 'file', path: file }, symbol: null, at: null }),
+            (dir) => go({ place: { kind: 'dir', path: dir }, symbol: null, at: null }),
           )}
         />
       )}
-    </>
+    </VStack>
   )
 
   const declared = (
@@ -677,7 +743,7 @@ export function Browse() {
                 size="sm"
                 label="All symbols"
                 icon={<Icon icon="chevronLeft" color="inherit" />}
-                onClick={() => setSymbol(null)}
+                onClick={() => go({ symbol: null })}
                 data-testid="all-symbols"
               />
             </HStack>
@@ -728,12 +794,8 @@ export function Browse() {
                 key={`${use.path}:${use.start}`}
                 label={basename(use.path)}
                 description={[folder(use.path), `byte ${use.start}`].filter(Boolean).join(' · ')}
-                onClick={() => {
-                  setPath(use.path)
-                  setAt({ path: use.path, start: use.start })
-                  setSheet(null)
-                }}
-                isSelected={at?.path === use.path && at.start === use.start}
+                onClick={() => go({ place: { kind: 'file', path: use.path }, at: use.start })}
+                isSelected={chosen === use.path && at === use.start}
               />
             ))}
           </List>
@@ -773,11 +835,9 @@ export function Browse() {
               <TreeList
                 density="compact"
                 variant="noGuides"
-                items={asOutline(outline, blob, symbol, (found) => {
-                  setSymbol(found.symbol)
-                  setAt({ path: found.path, start: found.start })
-                  setSheet(null)
-                })}
+                items={asOutline(outline, blob, symbol, (found) =>
+                  go({ symbol: found.symbol, at: found.start }),
+                )}
               />
             </VStack>
           )}
@@ -900,11 +960,9 @@ export function Browse() {
               <ProjectView
                 built={built}
                 asks={asks}
-                onOpen={(next) => {
-                  setPlace({ kind: 'file', path: next })
-                  setSymbol(null)
-                  setAt(null)
-                }}
+                onOpen={(next) =>
+                  go({ place: { kind: 'file', path: next }, symbol: null, at: null })
+                }
               />
             ) : painted && path ? (
               /* `width="100%"` so a short file still fills the pane rather than
@@ -944,7 +1002,7 @@ export function Browse() {
                       key=".."
                       label=".."
                       startContent={<FolderIcon width={16} height={16} />}
-                      onClick={() => setPlace({ kind: 'dir', path: folder(place.path) })}
+                      onClick={() => go({ place: { kind: 'dir', path: folder(place.path) } })}
                     />
                   ) : null}
                   {entries.map((entry) => (
@@ -960,12 +1018,13 @@ export function Browse() {
                           <FileIcon width={16} height={16} />
                         )
                       }
-                      onClick={() => {
-                        setSymbol(null)
-                        setAt(null)
-                        setSheet(null)
-                        setPlace({ kind: entry.is_dir ? 'dir' : 'file', path: entry.path })
-                      }}
+                      onClick={() =>
+                        go({
+                          place: { kind: entry.is_dir ? 'dir' : 'file', path: entry.path },
+                          symbol: null,
+                          at: null,
+                        })
+                      }
                     />
                   ))}
                 </List>

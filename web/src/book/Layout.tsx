@@ -16,6 +16,7 @@ import { GROUPS } from './content'
 import type { Heading } from './markdown'
 import { route } from './markdown'
 import { navigate } from './router'
+import { ScrollRootProvider } from './scrollRoot'
 import { Search } from './Search'
 import { ContrastIcon } from './ContrastIcon'
 
@@ -135,7 +136,7 @@ export function Layout({
   ))
 
   return (
-    <>
+    <ScrollRootProvider value={column}>
       {/* `fill` for both shapes: the shell owns the viewport and the content
           column scrolls inside it, which is what keeps the reading order and
           the outline in place while a page moves under them. */}
@@ -261,6 +262,6 @@ export function Layout({
       </AppShell>
 
       <Search isOpen={searching} onOpenChange={setSearching} />
-    </>
+    </ScrollRootProvider>
   )
 }

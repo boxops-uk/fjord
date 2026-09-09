@@ -664,7 +664,9 @@ check(
 )
 check(
   'the reading order is the one the generator publishes',
-  (await page.$$('.astryx-side-nav-item')).length === 23,
+  // Twenty-two pages of the book, and the two of this site's own that no
+  // generated page backs: the workbench and the code browser.
+  (await page.$$('.astryx-side-nav-item')).length === 24,
 )
 
 // A page is a route. If any of these were a document load the marker would be
@@ -679,13 +681,25 @@ const titles = await page.$$eval('.astryx-side-nav-item', (links) =>
 const broken = []
 for (const title of titles) {
   await openPage(title)
-  // A page of the book renders its title; the workbench renders its transport,
-  // because it is an application and has no page heading.
-  const alive = await page.evaluate(
-    () =>
-      Boolean(document.querySelector('[data-testid="prose"] h1')?.textContent?.trim()) ||
-      Boolean(document.querySelector('.transport')),
-  )
+  // A page of the book renders its title; the workbench renders its transport and
+  // the code browser its root listing, because both are applications and neither
+  // has a page heading.
+  // Waited for rather than sampled: `settle` is a quarter of a second, and the
+  // browser's first listing is a megabyte of index fetched and opened before it
+  // has anything to draw. A page that renders nothing still fails — it just
+  // takes the timeout to say so.
+  const alive = await page
+    .waitForFunction(
+      () =>
+        Boolean(document.querySelector('[data-testid="prose"] h1')?.textContent?.trim()) ||
+        Boolean(document.querySelector('.transport')) ||
+        Boolean(document.querySelector('[data-testid="browse-entry"]')),
+      { timeout: 20_000 },
+    )
+    .then(
+      () => true,
+      () => false,
+    )
   if (!alive) broken.push(title)
 }
 check('every page in the reading order renders', broken.length === 0, broken.join(', '))
