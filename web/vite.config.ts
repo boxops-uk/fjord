@@ -9,8 +9,9 @@ function pages(): string[] {
     groups: { pages: { slug: string }[] }[]
   }
   const slugs = nav.groups.flatMap((group) => group.pages.map((page) => page.slug))
-  // The workbench is a route with no page behind it, so the nav does not name it.
-  return [...slugs.filter((slug) => slug !== 'index'), 'playground']
+  // The workbench and the code browser are routes with no page behind them, so the
+  // nav does not name them.
+  return [...slugs.filter((slug) => slug !== 'index'), 'playground', 'browse']
 }
 
 // The book lives in `website/content/`, one directory up and outside this

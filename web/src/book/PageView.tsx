@@ -18,6 +18,7 @@ import { inlines, type Block, type Inline } from './markdown'
 import { navTitle, neighbours, page as findPage, rendered } from './content'
 import { route } from './markdown'
 import { scrollTo } from './router'
+import { useScrollRoot } from './scrollRoot'
 
 const SITE = 'Fjord DB'
 
@@ -55,11 +56,19 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
     document.title = page ? (page.slug === 'index' ? SITE : `${page.title} · ${SITE}`) : SITE
   }, [page])
 
-  // A fragment names a heading that only exists once this page has rendered.
+  // A fragment names a heading that only exists once this page has rendered; a
+  // page without one starts at its beginning, which is what every page opened
+  // from the reading order or the pager is.
+  //
+  // The region and not `document.querySelector('.astryx-layout-content')`, which
+  // is what this was: three elements carry that class and the first of them is
+  // the shell's, which never scrolls — so a reader who left one page at the
+  // bottom arrived at the next one at the bottom.
+  const root = useScrollRoot()
   useEffect(() => {
     if (hash) scrollTo(hash)
-    else document.querySelector('.astryx-layout-content')?.scrollTo({ top: 0 })
-  }, [slug, hash])
+    else root?.current?.scrollTo({ top: 0 })
+  }, [slug, hash, root])
 
   if (!page || !content) {
     return (

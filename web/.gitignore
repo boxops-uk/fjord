@@ -26,3 +26,9 @@ dist-ssr
 # Built by `scripts/build-wasm.sh`. A binary in git is a binary somebody has to
 # trust, and the build is one command.
 src/wasm/
+
+# Built by `scripts/build-corpus.sh` — a real checkout walked by Roslyn, exported as
+# a store image. Not checked in for `src/wasm/`'s reason, and more so: it is a
+# derived view of source that lives beside it, so a copy in git is one that goes
+# stale against the code it indexes without anything noticing.
+public/corpus/

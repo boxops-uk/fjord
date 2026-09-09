@@ -29,7 +29,7 @@ internal static class DotnetIndex
     /// Carried, not computed — the whole schema's, not this partial statement's. A stale
     /// one fails the handshake loudly, which is the assertion it is for.
     /// </remarks>
-    public const ulong SchemaFingerprint = 0x4e90774b9a0814cc;
+    public const ulong SchemaFingerprint = 0x4471c3f35a45b7da;
 
     // ---- src: the shared source layer ------------------------------------------------
 
@@ -485,7 +485,10 @@ internal static class DotnetIndex
             FjordType.Rec(
                 ("signature", FjordType.String),
                 ("doc", FjordType.String),
-                ("modifiers", FjordType.String))),
+                ("modifiers", FjordType.String),
+                ("qualified", FjordType.String),
+                ("package", FjordType.String),
+                ("kind", KindUnion))),
 
         new FjordPredicate("codemarkup.FileDefinition",
             FjordType.Rec(
@@ -1020,13 +1023,22 @@ internal static class DotnetIndex
                 FjordValue.Of(qualified)));
 
     public static FjordFact SymbolInfoFact(
-        FjordFact symbol, string signature, string doc, string modifiers) =>
+        FjordFact symbol,
+        string signature,
+        string doc,
+        string modifiers,
+        string qualified,
+        string package,
+        FjordValue kind) =>
         new(SymbolInfo,
             FjordValue.Rec(FjordValue.Of(FjordRef.To(symbol))),
             FjordValue.Rec(
                 FjordValue.Of(signature),
                 FjordValue.Of(doc),
-                FjordValue.Of(modifiers)));
+                FjordValue.Of(modifiers),
+                FjordValue.Of(qualified),
+                FjordValue.Of(package),
+                kind));
 
     public static FjordFact FileDefinitionFact(
         FjordFact file, long start, long length, FjordFact symbol, FjordValue kind, string name) =>

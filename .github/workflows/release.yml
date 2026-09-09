@@ -155,6 +155,23 @@ jobs:
       # wait on it. Built with `--bin fjord` only: nothing here needs the rest.
       - name: Build the server the .NET tests drive
         run: cargo build --release --locked --bin fjord
+      # **The fixture the code browser is driven over, built where its ingredients
+      # already are.** `web/public/corpus/` is not in the tree — a binary in git is a
+      # binary somebody has to trust — so without this the browser's checks in
+      # `web/smoke.mjs` cannot run at all, and for a while they did not: `site` reached
+      # the first of them and timed out waiting for a listing of an index nobody had
+      # built. This job is the one place that already has both halves of what building
+      # one costs, the .NET SDK above and the release binary on the line before, so it
+      # builds the corpus and hands it on rather than making `site` install a second
+      # toolchain to make its own.
+      - name: The corpus the code browser is driven over
+        run: ./scripts/build-corpus.sh
+      - name: Publish the corpus for the site job
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus
+          path: web/public/corpus
+          if-no-files-found: error
       # **Every shipped schema composes, and what comes out creates a database.**
       # `schema compose` inlines a schema's imports where the files are, which is what a
       # client that ships a known schema sends to `create`: it has no sigla parser, and a
@@ -334,6 +351,11 @@ jobs:
   site:
     name: site
     runs-on: ubuntu-latest
+    # **For the corpus and nothing else.** This job used to start with the others; it
+    # now waits on `test`, which is where the fixture the browser's checks read is
+    # built. The cost is real — `site` no longer overlaps `test` — and it buys those
+    # checks the only thing that makes them checks, which is running.
+    needs: test
     permissions:
       contents: read
       id-token: write # OIDC token the provenance is bound to
@@ -377,6 +399,14 @@ jobs:
       - name: Dependencies
         run: npm ci
         working-directory: web
+      # Into the path the page fetches from, which is the path `build-corpus.sh` writes
+      # to — `corpus.ts` reads it under `BASE_URL`, so it is a static asset like any
+      # other and `vite build` copies it into the bundle.
+      - name: The corpus the code browser is driven over
+        uses: actions/download-artifact@v4
+        with:
+          name: corpus
+          path: web/public/corpus
       # Before the site, and after `npm ci`: the script shrinks the module with the
       # `wasm-opt` that `web/`'s dev-dependencies bring, and a module that skipped that
       # step is the one thing a reader downloads before seeing anything.

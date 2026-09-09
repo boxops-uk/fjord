@@ -30,8 +30,17 @@ export type Page = {
 /** The playground is this site's own page: interactive, so the book has none. */
 export const PLAYGROUND = { slug: 'playground', title: 'Playground' }
 
+/**
+ * So is the code browser. It sits beside the playground because the two are the
+ * same claim asked twice: the workbench is the engine answering for a query, and
+ * this is the engine answering for a repository — every question on it a seek
+ * against an index in the tab. A reading order that mentioned only the first
+ * would leave the second reachable by knowing the URL.
+ */
+export const BROWSE = { slug: 'browse', title: 'Code browser' }
+
 export const GROUPS: { label: string; pages: { slug: string; title: string }[] }[] = [
-  { label: 'Try it', pages: [PLAYGROUND] },
+  { label: 'Try it', pages: [PLAYGROUND, BROWSE] },
   ...navigation.groups,
 ]
 

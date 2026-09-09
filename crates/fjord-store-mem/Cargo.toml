@@ -16,4 +16,5 @@ publish = false
 fjord-encoding = { path = "../fjord-encoding" }
 fjord-schema = { path = "../fjord-schema" }
 fjord-store = { path = "../fjord-store" }
+fjord-wire = { path = "../fjord-wire" }
 byteview = { workspace = true }

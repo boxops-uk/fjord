@@ -215,6 +215,46 @@ public sealed class FanOutTests
     }
 
     /// <summary>
+    /// <b>A database that writes styles says how to read them.</b>
+    /// </summary>
+    /// <remarks>
+    /// <c>src.FileLineStyles</c> is an opaque payload and this setting is the only
+    /// statement of its format and its vocabulary, so an index that writes styles
+    /// without it holds highlighting nothing can identify — and the schema says a
+    /// consumer that does not recognise the encoding renders the line plain. The
+    /// failure is therefore silent and total: every file draws uncoloured, exactly as
+    /// though no highlighter had ever run. <c>SemanticTokens.Encoding</c> existed and
+    /// was asserted only against its own value, which is a test that passes whether or
+    /// not anything writes it.
+    /// </remarks>
+    [Fact]
+    public void A_run_that_writes_styles_declares_their_encoding()
+    {
+        var settings = Provenance.Of(
+            new Options { Solutions = ["/checkout"], Styles = true },
+            "/checkout",
+            "net10.0",
+            "0.2.0");
+
+        Assert.Equal(
+            "roslyn-lsp-1",
+            Value(Assert.Single(settings, s => Dimension(s) == "style-encoding")));
+    }
+
+    /// <summary>
+    /// <b>And one that writes none claims none</b> — the opposite lie, and just as bad:
+    /// a consumer would decode absent payloads against a legend nothing wrote.
+    /// </summary>
+    [Fact]
+    public void A_run_that_writes_no_styles_claims_no_encoding()
+    {
+        var settings = Provenance.Of(
+            new Options { Solutions = ["/checkout"] }, "/checkout", "net10.0", "0.2.0");
+
+        Assert.DoesNotContain(settings, setting => Dimension(setting) == "style-encoding");
+    }
+
+    /// <summary>
     /// <b>The run writes one output per target, and they are not the same bytes.</b>
     /// </summary>
     /// <remarks>

@@ -25,7 +25,16 @@ use fjord_store::{
     keys::predicate_of,
 };
 
-#[derive(Default)]
+pub mod dump;
+
+/// The `entities` column family: a fact id to the key and value bytes it holds.
+///
+/// Named because it is written twice — the field and the `Arc::make_mut` that
+/// grows it — and because the pair is what a row *is* here, not an incidental
+/// tuple.
+type Entities = BTreeMap<u64, (Vec<u8>, Vec<u8>)>;
+
+#[derive(Default, Clone)]
 pub struct MemStore {
     /// Behind an `Arc` so a [`MemScan`] can hold the map open without copying
     /// the range it is about to walk.
@@ -41,7 +50,16 @@ pub struct MemStore {
     /// view — which is what fjall's snapshot gives, and what this store owes as
     /// its oracle.
     index: Arc<BTreeMap<Vec<u8>, u64>>,
-    by_id: BTreeMap<u64, (Vec<u8>, Vec<u8>)>,
+    /// Behind an `Arc` for the same reason `index` is, and it is the same
+    /// copy-on-write: a writer clones the map it is about to change and readers
+    /// keep the one they have.
+    ///
+    /// **What it buys is a cheap `Clone` for the whole store.** `Executor::new`
+    /// takes its store by value, so running several queries over one loaded corpus
+    /// means handing it a store each time — and a corpus is tens of thousands of
+    /// rows, which is a deep copy per query if this map is owned outright. Two
+    /// refcount bumps instead.
+    by_id: Arc<Entities>,
 }
 
 impl MemStore {
@@ -74,7 +92,7 @@ impl MemStore {
         let mut full_key = predicate_id.0.to_be_bytes().to_vec();
         full_key.extend_from_slice(&key_fields);
         Arc::make_mut(&mut self.index).insert(full_key, fact_id.raw());
-        self.by_id.insert(fact_id.raw(), (key_fields, value));
+        Arc::make_mut(&mut self.by_id).insert(fact_id.raw(), (key_fields, value));
     }
 }
 

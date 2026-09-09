@@ -134,6 +134,18 @@ pub enum Command {
     },
 
     /// Show a database's metadata and schema.
+    /// Write a database out as a store image — every row, with the id it has.
+    ///
+    /// The shape a `MemStore` is rebuilt from, so a corpus indexed here can be
+    /// queried somewhere that cannot intern a fact: the browser above all.
+    Export {
+        name: String,
+
+        /// Where to write the image.
+        #[arg(long, value_name = "PATH")]
+        to: PathBuf,
+    },
+
     Describe {
         name: String,
 

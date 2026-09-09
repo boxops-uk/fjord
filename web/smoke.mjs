@@ -157,7 +157,11 @@ await page.waitForSelector('.transport', { timeout: 15_000 })
 await page.waitForSelector('.data tr.section')
 check(
   'the plan, the run and the database are on screen together',
-  (await page.$$('.astryx-layout-panel')).length >= 2 &&
+  // One panel, not two. The second used to be the shell's own reading order,
+  // which counted here by accident: a full-screen demo has no side nav at any
+  // width now, so the only `LayoutPanel` left is the one this page put there.
+  // The claim is unchanged — it is the three selectors below that carry it.
+  (await page.$$('.astryx-layout-panel')).length >= 1 &&
     (await page.$$('.plan .steps li')).length > 0 &&
     (await page.$$('.transport')).length === 1 &&
     (await page.$$('.data tr.section')).length === PREDICATES,
@@ -524,6 +528,133 @@ const openPage = async (title) => {
   await settle()
 }
 
+// **A card has to land on the name it is about.**
+//
+// `CodeBlock` paints with the CSS Custom Highlight API, so a reference in the code
+// is a `Range` and not an element — there is nothing under the name to hang a card
+// on, and the anchor is a box computed from the reference's *byte* span instead.
+// Every step of that computation is a place to be wrong and still look right: an
+// entry index read as an array offset, bytes counted as UTF-16, an offset resolved
+// to the wrong line. Each of those puts a correct card, with the correct contents,
+// squarely over some other word — which is exactly the shape of the bug this
+// guards, and it survived a screenshot.
+//
+// So the expected rectangle is not a number written here. It is the block's *own*
+// painted range for the same name, asked for at the same moment.
+await page.goto(`${url}browse/`, { waitUntil: 'networkidle0' })
+
+// **The browser opens on a directory, not on a file**, the way a repository does —
+// so the code these checks are about has to be navigated to. Descend through the
+// listing, taking the first entry each time, until a file opens.
+await page.waitForSelector('[data-testid="browse-entry"]')
+for (let depth = 0; depth < 8; depth++) {
+  const opened = await page.$$('[data-line]')
+  if (opened.length > 0) break
+  const entered = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('[data-testid="browse-entry"]')]
+    // A file before a directory, so the walk ends as soon as one is reachable.
+    const row = rows.find((r) => r.dataset.dir === 'false') ?? rows.find((r) => r.dataset.dir === 'true')
+    if (!row) return false
+    ;(row.querySelector('[role="button"]') ?? row).click()
+    return true
+  })
+  if (!entered) break
+  await settle()
+  await settle()
+}
+check('the code browser opens a file from its directory listing', (await page.$$('[data-line]')).length > 0)
+await settle()
+
+// Which file the walk lands on is the corpus's business, and its first reference may
+// be a screen or two down. Bring one into view rather than naming a file here — the
+// checks below are about where a card lands, not about which file it lands in.
+await page.evaluate(() => {
+  for (const [name, highlight] of CSS.highlights) {
+    if (!/xref/.test(name)) continue
+    for (const range of highlight) {
+      const holder =
+        range.startContainer.parentElement?.closest('[data-line]') ??
+        range.startContainer.parentElement
+      holder?.scrollIntoView({ block: 'center' })
+      return
+    }
+  }
+})
+await settle()
+
+const painted = await page.evaluate(() => {
+  const found = []
+  for (const [name, highlight] of CSS.highlights) {
+    if (!/xref/.test(name)) continue
+    for (const range of highlight) {
+      const box = range.getBoundingClientRect()
+      if (box.width > 0 && box.y > 0 && box.y < window.innerHeight - 40)
+        found.push({
+          text: range.toString(),
+          x: Math.round(box.x),
+          y: Math.round(box.y),
+          w: Math.round(box.width),
+          h: Math.round(box.height),
+        })
+    }
+  }
+  // Reading order, so a failure names the same reference from run to run.
+  return found.sort((left, right) => left.y - right.y || left.x - right.x).slice(0, 6)
+})
+
+check(
+  'the code browser paints its references as links',
+  painted.length > 0,
+  `${painted.length} on screen`,
+)
+
+const astray = []
+const silent = []
+for (const name of painted) {
+  // Away first, and far: the card moves only when the span under the pointer
+  // changes, so hopping between two adjacent names would leave the first one up
+  // and pass a check it never ran.
+  await page.mouse.move(5, 5)
+  await settle()
+  await page.mouse.move(name.x + name.w / 2, name.y + name.h / 2)
+  // Longer than the rest the card waits for, which is deliberate on both sides.
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  const shown = await page.evaluate(() => {
+    const anchor = document.querySelector('[data-testid="hover-anchor"]')
+    const card = [...document.querySelectorAll('.astryx-hovercard')].find(
+      (element) => element.getBoundingClientRect().width > 0,
+    )
+    if (!anchor) return null
+    const box = anchor.getBoundingClientRect()
+    return {
+      x: Math.round(box.x),
+      y: Math.round(box.y),
+      w: Math.round(box.width),
+      says: card ? card.innerText.trim() : '',
+    }
+  })
+
+  if (
+    !shown ||
+    Math.abs(shown.x - name.x) > 1 ||
+    Math.abs(shown.y - name.y) > 1 ||
+    Math.abs(shown.w - name.w) > 1
+  )
+    astray.push(
+      `${name.text}: wanted ${name.x},${name.y},${name.w}, got ${
+        shown ? `${shown.x},${shown.y},${shown.w}` : 'no anchor'
+      }`,
+    )
+  else if (!shown.says) silent.push(name.text)
+}
+
+check('a hover card is anchored on the name it describes', astray.length === 0, astray.join('; '))
+// The card is fed by `codemarkup.SymbolInfo` through the WebAssembly module, so an
+// empty one is the binding gone rather than a symbol with nothing to say: a symbol
+// this index only *names* still gets the line that says so.
+check('every hovered name says something', silent.length === 0, silent.join(', '))
+
 await page.goto(url, { waitUntil: 'networkidle0' })
 await page.waitForSelector('[data-testid="prose"] h1')
 
@@ -533,7 +664,9 @@ check(
 )
 check(
   'the reading order is the one the generator publishes',
-  (await page.$$('.astryx-side-nav-item')).length === 23,
+  // Twenty-two pages of the book, and the two of this site's own that no
+  // generated page backs: the workbench and the code browser.
+  (await page.$$('.astryx-side-nav-item')).length === 24,
 )
 
 // A page is a route. If any of these were a document load the marker would be
@@ -548,13 +681,25 @@ const titles = await page.$$eval('.astryx-side-nav-item', (links) =>
 const broken = []
 for (const title of titles) {
   await openPage(title)
-  // A page of the book renders its title; the workbench renders its transport,
-  // because it is an application and has no page heading.
-  const alive = await page.evaluate(
-    () =>
-      Boolean(document.querySelector('[data-testid="prose"] h1')?.textContent?.trim()) ||
-      Boolean(document.querySelector('.transport')),
-  )
+  // A page of the book renders its title; the workbench renders its transport and
+  // the code browser its root listing, because both are applications and neither
+  // has a page heading.
+  // Waited for rather than sampled: `settle` is a quarter of a second, and the
+  // browser's first listing is a megabyte of index fetched and opened before it
+  // has anything to draw. A page that renders nothing still fails — it just
+  // takes the timeout to say so.
+  const alive = await page
+    .waitForFunction(
+      () =>
+        Boolean(document.querySelector('[data-testid="prose"] h1')?.textContent?.trim()) ||
+        Boolean(document.querySelector('.transport')) ||
+        Boolean(document.querySelector('[data-testid="browse-entry"]')),
+      { timeout: 20_000 },
+    )
+    .then(
+      () => true,
+      () => false,
+    )
   if (!alive) broken.push(title)
 }
 check('every page in the reading order renders', broken.length === 0, broken.join(', '))

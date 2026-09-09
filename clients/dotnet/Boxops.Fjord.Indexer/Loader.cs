@@ -327,6 +327,7 @@ internal static class Loader
         }
 
         Wire(workspace, added, log);
+        Document(workspace, log);
 
         // Ordered by path, not by whatever order the workspace hands them back: with
         // `--max-files` the order decides *which* files get indexed, and a run that
@@ -383,6 +384,78 @@ internal static class Loader
     /// a reference to a declaration outside the index.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Give every metadata reference the documentation file sitting beside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A reference assembly's doc comments are a separate file, and Roslyn does not
+    /// go looking.</b> <c>GetDocumentationCommentXml()</c> answers a metadata symbol
+    /// through the reference's <c>DocumentationProvider</c>, and a
+    /// <c>PortableExecutableReference</c> built without one has
+    /// <c>DocumentationProvider.Default</c> — which answers nothing, for every symbol,
+    /// silently. The XML ships beside the assembly in the targeting pack
+    /// (<c>System.Runtime.dll</c> and <c>System.Runtime.xml</c>), so this is a matter of
+    /// pointing at it rather than of finding it.
+    /// </para>
+    /// <para>
+    /// <b>Why it is worth a pass over every project.</b> The documentation on a symbol
+    /// this index does not declare is the one thing about it a reader cannot get from
+    /// its name — <c>codemarkup.SymbolInfo</c> is keyed <c>{symbol}</c> and so can hold
+    /// it without a declaration site, and without this the field is empty for every
+    /// symbol outside the compilation.
+    /// </para>
+    /// <para>
+    /// A reference whose XML is absent is left exactly as it was: the provider is only
+    /// swapped where there is a file to swap it for, so nothing is lost on a pack that
+    /// ships no documentation.
+    /// </para>
+    /// </remarks>
+    private static void Document(AdhocWorkspace workspace, TextWriter log)
+    {
+        var solution = workspace.CurrentSolution;
+        var documented = 0;
+
+        foreach (var id in solution.ProjectIds)
+        {
+            foreach (var reference in solution.GetProject(id)!.MetadataReferences
+                .OfType<PortableExecutableReference>()
+                .ToList())
+            {
+                if (reference.FilePath is not { Length: > 0 } assembly)
+                {
+                    continue;
+                }
+
+                var xml = Path.ChangeExtension(assembly, ".xml");
+
+                if (!File.Exists(xml))
+                {
+                    continue;
+                }
+
+                solution = solution
+                    .RemoveMetadataReference(id, reference)
+                    .AddMetadataReference(
+                        id,
+                        MetadataReference.CreateFromFile(
+                            assembly,
+                            reference.Properties,
+                            XmlDocumentationProvider.CreateFromFile(xml)));
+
+                documented++;
+            }
+        }
+
+        if (!workspace.TryApplyChanges(solution))
+        {
+            log.WriteLine("  ! the workspace refused the documentation providers");
+            return;
+        }
+
+        log.WriteLine($"  {documented} reference(s) carry their documentation");
+    }
+
     private static void Wire(
         AdhocWorkspace workspace,
         IReadOnlyList<(IAnalyzerResult Result, ProjectId Id)> added,

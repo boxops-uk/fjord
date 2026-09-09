@@ -4,6 +4,7 @@ import { PageView } from './book/PageView'
 import { rendered } from './book/content'
 import { useMode } from './book/mode'
 import { slugOf, useLocation } from './book/router'
+import { Browse } from './Browse'
 import { Playground } from './Playground'
 import { fjordTheme } from './theme'
 import './book.css'
@@ -24,9 +25,9 @@ export default function App() {
 
   return (
     <Theme theme={fjordTheme} mode={mode}>
-      {slug === 'playground' ? (
+      {slug === 'playground' || slug === 'browse' ? (
         <Layout slug={slug} toc={[]} onToggleMode={toggle} fills>
-          <Playground />
+          {slug === 'browse' ? <Browse /> : <Playground />}
         </Layout>
       ) : (
         <Layout slug={slug} toc={rendered(slug)?.toc ?? []} onToggleMode={toggle}>
