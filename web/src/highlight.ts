@@ -160,9 +160,12 @@ export function paint(blob: Blob, links: readonly number[] = []): Painted {
 
     // One map, two jobs: a byte-counting encoding's runs and every reference are
     // numbers in the same unit, and building it twice would walk the line twice.
-    const units = bytes || link < links.length ? unitsByByte(text) : null
     const start = blob.start(line) ?? 0
-
+    const nextStart = blob.start(line + 1)
+    const units =
+      bytes || (link < links.length && (nextStart === undefined || links[link] < nextStart))
+        ? unitsByByte(text)
+        : null
     const runs: Run[] = []
     if (legend) {
       const painted = blob.runs(line)
