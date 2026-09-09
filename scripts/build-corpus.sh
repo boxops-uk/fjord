@@ -55,13 +55,19 @@ echo "==> sealing code#$framework"
 
 mkdir -p "$out"
 
+# **Named for what they are and not for the world they came from.** `code` is the
+# world the index is written into, and naming the pair after it put the composed
+# schema under a filename this tree retired with the schema it belonged to — a
+# generated file wearing a deleted schema's name is one a reader places wrongly at
+# a glance. `scripts/check-docs.py` holds the retired names, so that collision is a
+# failed gate rather than a slow misunderstanding.
 echo "==> exporting"
-"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/code.fjmem"
+"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/corpus.fjmem"
 
 echo "==> composing the schema"
 "$fjord" --schema-path "$root/schemas" schema compose "$root/schemas/dotnet.sigla" \
-    > "$out/code.sigla"
+    > "$out/corpus.sigla"
 
-image=$(wc -c < "$out/code.fjmem")
-packed=$(gzip -9 -c "$out/code.fjmem" | wc -c)
-echo "==> $out/code.fjmem: $image bytes ($packed gzipped)"
+image=$(wc -c < "$out/corpus.fjmem")
+packed=$(gzip -9 -c "$out/corpus.fjmem" | wc -c)
+echo "==> $out/corpus.fjmem: $image bytes ($packed gzipped)"

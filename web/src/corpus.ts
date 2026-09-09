@@ -77,8 +77,8 @@ export type Corpus = {
  * from the repository name.
  */
 const base = import.meta.env.BASE_URL
-const IMAGE = `${base}corpus/code.fjmem`
-const SCHEMA = `${base}corpus/code.sigla`
+const IMAGE = `${base}corpus/corpus.fjmem`
+const SCHEMA = `${base}corpus/corpus.sigla`
 
 let corpus: Promise<Corpus> | null = null
 
