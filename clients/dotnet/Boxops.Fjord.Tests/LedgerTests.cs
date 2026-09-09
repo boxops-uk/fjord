@@ -271,7 +271,29 @@ public sealed class LedgerTests
         // edges, two each way. Each edge is one created key over four targets that already
         // exist: the solution and its file, the project and its file. 1260 + 2 + 4 = 1266
         // created, 9878 + (4 × 4) = 9894 deduped.
-        Assert.Equal(1266ul, created);
-        Assert.Equal(9894ul, deduped);
+        //
+        // **And describing what it does not declare moved both by eight.** The indexer
+        // writes one `codemarkup.SymbolInfo` per *distinct* symbol it references from
+        // outside the compilation — the fixture names eight — so each is one created key
+        // whose `src.Symbol` reference is a dedupe against the symbol the cross-reference
+        // for that same name already minted. 1266 + 8 = 1274, 9894 + 8 = 9902.
+        //
+        // **Declaring parameters moved them again, and the two figures name the split.**
+        // Each parameter writes its `src.Symbol`, a `codemarkup.Definition` and a
+        // `codemarkup.SymbolInfo`; the definition is keyed `{symbol, file}` so it dedupes
+        // two references, and the info dedupes one. A parameter something *uses* already
+        // has its symbol from the reference, so it is 2 created and 4 deduped; one nothing
+        // uses mints the symbol here, so it is 3 and 3. The fixture has thirteen — ten
+        // used, three not: (2 × 10) + (3 × 3) = 29 created, (4 × 10) + (3 × 3) = 49
+        // deduped. 1274 + 29 = 1303, 9902 + 49 = 9951.
+        //
+        // **And a positional record declares a property per parameter, with no syntax of
+        // its own.** `record R(ulong Created)` writes the parameter *and* a synthesised
+        // property, so the same three facts are written for each — by the same split, and
+        // at the same token, because in a positional record that token is where both are
+        // written. The fixture has two, one of them used: (2 × 1) + (3 × 1) = 5 created,
+        // (4 × 1) + (3 × 1) = 7 deduped. 1303 + 5 = 1308, 9951 + 7 = 9958.
+        Assert.Equal(1308ul, created);
+        Assert.Equal(9958ul, deduped);
     }
 }

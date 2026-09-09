@@ -137,11 +137,36 @@ schema codemarkup {
   # a symbol panel reads `Definition` for a hundred rows and `SymbolInfo` for the one under
   # the cursor. Nothing joins through it, so all of it is a value.
   #
+  # **Keyed by the symbol and nothing else, which is what makes it answerable for a symbol
+  # this index does not declare.** `Definition` is keyed `{symbol, file}` and so cannot
+  # describe `System.IDisposable` at all — there is no file to key it by. A producer that
+  # meets a reference to something outside its compilation still has the compiler's answer
+  # for all five of these, and writing them here is what lets a reader hover a name from
+  # another package and be told what it is.
+  #
+  # `qualified` and `kind` restate `Definition`'s fields rather than joining to them, for
+  # that reason: the join has no row on the side that needs it most. Saying "interface"
+  # about `System.IDisposable` needs no file, and a reader hovering a name wants it before
+  # anything else here — a signature says what a thing *is called*, not what it *is*.
+  # `package` is the assembly the symbol ships in, as a name and a version — the coordinate
+  # its `src.Symbol` is minted under, said in the form a card shows rather than as an
+  # identity string to be parsed.
+  #
+  # `kind` is **appended**, as `package` and `qualified` were: a record's field order is its
+  # encoding order, so a field added anywhere else renumbers every one after it for no
+  # reason a reader of this file would see.
+  #
   # There is no `container` field here or on `FileDefinition`. Containment is
   # `Relation {from = C, kind = {contains}, to = S}`, joinable in both directions.
   predicate SymbolInfo :
     { symbol : src.Symbol }
-    -> { signature : string, doc : string, modifiers : string }
+    -> { signature : string
+       , doc : string
+       , modifiers : string
+       , qualified : string
+       , package : string
+       , kind : Kind
+       }
 
   # Everything declared in a file, in position order — what a symbol outline or a sticky
   # header needs. `file` leads and `span` follows, so rows arrive in render order and nesting

@@ -385,6 +385,20 @@ pub struct Definition {
     /// The union alternative's name — `class_`, `method_`, `other`.
     pub kind: String,
     pub name: String,
+    /// The human-readable full name — `Namespace.Type.Method`.
+    ///
+    /// Stored by the producer rather than derived here, because it is not derivable
+    /// from the symbol string without a SCIP descriptor parser. Empty where the
+    /// producer wrote nothing, which is the same shape as `name`.
+    pub qualified: String,
+    /// The symbol that contains this one, or empty where nothing here does.
+    ///
+    /// **Filled by [`outline`] and by nothing else.** Containment is a `Relation`
+    /// rather than a field — the schema is explicit that there is no `container` on
+    /// `Definition` or `FileDefinition` — so it costs a query, and the one caller that
+    /// wants it is the one drawing a file's symbols as a tree. Empty is therefore two
+    /// answers at once: "nothing contains it" and "nobody asked".
+    pub container: String,
 }
 
 /// A reference: a span in a file that names a symbol.
@@ -413,6 +427,26 @@ pub struct LocalReference {
     pub target_length: i64,
 }
 
+/// What one symbol says about itself — `codemarkup.SymbolInfo`, whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Info {
+    /// The declaration as a reader would write it, types and all.
+    pub signature: String,
+    /// The doc comment, already stripped of its markup by the indexer. Often empty.
+    pub doc: String,
+    /// `public sealed`, `private static` — the words in front of the declaration.
+    pub modifiers: String,
+    /// The human-readable full name — `System.IDisposable`.
+    pub qualified: String,
+    /// The assembly it ships in, as a name and a version — `System.Runtime 10.0.0.0`.
+    pub package: String,
+    /// What it is — `interface_`, `method_`, `parameter`. The union alternative's name.
+    ///
+    /// On this predicate as well as on `Definition`, because a symbol nothing here
+    /// declares has no `Definition` at all and "what is it" is the first thing asked.
+    pub kind: String,
+}
+
 /// A search hit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Hit {
@@ -421,6 +455,201 @@ pub struct Hit {
     pub kind: String,
     pub path: String,
     pub line: i64,
+}
+
+/// One directory's immediate entries — **a seek, not a scan**.
+///
+/// `src.File` is a path relative to the index root, and a directory is a prefix of one
+/// rather than a fact of its own: there is nothing to join to and nothing to store. So
+/// the question "what is directly under `clients/dotnet/`" is a prefix seek on the
+/// leading field of the key, and the answer is that range cut at its next `/`.
+///
+/// A tree that opens one level at a time asks this once per level, which is what keeps
+/// a browser over a million-file index from reading a million paths to draw twelve
+/// rows. `prefix` is `""` for the root, or a directory path **with** its trailing `/`.
+pub fn children(prefix: &str) -> Result<Vec<Entry>, String> {
+    let rows = crate::corpus::values(
+        &format!(
+            "P where F = src.File P; P = {prefix}..",
+            prefix = literal(prefix)
+        ),
+        FILE_CAP,
+    )?;
+
+    // Ordered and deduped by the walk itself: the seek returns keys in order, so a
+    // directory's entries arrive together and the last one seen is the only one to
+    // compare against.
+    let mut out: Vec<Entry> = Vec::new();
+    for path in rows.iter().filter_map(as_str) {
+        let Some(rest) = path.strip_prefix(prefix) else {
+            continue;
+        };
+        let (name, is_dir) = match rest.split_once('/') {
+            Some((head, _)) => (head, true),
+            None => (rest, false),
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if out.last().is_some_and(|last| last.name == name) {
+            continue;
+        }
+        out.push(Entry {
+            name: name.to_owned(),
+            path: format!("{prefix}{name}"),
+            is_dir,
+        });
+    }
+
+    Ok(out)
+}
+
+/// An entry in a directory listing: a file, or a directory that holds more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Entry {
+    /// The last segment — what a row is labelled with.
+    pub name: String,
+    /// The whole path from the index root. A directory carries no trailing `/`.
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// What MSBuild resolved about one project, and what it builds against.
+///
+/// **The other half of a `.csproj`.** Its text says what somebody wrote; this says what
+/// the build made of it — the framework a `<TargetFramework>` resolved to, the version a
+/// floating `<PackageReference>` landed on, the graph edges a path string only implies.
+/// A viewer showing one without the other is showing half the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Project {
+    pub framework: String,
+    pub sdk: String,
+    pub output: String,
+    pub assembly: String,
+    pub namespace: String,
+    pub platform: String,
+    /// Projects this one builds against, as paths.
+    pub references: Vec<String>,
+    /// Projects that build against it — the direction that decides whether a change is safe.
+    pub dependents: Vec<String>,
+    /// The source files it compiles.
+    pub sources: Vec<String>,
+}
+
+/// A package a project asks for: what it resolved to, and what the file wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PackageRef {
+    pub name: String,
+    /// The version that was resolved — part of the package's identity.
+    pub version: String,
+    /// The range the project file asked for, which differs under a floating version.
+    pub range: String,
+}
+
+/// What the build layer holds about the project a `.csproj` declares.
+///
+/// `None` where the path names no project — every other file in the index, and a project
+/// outside the indexed tree that only an edge mentions.
+///
+/// # Errors
+///
+/// If no corpus is loaded, or a query fails.
+pub fn project(path: &str) -> Result<Option<Project>, String> {
+    let rows = crate::corpus::values(
+        &format!(
+            "{{row = P.value}} where F = src.File {file}; P = msbuild.Project {{file = F}}",
+            file = literal(path)
+        ),
+        1,
+    )?;
+
+    let Some(row) = rows.first().and_then(|row| field(row, "row")) else {
+        return Ok(None);
+    };
+
+    // Each of these is a `src.MaybeString`, which is a union rather than an empty string:
+    // "MSBuild resolved nothing" and "MSBuild resolved the empty string" are different
+    // answers, and the schema keeps them apart. A viewer wants one of them, so this is
+    // where they stop being different.
+    let said = |name: &str| {
+        field(row, name)
+            .and_then(|value| match value {
+                Value::Union { alt, value, .. } if alt == "just" => as_str(value),
+                _ => None,
+            })
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    let paths = |query: &str| -> Result<Vec<String>, String> {
+        Ok(crate::corpus::values(query, FILE_CAP)?
+            .iter()
+            .filter_map(as_str)
+            .map(ToOwned::to_owned)
+            .collect())
+    };
+
+    Ok(Some(Project {
+        framework: said("targetFramework"),
+        sdk: said("sdk"),
+        output: said("outputType"),
+        assembly: said("assemblyName"),
+        namespace: said("rootNamespace"),
+        platform: said("platformTarget"),
+        references: paths(&format!(
+            "Q where F = src.File {file}; P = msbuild.Project {{file = F}}; \
+             msbuild.ProjectReference {{from = P, to = T}}; T = msbuild.Project {{file = G}}; \
+             G = src.File Q",
+            file = literal(path)
+        ))?,
+        dependents: paths(&format!(
+            "Q where F = src.File {file}; P = msbuild.Project {{file = F}}; \
+             msbuild.ProjectReferencedBy {{to = P, from = T}}; \
+             T = msbuild.Project {{file = G}}; G = src.File Q",
+            file = literal(path)
+        ))?,
+        sources: paths(&format!(
+            "Q where F = src.File {file}; P = msbuild.Project {{file = F}}; \
+             msbuild.ProjectToSourceFile {{project = P, src = G}}; G = src.File Q",
+            file = literal(path)
+        ))?,
+    }))
+}
+
+/// The packages one project asks for, with the range its file wrote.
+///
+/// # Errors
+///
+/// If no corpus is loaded, or the query fails.
+pub fn packages(path: &str) -> Result<Vec<PackageRef>, String> {
+    let rows = crate::corpus::values(
+        &format!(
+            "{{name = N, version = V, row = R.value}} where F = src.File {file}; \
+             P = msbuild.Project {{file = F}}; \
+             R = msbuild.PackageReference {{project = P, package = K}}; \
+             K = msbuild.Package {{name = N, version = V}}",
+            file = literal(path)
+        ),
+        FILE_CAP,
+    )?;
+
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            Some(PackageRef {
+                name: as_str(field(row, "name")?)?.to_owned(),
+                version: as_str(field(row, "version")?)?.to_owned(),
+                range: field(row, "row")
+                    .and_then(|value| field(value, "range"))
+                    .and_then(|value| match value {
+                        Value::Union { alt, value, .. } if alt == "just" => as_str(value),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect())
 }
 
 /// Every file in the index, in the order a scan meets them.
@@ -522,8 +751,15 @@ pub fn blob(path: &str) -> Result<Blob, String> {
 pub fn outline(path: &str) -> Result<Vec<Definition>, String> {
     let rows = crate::corpus::values(
         &format!(
-            "{{symbol = Sym, span = SP, row = D.value}} where F = src.File {file}; \
-             D = codemarkup.FileDefinition {{file = F, span = SP, symbol = S}}; S = src.Symbol Sym",
+            // **The qualified name is a join, which is what `symbol` trailing the key is
+            // for.** `FileDefinition` carries `kind` and `name` and is ordered by file
+            // and span, so rows arrive in render order with no join at all; the full
+            // name lives on `Definition`, keyed by the symbol this row already names.
+            "{{symbol = Sym, span = SP, row = D.value, full = Q.value}} where \
+             F = src.File {file}; \
+             D = codemarkup.FileDefinition {{file = F, span = SP, symbol = S}}; \
+             S = src.Symbol Sym; \
+             Q = codemarkup.Definition {{symbol = S, file = F}}",
             file = literal(path)
         ),
         FILE_CAP,
@@ -546,11 +782,51 @@ pub fn outline(path: &str) -> Result<Vec<Definition>, String> {
                     .and_then(as_str)
                     .unwrap_or_default()
                     .to_owned(),
+                qualified: field(row, "full")
+                    .and_then(|full| field(full, "qualified"))
+                    .and_then(as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                container: String::new(),
             })
         })
         .collect();
 
     found.sort_by_key(|definition| definition.start);
+
+    // **A second question rather than a join.** A top-level type is contained by
+    // nothing, and joining `Relation` into the query above would drop its row entirely
+    // — the outline would lose exactly the entries every other one hangs off. So the
+    // edges come back on their own and are matched up here, where an absent one is an
+    // empty string rather than a missing symbol.
+    let edges = crate::corpus::values(
+        &format!(
+            "{{child = Sym, parent = Owner}} where F = src.File {file}; \
+             codemarkup.FileDefinition {{file = F, span = SP, symbol = S}}; \
+             S = src.Symbol Sym; \
+             codemarkup.Relation {{from = C, kind = {{contains = {{}}}}, to = S}}; \
+             C = src.Symbol Owner",
+            file = literal(path)
+        ),
+        FILE_CAP,
+    )?;
+
+    let held: std::collections::HashMap<&str, &str> = edges
+        .iter()
+        .filter_map(|row| {
+            Some((
+                as_str(field(row, "child")?)?,
+                as_str(field(row, "parent")?)?,
+            ))
+        })
+        .collect();
+
+    for definition in &mut found {
+        if let Some(owner) = held.get(definition.symbol.as_str()) {
+            definition.container = (*owner).to_owned();
+        }
+    }
+
     Ok(found)
 }
 
@@ -628,6 +904,11 @@ pub fn definitions(symbol: &str) -> Result<Vec<Definition>, String> {
                     .and_then(as_str)
                     .unwrap_or_default()
                     .to_owned(),
+                qualified: field(inner, "qualified")
+                    .and_then(as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                container: String::new(),
             })
         })
         .collect())
@@ -658,20 +939,67 @@ pub fn references(symbol: &str) -> Result<Vec<Reference>, String> {
         .collect())
 }
 
-/// Case-insensitive prefix search over the name index.
+/// **What a hover card needs**: the signature, the doc comment, and the modifiers.
+///
+/// Its own predicate rather than a wider `Definition`, and read one symbol at a
+/// time, because that is the shape the schema was given for exactly this reason: a
+/// signature plus a doc comment is an order of magnitude more bytes than a name and
+/// a span, and a panel reads a hundred of the latter for one of these.
+///
+/// `None` is ordinary rather than an error. Only a symbol this index *defines* has
+/// a row here — `System.String` is named by the code and declared outside it, so the
+/// card falls back to what the name itself says.
+pub fn info(symbol: &str) -> Result<Option<Info>, String> {
+    let rows = crate::corpus::values(
+        &format!(
+            "{{row = I.value}} where S = src.Symbol {symbol}; \
+             I = codemarkup.SymbolInfo {{symbol = S}}",
+            symbol = literal(symbol)
+        ),
+        1,
+    )?;
+
+    Ok(rows.iter().find_map(|row| {
+        let inner = field(row, "row")?;
+        Some(Info {
+            signature: as_str(field(inner, "signature")?)?.to_owned(),
+            doc: field(inner, "doc")
+                .and_then(as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            modifiers: field(inner, "modifiers")
+                .and_then(as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            qualified: field(inner, "qualified")
+                .and_then(as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            package: field(inner, "package")
+                .and_then(as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            kind: field(inner, "kind").map_or_else(|| "other".to_owned(), alternative),
+        })
+    }))
+}
+
+/// Case-insensitive **fuzzy prefix** search over the name index.
 ///
 /// **A seek, not a scan.** `codemarkup.SearchEntry` leads with `nameLowercase` for
 /// exactly this, and everything a hit renders trails it in the key — so a hit needs
-/// no join and no point read.
+/// no join and no point read. A fuzzy pattern keeps that: it sits on the leading
+/// field, where the executor can still turn a live DFA state into a range and seek
+/// past the dead bands between them.
 pub fn search(prefix: &str) -> Result<Vec<Hit>, String> {
     let lowered = prefix.to_lowercase();
 
     let rows = crate::corpus::values(
         &format!(
             "{{name = N, symbol = Sym, kind = K, path = P, line = L}} where \
-             codemarkup.SearchEntry {{nameLowercase = {prefix}.., name = N, kind = K, \
+             codemarkup.SearchEntry {{nameLowercase = {pattern}, name = N, kind = K, \
              symbol = S, file = F, line = L}}; S = src.Symbol Sym; F = src.File P",
-            prefix = literal(&lowered)
+            pattern = pattern(&lowered)
         ),
         SEARCH_CAP,
     )?;
@@ -768,6 +1096,31 @@ fn alternative(value: &Value) -> String {
 /// oldest injection there is. The escapes are the lexer's: `\"`, `\\`, the named
 /// control ones, and `\u` for anything else below a space.
 #[must_use]
+/// How a search term is spelled as a pattern, which depends on how much of it there is.
+///
+/// `~<` rather than `~` because this is a search box: it measures the term against a
+/// **prefix** of the stored name rather than the whole of it, so `"parsr"~<1` finds
+/// `parser_function`, which no whole-string distance would — a five-character term is
+/// never within three edits of a fifteen-character identifier, however well it starts
+/// it.
+///
+/// **The distance has to grow with the term rather than sit still.** A term no longer
+/// than its distance is within that distance of the *empty* prefix, and every name
+/// starts with the empty prefix — so a fixed `~<1` would make `"a"` match the entire
+/// index. Below three characters there is nothing worth being fuzzy about and the
+/// exact prefix is both the stricter answer and the cheaper one; past that, one edit
+/// covers the typo a short name can carry and two covers a long one. Three is the
+/// engine's ceiling and is not reached here: at that width the answers stop being
+/// about the term.
+fn pattern(lowered: &str) -> String {
+    let term = literal(lowered);
+    match lowered.chars().count() {
+        0..=2 => format!("{term}.."),
+        3..=5 => format!("{term}~<1"),
+        _ => format!("{term}~<2"),
+    }
+}
+
 pub fn literal(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');

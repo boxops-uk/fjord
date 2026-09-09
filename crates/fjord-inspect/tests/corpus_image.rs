@@ -169,6 +169,9 @@ fn a_real_index_loads_from_its_image_and_answers() {
         "{symbol} is in the outline but has no definition"
     );
 
+    // **A term too short to be fuzzy is still exact.** One character is within one
+    // edit of the empty prefix, and every name starts with that — so a fuzzy `"f"`
+    // would answer with the whole index rather than with anything about `f`.
     let hits = codeview::search("f").expect("search answers");
     println!("  search \"f\": {} hit(s)", hits.len());
     assert!(!hits.is_empty(), "nothing in this index starts with f");
@@ -179,4 +182,44 @@ fn a_real_index_loads_from_its_image_and_answers() {
             hit.name
         );
     }
+
+    // **The typo a search box exists to forgive**, built from a name this index
+    // actually holds rather than from one hardcoded here: take a long enough name,
+    // mistype a letter in the middle of its opening, and the hit has to come back.
+    // The exact prefix could not have found it — which is asserted, so that this
+    // still fails if `~<` silently degrades to `..`.
+    let long = hits
+        .iter()
+        .find(|hit| hit.name.chars().count() >= 8)
+        .expect("some name in this index is eight characters or more");
+    let opening: String = long.name.to_lowercase().chars().take(7).collect();
+    let mistyped: String = opening
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            if i == 4 {
+                if c == 'x' { 'y' } else { 'x' }
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    assert!(
+        !long.name.to_lowercase().starts_with(&mistyped),
+        "{mistyped:?} is still a prefix of {:?}; the typo did not take",
+        long.name
+    );
+
+    let forgiving = codeview::search(&mistyped).expect("a mistyped search answers");
+    println!(
+        "  search {mistyped:?} (for {:?}): {} hit(s)",
+        long.name,
+        forgiving.len()
+    );
+    assert!(
+        forgiving.iter().any(|hit| hit.symbol == long.symbol),
+        "{:?} was not found by {mistyped:?}, so the search is not fuzzy",
+        long.name
+    );
 }

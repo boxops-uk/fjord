@@ -14,22 +14,30 @@
 import init, {
   type Blob,
   type Definition,
+  type Entry,
   type FileRefs,
   type Hit,
+  type Info,
+  type PackageRef,
+  type Project,
   type Reference,
+  children,
   definitions,
   files,
   load_corpus,
   open,
   outline,
+  packages,
+  project,
   references,
   refs,
   search,
+  symbol_info,
   xrefs,
 } from './wasm/fjord_wasm.js'
 import wasmUrl from './wasm/fjord_wasm_bg.wasm?url'
 
-export type { Blob, Definition, FileRefs, Hit, Reference }
+export type { Blob, Definition, Entry, FileRefs, Hit, Info, PackageRef, Project, Reference }
 
 /** What a load answered — the shape `fjord_inspect::corpus::Loaded` serialises to. */
 type Loaded = {
@@ -45,6 +53,12 @@ export type Corpus = {
   /** The schema both sides agreed on, as `0x…`. */
   fingerprint: string
   files: () => string[]
+  /** One directory's immediate entries. `''` is the root; a directory ends in `/`. */
+  children: (prefix: string) => Entry[]
+  /** What the build layer holds about a project, or `undefined` for any other file. */
+  project: (path: string) => Project | undefined
+  /** The packages that project asks for, with the range its file wrote. */
+  packages: (path: string) => PackageRef[]
   open: (path: string) => Blob
   outline: (path: string) => Definition[]
   xrefs: (path: string) => Reference[]
@@ -53,6 +67,8 @@ export type Corpus = {
   definitions: (symbol: string) => Definition[]
   references: (symbol: string) => Reference[]
   search: (prefix: string) => Hit[]
+  /** What a hover card needs, or `undefined` where this index only names the symbol. */
+  info: (symbol: string) => Info | undefined
 }
 
 /**
@@ -102,6 +118,9 @@ export function loadCorpus(): Promise<Corpus> {
       rows: loaded.rows,
       fingerprint: loaded.fingerprint ?? '',
       files,
+      children,
+      project,
+      packages,
       open,
       outline,
       xrefs,
@@ -109,6 +128,7 @@ export function loadCorpus(): Promise<Corpus> {
       definitions,
       references,
       search,
+      info: symbol_info,
     }
   })()
 

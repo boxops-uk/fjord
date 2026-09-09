@@ -57,7 +57,14 @@ internal static class CodeMarkup
         IEventSymbol => DotnetIndex.Tagged(24u),
         ITypeParameterSymbol => DotnetIndex.Tagged(26u),
         INamespaceSymbol => DotnetIndex.Tagged(3u),
-        IParameterSymbol or ILocalSymbol => DotnetIndex.Tagged(13u),
+        // **A parameter says so, through `other`.** The union mirrors LSP's `SymbolKind`,
+        // which has no parameter in it — `variable` is where LSP puts one, and it is the
+        // answer a reader hovering an argument is least helped by. `other` carries what
+        // this producer saw for exactly this case, and `codeview::alternative` unwraps
+        // its payload, so the name reaches a consumer as the word rather than as a
+        // discriminant nobody can filter on either way.
+        IParameterSymbol => DotnetIndex.Tagged(0u, "parameter"),
+        ILocalSymbol => DotnetIndex.Tagged(13u),
 
         // Named rather than rounded: `other` carries what this producer saw, so a
         // consumer can tell "a kind you do not know" from "a kind nobody recorded".

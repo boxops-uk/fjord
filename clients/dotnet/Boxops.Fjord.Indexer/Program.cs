@@ -212,6 +212,14 @@ internal static class Program
             // which projects exist and what they depend on.
             target.Build.Emit(sink.Add);
 
+            // And the project files as text, which the build layer describes but cannot
+            // carry: it emits facts about a project, not the bytes of the file that
+            // declares it.
+            foreach (var described in target.Build.Projects)
+            {
+                indexer.IndexProjectFile(root, described.Path);
+            }
+
             foreach (var project in target.Projects)
             {
                 if (indexer.Exhausted)

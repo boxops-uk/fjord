@@ -124,6 +124,12 @@ export type Span = { type: string; start: number; end: number }
 /** One file's text, and the spans that colour it. */
 export type Painted = { code: string; spans: Span[] }
 
+/** A stretch of one line, in that line's string indices. */
+type Stretch = { from: number; to: number }
+
+/** A colour run, once it is a position in the line's text rather than a payload. */
+type Run = Stretch & { type: SyntaxType }
+
 /**
  * Join a blob's lines into the string `CodeBlock` renders, and lift every run onto
  * an offset into that string.
@@ -133,40 +139,73 @@ export type Painted = { code: string; spans: Span[] }
  * A byte-counting encoding is converted per line, because a byte offset into UTF-8 is
  * not a position in a JavaScript string and using it as one silently mis-colours
  * every line after the first character outside ASCII.
+ *
+ * `links` is every followable byte range in the file, ordered — `xref.links`. They
+ * arrive here rather than as a second pass because the conversion is the same one:
+ * a reference counts bytes, as a `scip-syntax-1` run does, and this is the loop that
+ * already holds the line and its byte→unit map.
  */
-export function paint(blob: Blob): Painted {
+export function paint(blob: Blob, links: readonly number[] = []): Painted {
   const legend = blob.encoding ? LEGENDS[blob.encoding] : undefined
   const bytes = blob.encoding ? COUNTS_BYTES[blob.encoding] === true : false
 
   const texts: string[] = []
   const spans: Span[] = []
   let offset = 0
+  let link = 0
 
   for (let line = 1; line <= blob.lines; line++) {
     const text = blob.text(line) ?? ''
     texts.push(text)
 
-    if (legend) {
-      const runs = blob.runs(line)
-      const units = bytes ? unitsByByte(text) : null
+    // One map, two jobs: a byte-counting encoding's runs and every reference are
+    // numbers in the same unit, and building it twice would walk the line twice.
+    const units = bytes || link < links.length ? unitsByByte(text) : null
+    const start = blob.start(line) ?? 0
 
-      for (let at = 0; at < runs.length; at += 4) {
-        const type = legend[runs[at + 2]]
+    const runs: Run[] = []
+    if (legend) {
+      const painted = blob.runs(line)
+
+      for (let at = 0; at < painted.length; at += 4) {
+        const type = legend[painted[at + 2]]
         if (!type) continue
 
-        const from = units ? (units[runs[at]] ?? text.length) : runs[at]
-        const to = units
-          ? (units[runs[at] + runs[at + 1]] ?? text.length)
-          : runs[at] + runs[at + 1]
+        const from = bytes && units ? (units[painted[at]] ?? text.length) : painted[at]
+        const to =
+          bytes && units
+            ? (units[painted[at] + painted[at + 1]] ?? text.length)
+            : painted[at] + painted[at + 1]
 
         // A run that does not lie inside its line is dropped rather than clamped:
         // it means the payload and the text disagree, and a clamped span paints
         // the wrong characters while looking like it worked.
         if (from >= to || to > text.length) continue
 
-        spans.push({ type, start: offset + from, end: offset + to })
+        runs.push({ type, from, to })
       }
     }
+
+    const marks: Stretch[] = []
+    if (units) {
+      // `units.length - 1` is the line's length in bytes: the map's last entry is
+      // the position one past its last character.
+      const ends = start + units.length - 1
+
+      while (link < links.length && links[link] < ends) {
+        const from = units[links[link] - start]
+        const to = units[links[link + 1] - start]
+        link += 2
+
+        // Dropped rather than clamped, for the reason a run is: a reference that
+        // does not lie inside the line it starts on is a disagreement.
+        if (from === undefined || to === undefined || from >= to) continue
+
+        marks.push({ from, to })
+      }
+    }
+
+    for (const span of weave(runs, marks, offset)) spans.push(span)
 
     // `+ 1` for the newline this line is joined with. The last one has none, which
     // costs an offset past the end that nothing reads.
@@ -174,6 +213,58 @@ export function paint(blob: Blob): Painted {
   }
 
   return { code: texts.join('\n'), spans }
+}
+
+/**
+ * One line's two vocabularies as one list of spans — the colour a run carries,
+ * and whether a reference covers it.
+ *
+ * **A span can only say one thing**, because the block paints one class (or one
+ * highlight) per span and overlapping spans are not a shape it has: in its span
+ * mode a second span over the same text repeats that text on the page. So the
+ * two are cut against each other and a stretch that is both is its own type —
+ * `type-xref` — which `app.css` gives the colour it merged with and the
+ * underline that says it is followable.
+ *
+ * Runs arrive ordered and non-overlapping (the blob says so of its payload) and
+ * so do marks (`xref.links` merges the two kinds), which is what lets one pass
+ * over the cut points answer both.
+ */
+function weave(runs: readonly Run[], marks: readonly Stretch[], offset: number): Span[] {
+  if (marks.length === 0) {
+    return runs.map((run) => ({ type: run.type, start: offset + run.from, end: offset + run.to }))
+  }
+
+  const cuts = [
+    ...new Set([...runs, ...marks].flatMap(({ from, to }) => [from, to])),
+  ].sort((left, right) => left - right)
+
+  const spans: Span[] = []
+  let run = 0
+  let mark = 0
+
+  for (let at = 0; at + 1 < cuts.length; at++) {
+    const from = cuts[at]
+    const to = cuts[at + 1]
+
+    while (run < runs.length && runs[run].to <= from) run++
+    while (mark < marks.length && marks[mark].to <= from) mark++
+
+    const colour = run < runs.length && runs[run].from <= from ? runs[run].type : null
+    const linked = mark < marks.length && marks[mark].from <= from
+    if (!colour && !linked) continue
+
+    const type = colour ? (linked ? `${colour}-xref` : colour) : 'xref'
+
+    // Adjacent pieces of one type are one span again: the cut points are every
+    // boundary either vocabulary has, so a run a mark ends inside is cut twice,
+    // and two spans meeting mid-word draw two underlines with a seam.
+    const last = spans[spans.length - 1]
+    if (last && last.type === type && last.end === offset + from) last.end = offset + to
+    else spans.push({ type, start: offset + from, end: offset + to })
+  }
+
+  return spans
 }
 
 /**

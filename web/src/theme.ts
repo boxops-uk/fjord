@@ -1,5 +1,5 @@
 import { defineTheme } from '@astryxdesign/core/theme'
-import { defineSyntaxTheme } from '@astryxdesign/core/theme/syntax'
+import { defineSyntaxTheme, type SyntaxThemeTokenInput } from '@astryxdesign/core/theme/syntax'
 
 /**
  * **Fjord, as a theme** — neutral ground, one accent, three code colours.
@@ -37,30 +37,43 @@ import { defineSyntaxTheme } from '@astryxdesign/core/theme/syntax'
  * Both schemes hold one lightness per role — 46–52% light, 80–84% dark — so a
  * keyword and a string differ in hue rather than in weight.
  */
-const syntax = defineSyntaxTheme({
-  name: 'fjord-code',
-  tokens: {
-    keyword: ['#a83442', '#ff9d9e'], // the language: 50% .15 18 / 80% .12 20
-    constant: ['#9e4c51', '#fbb6b5'], // a sigla variable: 52% .11 18 / 84% .08 20
-    function: ['#0c60a3', '#8cc3fc'], // a predicate: 48% .13 250 / 80% .10 250
-    type: ['#0c60a3', '#8cc3fc'],
-    string: ['#1d6835', '#95d7a2'], // a literal: 46% .11 150 / 82% .10 150
-    number: ['#1d6835', '#95d7a2'],
-    property: ['#3e4348', '#bbbec1'], // a field: 38% .010 250 / 80% .006 250
-    attribute: ['#3e4348', '#bbbec1'],
-    operator: ['#777b7f', '#83878b'], // 58% .008 250 / 62% .008 250
-    punctuation: ['#777b7f', '#83878b'],
-    comment: ['#83878b', '#777b7f'], // 62% / 58%
-    // `variable` is the design system's *plain* code colour — what an
-    // unhighlighted block is painted with — so it is the ink.
-    variable: ['#191b1d', '#e3e5e7'],
-    // A byte the lexer refused. It used to be a redder red than the accent,
-    // because a quieter error is invisible on a page whose accent is already
-    // red — the accent *is* that red now, so this is the same pair as
-    // `--color-error` and `--color-accent` rather than a fourth one near them.
-    tag: ['#df202e', '#fc5855'], // 58% .22 25 / 68% .20 25
-    background: ['#f5f7f9', '#07080a'], // 97.5% .003 250 / 13.5% .006 250
-  },
+const code: SyntaxThemeTokenInput = {
+  keyword: ['#a83442', '#ff9d9e'], // the language: 50% .15 18 / 80% .12 20
+  constant: ['#9e4c51', '#fbb6b5'], // a sigla variable: 52% .11 18 / 84% .08 20
+  function: ['#0c60a3', '#8cc3fc'], // a predicate: 48% .13 250 / 80% .10 250
+  type: ['#0c60a3', '#8cc3fc'],
+  string: ['#1d6835', '#95d7a2'], // a literal: 46% .11 150 / 82% .10 150
+  number: ['#1d6835', '#95d7a2'],
+  property: ['#3e4348', '#bbbec1'], // a field: 38% .010 250 / 80% .006 250
+  attribute: ['#3e4348', '#bbbec1'],
+  operator: ['#777b7f', '#83878b'], // 58% .008 250 / 62% .008 250
+  punctuation: ['#777b7f', '#83878b'],
+  comment: ['#83878b', '#777b7f'], // 62% / 58%
+  // `variable` is the design system's *plain* code colour — what an
+  // unhighlighted block is painted with — so it is the ink.
+  variable: ['#191b1d', '#e3e5e7'],
+  // A byte the lexer refused. It used to be a redder red than the accent,
+  // because a quieter error is invisible on a page whose accent is already
+  // red — the accent *is* that red now, so this is the same pair as
+  // `--color-error` and `--color-accent` rather than a fourth one near them.
+  tag: ['#df202e', '#fc5855'], // 58% .22 25 / 68% .20 25
+  background: ['#f5f7f9', '#07080a'], // 97.5% .003 250 / 13.5% .006 250
+}
+
+const syntax = defineSyntaxTheme({ name: 'fjord-code', tokens: code })
+
+/**
+ * **The same palette, for a language whose elements are its keywords.**
+ *
+ * `tag` is the refused-byte slot above, and a markup tokenizer puts every element
+ * name and every angle bracket in it — so XML painted with the code theme is a file
+ * of errors, in the one red on this page that means *this is wrong*. Markup takes
+ * this instead: one token repointed at the language's own colour, which is what an
+ * element name is, and the error red left where it still means something.
+ */
+export const markupSyntax = defineSyntaxTheme({
+  name: 'fjord-markup',
+  tokens: { ...code, tag: code.keyword },
 })
 
 export const fjordTheme = defineTheme({

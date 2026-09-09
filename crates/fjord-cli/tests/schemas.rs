@@ -209,12 +209,12 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
 
     let expected = [
         ("bundle.sigla", "0xf67c15e97c486055"),
-        ("codemarkup.sigla", "0x71c5a26efad9c90a"),
+        ("codemarkup.sigla", "0xfa1ab2c183c24494"),
         ("config.sigla", "0xac3c414ab7ff574f"),
         ("csharp.sigla", "0x13b475c0b02c4228"),
         ("demo.sigla", "0x03678fcd1e7924e3"),
-        ("dotnet.sigla", "0x4e90774b9a0814cc"),
-        ("index.sigla", "0x48932239a227a7f8"),
+        ("dotnet.sigla", "0x4471c3f35a45b7da"),
+        ("index.sigla", "0x7de1003fb6ef1242"),
         ("msbuild.sigla", "0xfad0dcb5ca7f6cd9"),
         ("npm.sigla", "0x89e3bbe02c94cb17"),
         ("src.sigla", "0x76a9b57d832f5ad9"),

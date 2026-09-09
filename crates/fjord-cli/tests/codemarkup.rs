@@ -425,6 +425,12 @@ fn every_codemarkup_predicate_answers_the_question_it_is_for() {
                     WireValue::Str("string Parse(string input)".to_owned()),
                     WireValue::Str("Parses the input.".to_owned()),
                     WireValue::Str("public".to_owned()),
+                    // The two a symbol with no declaration site still has: what it is
+                    // called in full, and what ships it.
+                    WireValue::Str("Acme.Parser.Parse(string)".to_owned()),
+                    WireValue::Str("Acme.Parser 1.0.0.0".to_owned()),
+                    // What it is, which a symbol with no declaration site still has.
+                    tag(6),
                 ]))),
             }],
         ),

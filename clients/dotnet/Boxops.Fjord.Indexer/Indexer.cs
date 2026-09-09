@@ -190,6 +190,21 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
     private readonly ConcurrentDictionary<ISymbol, int> _uses = new(SymbolEqualityComparer.Default);
 
+    /// <summary>
+    /// Which symbols outside this index have had their <c>codemarkup.SymbolInfo</c>
+    /// written, so that the hundredth reference to <c>IDisposable</c> writes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <b>The key is the SCIP id, not the symbol.</b> <c>IReadOnlyList&lt;FjordFact&gt;</c>
+    /// and <c>IReadOnlyList&lt;byte&gt;</c> are two <c>ISymbol</c>s and one id, and
+    /// <c>SymbolInfo</c> is keyed <c>{symbol}</c> — so keying this by the symbol would let
+    /// both through and offer ingest one key with two values, which it refuses
+    /// (<c>ops-I4</c>) by killing the write stream part-way through. The value written is
+    /// taken from <c>OriginalDefinition</c> for the same reason: it has to be a function
+    /// of the id, and a constructed generic's signature is not.
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, bool> _described = new(StringComparer.Ordinal);
+
     public bool Exhausted => options.MaxFiles > 0 && _claimed >= options.MaxFiles;
 
     /// <summary>Files handed to the walk, which is what `--max-files` counts.</summary>
@@ -391,6 +406,15 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                     Declare(model, declarator, file, offsets);
                     break;
 
+                // **A parameter is a declaration too, and was reaching none of this.**
+                // `Reference` mints a global symbol for one — SCIP spells it
+                // `…Connect().(address)` — so a use of it was a reference to a symbol
+                // nothing declared, and a reader hovering it was told it came from
+                // outside the index while looking at the line that declares it.
+                case ParameterSyntax parameter:
+                    DeclareParameter(model, parameter, file, offsets);
+                    break;
+
                 case SimpleNameSyntax name when options.References:
                     Reference(model, name, file, offsets);
                     break;
@@ -470,6 +494,62 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// all of them would serialise the walk behind the network.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// A project file's own text, so a reader can open the thing the build layer describes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A `.csproj` is named by the index and was never readable in it.</b> The build
+    /// layer emits an `msbuild.Project` keyed on a `src.File`, so the path is there and a
+    /// file tree lists it — but the walk only reads text for documents Roslyn compiles,
+    /// and a project file is not one. Opening it showed a file with no lines.
+    /// </para>
+    /// <para>
+    /// **No styles**: `IndexStyles` needs a `Document` to classify and there is none, so
+    /// the file renders plain. That is the right answer rather than a gap — this producer
+    /// has no XML classifier, and inventing one here would be a second highlighter to keep
+    /// in step with nothing.
+    /// </para>
+    /// <para>
+    /// Written once per project per run. A multi-targeting project is walked once per
+    /// framework and offers the same lines again, which is one key with one value — a
+    /// dedupe rather than the conflict `ops-I4` refuses.
+    /// </para>
+    /// </remarks>
+    public void IndexProjectFile(string root, string relative)
+    {
+        var absolute = System.IO.Path.Combine(root, relative);
+
+        if (!File.Exists(absolute))
+        {
+            return;
+        }
+
+        SourceText text;
+
+        try
+        {
+            text = SourceText.From(File.ReadAllText(absolute));
+        }
+        catch (IOException)
+        {
+            // A project file that cannot be read is one fact fewer, not a failed run:
+            // everything the build layer resolved about it still stands.
+            return;
+        }
+
+        var (rows, info) = SourceLayer.LineTable(text);
+        var file = DotnetIndex.FileFact(relative);
+
+        sink.Add(DotnetIndex.File, file);
+        sink.Add(
+            DotnetIndex.FileLanguage,
+            DotnetIndex.FileLanguageFact(file, SourceLayer.LanguageName(absolute)));
+        sink.Add(DotnetIndex.FileDigest, DotnetIndex.FileDigestFact(file, SourceLayer.Digest(text)));
+
+        IndexLines(text, rows, info, file, document: null);
+    }
+
     private void IndexLines(
         SourceText text,
         List<SourceLayer.Row> rows,
@@ -638,6 +718,154 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         }
 
         Interlocked.Increment(ref _declarations);
+    }
+
+    /// <summary>
+    /// Where a parameter is written, and what it is — but not what an outline lists.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two of the five facts a declaration writes, on purpose.</b>
+    /// <c>codemarkup.Definition</c> is the symbol-to-location answer, so a use of a
+    /// parameter can reach the line that declares it; <c>codemarkup.SymbolInfo</c> is
+    /// what a hover card reads. The other three are deliberately skipped:
+    /// <c>FileDefinition</c> is documented as "what a symbol outline or a sticky header
+    /// needs", and no outline lists the parameters of every method — nor does a search
+    /// over names want five more rows per signature, which is <c>SearchEntry</c> and
+    /// <c>SymbolByName</c>.
+    /// </para>
+    /// <para>
+    /// <b>Not routed through <see cref="Declare"/>, because a parameter has no
+    /// <c>csharp</c> entity</b> — the language layer models types, methods, properties
+    /// and fields, and `Declare` returns on a symbol with no entity before it reaches
+    /// any of the `codemarkup` facts at all.
+    /// </para>
+    /// <para>
+    /// <b>Only the defining half of a partial writes these.</b> Both halves declare
+    /// parameters that spell one SCIP string, so walking both would offer
+    /// <c>Definition</c> one key with two spans and <c>SymbolInfo</c> one key with two
+    /// values — which ingest refuses (<c>ops-I4</c>) by killing the write stream
+    /// part-way through. <see cref="ScipSymbols.Defining"/> is the same answer
+    /// <see cref="Declare"/> uses for the member itself.
+    /// </para>
+    /// </remarks>
+    private void DeclareParameter(
+        SemanticModel model,
+        ParameterSyntax node,
+        FjordFact file,
+        SourceLayer.Offsets offsets)
+    {
+        if (model.GetDeclaredSymbol(node) is not { } symbol
+            || symbol.ContainingSymbol is not { } member
+            || !SymbolEqualityComparer.Default.Equals(ScipSymbols.Defining(member), member))
+        {
+            return;
+        }
+
+        var scip = ScipSymbols.Of(symbol, out var unspellable);
+
+        if (unspellable)
+        {
+            Interlocked.Increment(ref _unspellable);
+        }
+
+        if (scip is null)
+        {
+            return;
+        }
+
+        var (start, length) = offsets.Span(node.Identifier.Span);
+        var named = DotnetIndex.SymbolFact(scip);
+
+        // **The member it belongs to, then its name.** `ToDisplayString()` on a parameter
+        // is `Namespace.Type name` — the *type* and the name, which is a signature and not
+        // a qualified name, and would leave a card repeating itself. The member's own
+        // display string already carries its parameter list, so this reads the way a
+        // method's `qualified` does with one more segment on the end.
+        var qualified = $"{member.ToDisplayString()}.{symbol.Name}";
+
+        sink.Add(DotnetIndex.Symbol, named);
+        sink.Add(
+            DotnetIndex.MarkupDefinition,
+            DotnetIndex.MarkupDefinitionFact(
+                named,
+                file,
+                start,
+                length,
+                CodeMarkup.Kind(symbol),
+                symbol.Name,
+                qualified));
+        sink.Add(
+            DotnetIndex.SymbolInfo,
+            DotnetIndex.SymbolInfoFact(
+                named,
+                CodeMarkup.Signature(symbol),
+                options.Docs ? DocComment(symbol) : string.Empty,
+                CodeMarkup.Modifiers(symbol),
+                qualified,
+                Package(symbol),
+                CodeMarkup.Kind(symbol)));
+
+        // **A positional record declares two things with one name.** `record
+        // WriteSummary(ulong Created, …)` writes a primary-constructor parameter *and* a
+        // property, and only the parameter has syntax: the property is synthesised, so
+        // `GetDeclaredSymbol` never answers with it from any node and the declaration
+        // walk cannot reach it. A use of `summary.Created` was then a reference to a
+        // symbol nothing declared — the same hole parameters were in, one layer along,
+        // and it showed a reader a raw SCIP id.
+        //
+        // The span is this one: in a positional record that token *is* where both are
+        // written, which is the honest answer to "where is this declared".
+        if (node.Parent?.Parent is RecordDeclarationSyntax
+            && member.ContainingType is { } holder)
+        {
+            foreach (var property in holder
+                .GetMembers(symbol.Name)
+                .OfType<IPropertySymbol>())
+            {
+                // **Only the one this token declares.** A record may write the property
+                // out itself — `record R(int X) { public int X { get; init; } = X; }` —
+                // and then nothing is synthesised: the property has a declaration of its
+                // own, the ordinary walk reaches it there, and claiming it here as well
+                // offers `codemarkup.Definition` one `{symbol, file}` key with two spans.
+                // Ingest refuses that and the write stream dies part-way through, which
+                // is what the surface corpus caught.
+                if (!property.DeclaringSyntaxReferences.Any(
+                        reference => reference.Span == node.Span))
+                {
+                    continue;
+                }
+
+                if (ScipSymbols.Of(property, out _) is not { } propertyScip)
+                {
+                    continue;
+                }
+
+                var asProperty = DotnetIndex.SymbolFact(propertyScip);
+
+                sink.Add(DotnetIndex.Symbol, asProperty);
+                sink.Add(
+                    DotnetIndex.MarkupDefinition,
+                    DotnetIndex.MarkupDefinitionFact(
+                        asProperty,
+                        file,
+                        start,
+                        length,
+                        CodeMarkup.Kind(property),
+                        property.Name,
+                        property.ToDisplayString()));
+                sink.Add(
+                    DotnetIndex.SymbolInfo,
+                    DotnetIndex.SymbolInfoFact(
+                        asProperty,
+                        CodeMarkup.Signature(property),
+                        options.Docs ? DocComment(property) : string.Empty,
+                        CodeMarkup.Modifiers(property),
+                        property.ToDisplayString(),
+                        Package(property),
+                        CodeMarkup.Kind(property)));
+            }
+        }
     }
 
     /// <summary>
@@ -830,6 +1058,32 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             sink.Add(
                 DotnetIndex.SymbolXRef,
                 DotnetIndex.SymbolXRefFact(target, file, start, length));
+
+            // **What a hover card needs for something this index does not declare.**
+            // `codemarkup.SymbolInfo` is keyed `{symbol}` and nothing else — there is no
+            // file in that key — so it is answerable for a target with no declaration
+            // site here, which is the whole difference between it and `Definition`. The
+            // compiler already has the signature and, where the reference assembly ships
+            // its XML beside it, the documentation comment too; without this the facts
+            // exist in the compiler and nowhere in the index.
+            //
+            // Written once per id: a run meets `IDisposable` wherever it is used, and
+            // every one of those would be the same key offered again.
+            if (outside && _described.TryAdd(scip, true))
+            {
+                var described = symbol.OriginalDefinition;
+
+                sink.Add(
+                    DotnetIndex.SymbolInfo,
+                    DotnetIndex.SymbolInfoFact(
+                        target,
+                        CodeMarkup.Signature(described),
+                        options.Docs ? DocComment(described) : string.Empty,
+                        CodeMarkup.Modifiers(described),
+                        described.ToDisplayString(),
+                        Package(described),
+                        CodeMarkup.Kind(described)));
+            }
         }
         else if (local is { } declared)
         {
@@ -1071,7 +1325,14 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         sink.Add(
             DotnetIndex.SymbolInfo,
-            DotnetIndex.SymbolInfoFact(named, signature, doc, modifiers));
+            DotnetIndex.SymbolInfoFact(
+                named,
+                signature,
+                doc,
+                modifiers,
+                symbol.ToDisplayString(),
+                Package(symbol),
+                kind));
 
         // The two search rows: the case-folded one a prefix or fuzzy match seeks on, and
         // the exact one, because "find exactly `Parse`" and "find anything spelled like
@@ -1160,6 +1421,23 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     }
 
     /// <summary>
+    /// The assembly a symbol ships in, as a name and a version.
+    /// </summary>
+    /// <remarks>
+    /// <b>The coordinate its symbol is minted under, said the way a card shows it.</b> A
+    /// SCIP id already carries this — <c>nuget System.Runtime 10.0.0.0 …</c> — but reading
+    /// it back out means parsing somebody else's identifier format in every consumer, and
+    /// a hand-written parser of a foreign grammar is a thing that breaks quietly when the
+    /// scheme moves. The assembly identity's full display name is the other option and is
+    /// not it either: <c>Culture=neutral, PublicKeyToken=…</c> is not what a reader wants
+    /// to be shown, so trimming it would just move the parsing.
+    /// </remarks>
+    private static string Package(ISymbol symbol) =>
+        symbol.ContainingAssembly?.Identity is { } identity
+            ? $"{identity.Name} {identity.Version}"
+            : string.Empty;
+
+    /// <summary>
     /// A declaration's doc comment as plain text — the summary, collapsed.
     /// </summary>
     /// <remarks>
@@ -1186,9 +1464,30 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
 
         var summary = xml[(opened + "<summary>".Length)..closed];
 
-        // Inner tags — `<see cref="X"/>`, `<c>x</c>` — become their text, and the
-        // line-wrapped source becomes one line.
-        var text = System.Text.RegularExpressions.Regex.Replace(summary, "<[^>]*>", string.Empty);
+        // **A cref is a word, not a tag.** `<see cref="T:System.UInt32"/>` is empty —
+        // the name it stands for is in the attribute — so stripping tags outright turns
+        // "Writes a <see cref="uint"/> into a span" into "Writes a into a span". The
+        // reference assemblies lean on these, so this is most of a BCL summary's nouns.
+        // The `T:`/`M:` prefix and the namespace go, leaving what a reader would say.
+        var named = System.Text.RegularExpressions.Regex.Replace(
+            summary,
+            """<(?:see|seealso)\s+cref="(?:[A-Za-z]:)?([^"]*)"\s*/?>""",
+            match =>
+            {
+                var cref = match.Groups[1].Value;
+                var cut = cref.LastIndexOfAny(['.', '#']);
+                return cut >= 0 && cut < cref.Length - 1 ? cref[(cut + 1)..] : cref;
+            });
+
+        // `<paramref name="x"/>` and `<typeparamref name="T"/>` say their name the same way.
+        named = System.Text.RegularExpressions.Regex.Replace(
+            named,
+            """<(?:paramref|typeparamref)\s+name="([^"]*)"\s*/?>""",
+            match => match.Groups[1].Value);
+
+        // What is left — `<c>x</c>`, `<para>` — becomes its text, and the line-wrapped
+        // source becomes one line.
+        var text = System.Text.RegularExpressions.Regex.Replace(named, "<[^>]*>", string.Empty);
 
         return SourceLayer.Clip(
             string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));

@@ -19,6 +19,46 @@ import type { Blob } from './corpus'
 const encoder = new TextEncoder()
 
 /**
+ * **Every followable byte range in a file**, ordered, as `[start, end)` pairs.
+ *
+ * The two kinds of reference are one affordance: a global one is followed by a
+ * query for its symbol's definition and a file-local one by a span in this same
+ * file, but a reader sees a name they can click either way — so what a renderer
+ * asks for is the union, and both arrays are already ordered by `start`, which
+ * makes this a merge rather than a sort.
+ *
+ * An overlap between the two is folded, because a stretch of text underlined
+ * twice is a stretch cut in two for no reason a reader can see.
+ */
+export function links(refs: { spans: Int32Array; locals: Int32Array }): number[] {
+  const ranges: number[] = []
+  let global = 0
+  let local = 0
+
+  const add = (start: number, length: number) => {
+    const last = ranges.length - 1
+    if (ranges.length > 0 && start <= ranges[last])
+      ranges[last] = Math.max(ranges[last], start + length)
+    else ranges.push(start, start + length)
+  }
+
+  while (global < refs.spans.length || local < refs.locals.length) {
+    const next = global < refs.spans.length ? refs.spans[global] : Infinity
+    const here = local < refs.locals.length ? refs.locals[local] : Infinity
+
+    if (next <= here) {
+      add(refs.spans[global], refs.spans[global + 1])
+      global += 2
+    } else {
+      add(refs.locals[local], refs.locals[local + 1])
+      local += 4
+    }
+  }
+
+  return ranges
+}
+
+/**
  * The index of the entry whose `[start, start + length)` contains `offset`, or
  * `-1`.
  *
@@ -82,6 +122,69 @@ export function positionAt(
   const column = range.toString().replace(/​/g, '').length
 
   return { line, column }
+}
+
+/**
+ * **Where a byte range sits on the screen**, for hanging a card off it.
+ *
+ * The inverse of `positionAt`, and it exists because the code has no element to
+ * anchor to: `CodeBlock` paints with the CSS Custom Highlight API, so a line is
+ * one text node and every colour on it is a `Range`, not a `<span>`. A card
+ * anchored to the line would sit at the start of the line; a card anchored to the
+ * pointer would wander while a reader holds still. A `Range` over the same bytes
+ * the highlight covers puts it on the name.
+ *
+ * `null` where the line is not rendered — the block virtualises long files, and a
+ * reference above or below the window has no rectangle to speak of.
+ */
+export function rectOf(
+  root: HTMLElement,
+  blob: Blob,
+  line: number,
+  start: number,
+  length: number,
+): DOMRect | null {
+  const holder = root.querySelector(`[data-line="${line}"]`)
+  const node = holder?.firstChild
+  if (!node || node.nodeType !== Node.TEXT_NODE) return null
+
+  const lineStart = blob.start(line)
+  const text = blob.text(line)
+  if (lineStart === undefined || text === undefined) return null
+
+  // Bytes on the way in, UTF-16 on the way out: the index counts a span in UTF-8
+  // and a DOM offset is a JS string index, and the two part company at the first
+  // character outside ASCII.
+  const from = utf16Of(text, start - lineStart)
+  const to = utf16Of(text, start - lineStart + length)
+  if (from === null || to === null) return null
+
+  const range = document.createRange()
+  range.setStart(node, Math.min(from, node.textContent?.length ?? from))
+  range.setEnd(node, Math.min(to, node.textContent?.length ?? to))
+
+  const rect = range.getBoundingClientRect()
+  return rect.width === 0 && rect.height === 0 ? null : rect
+}
+
+/** How many UTF-16 units of `text` the first `bytes` bytes of it occupy. */
+function utf16Of(text: string, bytes: number): number | null {
+  if (bytes <= 0) return 0
+
+  let seen = 0
+  for (let at = 0; at < text.length; at++) {
+    // A surrogate pair is one code point and two units, and `encoder` counts the
+    // pair once — so step by the pair rather than by the unit.
+    const code = text.codePointAt(at)
+    if (code === undefined) return null
+    const units = code > 0xffff ? 2 : 1
+    seen += encoder.encode(String.fromCodePoint(code)).length
+    if (seen > bytes) return at
+    at += units - 1
+    if (seen === bytes) return at + 1
+  }
+
+  return text.length
 }
 
 /**

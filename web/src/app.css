@@ -731,3 +731,100 @@
 .j-ref { color: var(--color-text-accent); }
 .j-pun { color: var(--color-syntax-punctuation); }
 .j-null { color: var(--color-text-secondary); }
+
+/* ---- the code browser: a reference is a link, so it is underlined ---- */
+
+/* **A span can only say one thing**, so `paint` weaves the two into one token
+   type: a reference over a `type` run reaches the block as `type-xref`. That
+   name is this page's rather than the design system's, so the colour it merged
+   with is handed back here — once, as a variable per syntax type, which the
+   block's two painting modes then read in their own way. In ranges mode the
+   block resolves `var(--color-syntax-<type>-xref)` for a type it has no rule of
+   its own for; in spans mode it stamps a class, which is the block below.
+
+   Every syntax type has a row, not only the ones a reference lands on in this
+   corpus: a merged type with no colour falls back to the code's default ink,
+   which is a method call that has quietly stopped looking like one. */
+pre.astryx-codeblock {
+  --color-syntax-keyword-xref: var(--color-syntax-keyword);
+  --color-syntax-string-xref: var(--color-syntax-string);
+  --color-syntax-comment-xref: var(--color-syntax-comment);
+  --color-syntax-number-xref: var(--color-syntax-number);
+  --color-syntax-function-xref: var(--color-syntax-function);
+  --color-syntax-type-xref: var(--color-syntax-type);
+  --color-syntax-tag-xref: var(--color-syntax-tag);
+  --color-syntax-attribute-xref: var(--color-syntax-attribute);
+  --color-syntax-property-xref: var(--color-syntax-property);
+  --color-syntax-operator-xref: var(--color-syntax-operator);
+  --color-syntax-constant-xref: var(--color-syntax-constant);
+  --color-syntax-punctuation-xref: var(--color-syntax-punctuation);
+  --color-syntax-variable-xref: var(--color-syntax-variable);
+}
+
+.astryx-token-keyword-xref { color: var(--color-syntax-keyword-xref); }
+.astryx-token-string-xref { color: var(--color-syntax-string-xref); }
+.astryx-token-comment-xref { color: var(--color-syntax-comment-xref); }
+.astryx-token-number-xref { color: var(--color-syntax-number-xref); }
+.astryx-token-function-xref { color: var(--color-syntax-function-xref); }
+.astryx-token-type-xref { color: var(--color-syntax-type-xref); }
+.astryx-token-tag-xref { color: var(--color-syntax-tag-xref); }
+.astryx-token-attribute-xref { color: var(--color-syntax-attribute-xref); }
+.astryx-token-property-xref { color: var(--color-syntax-property-xref); }
+.astryx-token-operator-xref { color: var(--color-syntax-operator-xref); }
+.astryx-token-constant-xref { color: var(--color-syntax-constant-xref); }
+.astryx-token-punctuation-xref { color: var(--color-syntax-punctuation-xref); }
+.astryx-token-variable-xref { color: var(--color-syntax-variable-xref); }
+
+/* The underline is one colour under every kind of name, because it is answering
+   a different question from the ink: the colour says what a name *is*, and this
+   says the page will follow it. It sits clear of the descenders, at a weight
+   that survives six hundred of them on one screen.
+
+   The two modes are two rules and not one selector list on purpose: a browser
+   with no `::highlight()` drops a list containing one, and that browser is
+   exactly the one painting the spans below. */
+.astryx-codeblock code::highlight(astryx-xref),
+.astryx-codeblock code::highlight(astryx-keyword-xref),
+.astryx-codeblock code::highlight(astryx-string-xref),
+.astryx-codeblock code::highlight(astryx-comment-xref),
+.astryx-codeblock code::highlight(astryx-number-xref),
+.astryx-codeblock code::highlight(astryx-function-xref),
+.astryx-codeblock code::highlight(astryx-type-xref),
+.astryx-codeblock code::highlight(astryx-tag-xref),
+.astryx-codeblock code::highlight(astryx-attribute-xref),
+.astryx-codeblock code::highlight(astryx-property-xref),
+.astryx-codeblock code::highlight(astryx-operator-xref),
+.astryx-codeblock code::highlight(astryx-constant-xref),
+.astryx-codeblock code::highlight(astryx-punctuation-xref),
+.astryx-codeblock code::highlight(astryx-variable-xref) {
+  text-decoration-line: underline;
+  text-decoration-color: var(--color-border-emphasized);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.astryx-codeblock [class*='astryx-token-'][class$='-xref'] {
+  text-decoration-line: underline;
+  text-decoration-color: var(--color-border-emphasized);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* ---- the code browser: a gutter that does not move between files ---- */
+
+/* `CodeBlock` computes `--_codeblock-gutter-width` from the line count and writes it
+   as an inline style on the `<code>` element, so a 57-line file gets a two-character
+   gutter and an 800-line one gets three — and the code shifts sideways as a reader
+   moves between them. `Browse` sets `--fj-gutter` to the same measure with a floor of
+   four, and this is where it wins: an inline declaration is only outranked by
+   `!important`, which is the whole reason it is here.
+
+   Set on the block as well as on the code, because the rule that draws the divider
+   between the numbers and the text reads the same property from an ancestor. */
+.astryx-codeblock {
+  --_codeblock-gutter-width: var(--fj-gutter, 4ch);
+}
+
+.astryx-codeblock code {
+  --_codeblock-gutter-width: var(--fj-gutter, 4ch) !important;
+}

@@ -32,7 +32,11 @@ framework="${FJORD_CORPUS_TFM:-net10.0}"
 export FJORD_INDEX_DIR="$scratch"
 
 echo "==> indexing $(basename "$source_path")"
-"$root/clients/dotnet/index-repo.sh" "$source_path" code --styles > "$scratch.log" 2>&1 || {
+# **Paths relative to the repository, not to the project.** The indexer's default root
+# is the single project's own directory, which makes every `src.File` a bare filename —
+# and a browser over that shows thirteen files in a heap, as though the checkout were
+# one folder deep. The root is what puts a file back where it lives.
+"$root/clients/dotnet/index-repo.sh" "$source_path" code --styles --root "$root" > "$scratch.log" 2>&1 || {
     echo "indexing failed; the log is at $scratch.log" >&2
     tail -20 "$scratch.log" >&2
     exit 1

@@ -220,6 +220,43 @@ pub struct Definition {
     /// The union alternative's name — `class_`, `method_` — or an `other` payload.
     pub kind: String,
     pub name: String,
+    /// The human-readable full name — `Namespace.Type.Method`, empty if unwritten.
+    pub qualified: String,
+    /// The symbol that contains this one. Filled by `outline`, empty elsewhere.
+    pub container: String,
+}
+
+/// What MSBuild resolved about one project, and what it builds against.
+#[wasm_bindgen(getter_with_clone)]
+pub struct Project {
+    pub framework: String,
+    pub sdk: String,
+    pub output: String,
+    pub assembly: String,
+    pub namespace: String,
+    pub platform: String,
+    /// Projects this one builds against, as paths.
+    pub references: Vec<String>,
+    /// Projects that build against it.
+    pub dependents: Vec<String>,
+    /// The source files it compiles.
+    pub sources: Vec<String>,
+}
+
+/// A package a project asks for: what it resolved to, and what the file wrote.
+#[wasm_bindgen(getter_with_clone)]
+pub struct PackageRef {
+    pub name: String,
+    pub version: String,
+    pub range: String,
+}
+
+/// An entry in a directory listing: a file, or a directory that holds more.
+#[wasm_bindgen(getter_with_clone)]
+pub struct Entry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
 }
 
 /// A span in a file that names a symbol.
@@ -229,6 +266,20 @@ pub struct Reference {
     pub path: String,
     pub start: i32,
     pub length: i32,
+}
+
+/// What one symbol says about itself, for a hover card.
+#[wasm_bindgen(getter_with_clone)]
+pub struct Info {
+    pub signature: String,
+    pub doc: String,
+    pub modifiers: String,
+    /// The human-readable full name — `System.IDisposable`.
+    pub qualified: String,
+    /// The assembly it ships in, as a name and a version — `System.Runtime 10.0.0.0`.
+    pub package: String,
+    /// What it is — the union alternative's name, or an `other` payload.
+    pub kind: String,
 }
 
 /// A search hit.
@@ -377,6 +428,59 @@ pub fn references(symbol: &str) -> Result<Vec<Reference>, JsError> {
         .map_err(|problem| JsError::new(&problem))
 }
 
+/// What the build layer holds about the project a `.csproj` declares.
+///
+/// `undefined` for every file that is not a project, which is most of them.
+///
+/// # Errors
+/// If no corpus is loaded, or a query fails.
+#[wasm_bindgen]
+pub fn project(path: &str) -> Result<Option<Project>, JsError> {
+    codeview::project(path)
+        .map(|found| found.map(Project::from))
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// The packages one project asks for, with the range its file wrote.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn packages(path: &str) -> Result<Vec<PackageRef>, JsError> {
+    codeview::packages(path)
+        .map(|found| found.into_iter().map(PackageRef::from).collect())
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// One directory's immediate entries — a prefix seek over `src.File`.
+///
+/// `prefix` is `""` for the root, or a directory path with its trailing `/`. A tree
+/// that opens a level at a time asks this once per level rather than reading every
+/// path in the index to draw a dozen rows.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn children(prefix: &str) -> Result<Vec<Entry>, JsError> {
+    codeview::children(prefix)
+        .map(|found| found.into_iter().map(Entry::from).collect())
+        .map_err(|problem| JsError::new(&problem))
+}
+
+/// The signature, doc comment and modifiers of one symbol, for a hover card.
+///
+/// `undefined` where this index only *names* the symbol rather than declaring it,
+/// which is ordinary: the card then says what the name alone can say.
+///
+/// # Errors
+/// If no corpus is loaded, or the query fails.
+#[wasm_bindgen]
+pub fn symbol_info(symbol: &str) -> Result<Option<Info>, JsError> {
+    codeview::info(symbol)
+        .map(|found| found.map(Info::from))
+        .map_err(|problem| JsError::new(&problem))
+}
+
 /// Case-insensitive prefix search over the name index.
 ///
 /// # Errors
@@ -388,6 +492,55 @@ pub fn search(prefix: &str) -> Result<Vec<Hit>, JsError> {
         .map_err(|problem| JsError::new(&problem))
 }
 
+impl From<codeview::Project> for Project {
+    fn from(found: codeview::Project) -> Self {
+        Self {
+            framework: found.framework,
+            sdk: found.sdk,
+            output: found.output,
+            assembly: found.assembly,
+            namespace: found.namespace,
+            platform: found.platform,
+            references: found.references,
+            dependents: found.dependents,
+            sources: found.sources,
+        }
+    }
+}
+
+impl From<codeview::PackageRef> for PackageRef {
+    fn from(found: codeview::PackageRef) -> Self {
+        Self {
+            name: found.name,
+            version: found.version,
+            range: found.range,
+        }
+    }
+}
+
+impl From<codeview::Entry> for Entry {
+    fn from(found: codeview::Entry) -> Self {
+        Self {
+            name: found.name,
+            path: found.path,
+            is_dir: found.is_dir,
+        }
+    }
+}
+
+impl From<codeview::Info> for Info {
+    fn from(found: codeview::Info) -> Self {
+        Self {
+            signature: found.signature,
+            doc: found.doc,
+            modifiers: found.modifiers,
+            qualified: found.qualified,
+            package: found.package,
+            kind: found.kind,
+        }
+    }
+}
+
 impl From<codeview::Definition> for Definition {
     fn from(found: codeview::Definition) -> Self {
         Self {
@@ -397,6 +550,8 @@ impl From<codeview::Definition> for Definition {
             length: found.length as i32,
             kind: found.kind,
             name: found.name,
+            qualified: found.qualified,
+            container: found.container,
         }
     }
 }
