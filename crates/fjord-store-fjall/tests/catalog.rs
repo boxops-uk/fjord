@@ -922,3 +922,48 @@ fn a_schema_declaring_into_the_reserved_namespace_is_refused() {
         "a refused create must publish nothing"
     );
 }
+
+/// **A schema declaring nothing is refused, at the one place both doors go through.**
+///
+/// The variant, here, because the store is where the rule lives. The same rule kept as
+/// a check on the server's *request field* refuses an empty schema file over the wire
+/// and lets the identical `create` through against the directory; one rule in one place
+/// is what makes those two answers the same answer.
+///
+/// The counterfactual is the point of the second half: the same root takes a schema
+/// that declares one predicate, so the refusal is about the schema and not about the
+/// catalog being unable to create anything.
+#[test]
+fn a_schema_declaring_no_predicates_is_refused() {
+    let rodeo = Rodeo::new();
+    let empty = Schema::new(rodeo.into_reader(), Arc::from(Vec::new()));
+
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let catalog = Catalog::open(dir.path()).expect("a catalog");
+
+    let err = catalog
+        .create("nothing", &empty)
+        .expect_err("a schema with no predicates must be refused");
+
+    assert!(
+        matches!(err, CatalogError::SchemaDeclaresNothing { .. }),
+        "{err:?}"
+    );
+
+    // Nothing left behind — the check is before anything reaches the disk.
+    assert!(catalog.list().expect("a listing").entries.is_empty());
+
+    let mut rodeo = Rodeo::new();
+    let name = rodeo.get_or_intern("t.P");
+    let declares = Schema::new(
+        rodeo.into_reader(),
+        Arc::from(vec![Predicate {
+            name,
+            key: PredicateTy::Str,
+            value: None,
+        }]),
+    );
+    catalog
+        .create("something", &declares)
+        .expect("one predicate is enough");
+}

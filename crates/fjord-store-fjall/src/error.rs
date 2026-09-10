@@ -180,6 +180,20 @@ pub enum CatalogError {
     )]
     ReservedNamespace { name: String, predicate: String },
 
+    /// A schema that declares no predicates.
+    ///
+    /// A predicate is the only thing a fact can be written against, so a database
+    /// created from one of these is an artifact nothing can ever write to and no query
+    /// can name anything in. Refused for the reason the two checks above are, with one
+    /// more on top: a schema is frozen for the database's lifetime
+    /// ([I13](../../../website/content/invariants.md#i13)), so an empty one cannot be
+    /// filled in afterwards.
+    #[error(
+        "the schema for `{name}` declares no predicates, so nothing could ever be \
+         written to it — and a database's schema is frozen at `create`"
+    )]
+    SchemaDeclaresNothing { name: String },
+
     /// A write asked of a database that is not [`Writable`](crate::meta::Status::Writable).
     ///
     /// `ops-I2`: once Complete, immutability is structural — no writable handle

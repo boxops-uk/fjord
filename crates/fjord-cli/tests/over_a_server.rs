@@ -401,3 +401,70 @@ fn a_query_with_no_server_says_so() {
     assert!(stderr.contains("fjord serve"), "{stderr}");
     assert!(stderr.contains("fjord.sock"), "{stderr}");
 }
+
+/// **The same refusal at both doors.**
+///
+/// A server reading an empty request field as "this client sent no schema" rather than
+/// as the schema it is creates a database against the directory and refuses the same
+/// file over the wire: same command, same file, and the answer decided by whether
+/// something is listening.
+///
+/// Asserted as **string equality** rather than as two refusals, because two doors
+/// refusing for two different reasons is the shape that failure takes.
+#[test]
+fn an_empty_schema_is_refused_the_same_way_with_and_without_a_server() {
+    let (dir, root) = scratch();
+    let empty = dir.path().join("empty.sigla");
+    std::fs::write(&empty, "").expect("written");
+    let empty = empty.to_str().expect("utf8");
+
+    let offline = fails(&root, &["create", "code", "--schema", empty]);
+
+    let serving = serve(&root);
+    let online = fails(&root, &["create", "code", "--schema", empty]);
+
+    // The counterfactual: a schema that declares something goes through this same
+    // door, so the refusal above is about the schema rather than about the server.
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
+    drop(serving);
+
+    assert_eq!(
+        offline, online,
+        "the same command, refused two different ways"
+    );
+    assert!(offline.contains("declares no predicates"), "{offline}");
+}
+
+/// **A server that is stopped takes its socket and its readiness file with it.**
+///
+/// `SIGTERM` is how an init system stops a process, and the default action for it is
+/// to die — which leaves both files standing. The socket is merely untidy: a client
+/// that finds a stale one is refused by the connect and treats it as "no server". The
+/// readiness file is worse, because it exists to be believed — a health check that
+/// reads it and nothing else reports a server that is not there.
+#[test]
+fn a_stopped_server_leaves_no_socket_and_no_ready_file() {
+    let (_dir, root) = scratch();
+    let ready = root.join("ready");
+    let socket = root.join("fjord.sock");
+
+    let mut serving = serve(&root);
+    assert!(
+        ready.exists() && socket.exists(),
+        "the server announced itself"
+    );
+
+    // `kill(1)` rather than a crate: `Child::kill` is `SIGKILL`, which is the one
+    // signal this cannot be made to survive and so the one that proves nothing.
+    let signalled = Command::new("kill")
+        .args(["-TERM", &serving.child.id().to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(signalled.success());
+
+    let status = serving.child.wait().expect("the server exits");
+    assert!(status.success(), "a stop is not a crash: {status}");
+
+    assert!(!socket.exists(), "the socket outlived the server");
+    assert!(!ready.exists(), "the readiness file outlived the server");
+}

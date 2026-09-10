@@ -44,6 +44,17 @@ pub fn check(file: &Path, roots: &[PathBuf]) -> Result<String, CliError> {
 
     out.push_str(&format!("fingerprint {:#018x}\n", identity.schema()));
 
+    // **Well-formed and still unusable**, which is the one outcome a checker that only
+    // said "ok" would send someone to `create` to discover. A schema resolving to
+    // nothing is a resolution problem that reads as a success — an entry file that is
+    // all comments, or imports that brought back nothing.
+    if resolved.schema.is_empty() {
+        out.push_str(
+            "warning: this schema declares no predicates, so no database can be \
+             created against it\n",
+        );
+    }
+
     Ok(out)
 }
 
@@ -153,7 +164,7 @@ fn side(what: &str, root: &Path, roots: &[PathBuf]) -> Result<(Identity, String)
         ));
     }
 
-    let catalog = commands::readable(root)?;
+    let catalog = commands::readable(root);
     let entry = catalog.resolve(
         &fjord_store_fjall::catalog::Selector::parse(what)?,
         fjord_store_fjall::catalog::Intent::Read,

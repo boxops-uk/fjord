@@ -16,7 +16,7 @@ pub fn run(
     format: Format,
     dump_schema: bool,
 ) -> Result<String, CliError> {
-    let catalog = commands::readable(root)?;
+    let catalog = commands::readable(root);
     let entry = catalog.resolve(&Selector::parse(name)?, Intent::Read)?;
 
     // **`--schema` dumps the copy verbatim**, comments and all, because the thing worth

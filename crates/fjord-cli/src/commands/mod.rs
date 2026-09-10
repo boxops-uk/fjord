@@ -224,9 +224,11 @@ pub fn exclusive(root: &Path, socket: &Path) -> Result<(Catalog, RootLock), CliE
 /// the whole point of the filesystem being the catalog, and the reason `list` and
 /// `describe` never needed a control message to work against a running server.
 ///
-/// # Errors
-///
-/// [`CliError::Store`] if the root cannot be read.
-pub fn readable(root: &Path) -> Result<Catalog, CliError> {
-    Ok(Catalog::open(root)?)
+/// **And it creates nothing.** Opening the root the way a writer does makes the
+/// directory, which would put a write behind the one command a person runs when they
+/// are trying to find out where they are — under `$XDG_DATA_HOME` by default, where a
+/// mistyped `--data-dir` leaves a directory nobody ever looks in.
+#[must_use]
+pub fn readable(root: &Path) -> Catalog {
+    Catalog::read_only(root)
 }

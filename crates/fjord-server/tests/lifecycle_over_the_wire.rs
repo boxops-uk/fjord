@@ -659,6 +659,12 @@ fn a_database_that_will_not_open_says_which_instance_and_why() {
 /// text, which is what [operations §5](../../../website/content/operations.md) always
 /// specified.
 ///
+/// **What is refused is the schema, not the field.** Stated as a check on the request
+/// — an empty `schema` string, answered with "pass one with `--schema`" — the rule
+/// fails an empty schema *file* over the wire while the identical `create` goes through
+/// against the directory. The empty source lowers to an empty schema and
+/// [`Catalog::create`] refuses that at both doors, so the two answers are one answer.
+///
 /// Sent as a raw control frame because no client should make this easy to do by accident
 /// — `fjord create` has a required flag, and `Connection::create` takes the source.
 #[test]
@@ -679,8 +685,8 @@ fn creating_a_database_with_no_schema_is_refused() {
     assert_eq!(header.kind, FrameKind::ERROR, "an empty schema is refused");
     let (_, message) = error_of(&payload);
     assert!(
-        message.contains("--schema"),
-        "the refusal should say what to pass: {message}"
+        message.contains("declares no predicates"),
+        "the refusal should say what is wrong with it: {message}"
     );
 
     // And nothing was left behind by the attempt.

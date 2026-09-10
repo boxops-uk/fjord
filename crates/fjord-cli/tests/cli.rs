@@ -92,9 +92,10 @@ fn a_database_lives_and_dies_through_the_command_tree() {
         "finishing twice should be allowed"
     );
 
-    // Deleting is not undoable and there is no trash, so the default is to ask.
-    let asked = ok(root, &["db", "rm", "code"]);
-    let _ = asked;
+    // Deleting is not undoable and there is no trash, so it takes the flag every
+    // time — and a refusal **fails**, because the status is the part a script reads.
+    let refused = fails(root, &["db", "rm", "code"]);
+    assert!(refused.contains("--yes"), "{refused}");
     assert!(
         ok(root, &["list"]).contains("code"),
         "a refused delete must not have deleted anything"
@@ -487,5 +488,155 @@ fn a_named_config_a_bad_schema_and_a_ttyless_shell_each_fail_by_name() {
     assert!(
         stderr.contains("is one running?"),
         "the failure says what to do: {stderr}"
+    );
+}
+
+/// **A delete that deleted nothing is not a success.**
+///
+/// The status, on its own, because that is all a script reads: `fjord db rm x && echo
+/// gone` must not print `gone` over a database that is still there. The sentence on
+/// stderr is not the part that carries this, so the assertion is on the code rather
+/// than the wording — and on the database surviving, so a run that passed by deleting
+/// it fails here instead.
+#[test]
+fn a_delete_refused_for_want_of_yes_fails() {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let root = dir.path();
+
+    ok(root, &["create", "code", "--schema", SAMPLE]);
+
+    let (success, _, stderr) = fjord(root, &["db", "rm", "code"]);
+    assert!(!success, "refusing to delete is a failure: {stderr}");
+    assert!(ok(root, &["list"]).contains("code"), "nothing was deleted");
+
+    // And with the flag it is a success that deleted something, so the refusal above
+    // is about the flag rather than about the database being undeletable.
+    ok(root, &["db", "rm", "code", "--yes"]);
+    assert!(ok(root, &["list"]).contains("no databases"));
+}
+
+/// **`list` looks; it does not create.**
+///
+/// Answering "no databases" and leaving the directory behind puts a write behind the
+/// command a person runs to find out where they are — under `$XDG_DATA_HOME` by
+/// default, where a mistyped path leaves a directory nobody ever looks in.
+///
+/// `describe` takes the same read-only door, so it is checked here too: the rule is
+/// about the door rather than about `list`.
+#[test]
+fn a_command_that_only_reads_creates_no_store_root() {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let root = dir.path().join("nothing-here");
+
+    assert!(ok(&root, &["list"]).contains("no databases"));
+    assert!(!root.exists(), "`list` created {}", root.display());
+
+    // A JSON listing is the same reading, and takes the same door.
+    assert!(ok(&root, &["list", "--format", "json"]).contains("databases"));
+    assert!(
+        !root.exists(),
+        "`list --format json` created {}",
+        root.display()
+    );
+
+    let stderr = fails(&root, &["describe", "code"]);
+    assert!(stderr.contains("code"), "{stderr}");
+    assert!(!root.exists(), "`describe` created {}", root.display());
+
+    // ...and the write door still creates it, or nothing else here would work.
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
+    assert!(root.is_dir(), "`create` makes the root");
+}
+
+/// **A schema that declares no predicates is refused, and says why.**
+///
+/// It resolves, it lowers, it has a fingerprint — and nothing can ever be written to a
+/// database created from it, which `create` is the last moment to say: a schema is
+/// frozen for the database's lifetime, so an empty one can never be filled in.
+///
+/// An entry file that is only comments is the same schema and gets the same refusal,
+/// which is the point: the rule is about what the schema *declares*, not about whether
+/// the file had bytes in it.
+#[test]
+fn a_schema_declaring_no_predicates_cannot_create_a_database() {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let root = dir.path();
+
+    for (name, source) in [("empty", ""), ("comments", "# nothing but this\n")] {
+        let file = root.join(format!("{name}.sigla"));
+        std::fs::write(&file, source).expect("written");
+        let file = file.to_str().expect("utf8");
+
+        // `schema check` accepts it — it is a well-formed schema — and warns, because
+        // the alternative is finding out at `create`.
+        let checked = ok(root, &["schema", "check", file]);
+        assert!(checked.contains("0 predicate(s)"), "{checked}");
+        assert!(checked.contains("no predicates"), "{checked}");
+
+        let stderr = fails(root, &["create", name, "--schema", file]);
+        assert!(stderr.contains("declares no predicates"), "{stderr}");
+    }
+
+    assert!(ok(root, &["list"]).contains("no databases"));
+}
+
+/// **`./fjord.json` is read because it is there, and a broken one says so.**
+///
+/// The rule is deliberate — the working directory only, no search of parents — but it
+/// is still a file nobody named changing what every invocation does. So a failure has
+/// to account for itself: an ordinary `fjord list` stopping over a file that is not on
+/// the command line is otherwise a mystery to go looking for.
+///
+/// Both halves, because the message is only worth having if the discovery is real:
+/// the first run proves the file is read at all.
+#[test]
+fn a_config_file_in_the_working_directory_is_read_and_explains_itself() {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let here = dir.path();
+    let root = here.join("store");
+
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_fjord"))
+            .current_dir(here)
+            .args(args)
+            .output()
+            .expect("the binary runs");
+
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    // A database somewhere no flag and no environment variable will mention.
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
+
+    std::fs::write(
+        here.join("fjord.json"),
+        format!(
+            "{{\"data_dir\": {}}}",
+            serde_json::to_string(root.to_str().expect("utf8")).expect("a JSON string")
+        ),
+    )
+    .expect("written");
+
+    let (success, listed, stderr) = run(&["list"]);
+    assert!(success, "{stderr}");
+    assert!(
+        listed.contains("code"),
+        "the config file in the working directory was not read:\n{listed}"
+    );
+
+    // ...and when it is not a config file, the failure names it *and* says where it
+    // came from, because nothing the caller typed does.
+    std::fs::write(here.join("fjord.json"), "not json").expect("written");
+
+    let (success, _, stderr) = run(&["list"]);
+    assert!(!success, "a broken config file is a failure");
+    assert!(stderr.contains("fjord.json"), "{stderr}");
+    assert!(
+        stderr.contains("working directory"),
+        "the failure should say where the file came from: {stderr}"
     );
 }

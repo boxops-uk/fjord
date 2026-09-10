@@ -127,29 +127,39 @@ pub const CONFIG_FILE: &str = "fjord.json";
 ///
 /// # Errors
 ///
-/// [`CliError::Config`] if a file that was named cannot be read or parsed. A *missing*
-/// `fjord.json` is not an error — nobody asked for one — but a missing `--config` is.
+/// [`CliError::Config`] if a file that was named cannot be read or parsed, and
+/// [`CliError::ConfigInTheWorkingDirectory`] for the same failure from `./fjord.json`,
+/// whose message has to account for a file nobody mentioned. A *missing* `fjord.json`
+/// is not an error — nobody asked for one — but a missing `--config` is.
 pub fn file(flag: Option<&std::path::Path>) -> Result<File, crate::CliError> {
-    let path = match flag {
-        Some(path) => path.to_path_buf(),
+    let (path, named) = match flag {
+        Some(path) => (path.to_path_buf(), true),
         None => {
             let local = PathBuf::from(CONFIG_FILE);
             if !local.is_file() {
                 return Ok(File::default());
             }
-            local
+            (local, false)
         }
     };
 
-    let text = std::fs::read_to_string(&path).map_err(|source| crate::CliError::Config {
-        path: path.clone(),
-        detail: source.to_string(),
-    })?;
+    // **Which door the file came through decides how the failure reads.** One the
+    // caller named needs no explaining; one picked up off the working directory does,
+    // because nothing on the command line mentions it.
+    let failed = |detail: String| match named {
+        true => crate::CliError::Config {
+            path: path.clone(),
+            detail,
+        },
+        false => crate::CliError::ConfigInTheWorkingDirectory {
+            path: path.clone(),
+            detail,
+        },
+    };
 
-    serde_json::from_str(&text).map_err(|source| crate::CliError::Config {
-        path,
-        detail: source.to_string(),
-    })
+    let text = std::fs::read_to_string(&path).map_err(|source| failed(source.to_string()))?;
+
+    serde_json::from_str(&text).map_err(|source| failed(source.to_string()))
 }
 
 /// Where a client connects when the address named no target.

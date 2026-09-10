@@ -28,8 +28,16 @@
 //! goes round again. Propagating it instead is the failure this arrangement exists to
 //! prevent: `EMFILE` is a statement about the process, so a loop that returned it
 //! ended the server and dropped every live connection in order to refuse one new one.
-//! What is above the loop — [`serve_on`]'s `select!` — therefore only ever hears about
-//! a panic, which is why an accept loop's return type says it has no other way out.
+//! An accept loop's return type says it has no other way out, so what is above the
+//! loop — [`serve_on`]'s `select!` — only ever hears a panic or the thing the loop
+//! knows nothing about: a [`Shutdown::OnSignal`] server being asked to stop.
+//!
+//! # Stopping is what removes the socket and the readiness file
+//!
+//! Both are published by [`Listener`] and both are taken back by its `Drop`, so the
+//! shutdown arm has one job: end the future holding the listener. A `SIGKILL` still
+//! leaves them, which is why a stale socket is answered as "no server" rather than
+//! trusted — but a readiness file has no such reader, so it must not be left.
 
 use std::{
     convert::Infallible,
@@ -59,6 +67,13 @@ use crate::{
 pub struct Listener {
     listener: StdUnixListener,
     path: PathBuf,
+    /// The readiness file, once [`announce`](Listener::announce) has written one.
+    ///
+    /// Held so that [`Drop`] can take it with the socket. A readiness file is a claim
+    /// that something is listening, so one that outlives its listener is a lie — and
+    /// the health checks it is written for are exactly the code that will not look any
+    /// further than "the file is there".
+    ready_file: Option<PathBuf>,
     examined_ceiling: u64,
     /// Shared rather than owned, because the cap is on the **process**: descriptors
     /// are not per-listener, so a socket and an opted-in TCP port draw on one pool.
@@ -89,6 +104,7 @@ impl Listener {
         Ok(Listener {
             listener,
             path,
+            ready_file: None,
             examined_ceiling: crate::session::EXAMINED_CEILING,
             admission: Arc::new(Admission::from_fd_limit()),
         })
@@ -138,10 +154,17 @@ impl Listener {
     /// # Errors
     ///
     /// [`ServerError::Io`] if the file cannot be written.
-    pub fn announce(&self, at: impl AsRef<Path>) -> Result<(), ServerError> {
-        let mut file = fs::File::create(at)?;
+    pub fn announce(&mut self, at: impl AsRef<Path>) -> Result<(), ServerError> {
+        let at = at.as_ref().to_path_buf();
+
+        let mut file = fs::File::create(&at)?;
         file.write_all(self.path.as_os_str().as_encoded_bytes())?;
         file.sync_all()?;
+
+        // Recorded only once it exists, so a failed write leaves nothing for `Drop` to
+        // delete — including somebody else's file at a path this never managed to
+        // create.
+        self.ready_file = Some(at);
         Ok(())
     }
 
@@ -180,12 +203,56 @@ impl Listener {
     }
 }
 
+/// What ends a server started by [`serve_on`].
+///
+/// **Asked for rather than assumed, because handling a signal is process-wide.**
+/// `tokio::signal` replaces the default disposition for the whole program, so a server
+/// that installed one on its own behalf would take `SIGTERM` and `SIGINT` away from
+/// whatever is embedding it — and a `cargo test` run that stops responding to Ctrl-C
+/// is a trap nobody would think to trace back to a server crate. `fjord serve` owns
+/// its process and says so; a harness composing a server into a process it does not
+/// own says the opposite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shutdown {
+    /// Stop on `SIGINT` or `SIGTERM`, taking the socket and the readiness file down.
+    OnSignal,
+    /// Serve until the process ends some other way, and install no handler.
+    Never,
+}
+
+/// The signals that mean **stop**, as one future.
+///
+/// `SIGINT` and `SIGTERM`, because those are what a terminal and an init system send.
+/// Handled rather than left to the default action for one reason: the default action
+/// is to die, and a process that dies leaves [`Listener`]'s socket and readiness file
+/// standing. A readiness file that outlives the listener it announced is believed by
+/// exactly the code it was written for.
+async fn shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        _ = interrupt.recv() => Ok(()),
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
 impl Drop for Listener {
-    /// Take the socket file with it. A leftover file is what the next `bind` has to
-    /// clean up, and leaving one behind makes "is a server running?" ambiguous —
-    /// which §2 says the socket is supposed to answer.
+    /// Take the socket file and the readiness file with it. A leftover file is what
+    /// the next `bind` has to clean up, and leaving one behind makes "is a server
+    /// running?" ambiguous — which §2 says the socket is supposed to answer.
+    ///
+    /// **This only runs if the process stops rather than dies**, which is what
+    /// [`Shutdown::OnSignal`] is for: the default disposition for `SIGTERM` is to die,
+    /// and a server that dies leaves both files standing.
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+
+        if let Some(at) = &self.ready_file {
+            let _ = fs::remove_file(at);
+        }
     }
 }
 
@@ -390,8 +457,12 @@ async fn serve_stream_with_ceiling(
     crate::session::serve(reader, writer, registry, examined_ceiling).await
 }
 
-/// Bind, announce, and serve — the whole of what a `serve` command does, on a runtime
-/// of its own.
+/// Bind, announce, and serve the socket, on a runtime of its own.
+///
+/// **Serves until the process ends**, and installs no signal handler — so the socket
+/// and the readiness file are removed only if the caller's process unwinds. A `serve`
+/// command wants [`serve_on`] with [`Shutdown::OnSignal`]; this is for a caller that
+/// has its own idea of what stopping means.
 ///
 /// # Errors
 ///
@@ -401,7 +472,7 @@ pub fn serve_unix(
     ready_file: Option<&Path>,
     registry: Arc<Registry>,
 ) -> Result<(), ServerError> {
-    let listener = Listener::bind(socket)?;
+    let mut listener = Listener::bind(socket)?;
 
     if let Some(at) = ready_file {
         listener.announce(at)?;
@@ -438,6 +509,7 @@ pub fn serve_on(
     ready_file: Option<&Path>,
     max_connections: Option<usize>,
     registry: Arc<Registry>,
+    shutdown: Shutdown,
 ) -> Result<(), ServerError> {
     let mut listener = Listener::bind(socket)?;
 
@@ -449,11 +521,7 @@ pub fn serve_on(
         listener.announce(at)?;
     }
 
-    let Some(address) = listen else {
-        return listener.run_blocking(registry);
-    };
-
-    let address = address.to_owned();
+    let address = listen.map(ToOwned::to_owned);
     let examined_ceiling = listener.examined_ceiling;
     // **One cap over both doors.** Descriptors are the process's, so two listeners
     // admitting `max` each would reserve nothing at all.
@@ -465,24 +533,44 @@ pub fn serve_on(
     runtime.block_on(async move {
         // Bound before either is served, so a bad address fails the command rather than
         // leaving a half-open server that answers on one door and not the other.
-        let tcp = TcpListener::bind(&address).await?;
-
-        let unix = {
-            let registry = Arc::clone(&registry);
-            tokio::spawn(async move { listener.run(registry).await })
+        let tcp = match &address {
+            Some(address) => Some(TcpListener::bind(address).await?),
+            None => None,
         };
 
-        let tcp = tokio::spawn(accept_loop(tcp, registry, admission, examined_ceiling));
+        // **Held here rather than spawned**, so that the listener is dropped when this
+        // block ends — and the socket and the readiness file go with the listener. A
+        // spawned task outlives the `select!` that stopped waiting on it, and its files
+        // would outlive the server by however long the runtime took to wind down.
+        let serving = listener.run(Arc::clone(&registry));
+        tokio::pin!(serving);
 
-        // Whichever stops first stops the server, and after the accept loops stopped
-        // being able to end that means a panic: a server still answering on one door
-        // while the other has fallen over is a worse state than one that has stopped.
+        // Both accept loops in one task is not a bottleneck: an accept loop accepts and
+        // spawns, and every byte of a connection is read on the task it spawned.
+        let opted_in = async move {
+            match tcp {
+                Some(tcp) => match accept_loop(tcp, registry, admission, examined_ceiling).await {},
+                // No TCP door, so nothing here ever decides the race.
+                None => std::future::pending::<Result<(), ServerError>>().await,
+            }
+        };
+        tokio::pin!(opted_in);
+
+        let stopped = async move {
+            match shutdown {
+                Shutdown::OnSignal => shutdown_signal().await.map_err(ServerError::Io),
+                Shutdown::Never => std::future::pending::<Result<(), ServerError>>().await,
+            }
+        };
+        tokio::pin!(stopped);
+
+        // Whichever stops first stops the server: a signal, or a door that fell over.
+        // A server still answering on one door while the other has gone is a worse
+        // state than one that has stopped.
         tokio::select! {
-            result = unix => result.map_err(|error| ServerError::Io(std::io::Error::other(error)))?,
-            result = tcp => match result {
-                Ok(never) => match never {},
-                Err(error) => Err(ServerError::Io(std::io::Error::other(error))),
-            },
+            outcome = &mut serving => outcome,
+            outcome = &mut opted_in => outcome,
+            outcome = &mut stopped => outcome,
         }
     })
 }

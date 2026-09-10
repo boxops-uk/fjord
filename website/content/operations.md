@@ -117,9 +117,13 @@ fjord --data-dir /var/lib/fjord serve --ready-file /run/fjord.ready
   config-file entry and no environment variable, so a port can only appear because somebody typed
   one. It is an opt-in to *reachability*, not to access control: the handshake accepts anonymous,
   so whoever passes it is taking on the gateway in front of it.
-- **`--ready-file` appears after the listener accepts.** The socket path is derived rather than
-  chosen, so the file only has to appear — but it has to appear *after*, or it is a race dressed as
-  a signal.
+- **`--ready-file` appears after the listener accepts, and goes when the server stops.** The
+  socket path is derived rather than chosen, so the file only has to appear — but it has to appear
+  *after*, or it is a race dressed as a signal. `SIGINT` and `SIGTERM` are handled rather than
+  left to kill the process, for the same reason in reverse: a readiness file that outlives its
+  listener is believed by exactly the health check it was written for. Both files are removed;
+  `SIGKILL` is the one that still leaves them, and a stale socket is answered as "no server"
+  rather than mistaken for one.
 - **Connections are capped, and the cap defaults to half the soft descriptor limit**
   (`--max-connections`). Descriptors are the resource a connection and the store compete for, so
   the half that is not spent on sockets is what keeps the store readable and the connections
