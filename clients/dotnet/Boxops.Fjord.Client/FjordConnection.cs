@@ -92,6 +92,16 @@ public sealed class FjordConnection : IDisposable
 
     public ServerHello Hello { get; }
 
+    /// <summary>The schema this connection encodes against.</summary>
+    /// <remarks>
+    /// Exposed because it is not always the one the caller passed in spirit: a producer
+    /// opens a session to <see cref="SchemaTypes"/>, renumbers the answer, and opens its
+    /// writers with that — and whatever else encodes for those writers (a
+    /// <c>FactSink</c>) has to use the same one or its records go out in a different
+    /// field order.
+    /// </remarks>
+    public FjordSchema Schema => _schema;
+
     /// <summary>
     /// Connect over a Unix socket and complete the handshake.
     /// </summary>

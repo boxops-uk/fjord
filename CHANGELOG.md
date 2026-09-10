@@ -7,6 +7,36 @@ format stamp and the marker table enforce: nothing already written is renumbered
 
 ## Unreleased
 
+### The .NET indexer learns its shapes from the server
+
+A run that connects now asks. `Connect` opens one session asserting nothing, calls
+`SchemaTypes`, renumbers the answer into this client's ids, and opens every writer with
+that — so a schema edit no longer refuses the indexer at the handshake, and no longer
+needs a client rebuild. It prints what it learned:
+
+    schema learned from the server: 65 predicate(s), 4471c3f35a45b7da
+
+**Renumbered, because a reference carries an id and an id belongs to a numbering.**
+`src.File` is predicate 0 in this client's list and 56 in the server's, and both are
+right — a block header carries the predicate's *name*, which is what the two sides share.
+`DotnetIndex.From` rewrites every `Fact` inside a key to the position this client keeps
+that predicate at; without it a nested reference would resolve to a different predicate
+entirely. Predicates the server serves and this client does not write — the virtuals
+among them — are left out, because a client may declare only what it writes.
+
+**The hand-written type tree is still there, and is now checked rather than trusted.**
+It could not simply be deleted: `--dry-run` encodes facts and connects to nothing, and
+several tests encode with no server at all, so the client needs shapes offline. What
+changed is that the declaration can no longer go stale silently —
+`The_renumbered_wire_schema_is_the_hand_written_one` compares what the server says
+against what the client states, predicate for predicate, field for field and reference
+for reference, and fails naming the predicate that moved. A run with a connection uses
+the server's answer regardless of what the declaration says.
+
+Deleting the declaration outright needs an offline source of types — descriptors emitted
+to a file by the CLI, cached and loaded by the client — which is the "may a fetched
+schema be cached" question the design left open.
+
 ### A client can ask what shape a predicate is · `Y`/`y`
 
 **The encoding existed, both ends implemented it, and nothing asked the question it

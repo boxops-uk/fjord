@@ -183,8 +183,11 @@ internal static class Program
         int files;
         Indexer indexer;
 
-        using (var sink = new FactSink(
-            DotnetIndex.Schema, targets, options.Batch, options.Emit))
+        // The connections' schema when there is one — the server's answer, renumbered —
+        // and the declaration when there is not, which is `--dry-run` encoding to a file.
+        var schema = connection?.Schema ?? DotnetIndex.Schema;
+
+        using (var sink = new FactSink(schema, targets, options.Batch, options.Emit))
         {
             // **`--emit` walks on one thread as well as writing on one.** The flag exists
             // to produce a file whose bytes can be compared — a golden — and one writer is
@@ -366,8 +369,13 @@ internal static class Program
 
         try
         {
+            // **Asserting nothing**: what this asks is whether the database is there, not
+            // whether the two agree about its shapes. A claim here would refuse the probe
+            // whenever the schema had moved — and send this straight to a `create` of a
+            // database that already exists, reporting the wrong thing about the right
+            // situation. The shapes are settled in `Connect`, by asking.
             using var probe = FjordConnection.Connect(
-                options.Address, DotnetIndex.Schema, SessionMode.ReadOnly);
+                options.Address, DotnetIndex.Schema, SessionMode.ReadOnly, assertSchema: false);
             return;
         }
         catch (FjordServerException)
@@ -415,17 +423,35 @@ internal static class Program
 
         Console.WriteLine($"connecting to {options.Address}, {writers} writer(s)");
 
-        // A claim, not a question: an indexer that disagrees with the server about the
-        // schema is refused at the handshake rather than after an hour of writing facts
-        // nobody can read back.
+        // **Asked, not claimed.** A connection encodes a fact positionally against the
+        // schema it was opened with, so the shapes have to be settled before the writers
+        // exist — which is why this is a session of its own, opened asserting nothing,
+        // whose only job is to ask. What comes back is renumbered into this client's ids
+        // and is what every writer below is opened with.
+        //
+        // The alternative is what this replaced: state the shapes here, assert the
+        // fingerprint, and be refused at the handshake when a schema moves. That refusal
+        // worked, and what it cost was a client rebuild for every schema edit — including
+        // edits to predicates this client never writes.
+        FjordSchema schema;
+        using (var asking = FjordConnection.Connect(
+            options.Address, DotnetIndex.Schema, SessionMode.ReadOnly, assertSchema: false))
+        {
+            schema = DotnetIndex.From(asking.SchemaTypes());
+        }
+
+        Console.WriteLine(
+            $"  schema learned from the server: {schema.Predicates.Count} predicate(s), "
+            + $"{schema.Fingerprint:x16}");
+
         var connections = new List<FjordConnection>(writers);
         for (var n = 0; n < writers; n++)
         {
             connections.Add(FjordConnection.Connect(
                 options.Address,
-                DotnetIndex.Schema,
+                schema,
                 SessionMode.ReadWrite,
-                assertSchema: true));
+                assertSchema: false));
         }
 
         return connections;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Boxops.Fjord.Client;
 
 namespace Boxops.Fjord.Indexer;
@@ -161,6 +162,174 @@ internal static class DotnetIndex
     /// from the resolved schema: two independent statements of one schema is what the
     /// fingerprint is for, and a generated one would agree by construction.
     /// </summary>
+    /// <summary>
+    /// The schema the server serves, renumbered into <i>this client's</i> ids.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What a run should write against.</b> The declaration below states the shapes
+    /// this client believes in; the server states the shapes the database actually has.
+    /// When there is a connection the second is the one to use, because it cannot be
+    /// stale — which is the whole point of asking.
+    /// </para>
+    /// <para>
+    /// <b>Renumbered, because a reference carries an id and an id belongs to a
+    /// numbering.</b> The server's ids are its own — <c>src.File</c> is 56 there and 0
+    /// here — so a <c>Fact</c> inside a key has to be rewritten to the position this
+    /// client keeps that predicate at, or a nested reference resolves to a different
+    /// predicate entirely. Names are what the two sides share, and a block header
+    /// carries one for exactly this reason.
+    /// </para>
+    /// <para>
+    /// Predicates the server serves and this client does not declare — the virtuals, and
+    /// anything in the schema it never writes — are left out: a client may declare only
+    /// what it writes, and carrying the rest would renumber everything.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="FjordProtocolException">
+    /// If the server does not serve a predicate this client declares, or a reference
+    /// points at one it does not — either of which means the two are describing
+    /// different schemas and no renumbering could reconcile them.
+    /// </exception>
+    public static FjordSchema From(FjordSchema served)
+    {
+        var mine = new Dictionary<string, uint>(Names.Length);
+        for (var id = 0u; id < Names.Length; id++)
+        {
+            mine[Names[id]] = id;
+        }
+
+        var predicates = new List<FjordPredicate>(Names.Length);
+
+        foreach (var name in Names)
+        {
+            var theirs = served.Predicates.FirstOrDefault(p => p.Name == name)
+                ?? throw new FjordProtocolException(
+                    $"this server does not serve `{name}`, which this client writes");
+
+            predicates.Add(new FjordPredicate(
+                name,
+                Renumber(theirs.Key, served, mine),
+                theirs.Value is null ? null : Renumber(theirs.Value, served, mine),
+                theirs.IsVirtual));
+        }
+
+        return new FjordSchema(predicates, served.Fingerprint);
+    }
+
+    /// <summary>Rewrite every reference from the server's numbering into this one's.</summary>
+    private static FjordType Renumber(
+        FjordType type,
+        FjordSchema served,
+        IReadOnlyDictionary<string, uint> mine) => type switch
+        {
+            FjordType.Fact fact => FjordType.Reference(Named(served, fact.Predicate, mine)),
+
+            FjordType.Record record => FjordType.Rec(
+                record.Fields
+                    .Select(field => (field.Name, Renumber(field.Type, served, mine)))
+                    .ToArray()),
+
+            FjordType.Union union => FjordType.OneOf(
+                union.Alternatives
+                    .Select(alt => (alt.Name, alt.Disc, Renumber(alt.Type, served, mine)))
+                    .ToArray()),
+
+            // The scalars carry no id and are the same on both sides.
+            _ => type,
+        };
+
+    private static uint Named(
+        FjordSchema served,
+        uint theirs,
+        IReadOnlyDictionary<string, uint> mine)
+    {
+        var name = served.NameOf(theirs);
+
+        return mine.TryGetValue(name, out var id)
+            ? id
+            : throw new FjordProtocolException(
+                $"a reference points at `{name}`, which this client does not declare");
+    }
+
+    /// <summary>
+    /// The predicates this client writes, in <b>its own id order</b> — the order the
+    /// constants above number them in.
+    /// </summary>
+    /// <remarks>
+    /// The names are the contract with the server; the positions are the contract with
+    /// this client's own code, which names a predicate by constant. Keeping them here as
+    /// one list is what lets <see cref="From"/> renumber without either side guessing.
+    /// </remarks>
+    public static readonly string[] Names =
+    [
+        "src.File",
+        "src.Symbol",
+        "src.FileLanguage",
+        "src.FileDigest",
+        "src.FileOrigin",
+        "src.FileInfo",
+        "src.FileLine",
+        "src.FileLineAt",
+        "src.FileLineStyles",
+        "config.Setting",
+        "msbuild.Solution",
+        "msbuild.Project",
+        "msbuild.Assembly",
+        "msbuild.Package",
+        "msbuild.SolutionToProject",
+        "msbuild.ProjectToSolution",
+        "msbuild.ProjectToSourceFile",
+        "msbuild.SourceFileToProject",
+        "msbuild.ProjectReference",
+        "msbuild.ProjectReferencedBy",
+        "msbuild.PackageReference",
+        "msbuild.PackageDependent",
+        "msbuild.Compilation",
+        "msbuild.ProjectCompilation",
+        "csharp.Name",
+        "csharp.NameLowerCase",
+        "csharp.Namespace",
+        "csharp.FullName",
+        "csharp.Class",
+        "csharp.Interface",
+        "csharp.Record",
+        "csharp.Struct",
+        "csharp.Implements",
+        "csharp.TypeTypeParameter",
+        "csharp.Method",
+        "csharp.MethodParameter",
+        "csharp.MethodTypeParameter",
+        "csharp.Parameter",
+        "csharp.Field",
+        "csharp.TypeParameter",
+        "csharp.Local",
+        "csharp.Property",
+        "csharp.PropertyParameter",
+        "csharp.ArrayType",
+        "csharp.PointerType",
+        "csharp.FunctionPointerType",
+        "csharp.DefinitionLocation",
+        "csharp.ObjectCreationLocation",
+        "csharp.MethodInvocationLocation",
+        "csharp.MemberAccessLocation",
+        "csharp.TypeLocation",
+        "csharp.EntityXRef",
+        "csharp.EntityRef",
+        "csharp.SymbolOf",
+        "csharp.DefinitionBySymbol",
+        "codemarkup.Definition",
+        "codemarkup.SymbolInfo",
+        "codemarkup.FileDefinition",
+        "codemarkup.FileXRef",
+        "codemarkup.SymbolXRef",
+        "codemarkup.FileLocalXRef",
+        "codemarkup.SearchEntry",
+        "codemarkup.SymbolByName",
+        "codemarkup.Relation",
+        "codemarkup.RelationOf",
+    ];
+
     public static readonly FjordSchema Schema = new([
         // `src.File` — a path relative to the index root, interned once.
         new FjordPredicate("src.File", FjordType.String, null),

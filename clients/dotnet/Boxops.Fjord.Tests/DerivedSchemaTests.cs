@@ -59,6 +59,62 @@ public class DerivedSchemaTests
     }
 
     /// <summary>
+    /// <b>The renumbered wire schema is the hand-written one, exactly</b> — same order,
+    /// same ids, same reference targets.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The sibling above compares the two modulo numbering, which is the weaker claim.
+    /// This one compares what <see cref="DotnetIndex.From"/> produces, where the
+    /// renumbering has already happened — so a reference must land on the same id, and
+    /// <c>==</c> on the ids is a real assertion rather than a tautology.
+    /// </para>
+    /// <para>
+    /// <b>This is what stops the declaration going stale.</b> A schema edit that moves a
+    /// shape now fails here, at the point of disagreement and naming the predicate,
+    /// rather than at a handshake as two fingerprints that differ — and a run that has a
+    /// connection uses the server's answer regardless.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_renumbered_wire_schema_is_the_hand_written_one()
+    {
+        using var server = FjordServer.Serving("derived", "dotnet.sigla");
+        using var connection = FjordConnection.Connect(
+            server.Socket, "derived", DotnetIndex.Schema, SessionMode.ReadOnly, false);
+
+        var renumbered = DotnetIndex.From(connection.SchemaTypes());
+        var stated = DotnetIndex.Schema;
+
+        Assert.Equal(stated.Predicates.Count, renumbered.Predicates.Count);
+
+        for (var id = 0; id < stated.Predicates.Count; id++)
+        {
+            var mine = stated.Predicates[id];
+            var wire = renumbered.Predicates[id];
+
+            Assert.Equal(mine.Name, wire.Name);
+            Assert.True(
+                Same(mine.Key, wire.Key, stated, renumbered),
+                $"`{mine.Name}` key: stated {Show(mine.Key, stated)}, "
+                + $"wire {Show(wire.Key, renumbered)}");
+            Assert.True(
+                (mine.Value is null) == (wire.Value is null)
+                    && (mine.Value is null || Same(mine.Value!, wire.Value!, stated, renumbered)),
+                $"`{mine.Name}` value: stated {Show(mine.Value, stated)}, "
+                + $"wire {Show(wire.Value, renumbered)}");
+        }
+
+        // And the references landed on *this* client's ids, not the server's — the thing
+        // renumbering exists to do. `src.File` is 0 here and 56 there.
+        var language = renumbered.Predicates[(int)DotnetIndex.FileLanguage];
+        var fields = Assert.IsType<FjordType.Record>(language.Key).Fields;
+        var reference = Assert.IsType<FjordType.Fact>(fields.Single(f => f.Name == "file").Type);
+
+        Assert.Equal(DotnetIndex.File, reference.Predicate);
+    }
+
+    /// <summary>
     /// Structural comparison, resolving each reference through the schema it came from.
     /// </summary>
     /// <remarks>
