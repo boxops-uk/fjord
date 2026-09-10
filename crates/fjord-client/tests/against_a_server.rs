@@ -2780,3 +2780,175 @@ fn a_paged_fuzzy_query_resumes_where_it_stopped() {
 
     assert_eq!(paged, all, "paging dropped or repeated a row");
 }
+
+/// **A client that states no schema learns every shape from the server.**
+///
+/// The acceptance criterion for the descriptor reply: a peer connects asserting nothing,
+/// asks what shapes there are, and gets back — for every predicate — its id, its name,
+/// both sides of its arrow, and whether it is one it may write to. That is the whole of
+/// what a producer needs before it can encode a fact, and none of it was previously
+/// answerable over the wire.
+#[test]
+fn a_client_that_asserts_nothing_is_told_every_predicates_shape() {
+    // With the catalogue, so the virtual marking is exercised rather than assumed: a
+    // writer has to be able to tell a predicate it may write from one it may only ask.
+    let serving = start_with_catalogue();
+
+    // `assert_schema: false` and a stand-in schema: this end has no opinion yet, which
+    // is exactly the position a client without a sigla parser is in.
+    let mut connection = Connection::connect(
+        &serving.socket,
+        "code",
+        Arc::new(schema()),
+        Mode::ReadOnly,
+        false,
+    )
+    .expect("a connection");
+
+    let described = connection.served_types().expect("the types");
+
+    let by_name: std::collections::BTreeMap<&str, &fjord_wire::PredicateDesc> =
+        described.iter().map(|p| (p.name.as_str(), p)).collect();
+
+    // Every stored predicate, plus the virtuals the session can also name.
+    for name in ["src.File", "src.Decl", "src.Doc", "src.Tagged"] {
+        assert!(by_name.contains_key(name), "{name} is missing: {by_name:?}");
+    }
+
+    // **A scalar key, and no value side** — which is not an empty one.
+    let file = by_name["src.File"];
+    assert_eq!(file.key, fjord_wire::Desc::Str);
+    assert_eq!(file.value, None);
+    assert!(!file.is_virtual);
+
+    // **A record key, in encoding order, with a reference carrying the id a block
+    // header uses.** This is the part a client cannot guess and previously transcribed.
+    let decl = by_name["src.Decl"];
+    let fjord_wire::Desc::Record(fields) = &decl.key else {
+        panic!("`src.Decl` has a record key: {decl:?}");
+    };
+    assert_eq!(
+        fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        vec!["file", "line", "name"]
+    );
+    assert_eq!(fields[0].1, fjord_wire::Desc::Fact(file.id));
+
+    // **A union's alternatives carry their discriminants**, which are not their
+    // positions — the fixture's tags are 3, 0 and 40,000 for exactly this.
+    let tagged = by_name["src.Tagged"];
+    let fjord_wire::Desc::Record(fields) = &tagged.key else {
+        panic!("`src.Tagged` has a record key: {tagged:?}");
+    };
+    let (_, what) = fields.iter().find(|(n, _)| n == "what").expect("`what`");
+    let fjord_wire::Desc::Union(alternatives) = what else {
+        panic!("`what` is a union: {what:?}");
+    };
+    let tags: std::collections::BTreeMap<&str, u32> = alternatives
+        .iter()
+        .map(|(name, disc, _)| (name.as_str(), *disc))
+        .collect();
+    assert_eq!(tags["num"], NUM);
+    assert_eq!(tags["text"], TEXT);
+    assert_eq!(tags["of"], OF);
+
+    // **The virtuals are marked**, so a writer knows which it can never write to.
+    let listing = by_name.get("fjord.db.List").unwrap_or_else(|| {
+        panic!(
+            "a served session can name the catalogue; it named {:?}",
+            by_name.keys().collect::<Vec<_>>()
+        )
+    });
+    assert!(listing.is_virtual, "{listing:?}");
+}
+
+/// **A fact built from the derived tree is a fact the server accepts** — which is the
+/// claim the reply exists to make good.
+///
+/// Nothing here states a shape. The record is assembled by looking each field up **by
+/// name** in what the server said and placing the value at that position, which is what
+/// a JSON-to-wire client does and what makes a schema edit stop being a client rebuild.
+#[test]
+fn a_fact_encoded_from_the_derived_tree_is_written_and_read_back() {
+    let serving = start();
+
+    let mut connection = Connection::connect(
+        &serving.socket,
+        "code",
+        Arc::new(schema()),
+        Mode::ReadWrite,
+        false,
+    )
+    .expect("a connection");
+
+    let described = connection.served_types().expect("the types");
+    let file = described
+        .iter()
+        .find(|p| p.name == "src.File")
+        .expect("`src.File`");
+    let decl = described
+        .iter()
+        .find(|p| p.name == "src.Decl")
+        .expect("`src.Decl`");
+
+    // What a by-name client has: field names and values, in no particular order.
+    let supplied = [
+        ("line", WireValue::Int(12)),
+        ("name", WireValue::Str("encode".to_owned())),
+        (
+            "file",
+            WireValue::Ref(WireRef::Nested(Box::new(WireFact {
+                predicate: file.id,
+                key: WireValue::Str("a.rs".to_owned()),
+                value: None,
+            }))),
+        ),
+    ];
+
+    // Placed by the *server's* order, which this end never had to know.
+    let fjord_wire::Desc::Record(fields) = &decl.key else {
+        panic!("a record key");
+    };
+    let key = WireValue::Record(
+        fields
+            .iter()
+            .map(|(name, _)| {
+                supplied
+                    .iter()
+                    .find(|(supplied, _)| supplied == name)
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_else(|| panic!("nothing supplied for `{name}`"))
+            })
+            .collect::<Vec<_>>()
+            .into(),
+    );
+
+    let written = connection
+        .write(
+            decl.id,
+            &[WireFact {
+                predicate: decl.id,
+                key,
+                value: None,
+            }],
+        )
+        .expect("the server accepts a fact shaped by its own answer");
+
+    // **Two**, because the nested `src.File` is interned on the way in — which is the
+    // other half of what a derived tree buys: `Desc::Fact` said the field was a
+    // reference, so this end knew to send the whole target fact rather than an id it
+    // does not have.
+    assert_eq!(written.created, 2, "the decl and the file it names");
+
+    // And it reads back as the fact that was meant, rather than as bytes that happened
+    // to fit — which is the failure a wrong field order produces.
+    let mut result = connection
+        .query(r#"{n = N} where src.Decl {file = F, line = 12, name = N}"#)
+        .expect("a query");
+    let rows = connection.drain(&mut result).expect("rows");
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0],
+        WireValue::Record(Box::new([WireValue::Str("encode".to_owned())]))
+    );
+}

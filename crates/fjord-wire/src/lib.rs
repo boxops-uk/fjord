@@ -98,8 +98,8 @@ pub use desc::{Desc, decode_desc, encode_desc};
 pub use error::WireError;
 pub use frame::{FrameHeader, FrameKind, StreamId, decode_frame, encode_frame};
 pub use protocol::{
-    Control, ControlOp, ControlReply, ErrorCode, Fetched, Mode, ProfileStep, QueryProfile, Ready,
-    Startup, kinds,
+    Control, ControlOp, ControlReply, ErrorCode, Fetched, Mode, PredicateDesc, ProfileStep,
+    QueryProfile, Ready, Startup, decode_types, encode_types, kinds, types_of,
 };
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};
 

@@ -14,6 +14,7 @@ public enum SessionMode : byte
 /// <summary>What the server said when the session opened.</summary>
 public sealed record ServerHello(uint Version, ulong SchemaFingerprint, ulong Predicates);
 
+
 /// <summary>What a write stream did.</summary>
 /// <remarks>
 /// <paramref name="Created"/> counts <b>every</b> fact written, nested targets
@@ -315,6 +316,84 @@ public sealed class FjordConnection : IDisposable
             var rowAt = 0;
             rows.Add(ValueCodec.ReadValue(frame.Payload, _schema, shape, ref rowAt));
         }
+    }
+
+    /// <summary>
+    /// Every predicate this session can name, as a type tree.
+    /// </summary>
+    /// <remarks>
+    /// <b>What this client should be built on, rather than a schema written out by hand.</b>
+    /// A fact's values go on the wire positionally against the predicate's declared type, so
+    /// a producer needs that type before it can encode one — and this client has no sigla
+    /// parser, so <see cref="SchemaSource"/> cannot give it one. Asking means a schema edit
+    /// stops being a client rebuild: look each field up by name in what comes back and put
+    /// the value where the server says it goes.
+    ///
+    /// The descriptors are the same encoding a query's row shape uses, so the decoding is
+    /// <c>RowDescriptor.Read</c> and not a second codec.
+    /// </remarks>
+    public FjordSchema SchemaTypes()
+    {
+        var stream = _nextStream++;
+        FrameIo.Write(_stream, FrameKind.Types, stream, []);
+
+        var reply = FrameIo.Read(_stream);
+        ThrowIfError(reply);
+
+        if (reply.Kind != FrameKind.TypesReply)
+        {
+            throw new FjordProtocolException(
+                $"expected a type descriptor list, got `{(char)reply.Kind}`");
+        }
+
+        var bytes = reply.Payload.AsSpan();
+        var at = 0;
+
+        var count = Varint.Read(bytes, ref at);
+        if (count > (ulong)bytes.Length)
+        {
+            throw new FjordProtocolException("more predicates declared than could fit");
+        }
+
+        var predicates = new List<FjordPredicate>((int)count);
+
+        for (ulong index = 0; index < count; index++)
+        {
+            var id = (uint)Varint.Read(bytes, ref at);
+
+            var length = Varint.Read(bytes, ref at);
+            if (length > (ulong)(bytes.Length - at))
+            {
+                throw new FjordProtocolException("a predicate name runs past the payload");
+            }
+
+            var name = Encoding.UTF8.GetString(bytes.Slice(at, (int)length));
+            at += (int)length;
+
+            var isVirtual = Varint.Read(bytes, ref at) != 0;
+            var key = RowDescriptor.Read(bytes, ref at);
+
+            // **A missing value side is not an empty record**, and the flag is what keeps
+            // them apart: a predicate with no value takes no descriptor at all.
+            var hasValue = Varint.Read(bytes, ref at) != 0;
+            var value = hasValue ? RowDescriptor.Read(bytes, ref at) : null;
+
+            // **Position is the id, and the server sends them in id order** — so a
+            // `Fact` reference inside a key, which names a predicate by number, resolves
+            // through this list to the predicate the server meant.
+            if (id != index)
+            {
+                throw new FjordProtocolException(
+                    $"predicate {id} arrived at position {index}; a reference inside a key "
+                    + "names a predicate by number and would resolve to the wrong one");
+            }
+
+            predicates.Add(new FjordPredicate(name, key, value, isVirtual));
+        }
+
+        // The fingerprint the server stated at the handshake, so a schema derived here
+        // carries the number a later session could assert.
+        return new FjordSchema(predicates, Hello.SchemaFingerprint);
     }
 
     /// <summary>

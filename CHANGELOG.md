@@ -5,6 +5,60 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## Unreleased
+
+### A client can ask what shape a predicate is · `Y`/`y`
+
+**The encoding existed, both ends implemented it, and nothing asked the question it
+answered.** `fjord schema compose` (0.2.0) solved *resolution* — imports inlined, so a server
+needs none of the caller's filesystem. It did not solve *shape*: the transport codec sends no
+field names, no type markers and no record arities, so a fact's values go on the wire
+**positionally against the predicate's declared type**, and a record's field order is part of
+its encoding. A client therefore needed each predicate's type tree before it could write a
+byte, and a composed schema is sigla source, which a client without a parser cannot read.
+
+Two new frames answer it. `Y` asks; `y` replies with every predicate this session can name —
+its id, its fully-qualified name, whether it is virtual, its key as a descriptor and its value
+as an optional one. `SCHEMA`/`h` still answers source and still should: a person diffing two
+schemas wants sigla, not a tag tree.
+
+**It is small because the descriptor was already the answer, pointed the other way.**
+`fjord-wire`'s `Desc` is the same cases as a predicate's type with record fields and union
+alternatives carrying their names as text, and it is already sent once per query stream as `T`
+because a query's head is a record no predicate declares. The .NET client already decoded it.
+So the format was designed, the encoder built, and a second implementation of the decoder
+shipped and exercised on every query — what was missing is only that a descriptor was
+available for a query's *rows* and not for a predicate's *key*.
+
+`Connection::served_types` is the Rust side; `FjordConnection.SchemaTypes` is the .NET side and
+returns a `FjordSchema`, so everything downstream of it works unchanged. A producer's shape is
+now: connect asserting nothing, ask, and write against the answer.
+
+**No protocol bump.** A client that has never heard of these neither sends `Y` nor receives
+`y`, which is what additive has to mean if the version is to stay where it is.
+
+**What it is for is deleting client code.** `Boxops.Fjord.Indexer/DotnetIndex.cs` restates
+`schemas/dotnet.sigla`'s 65 predicates in 233 `FjordType.` constructions across 1,104 lines,
+and `Blocks.cs` keeps a predicate id table in step beside it by hand. A new test asserts the
+derived schema agrees with that transcription predicate for predicate and field for field, so
+the transcription can now go — which is a separate change, and the reason this one lands
+first.
+
+**A schema edit stops being a client rebuild**, which is the point. A client that derives its
+types and builds records **by field name** does not care that a schema reordered its fields or
+added one it does not write. What it cannot derive is whether its own *program* was written
+for this version, and the protocol already carries that question separately: a startup frame's
+per-predicate claims are subset containment, and a producer that wants the early refusal can
+still make one.
+
+**Two things the reply makes visible that a hand-written schema cannot.** Virtual predicates
+are included and *marked* — a schema written by hand describes only what its author writes to,
+so it has no row for `fjord.db.List` and no way to know a write naming one would be refused.
+And a reference's id is the *server's* numbering: predicates arrive in id order so a schema
+learned this way has positions matching, but a client comparing a derived schema against a
+hand-written one has to resolve both sides' references to names first. `src.File` is predicate
+0 in the .NET client's own list and 56 in the server's, and both are right.
+
 ## 0.3.0 — 2026-09-10
 
 **Breaking on the wire: `codemarkup.SymbolInfo` gained three fields, so the schema

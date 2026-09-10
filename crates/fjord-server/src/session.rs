@@ -638,6 +638,7 @@ impl StreamTask {
             }
             kinds::CONTROL => self.control(payload).await,
             kinds::SCHEMA => self.schema().await,
+            kinds::TYPES => self.types().await,
             kinds::FETCH => self.fetch(payload).await,
 
             other => Err(ServerError::Protocol(format!(
@@ -703,6 +704,30 @@ impl StreamTask {
 
         self.outbound
             .send(kinds::SCHEMA_REPLY, self.stream, source.as_bytes())
+            .await
+    }
+
+    /// Answer the served schema as **type trees**, for a client with no parser.
+    ///
+    /// [`schema`](Self::schema)'s sibling, over the same value — so the two cannot
+    /// disagree about what is being served. The difference is only the rendering: that
+    /// one prints sigla for a person, this one encodes descriptors for a peer that has
+    /// neither an interner nor a lowerer and still has to write a fact positionally
+    /// against a predicate's declared type.
+    async fn types(&mut self) -> Result<(), ServerError> {
+        let schema = match &self.session.database {
+            Some(database) => Arc::clone(&database.schema),
+            None => Arc::clone(self.session.registry.schema()),
+        };
+
+        let described = protocol::types_of(&schema)?;
+
+        self.outbound
+            .send(
+                kinds::TYPES_REPLY,
+                self.stream,
+                &protocol::encode_types(&described),
+            )
             .await
     }
 

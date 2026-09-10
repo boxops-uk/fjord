@@ -101,6 +101,7 @@ use fjord_schema::{
 
 use crate::{
     WireError,
+    desc::{Desc, decode_desc, encode_desc},
     value::{WireValue, decode_value, encode_value},
     varint,
 };
@@ -112,7 +113,7 @@ use crate::{
 /// about the protocol and disagree about the data".
 ///
 /// **4 marks the `bytes` scalar family.** The wire descriptor gained `TAG_BYTES`, and a
-/// peer built before it meets that tag with no case for it: [`decode_desc`](crate::desc::decode_desc)
+/// peer built before it meets that tag with no case for it: [`decode_desc`]
 /// answers [`WireError::UnknownRefForm`] and refuses
 /// the stream rather than reading the field as a `string` and handing its caller bytes
 /// that are not text. Refusing is right, and it is *where* it happens that needs this
@@ -225,6 +226,27 @@ pub mod kinds {
     /// *ask*, not what the database holds — a client that cannot see `fjord.db.List`
     /// cannot compile the one query every server answers.
     pub const SCHEMA_REPLY: FrameKind = FrameKind(b'h');
+    /// Client → server: **what shape is everything you serve?** No payload.
+    ///
+    /// [`SCHEMA`]'s sibling, and the difference is who the answer is for. That one
+    /// answers *source*, which is what a person diffing two schemas wants and what a
+    /// client holding a sigla parser can lower. This one answers **type trees**, which
+    /// is what a client without one needs before it can write a byte: the transport
+    /// codec sends no field names, no type markers and no record arities, so a fact's
+    /// values go on the wire positionally against the predicate's declared type.
+    ///
+    /// Without it a client writes that type out by hand and the handshake fingerprint
+    /// is what catches a transcription that has gone stale — after somebody made it,
+    /// and as two numbers that differ rather than a predicate that was typed wrong.
+    /// With it a client builds records **by name** against what the server just said,
+    /// and a schema edit stops being a client rebuild.
+    pub const TYPES: FrameKind = FrameKind(b'Y');
+    /// Server → client: every predicate this session can name, as a descriptor.
+    ///
+    /// [`encode_types`](super::encode_types) says the shape. Virtual predicates are
+    /// included and **marked**, for [`SCHEMA_REPLY`]'s reason plus one more: a writer
+    /// needs to know which of them it can never write to.
+    pub const TYPES_REPLY: FrameKind = FrameKind(b'y');
     /// Client → server: **what facts do these ids name?**
     ///
     /// The read-path twin of [a reference on the way in][settled]. Stored, a reference
@@ -631,6 +653,150 @@ pub fn decode_complete(bytes: &[u8]) -> Result<(u64, u64), WireError> {
 }
 
 #[must_use]
+/// One predicate, as a peer that has no interner and no parser can read it.
+///
+/// The **whole** of what a writer needs: which predicate (`id`, because a block names a
+/// predicate by number), what to call it (`name`, because a producer knows the name and
+/// not the number), and both sides of the arrow as type trees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PredicateDesc {
+    pub id: PredicateId,
+    /// Fully qualified — `code.Decl`, not `Decl`.
+    pub name: String,
+    pub key: Desc,
+    /// `None` where the predicate has no value side, which is not the same as an empty
+    /// record and encodes differently.
+    pub value: Option<Desc>,
+    /// Answered by whoever runs the query rather than read from a keyspace.
+    ///
+    /// Carried because a writer has to know: a virtual predicate has no trees, so a
+    /// write naming one is refused, and a client discovering the schema would otherwise
+    /// have no way to tell it apart from one it may write.
+    pub is_virtual: bool,
+}
+
+/// Describe every predicate of `schema`, in id order.
+///
+/// # Errors
+///
+/// [`WireError`] if a predicate's name or type cannot be resolved through the schema's
+/// own interner, which is a broken schema rather than a protocol fault.
+pub fn types_of(schema: &Schema) -> Result<Vec<PredicateDesc>, WireError> {
+    (0..schema.len())
+        .map(|index| {
+            let id = PredicateId(index as u32);
+            let predicate = schema.get(id).ok_or(WireError::UnknownPredicate(id.0))?;
+
+            Ok(PredicateDesc {
+                id,
+                name: predicate
+                    .name()
+                    .ok_or(WireError::UnknownPredicate(id.0))?
+                    .to_owned(),
+                key: Desc::of(schema, predicate.key().ty)?,
+                value: predicate
+                    .value()
+                    .map(|ty| Desc::of(schema, ty.ty))
+                    .transpose()?,
+                is_virtual: schema.is_virtual(id),
+            })
+        })
+        .collect()
+}
+
+/// Encode a [`TYPES_REPLY`](kinds::TYPES_REPLY) payload.
+///
+/// ```text
+///   varint  count
+///   per predicate:
+///     varint  id
+///     string  name
+///     varint  is_virtual   (0 or 1)
+///     desc    key
+///     varint  has_value    (0 or 1)
+///     desc    value        (only when has_value)
+/// ```
+///
+/// The two flags are varints rather than bits of one byte because this is sent once per
+/// session and read by hand-written decoders in other languages; a bitfield would save
+/// bytes nobody is counting and cost a reader the one thing it needs.
+#[must_use]
+pub fn encode_types(predicates: &[PredicateDesc]) -> Vec<u8> {
+    let mut out = vec![];
+    varint::put_u64(&mut out, predicates.len() as u64);
+
+    for predicate in predicates {
+        varint::put_u64(&mut out, u64::from(predicate.id.0));
+        put_str(&mut out, &predicate.name);
+        varint::put_u64(&mut out, u64::from(predicate.is_virtual));
+        encode_desc(&mut out, &predicate.key);
+
+        match &predicate.value {
+            Some(value) => {
+                varint::put_u64(&mut out, 1);
+                encode_desc(&mut out, value);
+            }
+            None => varint::put_u64(&mut out, 0),
+        }
+    }
+
+    out
+}
+
+/// Read a [`TYPES_REPLY`](kinds::TYPES_REPLY) payload.
+///
+/// # Errors
+///
+/// [`WireError`] if the payload is malformed, or carries a descriptor tag this build has
+/// no case for — which is the refusal a peer built before a scalar family was added owes
+/// its caller, rather than reading the field as something else.
+pub fn decode_types(bytes: &[u8]) -> Result<Vec<PredicateDesc>, WireError> {
+    let (count, mut at) = varint::get_u64(bytes)?;
+
+    let count = usize::try_from(count).map_err(|_| WireError::LengthOutOfRange {
+        declared: count,
+        available: bytes.len(),
+    })?;
+
+    let mut predicates = Vec::with_capacity(count.min(1024));
+
+    for _ in 0..count {
+        let (id, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+        let id = u32::try_from(id).map_err(|_| WireError::UnknownPredicate(u32::MAX))?;
+
+        let (name, used) = get_str(&bytes[at..])?;
+        at += used;
+
+        let (is_virtual, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+
+        let (key, used) = decode_desc(&bytes[at..])?;
+        at += used;
+
+        let (has_value, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+
+        let value = if has_value == 0 {
+            None
+        } else {
+            let (value, used) = decode_desc(&bytes[at..])?;
+            at += used;
+            Some(value)
+        };
+
+        predicates.push(PredicateDesc {
+            id: PredicateId(id),
+            name,
+            key,
+            value,
+            is_virtual: is_virtual != 0,
+        });
+    }
+
+    Ok(predicates)
+}
+
 pub fn encode_control(control: &Control) -> Vec<u8> {
     let mut out = vec![control.op as u8];
     put_str(&mut out, &control.database);
@@ -1738,5 +1904,127 @@ mod tests {
                 vec![Found::Key(fact.key)]
             );
         }
+    }
+
+    // **A descriptor list survives the round trip**, which is the whole contract: a
+    // client encodes nothing from this and decodes everything, so a field that does not
+    // come back is a shape a producer would then write wrongly.
+    ::proptest::proptest! {
+        #[test]
+        fn a_described_schema_round_trips(
+            described in ::proptest::collection::vec(arb_predicate_desc(), 0..6)
+        ) {
+            let bytes = encode_types(&described);
+            ::proptest::prop_assert_eq!(decode_types(&bytes), Ok(described));
+        }
+    }
+
+    /// A strategy over one predicate's description.
+    ///
+    /// The two flags are drawn independently of the shapes because they are independent
+    /// on the wire: a virtual predicate may have a value side, and a stored one may not.
+    fn arb_predicate_desc() -> impl ::proptest::strategy::Strategy<Value = PredicateDesc> {
+        use ::proptest::prelude::*;
+
+        (
+            0u32..64,
+            ::proptest::sample::select(vec!["a.B", "code.Decl", "fjord.db.List", ""]),
+            crate::desc::proptest::arb_desc(),
+            ::proptest::option::of(crate::desc::proptest::arb_desc()),
+            any::<bool>(),
+        )
+            .prop_map(|(id, name, key, value, is_virtual)| PredicateDesc {
+                id: PredicateId(id),
+                name: name.to_owned(),
+                key,
+                value,
+                is_virtual,
+            })
+    }
+
+    /// **`None` and an empty record are different**, and the wire has to keep them
+    /// apart: a predicate with no value side takes no value bytes at all, while one
+    /// whose value is `{}` takes a record of zero fields. A decoder that folded them
+    /// would have a writer send bytes for a side that does not exist.
+    #[test]
+    fn no_value_side_is_not_an_empty_value_side() {
+        let none = PredicateDesc {
+            id: PredicateId(1),
+            name: "a.B".to_owned(),
+            key: Desc::Str,
+            value: None,
+            is_virtual: false,
+        };
+        let empty = PredicateDesc {
+            value: Some(Desc::Record(Box::new([]))),
+            ..none.clone()
+        };
+
+        use std::slice::from_ref;
+
+        assert_ne!(
+            encode_types(from_ref(&none)),
+            encode_types(from_ref(&empty))
+        );
+        assert_eq!(
+            decode_types(&encode_types(from_ref(&none))),
+            Ok(vec![none.clone()])
+        );
+        assert_eq!(
+            decode_types(&encode_types(from_ref(&empty))),
+            Ok(vec![empty.clone()])
+        );
+    }
+
+    /// **What the server describes is what the schema declares**, name for name and
+    /// side for side — including the virtual predicates, marked.
+    ///
+    /// Asserted against a schema with a value side, a nested reference and a virtual
+    /// predicate, because those are the three a description can get wrong in ways an
+    /// all-scalar schema would not show.
+    #[test]
+    fn describing_a_schema_names_every_predicate_and_marks_the_virtual_ones() {
+        let source = "schema a {\n  predicate File : string\n  \
+                      predicate Decl : { file : File, line : int } -> { text : string }\n}\n";
+        let schema = fjord_schema::syntax::read("a", source)
+            .expect("a schema")
+            .with_reserved_virtual();
+
+        let described = types_of(&schema).expect("described");
+
+        // **Id order, which is name order and not declaration order.** A predicate's
+        // position *is* its id, and lowering sorts by name — so a description is not a
+        // rendering of the source's layout, and a client that matched them up by
+        // position against a schema file would pair the wrong trees. Every consumer
+        // keys by name, which is why the name is carried.
+        assert_eq!(
+            described
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.Decl", "a.File"]
+        );
+
+        let file = &described[1];
+        assert_eq!(file.key, Desc::Str);
+        assert_eq!(file.value, None, "`File` has no value side");
+        assert!(!file.is_virtual);
+
+        let decl = &described[0];
+        let Desc::Record(fields) = &decl.key else {
+            panic!("a record key");
+        };
+        // Declaration order, which is the order the values go on the wire in.
+        assert_eq!(
+            fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["file", "line"]
+        );
+        // The id `File` actually has, which is the one a block header carries.
+        assert_eq!(fields[0].1, Desc::Fact(file.id), "a reference by id");
+        assert_eq!(file.id, PredicateId(1));
+        assert_eq!(
+            decl.value,
+            Some(Desc::Record(Box::new([("text".to_owned(), Desc::Str)])))
+        );
     }
 }

@@ -580,6 +580,37 @@ impl Connection {
             .map_err(ClientError::Protocol)
     }
 
+    /// The served schema as **type trees** — every predicate, with both sides of its
+    /// arrow as a descriptor.
+    ///
+    /// **What a client uses instead of writing the shapes out by hand.** A fact's values
+    /// go on the wire positionally against the predicate's declared type, so a producer
+    /// needs that type before it can encode; deriving it here is what lets a client
+    /// build records by field *name* and stop caring which order a schema declares them
+    /// in. A Rust client can lower [`served_schema_source`](Self::served_schema_source)
+    /// instead, because it links the schema front end — this is the answer for one that
+    /// does not, which is every client in another language.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Server`] if the server declines, or
+    /// [`ClientError::Protocol`] if the reply is not a descriptor list — including a
+    /// descriptor carrying a tag this build has no case for, which is a peer built
+    /// before a scalar family was added and is refused rather than misread.
+    pub fn served_types(&mut self) -> Result<Vec<fjord_wire::PredicateDesc>, ClientError> {
+        let stream = self.claim_stream();
+        self.send(kinds::TYPES, stream, &[])?;
+
+        let (kind, payload) = self.recv_stream_frame(stream)?;
+        self.release_stream(stream);
+
+        if kind != kinds::TYPES_REPLY {
+            return Err(unexpected("a type descriptor list", kind));
+        }
+
+        fjord_wire::decode_types(&payload).map_err(|why| ClientError::Protocol(format!("{why}")))
+    }
+
     /// The same, as the text the server sent.
     ///
     /// What a shell prints for `:schema`: comments and layout are the printer's rather
