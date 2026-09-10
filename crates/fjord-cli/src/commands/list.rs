@@ -14,7 +14,7 @@ use crate::{CliError, cli::Format, commands, output};
 /// [`CliError::Store`] if the root cannot be read. A single unreadable database is a
 /// *problem* in the listing rather than a failure of it.
 pub fn run(root: &std::path::Path, format: Format) -> Result<String, CliError> {
-    let listing = commands::readable(root)?.list()?;
+    let listing = commands::readable(root).list()?;
     Ok(render(&listing, format))
 }
 

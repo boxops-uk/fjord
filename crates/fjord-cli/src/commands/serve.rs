@@ -11,7 +11,11 @@
 
 use std::{path::Path, sync::Arc};
 
-use fjord_server::{Admission, Registry, registry::Schemas, server::serve_on};
+use fjord_server::{
+    Admission, Registry,
+    registry::Schemas,
+    server::{Shutdown, serve_on},
+};
 use fjord_wire::protocol;
 
 use crate::{CliError, commands};
@@ -118,6 +122,13 @@ pub fn run(
         println!("  tcp        {address}  (opted in — access control is the gateway's)");
     }
 
-    serve_on(socket, listen, ready_file, max_connections, registry)?;
+    serve_on(
+        socket,
+        listen,
+        ready_file,
+        max_connections,
+        registry,
+        Shutdown::OnSignal,
+    )?;
     Ok(())
 }

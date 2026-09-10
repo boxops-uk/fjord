@@ -82,6 +82,23 @@ pub enum CliError {
         detail: String,
     },
 
+    /// The same failure, from the file **nobody named**.
+    ///
+    /// `./fjord.json` is read because it is there, so a broken one stops an otherwise
+    /// ordinary `fjord list` with a failure about a file the caller never mentioned.
+    /// The rule is deliberate and the message is where it gets explained — the
+    /// alternative is a person searching their command line for something that is not
+    /// on it.
+    #[error(
+        "{path}: {detail}\n           \
+         this file is read because it is in the working directory; \
+         --config names another"
+    )]
+    ConfigInTheWorkingDirectory {
+        path: std::path::PathBuf,
+        detail: String,
+    },
+
     /// Nothing is listening where a database was asked for.
     ///
     /// §2's rule 1, and the message it asks for: a bare name always means "ask the
@@ -142,6 +159,18 @@ pub enum CliError {
     /// than anywhere else in this tool.
     #[error("{0}")]
     Schema(String),
+
+    /// A delete that was declined for want of `--yes`, and is therefore a **failure**.
+    ///
+    /// Its own variant because the alternative is returning `Ok`: a refusal printed
+    /// on stderr and an exit status of 0 makes `fjord db rm x && echo gone` print
+    /// "gone" over a database that is still there. The sentence is not what a script
+    /// reads; the status is.
+    #[error(
+        "refusing to delete `{name}`: this never asks, and there is no undo\n           \
+         pass --yes to confirm"
+    )]
+    NeedsConfirmation { name: String },
 
     /// The terminal, rather than anything Fjord did.
     ///
@@ -460,9 +489,9 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
         Command::Db(DbCommand::Rm { name, yes }) => {
             if !*yes {
                 // Deleting a database is not undoable and the tool has no trash, so
-                // the default is to ask. `--yes` is what a script passes.
-                eprintln!("fjord: refusing to delete `{name}` without --yes");
-                return Ok(());
+                // it takes the flag every time — and refusing **fails**, because a
+                // script reads the status rather than the sentence.
+                return Err(CliError::NeedsConfirmation { name: name.clone() });
             }
 
             commands::rm::run(root, &context.target(name)?)?;

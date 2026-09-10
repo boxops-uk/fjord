@@ -555,20 +555,20 @@ impl Registry {
     /// builds produces two different artifacts. `create` requires a schema
     /// ([operations](../../../website/content/operations.md)).
     ///
+    /// **What that must not become is a rule about the request field.** Refusing an
+    /// empty `source` here refuses a legitimately empty schema *file* with it, and only
+    /// over the wire — the same `create` goes through against the directory when
+    /// nothing is listening. An empty source lowers to an empty schema, and
+    /// [`Catalog::create`] refuses that at both doors, by name.
+    ///
     /// # Errors
     ///
-    /// [`ServerError::Protocol`] if `source` is empty or does not lower.
+    /// [`ServerError::Protocol`] if `source` does not lower.
     async fn create(
         self: Arc<Registry>,
         name: &str,
         source: &str,
     ) -> Result<ControlReply, ServerError> {
-        if source.trim().is_empty() {
-            return Err(ServerError::Protocol(
-                "create needs a schema: pass one with `--schema <file>`".to_owned(),
-            ));
-        }
-
         let schema = Arc::new(
             syntax::read("the schema this client sent", source).map_err(ServerError::Protocol)?,
         );

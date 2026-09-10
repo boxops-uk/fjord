@@ -277,6 +277,8 @@ fn start() -> Serving {
                 None,
                 None,
                 Arc::new(registry),
+                // A harness does not own this process's signals — see `Shutdown`.
+                fjord_server::server::Shutdown::Never,
             );
         });
     }

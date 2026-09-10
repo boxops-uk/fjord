@@ -181,7 +181,14 @@ pub fn serving_on_tcp(files: usize) -> (Serving, String) {
         let socket = socket.clone();
         thread::spawn(move || {
             drop(listener);
-            let _ = fjord_server::server::serve_on(&socket, Some(&address), None, None, registry);
+            let _ = fjord_server::server::serve_on(
+                &socket,
+                Some(&address),
+                None,
+                None,
+                registry,
+                fjord_server::server::Shutdown::Never,
+            );
         });
     }
 

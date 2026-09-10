@@ -342,6 +342,20 @@ impl Catalog {
         Ok(Catalog { root })
     }
 
+    /// A store root to **read**, whether or not it exists yet.
+    ///
+    /// [`open`](Catalog::open) creates the directory, which is right for the commands
+    /// that are about to write to it and wrong for the ones that are only looking:
+    /// `fjord list` against a path nobody has served answers "no databases" and must
+    /// leave nothing behind to prove it was asked. Reading takes no ownership either
+    /// way (`ops-I7`), so there is nothing for this to set up.
+    #[must_use]
+    pub fn read_only(root: impl AsRef<Path>) -> Catalog {
+        Catalog {
+            root: root.as_ref().to_path_buf(),
+        }
+    }
+
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
@@ -543,10 +557,21 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// [`CatalogError::BadDatabaseName`], or whatever
-    /// the store or the sidecar reports. On any of them nothing is left behind.
+    /// [`CatalogError::BadDatabaseName`], [`CatalogError::SchemaDeclaresNothing`], or
+    /// whatever the store or the sidecar reports. On any of them nothing is left behind.
     pub fn create(&self, name: &str, schema: &Schema) -> Result<Entry, CatalogError> {
         check_name(name)?;
+
+        // **The one door both paths go through, which is why the rule is here.** The
+        // same rule stated as a check on a *request field* — an empty `schema` string —
+        // refuses a legitimately empty schema file over the wire while letting the
+        // identical `create` through against the directory, and nothing above can see
+        // that the two answers differ.
+        if schema.is_empty() {
+            return Err(CatalogError::SchemaDeclaresNothing {
+                name: name.to_owned(),
+            });
+        }
 
         // **Derived here rather than passed in.** A caller handing over both a schema
         // and a number could hand over two that disagree, and the sidecar would then
@@ -848,11 +873,22 @@ impl Catalog {
         Ok(())
     }
 
+    /// The entries under `path`, or none if there is no such directory.
+    ///
+    /// **Absent is empty, not an error.** A [`read_only`](Catalog::read_only) catalog
+    /// may name a root nothing has created yet; failing here, or creating the directory
+    /// so as not to fail, both turn a question into a write.
     fn read_dir(&self, path: &Path) -> Result<Vec<fs::DirEntry>, CatalogError> {
-        let listing = fs::read_dir(path).map_err(|source| CatalogError::Meta {
-            path: path.to_path_buf(),
-            detail: format!("cannot list: {source}"),
-        })?;
+        let listing = match fs::read_dir(path) {
+            Ok(listing) => listing,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(CatalogError::Meta {
+                    path: path.to_path_buf(),
+                    detail: format!("cannot list: {source}"),
+                });
+            }
+        };
 
         listing
             .map(|entry| {

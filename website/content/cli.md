@@ -192,6 +192,11 @@ The schema is resolved (imports and all), canonicalised, fingerprinted and **emb
 frozen for the database's lifetime, so this is the one moment it can be chosen. Every
 predicate's storage trees are materialised up front from the schema.
 
+**A schema that declares no predicates is refused**, at the catalog and therefore at both doors —
+an empty entry file, or one that is all comments, resolves and lowers perfectly well and would
+make a database nothing could ever be written to. `fjord schema check` warns about the same thing
+one step earlier.
+
 The directory is `<root>/<name>/<instance>/`, where the instance is a ULID. Content identity does
 not exist yet — it hashes the base facts, so it can only be computed at `finish`.
 
@@ -235,6 +240,10 @@ code  01M0BNMTQ3RWQFMM755NV1MWA3  complete  b08eea634e86  f2c2e86612f5  5200   8
 Walks the store root and reads **sidecars only** — it never opens the storage engine, so it works
 while a server holds every database under the root. There is no manifest: the filesystem is the
 catalog, and any index would be rebuildable and never authoritative.
+
+**And it creates nothing.** A store root that does not exist holds no databases and is left not
+existing; `describe` takes the same read-only door. Only the commands that write make the
+directory.
 
 ## `fjord describe <name>`
 
@@ -319,6 +328,9 @@ fjord --data-dir ./db db rm scratch -y
 
 Routed through the server if it holds the database (the server closes and deletes); offline, it
 requires the lock to be free.
+
+**`-y`/`--yes` is required, and this command never prompts.** Without it nothing is deleted and
+the command **fails** — a refusal that exited 0 is one a script reads as a delete that happened.
 
 ## Exit codes and errors
 
