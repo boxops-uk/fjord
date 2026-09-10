@@ -5,6 +5,235 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## 0.3.0 — 2026-09-10
+
+**Breaking on the wire: `codemarkup.SymbolInfo` gained three fields, so the schema
+fingerprint moved.** A client built against `0.2.0` is refused at the handshake and a database
+written by it is keyed against a schema this does not serve. Rebuild the clients and recreate
+the indexes; `0.x` promises no format stability across minor versions.
+
+The round's shape: a **code browser over a real index**, answering in the page through the same
+executor the playground uses — which took a way for a database to travel to somewhere that
+cannot write facts (`fjord export`, and a store image), the browser's per-token questions
+answered in Rust rather than across a JSON boundary, and three defects in the indexer that
+produced plausible-looking output rather than failing. Then a **black-box pass over the
+command-line tool** by someone with the binary and no documentation: two of what it found were
+defects that answered wrongly rather than failing — a refused delete that exited 0, and an
+empty schema that built a database against the directory and was refused over the socket.
+
+### `codemarkup.SymbolInfo` describes a symbol this index does not declare · **rebuild your clients, recreate your databases**
+
+`SymbolInfo` is keyed `{symbol}` and nothing else, which is what lets it answer for
+`System.IDisposable`: `Definition` is keyed `{symbol, file}` and cannot, because there is no
+file to key it by. A producer that meets a reference to something outside its compilation
+still has the compiler's answer for it, so `qualified`, `package` and `kind` join `signature`,
+`doc` and `modifiers` in the value.
+
+They are **appended**. A record's field order is its encoding order, so a field added anywhere
+else renumbers every one after it for no reason a reader of the schema would see. `qualified`
+and `kind` restate `Definition`'s rather than joining to them, for the reason the predicate
+exists: the join has no row on the side that needs it most, and a signature says what a thing
+is *called*, not what it *is*.
+
+### A code browser over a real index, beside the playground
+
+The demo database is twelve facts written in Rust. This is the other kind — a C# checkout
+walked by Roslyn, twenty thousand rows against `schemas/dotnet.sigla`, answering in the page
+through the same executor. A file tree, source with the compiler's own highlighting, an
+outline, find-references, prefix search, and clicking a name to follow it.
+
+It is built out of the design system rather than beside it: `CodeBlock` takes the decoded runs
+through its `tokenizer` prop, so Roslyn's classifier drives an Astryx syntax theme and no
+regular expression's idea of C# gets between them. Where you are — the file, the directory, the
+symbol a pane is about, the byte a jump landed on — **is the URL** rather than React state
+mirrored into it, so Back undoes a jump, a reload stays put, and a deep link arrives with its
+path already open. The search term deliberately stays out: a filter is not a place, and a
+history entry per keystroke is a Back button that walks a word backwards.
+
+It sits in the reading order beside the playground because the two are the same claim asked
+twice — the engine answering for a query, and the engine answering for a repository.
+
+### `fjord export` writes a store image, and a page reads one
+
+Nothing compiled to WebAssembly can intern a fact: `fjord-ingest` depends on the fjall backend
+by name, because interning claims ids durably and writes through a batch. So a corpus cannot be
+assembled in a page — and does not need to be. Ids are assigned once, and a database indexed
+offline already holds the answer; what travels is the answer.
+
+`fjord_store_mem::dump` is the model store's own shape written down — predicate, key, sequence,
+value, one record each, writer and reader in one file so the format is stated once. `fjord
+export` writes it from a real database, scanning **one reader** so an image cannot hold rows
+from two states, and keyed against the **embedded** schema for the reason `finish` refuses a
+passed one: a predicate is looked up by position, so any other schema records every row under
+whatever type sits there, silently. `fjord_inspect::corpus` reads it back, and the fingerprint
+check is the point rather than a formality — a mismatch names both numbers and leaves nothing
+loaded.
+
+`MemStore` gains a cheap `Clone`: `Executor::new` takes its store by value, and both maps sit
+behind an `Arc`, so a query costs two refcount bumps instead of a deep copy of twenty thousand
+rows. Measured on `Boxops.Fjord.Client` — 12 files, 2,536 lines: 20,817 rows, 910,284 bytes,
+224,443 gzipped.
+
+### The code browser's questions are answered in Rust, and the boundary is typed
+
+A browser does per-token work on every line it draws, and answering it with a JSON string means
+parsing a document to reach numbers the engine already had. `fjord_inspect::codeview` moves
+that work behind the boundary: `decode_styles` turns a `src.FileLineStyles` payload into flat
+runs — resolving `roslyn-lsp-1`'s per-line deltas, and reading `scip-syntax-1`'s absolute
+starts as the absolute starts they are, which is the one mistake that produces plausible-looking
+output — and the questions a browser asks on top of it: a directory's children, a file's blob,
+its outline, its cross-references local and global, a symbol's definitions, uses and card, and
+a prefix search.
+
+A run carries its **legend index, not a class name**: the schema defines nothing about the
+payload's meaning, so mapping index to colour is the page's, a table lookup rather than
+decoding. Runs come back as a `Uint32Array`, four numbers each — one allocation instead of one
+per run — and a file's cross-references as two `Int32Array`s read once and memoised, because a
+getter returning a `Vec` copies it out of linear memory on every read.
+
+Measured against the real corpus through the built module: load 72 ms, open a 790-line file
+9 ms, draw a 50-line window with 263 runs 0.57 ms, outline 1.2 ms, find-references 0.44 ms,
+prefix search 0.64 ms.
+
+### The .NET indexer never wrote `style-encoding`, so `--styles` drew plain · **re-index anything built with `--styles`**
+
+`SemanticTokens.Encoding` is documented as what `config.Setting {dimension = "style-encoding"}`
+carries, and the .NET indexer never wrote it — only `scip2fjord` did. The schema says an
+unrecognised encoding renders plain, so `--styles` produced highlighting no consumer could
+identify and every file drew uncoloured, exactly as though no highlighter had run.
+
+The constant was asserted only against its own value, which is a test that passes whether or
+not anything writes it. It is written when styles are, refused when they are not, and both
+directions have a test.
+
+### A reference assembly's doc comments are a separate file, and Roslyn does not go looking
+
+`GetDocumentationCommentXml` answers a metadata symbol through the reference's
+`DocumentationProvider`, and a `PortableExecutableReference` built without one has
+`DocumentationProvider.Default` — which answers nothing, for every symbol, silently. The XML
+ships beside the assembly in the targeting pack, so this is a matter of pointing at it.
+
+Descriptions are deduplicated by SCIP id rather than by `ISymbol`: `IReadOnlyList<FjordFact>`
+and `IReadOnlyList<byte>` are two symbols and one id, and offering ingest one key with two
+values is refused by `ops-I4` part-way through the write stream.
+
+### The index root is the repository, and a directory is a prefix of a path · **re-index**
+
+`src.File` is relative to the index root, so "what is directly under `clients/dotnet/`" is a
+prefix seek on the leading field of the key, cut at its next `/`. A tree that opens one level at
+a time asks once per level, which is what keeps a browser over a million-file index from
+reading a million paths to draw twelve rows.
+
+Indexed the old way every `src.File` is a bare filename and a checkout looks one folder deep,
+which is why this is a re-index rather than a rendering change.
+
+### The build layer carries a project file's text
+
+A `.csproj`'s text says what somebody wrote; `msbuild` says what the build made of it — the
+framework a `<TargetFramework>` resolved to, the version a floating `<PackageReference>` landed
+on, the graph edges a path string only implies. A viewer showing one without the other shows
+half the file, and the walk only read text for documents Roslyn compiles, so opening a project
+file showed a file with no lines.
+
+It renders plain: this producer has no XML classifier, and inventing one here would be a second
+highlighter to keep in step with nothing.
+
+### The browser's checks are built in CI, and had never run
+
+`web/public/corpus/` is not in the tree — a binary in git is a binary somebody has to trust —
+and no job built one, so `site` reached the first code-browser check in `web/smoke.mjs` and
+timed out waiting for a listing of an index nobody had made. Four checks that read as coverage
+were reporting on nothing.
+
+`test` is the one job that already has both halves of what building a corpus costs: the .NET
+SDK it installs for the indexer suite, and the release `fjord` it builds for the same reason.
+It builds the corpus there and uploads it; `site` downloads it into the path the page fetches
+from, and waits on `test` now. The two no longer overlap, which is a real cost, and it buys
+those checks the only thing that makes them checks. Indexing the client takes about forty
+seconds.
+
+The pair is named for what it is. Naming the files after the world the index is written into
+put the composed schema under a filename this tree retired along with the schema that owned
+it — which `scripts/check-docs.py` holds in `RETIRED_NAMES` precisely so the collision fails a
+gate rather than quietly misleading a reader into placing a generated file as a deleted one.
+They are `corpus.fjmem` and `corpus.sigla`.
+
+### `db rm` refusing to delete is a failure · **check any script that runs it**
+
+Without `--yes` the tool printed `refusing to delete …`, deleted nothing, and exited **0**, so
+`fjord db rm x && echo gone` printed `gone` over a database that was still there. The sentence
+was never the part a script reads. It is now a `CliError` like every other refusal and exits 1,
+and the message says what to pass.
+
+The flag's own help was wrong in the other direction: it said "Do not ask", and the command has
+never asked. It never prompts, `--yes` is required every time, and the help says so.
+
+### A schema declaring no predicates is refused at both doors, not one
+
+An empty entry file — or one that is nothing but comments — resolves, lowers and fingerprints
+perfectly well. `create` took it against the store directory and refused it over the socket,
+so the same command with the same file gave two answers depending on whether a server was
+listening.
+
+The server was checking the wrong thing: an empty `schema` **request field**, which is what a
+client sending no schema at all looks like, and which a legitimately empty schema is
+indistinguishable from. The rule now lives in `Catalog::create`, which both doors go through,
+and is about what the schema *declares* — so the refusal, and its wording, are the same either
+way. `fjord schema check` warns about it one step earlier, where a resolution that brought back
+nothing otherwise reads as a success.
+
+### `fjord list` and `fjord describe` create nothing
+
+Both opened the store root the way a writer does, so `fjord list` against a fresh `--data-dir`
+answered "no databases" and left the directory behind to prove it had been asked — under
+`$XDG_DATA_HOME` by default, where a mistyped path leaves a directory nobody looks in again.
+Reading takes no ownership (`ops-I7`) and now takes no filesystem either: a root that does not
+exist holds no databases and stays not existing. The commands that write still make it.
+
+### A stopped server takes its socket and its readiness file with it
+
+`SIGTERM` is how an init system stops a process and its default action is to die, so both files
+outlived the server that published them. A stale socket was merely untidy — a client that finds
+one is refused by the connect and reads it as "no server" — but a readiness file exists to be
+believed, and a health check that reads it and nothing else reported a server that was gone.
+
+`SIGINT` and `SIGTERM` are handled now, and stopping drops the listener that owns both files.
+`SIGKILL` still leaves them, which is why the stale-socket reading stays.
+
+Signal handling is an argument rather than something the server crate does on its own:
+`tokio::signal` replaces a disposition process-wide, and two test harnesses embed `serve_on`,
+so installing handlers unasked would take Ctrl-C away from `cargo test`. `fjord serve` passes
+`Shutdown::OnSignal`; a caller composing a server into a process it does not own passes
+`Shutdown::Never`.
+
+### `--help` is written for someone who has only the binary
+
+Every doc comment in the command tree is rendered into a terminal by clap, and they had been
+written as rustdoc: Markdown emphasis, rustdoc links like ``[`crate::config`]``, invariant
+labels like `ops-I10`, a relative path to `PLAN.md`, and internal type names. None of it
+resolves to anything for the person reading it, which is the only person who sees it.
+
+The tree is product copy now, and a guard renders `-h` and `--help` for every command and
+refuses those markers by name, so a design note added to that file fails a test instead of
+reaching a release. Two more guards came with it: every argument must say what it is — several
+positionals printed as a bare `<NAME>` — and the root help must keep the line naming the
+documentation and the one naming the gap where an import command would be, which is what a new
+user goes looking for first.
+
+### `fjord export` and `fjord describe` each say what they do
+
+`Export` arrived carrying `Describe`'s summary line, so `fjord export --help` said "Show a
+database's metadata and schema" and `fjord describe --help` said nothing at all. Both are their
+own now, and `export`'s help states up front that it reads the store directly and needs a data
+directory no server is holding — which was otherwise discovered by hitting the refusal.
+
+### A `./fjord.json` that fails says where it came from
+
+The file is read because it is in the working directory, which is deliberate and documented,
+but a broken one stopped an ordinary `fjord list` with a failure naming a file that is nowhere
+on the command line. The refusal now accounts for itself and names `--config` as the way to
+choose another. One the caller *named* is unchanged: nobody needs telling where that came from.
+
 ## 0.2.0 — 2026-09-06
 
 **Breaking on both sides of the wire, and on disk.** The protocol is 4, the shipped schemas
