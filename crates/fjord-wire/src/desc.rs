@@ -301,12 +301,18 @@ fn take_name(bytes: &[u8], at: &mut usize) -> Result<String, WireError> {
     Ok(name)
 }
 
-#[cfg(test)]
-mod tests {
+/// The canonical strategy for a descriptor.
+///
+/// Lifted out of this module's own tests when a second battery needed it: a strategy
+/// restated beside its second consumer is two populations that drift, and a descriptor
+/// is exactly the shape where one of them would quietly stop drawing unions.
+#[cfg(any(test, feature = "proptest"))]
+pub mod proptest {
     use super::*;
     use ::proptest::prelude::*;
 
-    fn arb_desc() -> impl Strategy<Value = Desc> {
+    /// A descriptor, three levels deep, drawing every case the tag table has.
+    pub fn arb_desc() -> impl Strategy<Value = Desc> {
         let leaf = prop_oneof![
             Just(Desc::Int),
             Just(Desc::Str),
@@ -344,6 +350,12 @@ mod tests {
             ]
         })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{proptest::arb_desc, *};
+    use ::proptest::prelude::*;
 
     #[test]
     fn a_scalar_descriptor_is_one_byte() {

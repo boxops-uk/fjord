@@ -50,6 +50,15 @@ pub enum WireError {
     #[error("unknown reference form {0}")]
     UnknownRefForm(u64),
 
+    /// A chain of nested references deeper than a peer is allowed to send.
+    ///
+    /// **A refusal in place of a stack overflow.** Decoding follows a peer's nesting
+    /// with the decoder's own recursion, and a schema whose reference graph cycles puts
+    /// the depth in the peer's hands — twenty kilobytes of it aborted the whole server
+    /// process. See [`crate::value::MAX_NESTED_DEPTH`] for where the number comes from.
+    #[error("a chain of nested references deeper than {max} — send a reference by id instead")]
+    TooDeep { max: usize },
+
     /// A union value tagged with a discriminant the schema declares no alternative
     /// for — which is what a peer built against a different schema looks like from
     /// here.

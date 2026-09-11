@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Index a checkout, export it as a store image, and put it where the site can fetch it.
+# Index a checkout, export it as JSONL, and put it where the site can fetch it.
 #
 #   ./scripts/build-corpus.sh [path-to-project-or-solution] [out-dir]
 #
@@ -11,12 +11,17 @@
 #
 #   index    a real compiler walks real source — Buildalyzer and Roslyn, `--styles`
 #            for the highlighting, into a real database through a real server
-#   finish   sealing is what computes the content identity; an image of a database
-#            still being written is an image of a moment nobody can name
-#   export   every row with the id it already has, because nothing in a browser can
-#            intern a fact (`fjord export`, and `fjord_store_mem::dump`)
-#   compose  the schema the image is keyed against, resolved through its imports —
-#            the page states it and the load refuses a mismatch
+#   finish   sealing is what computes the content identity; an export of a database
+#            still being written is a moment nobody can name
+#   export   every fact as JSONL — the portable format, which a browser can load
+#            because a reference only ever names an earlier line. `--compact` because
+#            nothing reads this by hand: it is the cheaper export, and a predicate at a
+#            time is how the loader walks it anyway
+#   compose  the schema the export is read against, resolved through its imports — the
+#            page states it, and a predicate or field it does not declare is refused
+#   back     the export written into a database of its own, whose content identity must
+#            be the one it came from — the round trip, over the only artifact anybody
+#            actually ships
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,7 +56,11 @@ done
 fjord="$root/target/release/fjord"
 
 echo "==> sealing code#$framework"
-"$fjord" --data-dir "$scratch/db" finish "code#$framework"
+sealed=$("$fjord" --data-dir "$scratch/db" finish "code#$framework")
+echo "$sealed"
+
+# The number the round trip below has to arrive back at.
+identity="${sealed##*identity }"
 
 mkdir -p "$out"
 
@@ -62,12 +71,47 @@ mkdir -p "$out"
 # a glance. `scripts/check-docs.py` holds the retired names, so that collision is a
 # failed gate rather than a slow misunderstanding.
 echo "==> exporting"
-"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/corpus.fjmem"
+"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/corpus.jsonl" --compact
 
 echo "==> composing the schema"
 "$fjord" --schema-path "$root/schemas" schema compose "$root/schemas/dotnet.sigla" \
     > "$out/corpus.sigla"
 
-image=$(wc -c < "$out/corpus.fjmem")
-packed=$(gzip -9 -c "$out/corpus.fjmem" | wc -c)
-echo "==> $out/corpus.fjmem: $image bytes ($packed gzipped)"
+# **The round trip, on the real artifact.** The batteries put generated documents and a
+# hand-written fixture through the format; this puts the thing that ships through it —
+# twenty-four thousand facts a compiler wrote, unions carrying references, predicates
+# that name each other, a styles payload in `bytes`. A format nobody can write back is
+# not portable, and the only honest check of that is the whole file.
+#
+# Asserted on the content identity, which is a multiset hash over each fact's *logical*
+# form: every id differs on the way back, and if that were all that differed the numbers
+# still match. If they do not, the export lost something.
+echo "==> writing it back"
+"$fjord" --data-dir "$scratch/db" create back --schema "$out/corpus.sigla" > /dev/null
+
+"$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/back.ready" >> "$scratch.log" 2>&1 &
+server=$!
+trap 'kill "$server" 2>/dev/null || true' EXIT
+for _ in $(seq 1 300); do
+    [ -f "$scratch/back.ready" ] && break
+    sleep 0.1
+done
+
+"$fjord" --data-dir "$scratch/db" write back "$out/corpus.jsonl" > /dev/null
+
+kill "$server" 2>/dev/null || true
+wait "$server" 2>/dev/null || true
+trap - EXIT
+
+resealed=$("$fjord" --data-dir "$scratch/db" finish back)
+back="${resealed##*identity }"
+
+if [ "$identity" != "$back" ]; then
+    echo "the round trip changed the database: $identity going out, $back coming back" >&2
+    exit 1
+fi
+echo "==> round trip holds: $identity"
+
+raw=$(wc -c < "$out/corpus.jsonl")
+packed=$(gzip -9 -c "$out/corpus.jsonl" | wc -c)
+echo "==> $out/corpus.jsonl: $raw bytes ($packed gzipped)"

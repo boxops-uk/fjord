@@ -5,6 +5,149 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## Unreleased
+
+### The .NET indexer learns its shapes from the server
+
+A run that connects now asks. `Connect` opens one session asserting nothing, calls
+`SchemaTypes`, renumbers the answer into this client's ids, and opens every writer with
+that — so a schema edit no longer refuses the indexer at the handshake, and no longer
+needs a client rebuild. It prints what it learned:
+
+    schema learned from the server: 65 predicate(s), 4471c3f35a45b7da
+
+**Renumbered, because a reference carries an id and an id belongs to a numbering.**
+`src.File` is predicate 0 in this client's list and 56 in the server's, and both are
+right — a block header carries the predicate's *name*, which is what the two sides share.
+`DotnetIndex.From` rewrites every `Fact` inside a key to the position this client keeps
+that predicate at; without it a nested reference would resolve to a different predicate
+entirely. Predicates the server serves and this client does not write — the virtuals
+among them — are left out, because a client may declare only what it writes.
+
+**The hand-written type tree is still there, and is now checked rather than trusted.**
+It could not simply be deleted: `--dry-run` encodes facts and connects to nothing, and
+several tests encode with no server at all, so the client needs shapes offline. What
+changed is that the declaration can no longer go stale silently —
+`The_renumbered_wire_schema_is_the_hand_written_one` compares what the server says
+against what the client states, predicate for predicate, field for field and reference
+for reference, and fails naming the predicate that moved. A run with a connection uses
+the server's answer regardless of what the declaration says.
+
+Deleting the declaration outright needs an offline source of types — descriptors emitted
+to a file by the CLI, cached and loaded by the client — which is the "may a fetched
+schema be cached" question the design left open.
+
+### `fjord write` takes JSONL, and the file-splitting design is gone
+
+**The simple way in, and deliberately not the fast one.** One JSON object per line:
+
+    {"id": "1", "predicate": "src.File", "fact": "store/keys.py"}
+    {"id": 2, "predicate": "src.Decl", "fact": {"file": "1", "name": "put", "line": 12}}
+    {"predicate": "src.Digest", "fact": {"file": "1"}, "value": {"sha256": "…"}}
+
+`id` names a fact **within the file** and nothing else — not the id the database will give
+it, and re-reading into a fresh database renumbers everything. That costs nothing:
+`ops-I4`'s content identity is a multiset hash over each fact's *logical* form, so a
+renumbered copy of a database is the same database.
+
+A reference carries the id of a fact written **earlier in the file**, and a forward
+reference is refused rather than held over. Refusing is what makes a reader one forward
+pass: nothing is buffered waiting for a target, and a cycle cannot be expressed. Every
+refusal names the file, the line and the field — `bad.jsonl:3: fact.file: `d` is a
+`demo.Decl`, and a `demo.File` is declared here`.
+
+This is not the path an indexer should take. A producer writing at volume speaks the wire
+protocol through a client library, where a fact is encoded once and a block carries
+hundreds; this is for a person or an agent writing a few facts by hand.
+
+**What went with it is the file-splitting design.** `find_sync`, `find_block` and `Scan`
+are deleted — 133 lines of scanner, 215 lines of tests for it, and the module doc arguing
+about false candidates and crafted checksums inside blobs. None of it had a production
+caller. It also takes with it a question the design could never answer: a damaged block
+and a false candidate are the same bytes to a scan, so resuming past one means resuming
+past the other, and a corruption `decode_block` would have reported becomes a file that
+quietly holds fewer facts.
+
+**The sync marker stays**, because it is on the wire: every `CopyData` payload carries one
+and two client implementations write it. It is a check rather than an index now —
+`decode_header` refuses bytes that do not begin with it — and a run of blocks is walked by
+the lengths the headers declare, which is exact where a scan was a guess.
+
+### A write can say what each fact was called · `I`/`i`
+
+`OPEN_WRITE_IDS` opens a write stream that reports the ids it minted, in an `IDS` frame
+just before the completion — `QUERY_PROFILE`/`PROFILE`'s shape exactly, and additive for
+the same reason: a client that opens with `W` neither sends `I` nor receives `i`, so no
+protocol bump and an indexer writing millions of facts pays nothing.
+
+**What it is for is a client interning a little of it itself.** A reference on the way in
+may be the whole target fact, which is what lets a producer keep no book of what it has
+sent. That is right until one target is referenced ten thousand times and the producer is
+re-sending the same bytes to be looked up and thrown away each time. Knowing the id lets it
+send that target once and reference it by id thereafter.
+
+The ids are the **top-level** facts in the order they were sent; a nested target is
+referenced rather than ingested in its own right and does not appear. A deduplicated fact
+still has one — the id it already had, which is the answer a caller caching it wants.
+`intern_block` was already collecting all of this and the server was discarding it.
+
+`fjord write` uses it, and the effect is measurable: 25,000 declarations referencing one
+file, across three batches, report **9,999** deduplications rather than 25,000. The first
+batch inlines the target because it has no id yet; the rest reference it by id and
+deduplicate nothing.
+
+### A client can ask what shape a predicate is · `Y`/`y`
+
+**The encoding existed, both ends implemented it, and nothing asked the question it
+answered.** `fjord schema compose` (0.2.0) solved *resolution* — imports inlined, so a server
+needs none of the caller's filesystem. It did not solve *shape*: the transport codec sends no
+field names, no type markers and no record arities, so a fact's values go on the wire
+**positionally against the predicate's declared type**, and a record's field order is part of
+its encoding. A client therefore needed each predicate's type tree before it could write a
+byte, and a composed schema is sigla source, which a client without a parser cannot read.
+
+Two new frames answer it. `Y` asks; `y` replies with every predicate this session can name —
+its id, its fully-qualified name, whether it is virtual, its key as a descriptor and its value
+as an optional one. `SCHEMA`/`h` still answers source and still should: a person diffing two
+schemas wants sigla, not a tag tree.
+
+**It is small because the descriptor was already the answer, pointed the other way.**
+`fjord-wire`'s `Desc` is the same cases as a predicate's type with record fields and union
+alternatives carrying their names as text, and it is already sent once per query stream as `T`
+because a query's head is a record no predicate declares. The .NET client already decoded it.
+So the format was designed, the encoder built, and a second implementation of the decoder
+shipped and exercised on every query — what was missing is only that a descriptor was
+available for a query's *rows* and not for a predicate's *key*.
+
+`Connection::served_types` is the Rust side; `FjordConnection.SchemaTypes` is the .NET side and
+returns a `FjordSchema`, so everything downstream of it works unchanged. A producer's shape is
+now: connect asserting nothing, ask, and write against the answer.
+
+**No protocol bump.** A client that has never heard of these neither sends `Y` nor receives
+`y`, which is what additive has to mean if the version is to stay where it is.
+
+**What it is for is deleting client code.** `Boxops.Fjord.Indexer/DotnetIndex.cs` restates
+`schemas/dotnet.sigla`'s 65 predicates in 233 `FjordType.` constructions across 1,104 lines,
+and `Blocks.cs` keeps a predicate id table in step beside it by hand. A new test asserts the
+derived schema agrees with that transcription predicate for predicate and field for field, so
+the transcription can now go — which is a separate change, and the reason this one lands
+first.
+
+**A schema edit stops being a client rebuild**, which is the point. A client that derives its
+types and builds records **by field name** does not care that a schema reordered its fields or
+added one it does not write. What it cannot derive is whether its own *program* was written
+for this version, and the protocol already carries that question separately: a startup frame's
+per-predicate claims are subset containment, and a producer that wants the early refusal can
+still make one.
+
+**Two things the reply makes visible that a hand-written schema cannot.** Virtual predicates
+are included and *marked* — a schema written by hand describes only what its author writes to,
+so it has no row for `fjord.db.List` and no way to know a write naming one would be refused.
+And a reference's id is the *server's* numbering: predicates arrive in id order so a schema
+learned this way has positions matching, but a client comparing a derived schema against a
+hand-written one has to resolve both sides' references to names first. `src.File` is predicate
+0 in the .NET client's own list and 56 in the server's, and both are right.
+
 ## 0.3.0 — 2026-09-10
 
 **Breaking on the wire: `codemarkup.SymbolInfo` gained three fields, so the schema

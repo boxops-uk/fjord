@@ -34,6 +34,20 @@ pub enum IngestError {
         detail: &'static str,
     },
 
+    /// Bytes the codec refused to make — an over-long key above all, which is a
+    /// well-formed fact the storage layer cannot hold.
+    ///
+    /// **Separate from [`IngestError::TypeMismatch`], which is where it used to land,
+    /// and the difference is what a producer does about it.** A type mismatch says the
+    /// fact is the wrong shape; this says the shape is right and the fact is too big, so
+    /// the codec's own sentence is carried rather than replaced by a guess.
+    #[error("{what} could not be encoded: {why}")]
+    Codec {
+        what: &'static str,
+        #[source]
+        why: fjord_encoding::error::StoreCodecError,
+    },
+
     /// The same key already holds a **different** fact — `ops-I5`'s reject, and the
     /// one an interned nested fact can raise by disagreeing with a target that is
     /// already stored.
@@ -58,6 +72,7 @@ impl IngestError {
             IngestError::Wire(_)
             | IngestError::UnknownPredicate(_)
             | IngestError::TypeMismatch { .. }
+            | IngestError::Codec { .. }
             | IngestError::Conflict { .. } => true,
             IngestError::Store(_) => false,
         }

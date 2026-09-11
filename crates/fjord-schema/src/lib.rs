@@ -24,6 +24,7 @@ pub use lasso;
 
 pub mod fingerprint;
 pub mod id;
+pub mod refs;
 pub mod schema;
 pub mod syntax;
 

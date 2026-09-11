@@ -1,23 +1,24 @@
-//! **A real code index in the page** — an image loaded once, queried many times.
+//! **A real code index in the page** — an export loaded once, queried many times.
 //!
 //! [`crate::demo`] is a database *written* in Rust: twelve facts chosen to show
 //! every construct the type model holds. This is the other kind — a database
-//! **indexed** from real source by a real compiler, exported as a store image by
+//! **indexed** from real source by a real compiler, written out as JSONL by
 //! `fjord export`, and fetched as a static asset. The engine cannot tell them
 //! apart, which is the point: the same executor, the same plan, the same profile.
 //!
 //! **Loaded rather than built, because a browser cannot intern a fact.**
 //! `fjord-ingest` reaches the fjall backend by name, so the write funnel is not in
-//! a WebAssembly build at all. An image carries rows with the ids they were already
-//! given, and [`fjord_store_mem::dump::read`] puts them back — no interning, no
-//! backend, no lifecycle.
+//! a WebAssembly build at all. A JSONL export needs no funnel: its references only
+//! ever name earlier lines, so [`crate::jsonl::read`] counts a sequence per
+//! predicate as it goes — no interning, no backend, no lifecycle.
 //!
-//! **The fingerprint is checked here, and refusing is the whole point.** An image
-//! is bytes keyed against one schema; read against another, every row decodes as
-//! whatever type sits at that position — silently, and wrongly. That is the failure
-//! a client's handshake exists to catch, and this is the same check in the same
-//! spirit: the number travels with the image, the page states the schema, and a
-//! mismatch is a refusal that names both numbers rather than a page of nonsense.
+//! **Nothing in the file says which schema it was written against, and the risk that
+//! leaves is a narrow one.** A predicate or a field the page's schema does not declare
+//! is refused by name on the line that uses it, which is most of a mismatch. What gets
+//! through is a field that kept its name and changed its *type*, or an alternative
+//! renumbered under the same name — decoded as whatever the page now says, silently.
+//! The fingerprint is reported so a reader can see which schema answered; it is not a
+//! check, because there is no second number to check it against.
 //!
 //! **State, deliberately, and thread-local.** Everything else in this crate is a
 //! function of its arguments. A corpus is not: it is megabytes that must not be
@@ -28,7 +29,7 @@
 use std::cell::RefCell;
 
 use fjord_schema::{fingerprint, schema::Schema};
-use fjord_store_mem::{MemStore, dump};
+use fjord_store_mem::MemStore;
 use serde::Serialize;
 
 use crate::{rows::Rows, schema::compile as compile_schema, view::DiagnosticView};
@@ -60,13 +61,24 @@ pub struct Loaded {
     pub diagnostics: Vec<DiagnosticView>,
 }
 
-/// Load `image` as the page's corpus, keyed against `schema_source`.
+/// Load `text` as the page's corpus — the **portable format**, keyed against
+/// `schema_source`.
 ///
-/// Replaces whatever was loaded before. A failure leaves **nothing** loaded rather
-/// than the previous corpus: a page that fetched a new asset and got a refusal
-/// should not go on answering from the old one as though it had succeeded.
+/// Replaces whatever was loaded before. A failure leaves **nothing** loaded rather than
+/// the previous corpus: a page that fetched a new asset and got a refusal should not go
+/// on answering from the old one as though it had succeeded.
+///
+/// **The ids are this load's own.** A line's `id` names a fact within the file, and the
+/// sequence a fact gets here is the next one for its predicate — so the numbering differs
+/// from the database the file came from. `ops-I4`'s content identity is a multiset hash
+/// over each fact's logical form, so the loaded copy is the same database.
+///
+/// **A wrong schema is caught by name, not up front.** Nothing in the file identifies
+/// the schema it was written against, so the refusal comes on the first line naming a
+/// predicate or a field this one does not declare — late, and only for a mismatch that
+/// changes a name.
 #[must_use]
-pub fn load(image: &[u8], schema_source: &str) -> Loaded {
+pub fn load_jsonl(text: &str, schema_source: &str) -> Loaded {
     LOADED.with_borrow_mut(|slot| *slot = None);
 
     let (schema, diagnostics) = compile_schema(schema_source);
@@ -75,43 +87,36 @@ pub fn load(image: &[u8], schema_source: &str) -> Loaded {
         return refused("the schema this page states does not compile", diagnostics);
     };
 
-    let read = match dump::read(image) {
-        Ok(image) => image,
-        Err(problem) => return refused(&problem.to_string(), diagnostics),
+    let read = match crate::jsonl::read(text, &schema) {
+        Ok(read) => read,
+        Err(problem) => return refused(&problem, diagnostics),
     };
 
-    let stated = fingerprint::of(&schema);
-
-    if read.fingerprint != stated {
-        return refused(
-            &format!(
-                "this image was written against schema {:#018x} and the page states \
-                 {stated:#018x} — every row would decode against the wrong predicate",
-                read.fingerprint
-            ),
-            diagnostics,
-        );
-    }
-
-    // Counted once, here, rather than by scanning on every question about it.
-    let rows = image_rows(&read.store, &schema);
+    let fingerprint = fingerprint::of(&schema);
+    let rows = read.facts;
 
     LOADED.with_borrow_mut(|slot| {
         *slot = Some(Corpus {
             schema,
             store: read.store,
             rows,
-            fingerprint: stated,
+            fingerprint,
         });
     });
 
     Loaded {
         ok: true,
         rows,
-        fingerprint: Some(format!("{stated:#018x}")),
+        fingerprint: Some(format!("{fingerprint:#018x}")),
         problem: None,
         diagnostics,
     }
+}
+
+/// [`load_jsonl`], as the JSON a page reads.
+#[must_use]
+pub fn load_jsonl_json(text: &str, schema_source: &str) -> String {
+    serde_json::to_string(&load_jsonl(text, schema_source)).unwrap_or_default()
 }
 
 /// What is loaded, without loading anything — for a page restoring its own state.
@@ -187,12 +192,6 @@ pub fn rows_json(query: &str) -> String {
     serde_json::to_string(&rows(query)).expect("a rows view serialises")
 }
 
-/// The same, for [`load`] and [`loaded`].
-#[must_use]
-pub fn load_json(image: &[u8], schema_source: &str) -> String {
-    serde_json::to_string(&load(image, schema_source)).expect("a load view serialises")
-}
-
 /// The same, for [`loaded`].
 #[must_use]
 pub fn loaded_json() -> String {
@@ -209,71 +208,62 @@ fn refused(problem: &str, diagnostics: Vec<DiagnosticView>) -> Loaded {
     }
 }
 
-/// How many rows the store holds, counted by walking it once at load.
-fn image_rows(store: &MemStore, schema: &Schema) -> usize {
-    dump::rows_of(store, u32::try_from(schema.len()).unwrap_or(u32::MAX))
-        .map(|rows| rows.len())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
-    use fjord_store_mem::dump::OwnedRow;
-
     use super::*;
 
     /// **Tests hold their own corpus.** The slot is a thread local and the harness
     /// runs each test on its own thread, so a load here is invisible to every other
     /// test — which is what lets these run in parallel while sharing a name for the
     /// thing they load.
-    fn image_of_the_demo_database() -> (Vec<u8>, &'static str) {
-        let (schema, _) = compile_schema(crate::demo::SCHEMA);
-        let schema = schema.expect("the demo schema compiles");
-        let store = crate::demo::store(&schema).expect("the demo facts encode");
+    ///
+    /// Written out by hand rather than round-tripped through an exporter: the writer
+    /// lives with the tool that walks a real database, and what this module owes is that
+    /// it can *read* the format.
+    const DUMP: &str = concat!(
+        r#"{"id":1,"predicate":"code.File","fact":"src/main.rs"}"#,
+        "\n",
+        r#"{"id":2,"predicate":"code.File","fact":"src/lib.rs"}"#,
+        "\n",
+        r#"{"id":3,"predicate":"code.Decl","fact":{"file":1,"name":"main","line":1},"value":"fn"}"#,
+        "\n",
+        r#"{"id":4,"predicate":"code.Decl","fact":{"file":2,"name":"run","line":9},"value":"fn"}"#,
+        "\n",
+    );
 
-        let rows = dump::rows_of(&store, u32::try_from(schema.len()).unwrap_or(u32::MAX))
-            .expect("the demo store scans");
-
-        (
-            dump::write(fingerprint::of(&schema), rows.iter().map(OwnedRow::as_row)),
-            crate::demo::SCHEMA,
-        )
-    }
-
-    /// The load-and-query path end to end, against the answer the same query gives
-    /// over the database this crate builds in Rust. **Equality with `rows` is the
-    /// claim**: an image is not a different database, it is the same one moved.
+    /// The load-and-query path end to end: what went in comes back, through a reference.
     #[test]
-    fn an_image_answers_what_the_database_it_was_written_from_answers() {
-        let (image, schema_source) = image_of_the_demo_database();
-
-        let loaded = load(&image, schema_source);
+    fn a_dump_answers_the_facts_it_carries() {
+        let loaded = load_jsonl(DUMP, crate::demo::SCHEMA);
         assert!(loaded.ok, "{:?}", loaded.problem);
-        assert!(loaded.rows > 0, "the demo database is not empty");
+        assert_eq!(loaded.rows, 4);
 
-        const QUERY: &str = "P where F = code.File {path = P}";
+        // A whole-predicate scan.
+        let files = rows("P where code.File P");
+        assert_eq!(files.rows.len(), 2, "{files:?}");
 
-        assert_eq!(
-            rows(QUERY).rows,
-            crate::rows::rows(schema_source, QUERY).rows,
-            "the image answered differently from the database it was written from"
-        );
+        // And a join *through* a reference, which is the half a local id has to have
+        // resolved correctly for: the decl's `file` must name the file's own row.
+        let joined =
+            rows("{p = P, n = N} where code.Decl {file = F, name = N, line = L}; F = code.File P");
+        assert_eq!(joined.rows.len(), 2, "{joined:?}");
     }
 
-    /// The check the whole module exists for. An image keyed against one schema and
-    /// read against another decodes every row as whatever type sits at that
-    /// position — so the refusal names both numbers rather than answering nonsense.
+    /// A dump read against a schema that does not declare its predicates is refused,
+    /// naming the first line that does not fit.
+    ///
+    /// **This is what a store image's fingerprint used to do**, one line earlier and as
+    /// two numbers. A dump carries no fingerprint, so the refusal comes from the first
+    /// line naming a predicate the schema has not got — which says more, not less.
     #[test]
-    fn an_image_written_against_another_schema_is_refused_naming_both() {
-        let (image, _) = image_of_the_demo_database();
-
-        let loaded = load(&image, "schema other { predicate Thing : string }");
+    fn a_dump_read_against_another_schema_is_refused_by_name() {
+        let loaded = load_jsonl(DUMP, "schema other { predicate Thing : string }");
 
         assert!(!loaded.ok);
         let problem = loaded.problem.expect("a refusal says why");
         assert!(
-            problem.contains("0x") && problem.contains("decode"),
-            "the refusal should name the two fingerprints: {problem}"
+            problem.contains("code.File") && problem.contains("line 1"),
+            "the refusal should name the line and the predicate: {problem}"
         );
         assert!(!super::loaded().ok, "a refused load left a corpus loaded");
     }
@@ -299,12 +289,10 @@ mod tests {
     /// from the old one as though the fetch had worked.
     #[test]
     fn a_refused_load_replaces_nothing_and_leaves_nothing() {
-        let (image, schema_source) = image_of_the_demo_database();
-
-        assert!(load(&image, schema_source).ok);
+        assert!(load_jsonl(DUMP, crate::demo::SCHEMA).ok);
         assert!(super::loaded().ok);
 
-        let refused = load(b"not an image at all", schema_source);
+        let refused = load_jsonl("not a dump at all", crate::demo::SCHEMA);
 
         assert!(!refused.ok);
         assert_eq!(refused.rows, 0);

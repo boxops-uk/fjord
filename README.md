@@ -89,7 +89,7 @@ an attested `fjord-docs-site.tar.gz`, servable from the root of any static host.
 > schema identity, the wire protocol with a second implementation in another language, parallel
 > ingestion, a server, a client, the command-line tool, and a code-search site built on nothing
 > but the client, and a code browser over a real index that answers in the page from an
-> exported store image. The engine compiles to WebAssembly, and the book above is that build.
+> exported dump of it. The engine compiles to WebAssembly, and the book above is that build.
 >
 > **Not built:** authentication, stored derivation, ingestion from files, arrays and sets,
 > per-predicate statistics. [`CHANGELOG.md`](CHANGELOG.md) is the full inventory — including,

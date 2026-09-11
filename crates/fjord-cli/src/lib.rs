@@ -2,8 +2,9 @@
 //!
 //! The binary is a thin dispatcher over this; what lives here is what more than one
 //! target needs **one** statement of: the sample code index — `schemas/demo.sigla`, parsed
-//! by [`sample_schema`] — and the workload catalogue every instrument in `examples/`
-//! measures.
+//! by [`sample_schema`] — the workload catalogue every instrument in `examples/`
+//! measures, and the JSONL document [`document`] composes over an arbitrary schema for
+//! the batteries that put one through the format.
 //!
 //! **Neither is reached by any command.** They are fixtures for the tests, the two
 //! integration suites and the six instruments; the tool itself takes a schema from
@@ -17,5 +18,6 @@
 //! This is `fjord-cli` in [operations §10](../../../website/content/operations.md)'s
 //! layout, and the package is named for that.
 
+pub mod document;
 pub mod sample_schema;
 pub mod workload;

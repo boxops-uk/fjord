@@ -49,7 +49,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::schema::{PredicateId, PredicateTy, Schema};
+use crate::{
+    refs,
+    schema::{PredicateId, PredicateTy, Schema},
+};
 
 /// The version of *this algorithm*.
 ///
@@ -181,14 +184,15 @@ pub fn of(schema: &Schema) -> u64 {
 #[must_use]
 pub fn identity(schema: &Schema) -> Identity {
     let names = names_of(schema);
-    let groups = components(schema, &names);
+    let ids: Vec<PredicateId> = names.keys().copied().collect();
+    let groups = refs::components(schema, &ids);
 
     // Each component is emitted after everything it references, so a fingerprint is
     // always known by the time something spells it.
     let mut fingerprints: BTreeMap<PredicateId, u64> = BTreeMap::new();
 
     for group in &groups {
-        let cyclic = group.len() > 1 || self_referencing(schema, group[0]);
+        let cyclic = group.len() > 1 || refs::self_referencing(schema, group[0]);
         let members: BTreeSet<PredicateId> = group.iter().copied().collect();
 
         // Inside a cycle, a back-edge is rendered as `#0` — which is what gives the
@@ -375,135 +379,6 @@ fn names_of(schema: &Schema) -> BTreeMap<PredicateId, String> {
             Some((id, schema.get(id)?.name()?.to_owned()))
         })
         .collect()
-}
-
-fn self_referencing(schema: &Schema, id: PredicateId) -> bool {
-    references(schema, id).contains(&id)
-}
-
-/// Every predicate a predicate's types mention.
-fn references(schema: &Schema, id: PredicateId) -> BTreeSet<PredicateId> {
-    fn walk(ty: &PredicateTy, into: &mut BTreeSet<PredicateId>) {
-        match ty {
-            PredicateTy::Fact(target) => {
-                into.insert(*target);
-            }
-            PredicateTy::Record(fields) => {
-                for (_, field) in fields.iter() {
-                    walk(field, into);
-                }
-            }
-            PredicateTy::Union(alts) => {
-                for alt in alts.iter() {
-                    walk(&alt.ty, into);
-                }
-            }
-            PredicateTy::Int | PredicateTy::Str | PredicateTy::Bytes => {}
-        }
-    }
-
-    let mut out = BTreeSet::new();
-    if let Some(predicate) = schema.get(id) {
-        walk(&predicate.predicate().key, &mut out);
-        if let Some(value) = predicate.predicate().value.as_ref() {
-            walk(value, &mut out);
-        }
-    }
-    out
-}
-
-/// Strongly-connected components, **dependencies first**.
-///
-/// Tarjan's, written iteratively: a schema is a data path, and a recursive walk over one
-/// deep enough would be a stack overflow where
-/// [conventions](https://github.com/boxops-uk/fjord/blob/main/AGENTS.md) requires an error. Tarjan emits each
-/// component only after everything it reaches, which is exactly the order the
-/// fingerprints need.
-fn components(schema: &Schema, names: &BTreeMap<PredicateId, String>) -> Vec<Vec<PredicateId>> {
-    #[derive(Default, Clone)]
-    struct Node {
-        index: Option<usize>,
-        low: usize,
-        on_stack: bool,
-    }
-
-    let ids: Vec<PredicateId> = names.keys().copied().collect();
-    let edges: BTreeMap<PredicateId, Vec<PredicateId>> = ids
-        .iter()
-        .map(|id| {
-            let mut targets: Vec<PredicateId> = references(schema, *id)
-                .into_iter()
-                .filter(|target| names.contains_key(target))
-                .collect();
-            targets.sort();
-            (*id, targets)
-        })
-        .collect();
-
-    let mut state: BTreeMap<PredicateId, Node> =
-        ids.iter().map(|id| (*id, Node::default())).collect();
-    let mut stack: Vec<PredicateId> = vec![];
-    let mut out: Vec<Vec<PredicateId>> = vec![];
-    let mut next = 0usize;
-
-    for root in &ids {
-        if state[root].index.is_some() {
-            continue;
-        }
-
-        // (node, how many of its edges have been taken)
-        let mut work: Vec<(PredicateId, usize)> = vec![(*root, 0)];
-
-        while let Some((node, edge)) = work.pop() {
-            if edge == 0 {
-                let entry = state.get_mut(&node).expect("known node");
-                entry.index = Some(next);
-                entry.low = next;
-                entry.on_stack = true;
-                next += 1;
-                stack.push(node);
-            }
-
-            let targets = &edges[&node];
-
-            if edge < targets.len() {
-                let target = targets[edge];
-                work.push((node, edge + 1));
-
-                match state[&target].index {
-                    None => work.push((target, 0)),
-                    Some(index) => {
-                        if state[&target].on_stack {
-                            let low = state[&node].low.min(index);
-                            state.get_mut(&node).expect("known node").low = low;
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // Every edge taken: close the node, and propagate its low-link upward.
-            if state[&node].low == state[&node].index.expect("visited") {
-                let mut group = vec![];
-                while let Some(member) = stack.pop() {
-                    state.get_mut(&member).expect("known node").on_stack = false;
-                    group.push(member);
-                    if member == node {
-                        break;
-                    }
-                }
-                group.sort();
-                out.push(group);
-            }
-
-            if let Some((parent, _)) = work.last().copied() {
-                let low = state[&parent].low.min(state[&node].low);
-                state.get_mut(&parent).expect("known node").low = low;
-            }
-        }
-    }
-
-    out
 }
 
 #[cfg(test)]

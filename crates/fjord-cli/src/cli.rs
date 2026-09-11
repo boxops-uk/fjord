@@ -140,6 +140,24 @@ pub enum Command {
         schema: PathBuf,
     },
 
+    /// Write facts from JSONL files
+    ///
+    /// One JSON object per line: `{"id": "1", "predicate": "src.File", "fact": "a.cs"}`.
+    /// A reference field carries the id of a fact written on an earlier line, and a
+    /// forward reference is refused rather than held over.
+    ///
+    /// The simple way in, not the fast one. A producer writing at volume speaks the wire
+    /// protocol through a client library; this is for a person or an agent writing a few
+    /// facts by hand. Needs a running server.
+    Write {
+        /// The database to write to, as `name` or `name@instance`
+        name: String,
+
+        /// The files to read. Blank lines and lines starting with `#` are skipped
+        #[arg(value_name = "FILE", required = true)]
+        files: Vec<PathBuf>,
+    },
+
     /// Seal a database: Writable to Complete, and immutable thereafter
     Finish {
         /// The database to seal, as `name` or `name@instance`
@@ -160,10 +178,11 @@ pub enum Command {
         format: Format,
     },
 
-    /// Write a database out as a store image — every row, with the id it has
+    /// Write a database out as a portable file — every fact, in dependency order
     ///
-    /// The shape a database is rebuilt from somewhere that cannot write facts of its
-    /// own, a browser above all.
+    /// The same grammar `fjord write` reads, so an export can be written back. A
+    /// reference carries the local id of a line written earlier, so the file is read in
+    /// one forward pass and the ids it names are its own.
     ///
     /// Reads the store directly, so it needs a data directory no server is holding:
     /// stop the server first, or export from a copy.
@@ -171,9 +190,22 @@ pub enum Command {
         /// The database to write out, as `name` or `name@instance`
         name: String,
 
-        /// Where to write the image
+        /// Where to write it
         #[arg(long, value_name = "PATH")]
         to: PathBuf,
+
+        /// Group the facts by predicate rather than putting each fact's targets
+        /// immediately above it
+        ///
+        /// The default order is the one a person reads: the answer to "what is this
+        /// `3`?" is a line or two up. This one writes every fact of a predicate before
+        /// any fact of the next, predicates still in dependency order.
+        ///
+        /// It is the cheaper export: only one group of facts is held at a time and
+        /// there is no dependency walk to do. On a 550,000-fact database, 2.5s and
+        /// 299 MB against 6.0s and 364 MB. The file itself is the same size.
+        #[arg(long)]
+        compact: bool,
     },
 
     /// Show a database's metadata and schema

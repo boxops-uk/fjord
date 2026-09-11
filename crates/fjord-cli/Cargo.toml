@@ -54,9 +54,13 @@ fjord-engine = { path = "../fjord-engine" }
 fjord-schema = { path = "../fjord-schema" }
 fjord-server = { path = "../fjord-server" }
 fjord-store = { path = "../fjord-store" }
-# The model store, for the image `export` writes: the format is stated once, beside
-# the store it rebuilds, because the browser is what reads it back.
+# The model store, for the walk `export` reads: every row of a database, bytes and an id,
+# stated once beside the store it comes out of.
 fjord-store-mem = { path = "../fjord-store-mem" }
+# The storage codec, for reading a stored key back into values a dump can render. The
+# tool otherwise never touches it — a fact goes out over the wire and comes back decoded
+# — and `export` is the one place it holds bytes that were written to disk.
+fjord-encoding = { path = "../fjord-encoding" }
 # The message vocabulary, for the frames the tool reads and writes through
 # `fjord-client`. That it needs the codec and not the server's session machinery is the
 # seam working: `protocol` says what a message means, `wire` delimits it, and neither
@@ -109,6 +113,9 @@ fjord-ingest = { path = "../fjord-ingest" }
 # needs the two in one test binary.
 fjord-inspect = { path = "../fjord-inspect" }
 fjord-store = { path = "../fjord-store", features = ["proptest"] }
+# The schema-and-fact generator, for the round trip over a schema nobody wrote by hand.
+# Behind that crate's `proptest` feature for the reason `fjord-encoding` above is.
+fjord-wire = { path = "../fjord-wire", features = ["proptest"] }
 # The `arb_*` strategies are active under `cfg(test)` whether or not the
 # `proptest` feature is on, so the crate has to be here as well as being an
 # optional dependency.

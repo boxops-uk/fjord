@@ -78,7 +78,20 @@ public abstract record FjordType
 }
 
 /// <summary>One predicate: its name, its key type, and its value side if it has one.</summary>
-public sealed record FjordPredicate(string Name, FjordType Key, FjordType? Value);
+/// <param name="Name">Fully qualified — <c>code.Decl</c>, not <c>Decl</c>.</param>
+/// <param name="Key">The key's type, whose record field order is its encoding order.</param>
+/// <param name="Value"><c>null</c> where the predicate has no value side.</param>
+/// <param name="IsVirtual">
+/// Answered by the server rather than stored, so a write naming one is refused. Defaulted
+/// because a schema written out by hand describes only what it writes to, and only a
+/// schema <i>derived</i> from a server (<c>FjordConnection.SchemaTypes</c>) has virtual
+/// predicates in it at all.
+/// </param>
+public sealed record FjordPredicate(
+    string Name,
+    FjordType Key,
+    FjordType? Value,
+    bool IsVirtual = false);
 
 /// <summary>
 /// The schema a client writes against, and the fingerprint it carries.

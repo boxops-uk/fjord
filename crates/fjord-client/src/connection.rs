@@ -411,9 +411,59 @@ impl Connection {
         &mut self,
         blocks: &[(PredicateId, &[WireFact])],
     ) -> Result<Written, ClientError> {
+        self.write_stream(blocks, false).map(|(written, _)| written)
+    }
+
+    /// The same, and **say what each fact was called**.
+    ///
+    /// The ids of the top-level facts, in the order they were sent — a nested target is
+    /// referenced rather than ingested in its own right and does not appear. A
+    /// deduplicated fact still has one: the id it already had, which is the answer a
+    /// caller caching it wants.
+    ///
+    /// **What this is for is a caller interning a little of it itself.** A reference on
+    /// the way in may be the whole target fact, which is what lets a producer keep no
+    /// book of what it has sent. That is right until one target is referenced ten
+    /// thousand times and the producer is re-sending the same bytes to be looked up and
+    /// thrown away each time; knowing the id lets it send that target once and reference
+    /// it by id thereafter.
+    ///
+    /// # Errors
+    ///
+    /// As [`write_blocks`](Connection::write_blocks), plus
+    /// [`ClientError::Protocol`] if the server completes the stream without reporting
+    /// them — which is a server that predates the frame.
+    pub fn write_blocks_reporting_ids(
+        &mut self,
+        blocks: &[(PredicateId, &[WireFact])],
+    ) -> Result<(Written, Vec<FactId>), ClientError> {
+        let (written, ids) = self.write_stream(blocks, true)?;
+
+        let ids = ids.ok_or_else(|| {
+            ClientError::Protocol(
+                "this server completed the write without reporting ids, so it predates \
+                 them — write without asking for ids, or upgrade it"
+                    .to_owned(),
+            )
+        })?;
+
+        Ok((written, ids))
+    }
+
+    fn write_stream(
+        &mut self,
+        blocks: &[(PredicateId, &[WireFact])],
+        want_ids: bool,
+    ) -> Result<(Written, Option<Vec<FactId>>), ClientError> {
         let stream = self.claim_stream();
 
-        self.send(kinds::OPEN_WRITE, stream, &[])?;
+        let opening = if want_ids {
+            kinds::OPEN_WRITE_IDS
+        } else {
+            kinds::OPEN_WRITE
+        };
+
+        self.send(opening, stream, &[])?;
 
         let (kind, _) = self.recv_stream_frame(stream)?;
         if kind != FrameKind::COPY_IN_RESPONSE {
@@ -429,7 +479,17 @@ impl Connection {
 
         self.send(FrameKind::COPY_DONE, stream, &[])?;
 
-        let (kind, payload) = self.recv_stream_frame(stream)?;
+        // **The ids arrive before the completion, as a profile does** — so a stream that
+        // reports them is two frames and one that does not is one, and neither has to be
+        // told apart from the other by anything but its kind.
+        let (mut kind, mut payload) = self.recv_stream_frame(stream)?;
+        let mut ids = None;
+
+        if kind == kinds::IDS {
+            ids = Some(protocol::decode_ids(&payload)?);
+            (kind, payload) = self.recv_stream_frame(stream)?;
+        }
+
         self.release_stream(stream);
 
         if kind != kinds::COMPLETE {
@@ -437,7 +497,7 @@ impl Connection {
         }
 
         let (created, deduped) = protocol::decode_complete(&payload)?;
-        Ok(Written { created, deduped })
+        Ok((Written { created, deduped }, ids))
     }
 
     // ---- querying -----------------------------------------------------------
@@ -578,6 +638,37 @@ impl Connection {
         fjord_schema::syntax::recover("the schema this server serves", &source)
             .map(Schema::with_reserved_virtual)
             .map_err(ClientError::Protocol)
+    }
+
+    /// The served schema as **type trees** — every predicate, with both sides of its
+    /// arrow as a descriptor.
+    ///
+    /// **What a client uses instead of writing the shapes out by hand.** A fact's values
+    /// go on the wire positionally against the predicate's declared type, so a producer
+    /// needs that type before it can encode; deriving it here is what lets a client
+    /// build records by field *name* and stop caring which order a schema declares them
+    /// in. A Rust client can lower [`served_schema_source`](Self::served_schema_source)
+    /// instead, because it links the schema front end — this is the answer for one that
+    /// does not, which is every client in another language.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Server`] if the server declines, or
+    /// [`ClientError::Protocol`] if the reply is not a descriptor list — including a
+    /// descriptor carrying a tag this build has no case for, which is a peer built
+    /// before a scalar family was added and is refused rather than misread.
+    pub fn served_types(&mut self) -> Result<Vec<fjord_wire::PredicateDesc>, ClientError> {
+        let stream = self.claim_stream();
+        self.send(kinds::TYPES, stream, &[])?;
+
+        let (kind, payload) = self.recv_stream_frame(stream)?;
+        self.release_stream(stream);
+
+        if kind != kinds::TYPES_REPLY {
+            return Err(unexpected("a type descriptor list", kind));
+        }
+
+        fjord_wire::decode_types(&payload).map_err(|why| ClientError::Protocol(format!("{why}")))
     }
 
     /// The same, as the text the server sent.

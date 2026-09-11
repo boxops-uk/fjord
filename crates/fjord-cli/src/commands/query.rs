@@ -319,15 +319,25 @@ pub fn render_profile(profile: &fjord_client::QueryProfile, rows: u64) -> String
 /// directory, because a server may be holding it (`ops-I1`). Where the target came from
 /// is already settled by the time it arrives: see [`Target`](crate::commands::Target).
 pub(crate) fn connect(target: &Target, mode: Mode) -> Result<Connection, CliError> {
+    connect_with(target, mode, Arc::new(sample_schema::schema()))
+}
+
+/// The same, opened against a schema the caller has.
+///
+/// **Which schema a connection is opened with is not a formality.** `write_blocks`
+/// encodes a fact positionally against the connection's own schema, so a writer opened
+/// with the stand-in above encodes every record against the wrong shape — and fails as a
+/// record arity, or as a nested fact of the wrong predicate, naming nothing that leads
+/// back here. A reader gets away with it because rows are decoded against the descriptor
+/// the server sends; a writer does not.
+pub(crate) fn connect_with(
+    target: &Target,
+    mode: Mode,
+    schema: Arc<fjord_schema::schema::Schema>,
+) -> Result<Connection, CliError> {
     use std::io::ErrorKind;
 
-    let opened = Connection::open(
-        &target.endpoint,
-        &target.database,
-        Arc::new(sample_schema::schema()),
-        mode,
-        false,
-    );
+    let opened = Connection::open(&target.endpoint, &target.database, schema, mode, false);
 
     match opened {
         Ok(connection) => Ok(connection),

@@ -217,6 +217,12 @@ impl Database {
 struct Writing {
     created: u64,
     deduped: u64,
+    /// The ids so far, when the stream was opened with `OPEN_WRITE_IDS`.
+    ///
+    /// `None` is the ordinary stream, and it is `None` rather than an empty `Vec` on
+    /// purpose: a producer writing millions of facts must not accumulate an id per fact
+    /// for a frame nobody asked for.
+    ids: Option<Vec<fjord_schema::id::FactId>>,
 }
 
 /// What a connection knows, once the handshake has settled it.
@@ -626,7 +632,8 @@ struct StreamTask {
 impl StreamTask {
     async fn handle(&mut self, header: &FrameHeader, payload: &[u8]) -> Result<(), ServerError> {
         match header.kind {
-            kinds::OPEN_WRITE => self.open_write().await,
+            kinds::OPEN_WRITE => self.open_write(false).await,
+            kinds::OPEN_WRITE_IDS => self.open_write(true).await,
             FrameKind::COPY_DATA => self.copy_data(payload).await,
             FrameKind::COPY_DONE => self.copy_done().await,
             kinds::QUERY => self.query(payload, false, None).await,
@@ -638,6 +645,7 @@ impl StreamTask {
             }
             kinds::CONTROL => self.control(payload).await,
             kinds::SCHEMA => self.schema().await,
+            kinds::TYPES => self.types().await,
             kinds::FETCH => self.fetch(payload).await,
 
             other => Err(ServerError::Protocol(format!(
@@ -703,6 +711,30 @@ impl StreamTask {
 
         self.outbound
             .send(kinds::SCHEMA_REPLY, self.stream, source.as_bytes())
+            .await
+    }
+
+    /// Answer the served schema as **type trees**, for a client with no parser.
+    ///
+    /// [`schema`](Self::schema)'s sibling, over the same value — so the two cannot
+    /// disagree about what is being served. The difference is only the rendering: that
+    /// one prints sigla for a person, this one encodes descriptors for a peer that has
+    /// neither an interner nor a lowerer and still has to write a fact positionally
+    /// against a predicate's declared type.
+    async fn types(&mut self) -> Result<(), ServerError> {
+        let schema = match &self.session.database {
+            Some(database) => Arc::clone(&database.schema),
+            None => Arc::clone(self.session.registry.schema()),
+        };
+
+        let described = protocol::types_of(&schema)?;
+
+        self.outbound
+            .send(
+                kinds::TYPES_REPLY,
+                self.stream,
+                &protocol::encode_types(&described),
+            )
             .await
     }
 
@@ -835,7 +867,8 @@ impl StreamTask {
             .await
     }
 
-    async fn open_write(&mut self) -> Result<(), ServerError> {
+    /// Open a write stream, optionally one that reports the ids it minted.
+    async fn open_write(&mut self, report_ids: bool) -> Result<(), ServerError> {
         if self.session.mode != Mode::ReadWrite {
             return Err(ServerError::ModeRefused);
         }
@@ -857,7 +890,11 @@ impl StreamTask {
             )));
         }
 
-        self.writing = Some(Writing::default());
+        self.writing = Some(Writing {
+            ids: report_ids.then(Vec::new),
+            ..Writing::default()
+        });
+
         self.outbound
             .send(FrameKind::COPY_IN_RESPONSE, self.stream, &[])
             .await
@@ -920,6 +957,13 @@ impl StreamTask {
         writing.created += out.created as u64;
         writing.deduped += out.deduped as u64;
 
+        // Only where they were asked for: `intern_block` collects them either way, and
+        // keeping them for a stream that will not report them is an allocation per fact
+        // for nothing.
+        if let Some(ids) = writing.ids.as_mut() {
+            ids.extend(out.ids);
+        }
+
         Ok(())
     }
 
@@ -930,6 +974,14 @@ impl StreamTask {
                 self.stream.0
             ))
         })?;
+
+        // **Before the completion, as a profile is.** A caller reads the ids and then
+        // the frame that ends the stream, so nothing has to be held across the end.
+        if let Some(ids) = &writing.ids {
+            self.outbound
+                .send(kinds::IDS, self.stream, &protocol::encode_ids(ids))
+                .await?;
+        }
 
         self.outbound
             .send(

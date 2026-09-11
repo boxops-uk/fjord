@@ -1,56 +1,115 @@
-//! `fjord export <db> --to <path>`.
+//! `fjord export <db> --to <file.jsonl>` — a database as the portable format.
 //!
-//! A database as a **store image**: every row, with the id it already has, in the
-//! shape [`fjord_store_mem::MemStore`] is rebuilt from.
+//! **The same grammar `fjord write` reads**, so an export can be written back: one JSON
+//! object per line, a local `id` naming the fact within the file, and a reference
+//! carrying the id of a fact written earlier.
 //!
-//! **This exists because nothing in a browser can intern a fact.** `fjord-ingest`
-//! depends on the fjall backend by name — interning claims ids durably and writes
-//! through a batch — so the write funnel is not reachable from a WebAssembly build,
-//! and a corpus cannot be assembled in the page. It does not need to be: ids are
-//! assigned once, and a database indexed here already holds the answer. This is how
-//! the answer travels.
+//! # Two orders, because a reader and a person want different ones
 //!
-//! **Offline only, and that is `ops-I1` rather than a limitation.** Reading every row
-//! means opening fjall, and one process owns a root — so a server holding it is a
-//! refusal with something to do about it, never a second opener.
+//! Both satisfy the rule that makes the format one forward pass — a reference names a
+//! line already gone past — and they differ in *how far back* that line is.
+//!
+//! **Dependency order**, the default, puts a fact's targets in the lines immediately
+//! above it: a decl, then the file it names, then the next decl. That is how a person
+//! reads one, because the answer to "what is this `3`?" is a line or two up.
+//!
+//! **Grouped order**, under `--compact`, writes every fact of one predicate before any
+//! fact of the next, with the predicates themselves in dependency order. What that buys
+//! is the **export itself**, not the file: a component at a time is the only thing
+//! resident, and there is no walk to do. Measured on a 550,000-fact database, **2.5s and
+//! 299 MB against 6.0s and 364 MB** — and on that schema the two orders emit byte-for-byte
+//! the same file, because its predicates are already declared in dependency order.
+//!
+//! What it does **not** buy, measured rather than assumed, on the code browser's
+//! 24,612-fact corpus: the file is the same size, gzips 1.5% smaller, and writes back
+//! with 6% fewer redundant targets. The wire saving is small because `fjord write`
+//! batches ten thousand lines, so a target and the facts naming it usually land in one
+//! batch either way — grouping only helps across a batch boundary.
+//!
+//! # Why the order is not the order they are stored in
+//!
+//! Facts are stored grouped by predicate, and a predicate's id comes from where it sits
+//! in the schema rather than from what it references — so nothing says a target's group
+//! is emitted before the group naming it. Both orders fix that, and `--compact` fixes it
+//! with an order the schema already knows: `fjord_schema::refs::components` answers
+//! strongly-connected components, each after everything it reaches.
+//!
+//! **A component can hold more than one predicate**, because a schema may declare two
+//! that name each other, and then no per-predicate order exists. Within a component that
+//! can cycle the walk is the depth-first one, over that component's rows alone — every
+//! other component is already written, so it bottoms out at once.
+//!
+//! A predicate that names **itself** is a component of one that can still cycle, which is
+//! why the size of a component is not the test.
+//!
+//! # It reads the store directly
+//!
+//! Which means it opens fjall, which `ops-I1` gives to one process: a server holding this
+//! root is a refusal rather than something to work around.
 
-use std::path::Path;
+use std::{collections::HashMap, io::Write, path::Path};
 
-use fjord_schema::fingerprint;
-use fjord_store_fjall::catalog::{Intent, Selector};
-use fjord_store_mem::dump::{self, OwnedRow};
+use fjord_encoding::tuple::{self, Value};
+use fjord_schema::{
+    id::FactId,
+    refs,
+    schema::{LocalInterner, PredicateId, Schema},
+};
+use fjord_store::fact_store::FactStore;
+use fjord_store_mem::dump::OwnedRow;
 
 use crate::{
     CliError,
     commands::{self, Route, Target},
 };
 
-/// What an export did, for the line the tool prints.
-pub struct Exported {
-    pub rows: usize,
-    pub bytes: usize,
-    pub fingerprint: u64,
+/// What an export came to, for the line the tool prints.
+pub struct Dumped {
+    pub facts: usize,
+    pub bytes: u64,
+}
+
+/// Which order the facts come out in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    /// A fact's targets in the lines just above it.
+    Dependency,
+    /// Every fact of a predicate together, predicates in dependency order.
+    Grouped,
+}
+
+/// One fact, decoded and waiting for its turn.
+struct Row {
+    predicate: PredicateId,
+    key: Value,
+    value: Option<Value>,
+}
+
+/// The local ids handed out so far, and the next one to hand out.
+///
+/// **A reference renders through this**, so a fact reaching it for a target that is not
+/// in it yet would write `null` — which is why every path here writes a fact only once
+/// everything it names is present.
+struct Numbering {
+    local: HashMap<u64, u64>,
+    next: u64,
 }
 
 /// # Errors
 ///
-/// [`CliError::RootHeld`] or a server refusal if this process may not open the root,
-/// [`CliError::NoEmbeddedSchema`] for a database carrying no schema copy to key its
-/// rows against, and whatever scanning or writing the file reports.
-pub fn run(root: &Path, target: &Target, to: &Path) -> Result<Exported, CliError> {
-    // Routed like every other command that opens the store, so "a server holds this
-    // root" is answered by the rule rather than by a second opener finding out.
+/// [`CliError::ExportNeedsTheRoot`] if a server holds it, [`CliError::NoEmbeddedSchema`]
+/// for a database carrying no schema copy, or whatever reading or writing reports.
+pub fn run(root: &Path, target: &Target, to: &Path, order: Order) -> Result<Dumped, CliError> {
     let catalog = match commands::route(root, target)? {
         Route::Local(catalog, _lock) => catalog,
         Route::Server(_) => return Err(CliError::ExportNeedsTheRoot),
     };
 
-    let entry = catalog.resolve(&Selector::parse(&target.database)?, Intent::Read)?;
+    let entry = catalog.resolve(
+        &fjord_store_fjall::catalog::Selector::parse(&target.database)?,
+        fjord_store_fjall::catalog::Intent::Read,
+    )?;
 
-    // **The embedded copy, never a schema passed in.** A predicate is looked up by
-    // position, so keying an image against any other schema would record every row
-    // under whatever type sits at that position — silently. `finish` refuses a passed
-    // schema for the same reason.
     let schema = fjord_store_fjall::schema_doc::read(&entry.path)?.ok_or_else(|| {
         CliError::NoEmbeddedSchema {
             name: target.database.clone(),
@@ -58,18 +117,432 @@ pub fn run(root: &Path, target: &Target, to: &Path) -> Result<Exported, CliError
     })?;
 
     let db = entry.open_store()?;
-    // One reader, so every predicate is scanned against one snapshot: an image of a
+
+    // **One reader, so every predicate is scanned against one snapshot**: an export of a
     // database that moved under the walk would hold rows from two states.
     let reader = db.reader();
-    let rows = dump::rows_of(&reader, u32::try_from(schema.len()).unwrap_or(u32::MAX))?;
-    let fingerprint = fingerprint::of(&schema);
-    let image = dump::write(fingerprint, rows.iter().map(OwnedRow::as_row));
 
-    std::fs::write(to, &image)?;
+    let file = std::fs::File::create(to)?;
+    let mut out = std::io::BufWriter::new(file);
 
-    Ok(Exported {
-        rows: rows.len(),
-        bytes: image.len(),
-        fingerprint,
+    let facts = write_to(&reader, &schema, order, &mut out)?;
+
+    out.flush()?;
+    drop(out);
+
+    Ok(Dumped {
+        facts,
+        bytes: std::fs::metadata(to)?.len(),
     })
+}
+
+/// Write every fact `reader` holds, as the format, in `order`. Answers how many.
+///
+/// **Separate from [`run`] because opening a store and writing a format are different
+/// jobs**, and only the second one is the format. A caller with rows already in hand —
+/// a battery over a model store, above all — writes them through this without a
+/// directory, a lock or a catalog anywhere in reach, which is what lets the grammar be
+/// tested at the volume a generator wants.
+///
+/// # Errors
+///
+/// A fact of a predicate the schema does not declare, a stored key or value that does
+/// not decode against it, a reference naming a fact `reader` does not hold, or whatever
+/// writing reports.
+pub fn write_to<S: FactStore, W: Write>(
+    reader: &S,
+    schema: &Schema,
+    order: Order,
+    out: &mut W,
+) -> Result<usize, CliError> {
+    let interner = LocalInterner::new(schema.interner().clone());
+
+    let mut numbering = Numbering {
+        local: HashMap::new(),
+        next: 1,
+    };
+
+    match order {
+        Order::Dependency => dependency_order(reader, schema, &interner, &mut numbering, out),
+        Order::Grouped => grouped_order(reader, schema, &interner, &mut numbering, out),
+    }
+}
+
+/// Every stored predicate, in an order where a component follows everything it reaches.
+fn stored_order(schema: &Schema) -> Vec<Vec<PredicateId>> {
+    let stored: Vec<PredicateId> = (0..schema.len())
+        .map(|index| PredicateId(index as u32))
+        .filter(|id| !schema.is_virtual(*id))
+        .collect();
+
+    refs::components(schema, &stored)
+}
+
+/// A predicate at a time, in dependency order — `--compact`.
+///
+/// **Only one component's rows are resident**, which for a real index is the difference
+/// between an export that fits in memory and one that does not. The numbering is not:
+/// a reference renders as a local id, so every id handed out so far has to be in reach.
+fn grouped_order<S: FactStore, W: Write>(
+    reader: &S,
+    schema: &Schema,
+    interner: &LocalInterner,
+    numbering: &mut Numbering,
+    out: &mut W,
+) -> Result<usize, CliError> {
+    let mut written = 0usize;
+
+    for group in stored_order(schema) {
+        // A component of one predicate that does not name itself has no reference into
+        // its own rows, so scan order is already an order that reads back.
+        let simple = group.len() == 1 && !refs::self_referencing(schema, group[0]);
+
+        let mut rows: Vec<(FactId, Row)> = Vec::new();
+
+        for predicate in &group {
+            for raw in fjord_store_mem::dump::rows_for(reader, *predicate)? {
+                rows.push(decode(&raw, schema, interner)?);
+            }
+        }
+
+        if simple {
+            for (id, row) in &rows {
+                emit(*id, row, schema, numbering, out)?;
+                written += 1;
+            }
+            continue;
+        }
+
+        // A component that can cycle: the rows it holds are the only ones not yet
+        // written, so a depth-first walk over just these bottoms out on the first
+        // reference leaving the component.
+        written += walk(&rows, schema, numbering, out)?;
+    }
+
+    Ok(written)
+}
+
+/// Targets in the lines immediately above the fact naming them — the default.
+///
+/// The whole database is resident, because a walk that can reach any row has to be able
+/// to reach any row.
+fn dependency_order<S: FactStore, W: Write>(
+    reader: &S,
+    schema: &Schema,
+    interner: &LocalInterner,
+    numbering: &mut Numbering,
+    out: &mut W,
+) -> Result<usize, CliError> {
+    let mut rows: Vec<(FactId, Row)> = Vec::new();
+
+    for index in 0..schema.len() {
+        let predicate = PredicateId(index as u32);
+        if schema.is_virtual(predicate) {
+            continue;
+        }
+
+        for raw in fjord_store_mem::dump::rows_for(reader, predicate)? {
+            rows.push(decode(&raw, schema, interner)?);
+        }
+    }
+
+    walk(&rows, schema, numbering, out)
+}
+
+/// Depth first over `rows`, writing a fact once everything it names has been written.
+///
+/// A reference to a fact **outside** `rows` is expected to be numbered already; one that
+/// is neither is a damaged database and says so rather than writing a dangling file.
+fn walk<W: Write>(
+    rows: &[(FactId, Row)],
+    schema: &Schema,
+    numbering: &mut Numbering,
+    out: &mut W,
+) -> Result<usize, CliError> {
+    let at: HashMap<u64, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, (id, _))| (id.raw(), index))
+        .collect();
+
+    let mut written = 0usize;
+
+    // **Explicit stack, because a reference chain can be deep** — a doc names a decl
+    // which names a file — and a recursive walk would put that depth on the call stack.
+    let mut stack: Vec<FactId> = Vec::new();
+
+    for (start, _) in rows {
+        stack.push(*start);
+
+        while let Some(id) = stack.last().copied() {
+            if numbering.local.contains_key(&id.raw()) {
+                stack.pop();
+                continue;
+            }
+
+            let Some(index) = at.get(&id.raw()).copied() else {
+                // A reference naming no stored fact is a damaged database, and saying so
+                // is better than writing a file whose references dangle.
+                return Err(CliError::Diagnosed(format!(
+                    "fjord: a reference names {id:?}, which this database does not hold\n"
+                )));
+            };
+
+            let (_, row) = &rows[index];
+
+            // Everything it names, first. A node is reached twice — once to push its
+            // targets, once when they are all numbered — and a target pushed by two
+            // parents costs a visit that pops immediately, so this is O(edges).
+            let mut waiting = false;
+
+            for named in references(&row.key).chain(row.value.iter().flat_map(references)) {
+                if !numbering.local.contains_key(&named.raw()) {
+                    stack.push(named);
+                    waiting = true;
+                }
+            }
+
+            if waiting {
+                continue;
+            }
+
+            stack.pop();
+            emit(id, row, schema, numbering, out)?;
+            written += 1;
+        }
+    }
+
+    Ok(written)
+}
+
+/// One stored row, decoded against the schema, with the id it is stored under.
+///
+/// A key is stored flat — its top-level fields back to back with no record wrapper —
+/// which is why it takes `decode_key` and a value takes the other.
+fn decode(
+    raw: &OwnedRow,
+    schema: &Schema,
+    interner: &LocalInterner,
+) -> Result<(FactId, Row), CliError> {
+    let declared = schema.get(raw.predicate).ok_or_else(|| {
+        CliError::Diagnosed(format!(
+            "fjord: this database holds a fact of predicate {}, which its schema does \
+             not declare\n",
+            raw.predicate.0
+        ))
+    })?;
+
+    let key = tuple::decode_key(interner, &raw.key, declared.key().ty)
+        .map_err(|why| CliError::Diagnosed(format!("fjord: a stored key: {why}\n")))?;
+
+    let value = match declared.value() {
+        Some(ty) if !raw.value.is_empty() => Some(
+            tuple::decode_typed(interner, &raw.value, ty.ty)
+                .map_err(|why| CliError::Diagnosed(format!("fjord: a stored value: {why}\n")))?,
+        ),
+        _ => None,
+    };
+
+    let id = FactId::new(raw.predicate, raw.sequence)
+        .map_err(|why| CliError::Diagnosed(format!("fjord: a stored id: {why}\n")))?;
+
+    Ok((
+        id,
+        Row {
+            predicate: raw.predicate,
+            key,
+            value,
+        },
+    ))
+}
+
+/// Write one fact, and give it the next local id.
+fn emit<W: Write>(
+    id: FactId,
+    row: &Row,
+    schema: &Schema,
+    numbering: &mut Numbering,
+    out: &mut W,
+) -> Result<(), CliError> {
+    let name = schema
+        .get(row.predicate)
+        .and_then(|predicate| predicate.name())
+        .unwrap_or_default();
+
+    // **Written field by field, so the order reads.** `serde_json`'s map sorts, which
+    // would put `fact` before `id` on every line of a format whose whole point is that a
+    // person can read and edit it.
+    write!(
+        out,
+        "{{\"id\":{},\"predicate\":{},\"fact\":{}",
+        numbering.next,
+        serde_json::Value::from(name),
+        json(&row.key, &numbering.local)
+    )?;
+
+    if let Some(value) = &row.value {
+        write!(out, ",\"value\":{}", json(value, &numbering.local))?;
+    }
+
+    writeln!(out, "}}")?;
+
+    numbering.local.insert(id.raw(), numbering.next);
+    numbering.next += 1;
+
+    Ok(())
+}
+
+/// Every fact this value names, directly or through a record or a union.
+fn references(value: &Value) -> Box<dyn Iterator<Item = FactId> + '_> {
+    match value {
+        Value::FactRef(id) => Box::new(std::iter::once(*id)),
+        Value::Record(fields) => Box::new(fields.iter().flat_map(|(_, inner)| references(inner))),
+        Value::Union { value, .. } => references(value),
+        _ => Box::new(std::iter::empty()),
+    }
+}
+
+/// A decoded value as JSON, with a reference as the **local id** of the line that wrote
+/// it — which is what makes the file readable back by `fjord write`.
+fn json(value: &Value, local: &HashMap<u64, u64>) -> serde_json::Value {
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Int(int) => serde_json::Value::from(*int),
+        Value::Str(text) => serde_json::Value::from(text.clone()),
+        Value::Bytes(payload) => serde_json::Value::from(hex(payload)),
+
+        // The whole reason this is not `fjord_inspect::value::json`: that one renders a
+        // reference as the database's own `#p:s`, which means nothing in another
+        // database. This one names the line.
+        Value::FactRef(id) => local
+            .get(&id.raw())
+            .map_or(serde_json::Value::Null, |named| {
+                serde_json::Value::from(*named)
+            }),
+
+        Value::Record(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(name, inner)| (name.clone(), json(inner, local)))
+                .collect(),
+        ),
+
+        Value::Union { alt, value, .. } => {
+            serde_json::Value::Object([(alt.clone(), json(value, local))].into_iter().collect())
+        }
+    }
+}
+
+/// Lowercase hex, two digits a byte.
+///
+/// The same rendering the other JSON view uses, and the same reason: a byte pair reads in
+/// a terminal, and a reader of this file holds the schema that says the field is `bytes`.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fjord_schema::schema::PredicateId;
+    use proptest::prelude::*;
+
+    /// What a document comes to when it is read into a model store: the store, and the
+    /// content identity of what is in it.
+    ///
+    /// **The real identity function**, over a model store rather than a directory —
+    /// `ops-I4` is about content and not about where it is kept. Two documents naming
+    /// the same facts under different local ids answer the same number, which is the
+    /// difference a round trip is allowed to make and the only one.
+    fn read_and_weigh(text: &str, schema: &Schema) -> (fjord_store_mem::MemStore, u64) {
+        let read = fjord_inspect::jsonl::read(text, schema).expect("the document reads");
+
+        let identity = fjord_store_fjall::identity::over(
+            &read.store,
+            (0..schema.len()).map(|index| PredicateId(index as u32)),
+            schema,
+            fjord_schema::fingerprint::of(schema),
+        )
+        .expect("an identity");
+
+        (read.store, identity.fingerprint)
+    }
+
+    proptest! {
+        // **Volume, because none of this costs a process.** Reading a document and
+        // writing one are the two halves of the format, and neither needs a server, a
+        // directory or a storage engine — so the generator runs here, and the battery
+        // in `tests/jsonl_write.rs` checks the same claim through the tool a few times
+        // over, where a process is what is being tested.
+        //
+        // 2,048 measured at 3.4s in a debug build, which is the budget a battery on the
+        // ordinary path gets. The number is here rather than left at proptest's 256
+        // because the generator's reach is the whole point of it: a `bytes` leaf is
+        // weighted at one in twenty, so the shapes that matter most are the ones a
+        // default run would see least.
+        #![proptest_config(ProptestConfig {
+            cases: 2048,
+            ..ProptestConfig::default()
+        })]
+
+        /// **Any schema, any document, either order: what goes in comes back.**
+        ///
+        /// Both halves of the format are under this — `fjord_inspect::jsonl` reads and
+        /// this module writes — and the assertion is the content identity, so a loss in
+        /// either moves the number while a renumbering does not.
+        #[test]
+        fn any_schema_and_document_survive_the_format(
+            drawn in fjord_wire::value::proptest::arb_schema_and_fact(),
+            compact in any::<bool>(),
+            reversed in any::<bool>(),
+        ) {
+            let source = fjord_schema::syntax::print::print(&drawn.schema());
+            let source = if reversed {
+                fjord_cli::document::with_the_predicate_order_reversed(&source)
+            } else {
+                source
+            };
+
+            let schema = fjord_schema::syntax::read("gen", &source)
+                .expect("a printed schema reads back");
+
+            let mut draws = fjord_cli::document::Draws::new(
+                drawn.ints.clone(),
+                drawn.texts.clone(),
+                drawn.picks.clone(),
+            );
+
+            let document = fjord_cli::document::a_document_over(&schema, &mut draws);
+            let (store, identity) = read_and_weigh(&document, &schema);
+
+            let order = if compact {
+                Order::Grouped
+            } else {
+                Order::Dependency
+            };
+
+            let mut written = Vec::new();
+            let facts =
+                write_to(&store, &schema, order, &mut written).expect("the store writes");
+
+            let text = String::from_utf8(written).expect("the format is UTF-8");
+            prop_assert_eq!(text.lines().count(), facts);
+
+            let (_, again) = read_and_weigh(&text, &schema);
+            prop_assert_eq!(
+                identity,
+                again,
+                "the round trip changed the database\n--- in\n{}\n--- out\n{}",
+                document,
+                text
+            );
+        }
+    }
 }

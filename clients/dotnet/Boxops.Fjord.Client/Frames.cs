@@ -71,6 +71,18 @@ public static class FrameKind
 
     /// <summary>Server → client: this database's schema, as source. The whole payload.</summary>
     public const byte SchemaReply = (byte)'h';
+
+    /// <summary>Client → server: what shape is everything you serve? No payload.</summary>
+    /// <remarks>
+    /// <b><see cref="Schema"/>'s sibling, and the one this client needs.</b> That one
+    /// answers source, which this client cannot read — it has no sigla parser. This one
+    /// answers type trees, in exactly the encoding <c>RowDescriptor.Read</c> already
+    /// decodes for a query's rows.
+    /// </remarks>
+    public const byte Types = (byte)'Y';
+
+    /// <summary>Server → client: every predicate this session can name, as a descriptor.</summary>
+    public const byte TypesReply = (byte)'y';
 }
 
 /// <summary>A lifecycle operation, by the byte the wire assigns it.</summary>

@@ -48,6 +48,18 @@ pub enum StoreCodecError {
     /// from a crate above this one must be. Both exist because they catch it at
     /// different moments: this one before the bytes are written, that one for bytes
     /// some other writer produced.
+    /// A key whose encoded bytes are longer than a stored key may be.
+    ///
+    /// **An encode-side refusal for a storage-side limit**, and it is here because
+    /// this is the only place every producer of a key passes through — the write
+    /// funnel, the model store and the tool's readers alike. Below this, the backend's
+    /// answer to an over-long key is an `assert!`, and a panic on ordinary input is not
+    /// an answer.
+    ///
+    /// See [`crate::tuple::MAX_KEY_BYTES`] for where the number comes from.
+    #[error("a key of {len} bytes is longer than the {max} a stored key may be")]
+    KeyTooLong { len: usize, max: usize },
+
     #[error("a reference declared to name predicate {expected} names predicate {found}")]
     FactRefPredicate { expected: u32, found: u32 },
 

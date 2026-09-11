@@ -3,9 +3,11 @@
 //! **Why the tool tests a server in-process at all.** `tests/over_a_server.rs` drives
 //! the real binary against a real `fjord serve`, which is the right shape for the
 //! lifecycle — it proves the frames crossed a socket between two processes. It is the
-//! wrong shape for anything that needs *facts in a database*, because the tool has no
-//! command that writes any (file ingestion is unbuilt), and the wrong shape for anything that
-//! needs to look at a value the binary does not print.
+//! wrong shape for anything that needs to look at a value the binary does not print, or
+//! for a fixture whose facts are chosen to exercise the engine rather than the format.
+//!
+//! `tests/jsonl_write.rs` is the other way round: `fjord write` puts facts in through
+//! the tool, out of a file, and that is the right shape for testing the *format*.
 //!
 //! So this stands the same server up behind the same socket, writes facts through the
 //! ordinary client, and hands back a path. Nothing here is a shortcut around the wire:

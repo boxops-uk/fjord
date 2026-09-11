@@ -2780,3 +2780,287 @@ fn a_paged_fuzzy_query_resumes_where_it_stopped() {
 
     assert_eq!(paged, all, "paging dropped or repeated a row");
 }
+
+/// **A client that states no schema learns every shape from the server.**
+///
+/// The acceptance criterion for the descriptor reply: a peer connects asserting nothing,
+/// asks what shapes there are, and gets back — for every predicate — its id, its name,
+/// both sides of its arrow, and whether it is one it may write to. That is the whole of
+/// what a producer needs before it can encode a fact, and none of it was previously
+/// answerable over the wire.
+#[test]
+fn a_client_that_asserts_nothing_is_told_every_predicates_shape() {
+    // With the catalogue, so the virtual marking is exercised rather than assumed: a
+    // writer has to be able to tell a predicate it may write from one it may only ask.
+    let serving = start_with_catalogue();
+
+    // `assert_schema: false` and a stand-in schema: this end has no opinion yet, which
+    // is exactly the position a client without a sigla parser is in.
+    let mut connection = Connection::connect(
+        &serving.socket,
+        "code",
+        Arc::new(schema()),
+        Mode::ReadOnly,
+        false,
+    )
+    .expect("a connection");
+
+    let described = connection.served_types().expect("the types");
+
+    let by_name: std::collections::BTreeMap<&str, &fjord_wire::PredicateDesc> =
+        described.iter().map(|p| (p.name.as_str(), p)).collect();
+
+    // Every stored predicate, plus the virtuals the session can also name.
+    for name in ["src.File", "src.Decl", "src.Doc", "src.Tagged"] {
+        assert!(by_name.contains_key(name), "{name} is missing: {by_name:?}");
+    }
+
+    // **A scalar key, and no value side** — which is not an empty one.
+    let file = by_name["src.File"];
+    assert_eq!(file.key, fjord_wire::Desc::Str);
+    assert_eq!(file.value, None);
+    assert!(!file.is_virtual);
+
+    // **A record key, in encoding order, with a reference carrying the id a block
+    // header uses.** This is the part a client cannot guess and previously transcribed.
+    let decl = by_name["src.Decl"];
+    let fjord_wire::Desc::Record(fields) = &decl.key else {
+        panic!("`src.Decl` has a record key: {decl:?}");
+    };
+    assert_eq!(
+        fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        vec!["file", "line", "name"]
+    );
+    assert_eq!(fields[0].1, fjord_wire::Desc::Fact(file.id));
+
+    // **A union's alternatives carry their discriminants**, which are not their
+    // positions — the fixture's tags are 3, 0 and 40,000 for exactly this.
+    let tagged = by_name["src.Tagged"];
+    let fjord_wire::Desc::Record(fields) = &tagged.key else {
+        panic!("`src.Tagged` has a record key: {tagged:?}");
+    };
+    let (_, what) = fields.iter().find(|(n, _)| n == "what").expect("`what`");
+    let fjord_wire::Desc::Union(alternatives) = what else {
+        panic!("`what` is a union: {what:?}");
+    };
+    let tags: std::collections::BTreeMap<&str, u32> = alternatives
+        .iter()
+        .map(|(name, disc, _)| (name.as_str(), *disc))
+        .collect();
+    assert_eq!(tags["num"], NUM);
+    assert_eq!(tags["text"], TEXT);
+    assert_eq!(tags["of"], OF);
+
+    // **The virtuals are marked**, so a writer knows which it can never write to.
+    let listing = by_name.get("fjord.db.List").unwrap_or_else(|| {
+        panic!(
+            "a served session can name the catalogue; it named {:?}",
+            by_name.keys().collect::<Vec<_>>()
+        )
+    });
+    assert!(listing.is_virtual, "{listing:?}");
+}
+
+/// **A fact built from the derived tree is a fact the server accepts** — which is the
+/// claim the reply exists to make good.
+///
+/// Nothing here states a shape. The record is assembled by looking each field up **by
+/// name** in what the server said and placing the value at that position, which is what
+/// a JSON-to-wire client does and what makes a schema edit stop being a client rebuild.
+#[test]
+fn a_fact_encoded_from_the_derived_tree_is_written_and_read_back() {
+    let serving = start();
+
+    let mut connection = Connection::connect(
+        &serving.socket,
+        "code",
+        Arc::new(schema()),
+        Mode::ReadWrite,
+        false,
+    )
+    .expect("a connection");
+
+    let described = connection.served_types().expect("the types");
+    let file = described
+        .iter()
+        .find(|p| p.name == "src.File")
+        .expect("`src.File`");
+    let decl = described
+        .iter()
+        .find(|p| p.name == "src.Decl")
+        .expect("`src.Decl`");
+
+    // What a by-name client has: field names and values, in no particular order.
+    let supplied = [
+        ("line", WireValue::Int(12)),
+        ("name", WireValue::Str("encode".to_owned())),
+        (
+            "file",
+            WireValue::Ref(WireRef::Nested(Box::new(WireFact {
+                predicate: file.id,
+                key: WireValue::Str("a.rs".to_owned()),
+                value: None,
+            }))),
+        ),
+    ];
+
+    // Placed by the *server's* order, which this end never had to know.
+    let fjord_wire::Desc::Record(fields) = &decl.key else {
+        panic!("a record key");
+    };
+    let key = WireValue::Record(
+        fields
+            .iter()
+            .map(|(name, _)| {
+                supplied
+                    .iter()
+                    .find(|(supplied, _)| supplied == name)
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_else(|| panic!("nothing supplied for `{name}`"))
+            })
+            .collect::<Vec<_>>()
+            .into(),
+    );
+
+    let written = connection
+        .write(
+            decl.id,
+            &[WireFact {
+                predicate: decl.id,
+                key,
+                value: None,
+            }],
+        )
+        .expect("the server accepts a fact shaped by its own answer");
+
+    // **Two**, because the nested `src.File` is interned on the way in — which is the
+    // other half of what a derived tree buys: `Desc::Fact` said the field was a
+    // reference, so this end knew to send the whole target fact rather than an id it
+    // does not have.
+    assert_eq!(written.created, 2, "the decl and the file it names");
+
+    // And it reads back as the fact that was meant, rather than as bytes that happened
+    // to fit — which is the failure a wrong field order produces.
+    let mut result = connection
+        .query(r#"{n = N} where src.Decl {file = F, line = 12, name = N}"#)
+        .expect("a query");
+    let rows = connection.drain(&mut result).expect("rows");
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0],
+        WireValue::Record(Box::new([WireValue::Str("encode".to_owned())]))
+    );
+}
+
+/// **A write says what each fact was called, and the id names that fact.**
+///
+/// Not merely that ids come back: that fetching one returns the fact it was reported for.
+/// An off-by-one in the order, or a nested target counted as a top-level fact, would
+/// leave a plausible list of well-formed ids naming the wrong rows.
+#[test]
+fn a_write_reports_the_id_of_every_fact_it_wrote() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let files = [file("a.rs"), file("b.rs"), file("c.rs")];
+    let (written, ids) = connection
+        .write_blocks_reporting_ids(&[(FILE, &files)])
+        .expect("the write reports ids");
+
+    assert_eq!(written.created, 3);
+    assert_eq!(ids.len(), 3, "one per top-level fact");
+
+    // Each id names the fact it was reported for, in the order they were sent. `fetch`
+    // answers a fact's **key**, which is what a reference resolves to.
+    let schema = schema();
+    for (id, expected) in ids.iter().zip(files.iter()) {
+        let found = connection
+            .fetch(&schema, &[*id], None)
+            .expect("the id resolves");
+
+        let Some(Found::Key(key)) = found.first() else {
+            panic!("{id:?} named nothing: {found:?}");
+        };
+        assert_eq!(*key, expected.key, "{id:?}");
+    }
+}
+
+/// **A deduplicated fact still has an id — the one it already had.**
+///
+/// Which is the answer a caller caching one wants: writing a target it has written
+/// before should hand back the same id, not nothing and not a new one.
+#[test]
+fn writing_a_fact_twice_reports_the_same_id_both_times() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let once = [file("a.rs")];
+
+    let (first, first_ids) = connection
+        .write_blocks_reporting_ids(&[(FILE, &once)])
+        .expect("written");
+    let (again, again_ids) = connection
+        .write_blocks_reporting_ids(&[(FILE, &once)])
+        .expect("written again");
+
+    assert_eq!((first.created, first.deduped), (1, 0));
+    assert_eq!(
+        (again.created, again.deduped),
+        (0, 1),
+        "the second is a dedup"
+    );
+    assert_eq!(first_ids, again_ids, "and it is the same fact");
+}
+
+/// **A nested target is referenced, not ingested**, so it is not in the list.
+///
+/// The count is what a caller lines its own facts up against, so a nested fact appearing
+/// here would shift every id after it onto the wrong fact.
+#[test]
+fn a_nested_target_is_not_reported_as_a_fact_of_its_own() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    // One decl, whose `file` is the whole target fact rather than an id — which is what
+    // `decl` builds, and the shape a producer holding no ids writes.
+    let decls = [decl("nested.rs", 1, "f")];
+
+    let (written, ids) = connection
+        .write_blocks_reporting_ids(&[(DECL, &decls)])
+        .expect("written");
+
+    assert_eq!(written.created, 2, "the decl and the file it names");
+    assert_eq!(ids.len(), 1, "but only the decl was sent");
+
+    // And the one reported is the decl, not the file it carried: a decl's key is a
+    // record, where a file's is a bare string.
+    let found = connection
+        .fetch(&schema(), &[ids[0]], None)
+        .expect("the id resolves");
+
+    let Some(Found::Key(WireValue::Record(fields))) = found.first() else {
+        panic!("the decl's key is a record, got {found:?}");
+    };
+    assert_eq!(fields.len(), 3, "file, line, name");
+}
+
+/// **A stream that did not ask gets no `IDS` frame**, which is what makes this additive.
+///
+/// A producer writing millions of facts pays nothing for a reply it has no use for, and
+/// a client that predates the frame never meets one.
+#[test]
+fn a_write_that_did_not_ask_for_ids_is_one_frame_as_it_always_was() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let files = [file("a.rs"), file("b.rs")];
+    let written = connection.write(FILE, &files).expect("written");
+
+    assert_eq!(written.created, 2);
+
+    // The stream ended cleanly and the connection is still usable, which is the whole
+    // claim: nothing was left unread in the socket for the next stream to trip over.
+    let mut result = connection.query("P where src.File P").expect("a query");
+    assert_eq!(connection.drain(&mut result).expect("rows").len(), 2);
+}

@@ -1,35 +1,35 @@
-//! **An exported image of a real index, loaded and queried.**
+//! **An exported dump of a real index, loaded and queried.**
 //!
 //! The batteries beside this one prove the load path against the database this
 //! crate writes in Rust. That database is twelve facts chosen by hand; this is the
 //! other question — whether a *real* index, twenty thousand facts written by Roslyn
 //! against `schemas/dotnet.sigla`, survives the same trip.
 //!
-//! **Ignored, because the image is not in the repository and should not be.** It is
+//! **Ignored, because the dump is not in the repository and should not be.** It is
 //! built by indexing a checkout, which needs MSBuild, a server and a minute — so it
 //! is named by an environment variable and run on purpose:
 //!
 //! ```sh
 //! ./clients/dotnet/index-repo.sh clients/dotnet/Boxops.Fjord.Client/Boxops.Fjord.Client.csproj code --styles
 //! fjord --data-dir /tmp/fj-index/db finish 'code#net10.0'
-//! fjord --data-dir /tmp/fj-index/db export 'code#net10.0' --to /tmp/fj-index/client.fjmem
+//! fjord --data-dir /tmp/fj-index/db export 'code#net10.0' --to /tmp/fj-index/client.jsonl
 //!
-//! FJORD_CORPUS_IMAGE=/tmp/fj-index/client.fjmem \
+//! FJORD_CORPUS_DUMP=/tmp/fj-index/client.jsonl \
 //! FJORD_CORPUS_SCHEMA=schemas/dotnet.sigla \
-//!     cargo test -p fjord-inspect --test corpus_image -- --ignored --nocapture
+//!     cargo test -p fjord-inspect --test corpus_jsonl -- --ignored --nocapture
 //! ```
 
 use fjord_inspect::corpus;
 
 #[test]
-#[ignore = "not a guard: needs an exported image, built by indexing a checkout — see the module note"]
-fn a_real_index_loads_from_its_image_and_answers() {
-    let image_path =
-        std::env::var("FJORD_CORPUS_IMAGE").expect("FJORD_CORPUS_IMAGE names the image to load");
+#[ignore = "not a guard: needs an exported dump, built by indexing a checkout — see the module note"]
+fn a_real_index_loads_from_its_dump_and_answers() {
+    let dump_path =
+        std::env::var("FJORD_CORPUS_DUMP").expect("FJORD_CORPUS_DUMP names the dump to load");
     let schema_path = std::env::var("FJORD_CORPUS_SCHEMA")
         .expect("FJORD_CORPUS_SCHEMA names the schema it was written against");
 
-    let image = std::fs::read(&image_path).expect("the image reads");
+    let dump = std::fs::read_to_string(&dump_path).expect("the dump reads");
 
     // Composed the way the indexer composes it: `dotnet.sigla` reaches five files
     // by import, and following an import is sigla's job.
@@ -39,8 +39,8 @@ fn a_real_index_loads_from_its_image_and_answers() {
             .expect("the schema resolves");
     let source = fjord_schema::syntax::print::print(&resolved.schema);
 
-    let loaded = corpus::load(&image, &source);
-    assert!(loaded.ok, "the image was refused: {:?}", loaded.problem);
+    let loaded = corpus::load_jsonl(&dump, &source);
+    assert!(loaded.ok, "the dump was refused: {:?}", loaded.problem);
 
     println!(
         "loaded {} rows, schema {}",
