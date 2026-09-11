@@ -193,6 +193,19 @@ pub enum Command {
         /// Where to write it
         #[arg(long, value_name = "PATH")]
         to: PathBuf,
+
+        /// Group the facts by predicate rather than putting each fact's targets
+        /// immediately above it
+        ///
+        /// The default order is the one a person reads: the answer to "what is this
+        /// `3`?" is a line or two up. This one writes every fact of a predicate before
+        /// any fact of the next, predicates still in dependency order.
+        ///
+        /// It is the cheaper export: only one group of facts is held at a time and
+        /// there is no dependency walk to do. On a 550,000-fact database, 2.5s and
+        /// 299 MB against 6.0s and 364 MB. The file itself is the same size.
+        #[arg(long)]
+        compact: bool,
     },
 
     /// Show a database's metadata and schema

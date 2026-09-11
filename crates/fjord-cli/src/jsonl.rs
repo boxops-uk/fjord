@@ -186,14 +186,22 @@ impl Seen {
                 .map(|s| WireValue::Str(s.to_owned()))
                 .ok_or_else(|| format!("{at}: expected a string, found {}", shape(json))),
 
-            // **Base64, and stated as such in the tool's own schema.** A JSON array of
-            // numbers would read as bytes too, and would silently accept `[300]`.
+            // **Lowercase hex, which is what `fjord export` writes and what every JSON
+            // view of a fact renders.** A JSON array of numbers would read as bytes too,
+            // and would silently accept `[300]`.
+            //
+            // Hex rather than base64 because of what a *wrong* encoding does here. The
+            // two alphabets overlap, so a base64 reader accepts every hex string and
+            // quietly decodes it to three-quarters of the wrong bytes — no error, a
+            // database that is silently not the one exported. Hex is the narrow
+            // alphabet: it rejects the uppercase, `+`, `/` and `=` that base64 is full
+            // of, so the same mistake is a refusal on the line it is on.
             PredicateTy::Bytes => {
                 let text = json.as_str().ok_or_else(|| {
-                    format!("{at}: expected base64 in a string, found {}", shape(json))
+                    format!("{at}: expected hex in a string, found {}", shape(json))
                 })?;
                 Ok(WireValue::Bytes(
-                    base64(text).map_err(|why| format!("{at}: {why}"))?,
+                    hex(text).map_err(|why| format!("{at}: {why}"))?,
                 ))
             }
 
@@ -404,27 +412,35 @@ fn shape(json: &Value) -> &'static str {
     }
 }
 
-/// Standard base64, decoded by hand rather than by a dependency.
-fn base64(text: &str) -> Result<Vec<u8>, String> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/// Lowercase hex, two digits a byte.
+///
+/// **Uppercase is refused rather than folded.** `fjord export` writes lowercase, so an
+/// uppercase digit came from somewhere else, and the narrow alphabet is the whole reason
+/// this is hex: accepting more of it gives back the silence base64 had.
+fn hex(text: &str) -> Result<Vec<u8>, String> {
+    if text.len() % 2 != 0 {
+        return Err(format!(
+            "hex has two digits a byte, and this is {} long",
+            text.len()
+        ));
+    }
 
-    let trimmed = text.trim_end_matches('=');
-    let mut out = Vec::with_capacity(trimmed.len() * 3 / 4);
-    let mut accumulator: u32 = 0;
-    let mut bits = 0u32;
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
 
-    for byte in trimmed.bytes() {
-        let Some(index) = ALPHABET.iter().position(|c| *c == byte) else {
-            return Err(format!("`{}` is not base64", byte as char));
-        };
-
-        accumulator = (accumulator << 6) | index as u32;
-        bits += 6;
-
-        if bits >= 8 {
-            bits -= 8;
-            out.push((accumulator >> bits) as u8);
+    for pair in bytes.chunks_exact(2) {
+        let mut byte = 0u8;
+        for digit in pair {
+            let nibble = match digit {
+                b'0'..=b'9' => digit - b'0',
+                b'a'..=b'f' => digit - b'a' + 10,
+                _ => {
+                    return Err(format!("`{}` is not a lowercase hex digit", *digit as char));
+                }
+            };
+            byte = (byte << 4) | nibble;
         }
+        out.push(byte);
     }
 
     Ok(out)

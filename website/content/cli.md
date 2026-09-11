@@ -246,17 +246,31 @@ gzip code.jsonl
 | Flag | Means |
 |---|---|
 | `--to <PATH>` | **Required.** Where to write it |
+| `--compact` | Group the facts by predicate rather than by what names what |
 
 The same grammar `write` reads, so an export can be written back — and the round trip comes
 out with the identity it started with. That is what makes this the portable format: there is
 no second encoding to maintain, document and test, and a reader for it is `json.loads` per
 line.
 
-Facts come out in **dependency order**, which is not the order they are stored in: storage
-groups by predicate, so a fact whose reference is stored under a later predicate would name a
-line that has not happened yet. The walk emits targets first, depth first, and writes a fact
-the moment everything it names has been written. References cannot cycle — a key's bytes do
-not exist until the facts it references have ids — so the walk needs no cycle check.
+Neither order is the order they are stored in. Storage groups by predicate, and a predicate's
+id comes from where it sits in the schema rather than from what it references, so a fact whose
+target is stored under a later predicate would name a line that has not happened yet.
+
+By default a fact's targets are the lines **immediately above it** — a decl, then the file it
+names — which is the order a person reads one in: the answer to "what is this `3`?" is a line
+or two up. The walk emits targets first, depth first. References cannot cycle, since a key's
+bytes do not exist until the facts it references have ids, so it needs no cycle check.
+
+`--compact` writes every fact of one predicate before any fact of the next, the predicates
+themselves still ordered by what they reference. It is the **cheaper export** — one group of
+facts held at a time, and no walk — measured on a 550,000-fact database at 2.5s and 299 MB
+against 6.0s and 364 MB. The file is the same size either way.
+
+A schema may declare two predicates that name each other, and then no order over predicates
+exists. `--compact` falls back to the depth-first walk inside such a group and nowhere else.
+A predicate that names *itself* is one of these, which is why the size of a group is not the
+test.
 
 It is bigger than the store and compresses to about the same: on a 177,725-fact index, 24 MB
 of JSONL against 7.7 MB of store, and 2.2 MB gzipped against 1.9. Loading it costs a parse

@@ -21,36 +21,57 @@ pub struct OwnedRow {
     pub value: Vec<u8>,
 }
 
+/// Read every row of one predicate.
+///
+/// **One scan, because that is what a scan is.** The seam bounds a scan to the
+/// predicate named by `lo`'s leading bytes, so there is no walk of the whole key space
+/// to be had and asking for one would be asking the store to do something it has said
+/// it does not do.
+///
+/// Rows come back in **key** order, which is the order they are stored in and not the
+/// order they were written in. A caller that needs the second sorts on
+/// [`OwnedRow::sequence`] — which is what a predicate whose facts reference each other
+/// has to do, because a referent is interned before its referrer and nothing else
+/// recovers that.
+pub fn rows_for<S: FactStore>(
+    store: &S,
+    predicate: PredicateId,
+) -> Result<Vec<OwnedRow>, StoreError> {
+    let lo = predicate.0.to_be_bytes();
+    let hi = predicate.0.checked_add(1).map(u32::to_be_bytes);
+
+    let mut rows = Vec::new();
+
+    for found in store.scan(&lo, hi.as_ref().map(|end| end.as_slice()))? {
+        let (_, id) = found?;
+
+        // The key comes from `point` rather than from the scan: a scan yields the
+        // *full* key, predicate prefix and all, and a row is stored without it.
+        let Some(entity) = store.point(id)? else {
+            continue;
+        };
+
+        rows.push(OwnedRow {
+            predicate: id.predicate(),
+            key: entity.key.to_vec(),
+            sequence: id.sequence(),
+            value: entity.value.to_vec(),
+        });
+    }
+
+    Ok(rows)
+}
+
 /// Read every row of `store`, predicate by predicate, for `predicate_count`
 /// predicates — the schema's length, which is one past the largest valid id.
 ///
-/// **One scan per predicate, because that is what a scan is.** The seam bounds a
-/// scan to the predicate named by `lo`'s leading bytes, so there is no walk of the
-/// whole key space to be had and asking for one would be asking the store to do
-/// something it has said it does not do.
+/// **The whole database, resident.** A caller that can work a predicate at a time wants
+/// [`rows_for`] instead, and for a real index the difference is whether it fits.
 pub fn rows_of<S: FactStore>(store: &S, predicate_count: u32) -> Result<Vec<OwnedRow>, StoreError> {
     let mut rows = Vec::new();
 
     for predicate in 0..predicate_count {
-        let lo = predicate.to_be_bytes();
-        let hi = predicate.checked_add(1).map(u32::to_be_bytes);
-
-        for found in store.scan(&lo, hi.as_ref().map(|end| end.as_slice()))? {
-            let (_, id) = found?;
-
-            // The key comes from `point` rather than from the scan: a scan yields the
-            // *full* key, predicate prefix and all, and a row is stored without it.
-            let Some(entity) = store.point(id)? else {
-                continue;
-            };
-
-            rows.push(OwnedRow {
-                predicate: id.predicate(),
-                key: entity.key.to_vec(),
-                sequence: id.sequence(),
-                value: entity.value.to_vec(),
-            });
-        }
+        rows.append(&mut rows_for(store, PredicateId(predicate))?);
     }
 
     Ok(rows)

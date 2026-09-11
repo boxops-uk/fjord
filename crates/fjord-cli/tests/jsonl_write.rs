@@ -14,7 +14,8 @@ use std::{
 const SCHEMA: &str = "schema demo {\n  \
      predicate File : string\n  \
      predicate Decl : { file : File, name : string, line : int }\n  \
-     predicate Digest : { file : File } -> { sha : string }\n}\n";
+     predicate Digest : { file : File } -> { sha : string }\n  \
+     predicate Styles : { file : File } -> { payload : bytes }\n}\n";
 
 struct Serving {
     child: Child,
@@ -260,6 +261,22 @@ fn a_line_that_does_not_fit_the_schema_says_which_and_why() {
             "{\"predicate\":\"demo.File\",\"fact\":\"a\",\"value\":{\"x\":1}}\n",
             "has no value side",
         ),
+        // **Base64 is what a `bytes` field must not quietly accept.** The alphabets
+        // overlap, so a base64 reader takes every hex string and decodes it to
+        // three-quarters of the wrong bytes without a word — which is a database that
+        // is silently not the one exported. Hex is narrow enough to say so.
+        (
+            "base64.jsonl",
+            "{\"id\":\"f\",\"predicate\":\"demo.File\",\"fact\":\"a\"}\n\
+             {\"predicate\":\"demo.Styles\",\"fact\":{\"file\":\"f\"},\"value\":{\"payload\":\"AP8Qpw==\"}}\n",
+            "is not a lowercase hex digit",
+        ),
+        (
+            "oddhex.jsonl",
+            "{\"id\":\"f\",\"predicate\":\"demo.File\",\"fact\":\"a\"}\n\
+             {\"predicate\":\"demo.Styles\",\"fact\":{\"file\":\"f\"},\"value\":{\"payload\":\"00f\"}}\n",
+            "hex has two digits a byte",
+        ),
         ("garbage.jsonl", "this is not json\n", "not JSON"),
     ] {
         let path = file_of(&serving, name, lines);
@@ -363,6 +380,7 @@ fn an_export_written_back_has_the_identity_it_started_with() {
 {"id": "4", "predicate": "demo.Decl", "fact": {"file": "1", "name": "get", "line": 30}}
 {"id": "5", "predicate": "demo.Decl", "fact": {"file": "2", "name": "plan", "line": 3}}
 {"predicate": "demo.Digest", "fact": {"file": "2"}, "value": {"sha": "abc"}}
+{"predicate": "demo.Styles", "fact": {"file": "1"}, "value": {"payload": "00ff10a7"}}
 "#,
     );
 
@@ -381,39 +399,107 @@ fn an_export_written_back_has_the_identity_it_started_with() {
         .map(|rest| rest.trim().to_owned())
         .expect("finish reports an identity");
 
-    // Export reads the store directly, so the server goes down for it.
-    server.stop();
-
-    let dump = server.root.parent().expect("a parent").join("out.jsonl");
-    let (ok, said, why) = fjord(
-        &server.root,
-        &["export", "code", "--to", dump.to_str().expect("utf8")],
-    );
-    assert!(ok, "{why}");
-    assert!(said.contains("6 fact(s)"), "{said}");
-
-    // A second database in the same root, built from that dump alone.
     let schema = server.root.parent().expect("a parent").join("demo.sigla");
+    let scratch = server.root.parent().expect("a parent").to_owned();
+
+    // **Both orders, because both claim to be the same facts.** They differ in what a
+    // line's neighbours are and in nothing else, so an order that dropped or duplicated
+    // one would show here and only here.
+    for (order, into) in [("dependency", "back"), ("grouped", "back_compact")] {
+        // Export reads the store directly, so the server goes down for it.
+        server.stop();
+
+        let dump = scratch.join(format!("{order}.jsonl"));
+        let mut args = vec!["export", "code", "--to", dump.to_str().expect("utf8")];
+        if order == "grouped" {
+            args.push("--compact");
+        }
+
+        let (ok, said, why) = fjord(&server.root, &args);
+        assert!(ok, "{order}: {why}");
+        assert!(said.contains("7 fact(s)"), "{order}: {said}");
+
+        // A second database in the same root, built from that dump alone.
+        let (ok, _, why) = fjord(
+            &server.root,
+            &["create", into, "--schema", schema.to_str().expect("utf8")],
+        );
+        assert!(ok, "{order}: {why}");
+
+        server.restart();
+
+        let (ok, said, why) = fjord(&server.root, &["write", into, dump.to_str().expect("utf8")]);
+        assert!(ok, "{order}: {why}");
+        assert!(said.contains("7 fact(s) written"), "{order}: {said}");
+
+        let (ok, resealed, why) = fjord(&server.root, &["finish", into]);
+        assert!(ok, "{order}: {why}");
+
+        assert!(
+            resealed.contains(&identity),
+            "{order}: the round trip changed the identity: {identity} is not in {resealed}"
+        );
+    }
+}
+
+/// **`--compact` writes a predicate's facts as one run**, and the predicates themselves
+/// still in dependency order.
+///
+/// Both halves matter and only together: a run per predicate that put `Decl` before the
+/// `File` it names would be a file nothing can read back, and predicates in dependency
+/// order that interleaved their facts would not be grouped at all.
+#[test]
+fn a_compact_export_writes_each_predicate_as_one_run() {
+    let mut server = serving();
+
+    let seed = file_of(
+        &server,
+        "seed.jsonl",
+        r#"{"id": "1", "predicate": "demo.File", "fact": "a.py"}
+{"id": "2", "predicate": "demo.Decl", "fact": {"file": "1", "name": "put", "line": 12}}
+{"id": "3", "predicate": "demo.File", "fact": "b.py"}
+{"id": "4", "predicate": "demo.Decl", "fact": {"file": "3", "name": "get", "line": 30}}
+"#,
+    );
+
     let (ok, _, why) = fjord(
         &server.root,
-        &["create", "back", "--schema", schema.to_str().expect("utf8")],
+        &["write", "code", seed.to_str().expect("utf8")],
     );
     assert!(ok, "{why}");
 
-    server.restart();
+    server.stop();
 
-    let (ok, said, why) = fjord(
+    let dump = server
+        .root
+        .parent()
+        .expect("a parent")
+        .join("compact.jsonl");
+    let (ok, _, why) = fjord(
         &server.root,
-        &["write", "back", dump.to_str().expect("utf8")],
+        &[
+            "export",
+            "code",
+            "--to",
+            dump.to_str().expect("utf8"),
+            "--compact",
+        ],
     );
     assert!(ok, "{why}");
-    assert!(said.contains("6 fact(s) written"), "{said}");
 
-    let (ok, resealed, why) = fjord(&server.root, &["finish", "back"]);
-    assert!(ok, "{why}");
+    let text = std::fs::read_to_string(&dump).expect("the dump reads");
+    let order: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            let at = line.find("\"predicate\":\"")? + 13;
+            let rest = &line[at..];
+            Some(rest[..rest.find('"')?].to_owned())
+        })
+        .collect();
 
-    assert!(
-        resealed.contains(&identity),
-        "the round trip changed the identity: {identity} is not in {resealed}"
+    assert_eq!(
+        order,
+        vec!["demo.File", "demo.File", "demo.Decl", "demo.Decl"],
+        "{text}"
     );
 }

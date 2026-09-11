@@ -327,8 +327,14 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             Ok(())
         }
 
-        Command::Export { name, to } => {
-            let dumped = commands::export::run(root, &context.target(name)?, to)?;
+        Command::Export { name, to, compact } => {
+            let order = if *compact {
+                commands::export::Order::Grouped
+            } else {
+                commands::export::Order::Dependency
+            };
+
+            let dumped = commands::export::run(root, &context.target(name)?, to, order)?;
 
             println!(
                 "wrote {} fact(s) to {} ({} bytes)",

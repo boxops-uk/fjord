@@ -13,8 +13,10 @@
 #            for the highlighting, into a real database through a real server
 #   finish   sealing is what computes the content identity; an export of a database
 #            still being written is a moment nobody can name
-#   export   every fact as JSONL, in dependency order — the portable format, which a
-#            browser can load because a reference only ever names an earlier line
+#   export   every fact as JSONL — the portable format, which a browser can load
+#            because a reference only ever names an earlier line. `--compact` because
+#            nothing reads this by hand: it is the cheaper export, and a predicate at a
+#            time is how the loader walks it anyway
 #   compose  the schema the export is read against, resolved through its imports — the
 #            page states it, and a predicate or field it does not declare is refused
 set -euo pipefail
@@ -62,7 +64,7 @@ mkdir -p "$out"
 # a glance. `scripts/check-docs.py` holds the retired names, so that collision is a
 # failed gate rather than a slow misunderstanding.
 echo "==> exporting"
-"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/corpus.jsonl"
+"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/corpus.jsonl" --compact
 
 echo "==> composing the schema"
 "$fjord" --schema-path "$root/schemas" schema compose "$root/schemas/dotnet.sigla" \
