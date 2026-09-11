@@ -178,10 +178,11 @@ pub enum Command {
         format: Format,
     },
 
-    /// Write a database out as a store image — every row, with the id it has
+    /// Write a database out as a portable file — every fact, in dependency order
     ///
-    /// The shape a database is rebuilt from somewhere that cannot write facts of its
-    /// own, a browser above all.
+    /// The same grammar `fjord write` reads, so an export can be written back. A
+    /// reference carries the local id of a line written earlier, so the file is read in
+    /// one forward pass and the ids it names are its own.
     ///
     /// Reads the store directly, so it needs a data directory no server is holding:
     /// stop the server first, or export from a copy.
@@ -189,7 +190,7 @@ pub enum Command {
         /// The database to write out, as `name` or `name@instance`
         name: String,
 
-        /// Where to write the image
+        /// Where to write it
         #[arg(long, value_name = "PATH")]
         to: PathBuf,
     },

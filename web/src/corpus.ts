@@ -2,9 +2,10 @@
  * **The code index, in the page.**
  *
  * `wasm.ts` loads the engine; this loads the *corpus* — a real checkout walked by
- * Roslyn, exported by `fjord export` as a store image, fetched as a static asset and
- * put back into a `MemStore`. Nothing here interns a fact, because nothing compiled
- * to WebAssembly can: the ids were assigned once, offline, and travel with the rows.
+ * Roslyn, exported by `fjord export` as JSONL, fetched as a static asset and read back
+ * into a `MemStore`. Nothing here interns a fact, because nothing compiled to
+ * WebAssembly can: a reference in the file names an earlier line, so the load counts
+ * out a sequence per predicate instead.
  *
  * **The types come from the module, not from here.** `wasm-bindgen` writes the
  * `.d.ts` from the Rust, so `Blob`, `Definition`, `Reference` and `Hit` are the
@@ -24,7 +25,7 @@ import init, {
   children,
   definitions,
   files,
-  load_corpus,
+  load_corpus_jsonl,
   open,
   outline,
   packages,
@@ -77,7 +78,7 @@ export type Corpus = {
  * from the repository name.
  */
 const base = import.meta.env.BASE_URL
-const IMAGE = `${base}corpus/corpus.fjmem`
+const FACTS = `${base}corpus/corpus.jsonl`
 const SCHEMA = `${base}corpus/corpus.sigla`
 
 let corpus: Promise<Corpus> | null = null
@@ -93,14 +94,14 @@ export function loadCorpus(): Promise<Corpus> {
   corpus ??= (async () => {
     await init({ module_or_path: wasmUrl })
 
-    const [image, schema] = await Promise.all([
-      fetch(IMAGE).then((response) => {
+    const [facts, schema] = await Promise.all([
+      fetch(FACTS).then((response) => {
         if (!response.ok) {
           throw new Error(
-            `no corpus at ${IMAGE} (${response.status}) — run scripts/build-corpus.sh`,
+            `no corpus at ${FACTS} (${response.status}) — run scripts/build-corpus.sh`,
           )
         }
-        return response.arrayBuffer()
+        return response.text()
       }),
       fetch(SCHEMA).then((response) => {
         if (!response.ok) throw new Error(`no schema at ${SCHEMA} (${response.status})`)
@@ -108,9 +109,7 @@ export function loadCorpus(): Promise<Corpus> {
       }),
     ])
 
-    const loaded = JSON.parse(
-      load_corpus(new Uint8Array(image), schema),
-    ) as Loaded
+    const loaded = JSON.parse(load_corpus_jsonl(facts, schema)) as Loaded
 
     if (!loaded.ok) throw new Error(loaded.problem ?? 'the corpus was refused')
 

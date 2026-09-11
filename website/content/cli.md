@@ -200,6 +200,72 @@ one step earlier.
 The directory is `<root>/<name>/<instance>/`, where the instance is a ULID. Content identity does
 not exist yet — it hashes the base facts, so it can only be computed at `finish`.
 
+## `fjord write <name> <file.jsonl>…`
+
+```bash
+fjord --data-dir ./db write code facts.jsonl
+```
+
+One JSON object per line:
+
+```json
+{"id": "f", "predicate": "src.File", "fact": "store/keys.py"}
+{"id": "2", "predicate": "src.FileDigest", "fact": {"file": "f"}, "value": {"digest": "a3f1…"}}
+{"predicate": "src.FileInfo", "fact": {"file": "f"}, "value": {"bytes": 812, "lines": 31, "endsInNewline": {"true_": {}}}}
+```
+
+Blank lines and lines starting with `#` are skipped, and `id` is optional on a fact nothing
+references.
+
+**`id` names a fact within the file** — not the id the database gives it. A reference field
+carries the id of a fact written on an **earlier** line, and a forward reference is refused
+rather than held over. Refusing is what makes a reader one forward pass: nothing is buffered
+waiting for a target, a cycle cannot be expressed, and the order a person reads the file in
+is the order it is built in.
+
+Renumbering on the way in costs nothing. Content identity is a multiset hash over each fact's
+*logical* form ([`ops-I4`](operations.html)), so a copy read back under fresh numbering
+is the same database.
+
+A union takes an object naming exactly one alternative — `{"true_": {}}`, `{"just": 3}` — and
+`bytes` is lowercase hex. Every refusal names the file, the line and the field.
+
+**This is the simple way in, not the fast one.** A producer writing at volume speaks the wire
+protocol through a client library, where a fact is encoded once and a block carries hundreds
+of them; interning there is a `FactId` rather than a copy of the target fact. This is for the
+other case — a person authoring a few facts, an agent fiddling, a fixture. It needs a running
+server, because ids are the backend's to mint.
+
+## `fjord export <name> --to <file.jsonl>`
+
+```bash
+fjord --data-dir ./db export code --to code.jsonl
+gzip code.jsonl
+```
+
+| Flag | Means |
+|---|---|
+| `--to <PATH>` | **Required.** Where to write it |
+
+The same grammar `write` reads, so an export can be written back — and the round trip comes
+out with the identity it started with. That is what makes this the portable format: there is
+no second encoding to maintain, document and test, and a reader for it is `json.loads` per
+line.
+
+Facts come out in **dependency order**, which is not the order they are stored in: storage
+groups by predicate, so a fact whose reference is stored under a later predicate would name a
+line that has not happened yet. The walk emits targets first, depth first, and writes a fact
+the moment everything it names has been written. References cannot cycle — a key's bytes do
+not exist until the facts it references have ids — so the walk needs no cycle check.
+
+It is bigger than the store and compresses to about the same: on a 177,725-fact index, 24 MB
+of JSONL against 7.7 MB of store, and 2.2 MB gzipped against 1.9. Loading it costs a parse
+the store does not — roughly 3× — which is the price of the format being one anybody can read.
+
+**Reads the store directly**, which means opening the storage engine, which
+[`ops-I1`](operations.html) gives to one process: a server holding the root is a
+refusal rather than something to work around. Stop it, or export from a copy.
+
 ## `fjord finish <name>`
 
 ```bash

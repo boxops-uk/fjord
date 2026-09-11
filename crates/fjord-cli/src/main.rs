@@ -113,16 +113,16 @@ pub enum CliError {
     NoServer { target: fjord_client::Endpoint },
 
     /// `export` reads every row, which means opening fjall, which `ops-I1` gives to
-    /// one process. A server holding the root is not a fault to work around — the
-    /// image is built from a database nothing else is serving.
+    /// one process. A server holding the root is not a fault to work around — an export
+    /// is taken from a database nothing else is serving.
     #[error(
         "export reads the store directly, and a server is holding this root\n           \
          stop it first, or export from a data directory nothing is serving"
     )]
     ExportNeedsTheRoot,
 
-    /// A database with no embedded schema copy. Its rows are keyed and valued against
-    /// a schema, so an image of them without one is bytes nothing can decode.
+    /// A database with no embedded schema copy. Its rows are keyed and valued against a
+    /// schema, so writing them out without one is bytes nothing can name a field of.
     #[error(
         "{name} embeds no schema copy, so its rows cannot be keyed to one\n           \
          it predates one being kept; re-create and re-index it to export it"
@@ -328,14 +328,13 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
         }
 
         Command::Export { name, to } => {
-            let exported = commands::export::run(root, &context.target(name)?, to)?;
+            let dumped = commands::export::run(root, &context.target(name)?, to)?;
 
             println!(
-                "wrote {} rows to {} ({} bytes, schema {:#018x})",
-                exported.rows,
+                "wrote {} fact(s) to {} ({} bytes)",
+                dumped.facts,
                 to.display(),
-                exported.bytes,
-                exported.fingerprint
+                dumped.bytes
             );
             Ok(())
         }

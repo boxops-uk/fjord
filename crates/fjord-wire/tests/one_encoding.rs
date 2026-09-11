@@ -12,8 +12,8 @@ use fjord_schema::{
     schema::{Predicate, PredicateId, PredicateTy, Schema},
 };
 use fjord_wire::{
-    FrameKind, StreamId, WireFact, WireRef, WireValue, block, decode_block,
-    decode_frame, encode_block, encode_frame,
+    FrameKind, StreamId, WireFact, WireRef, WireValue, block, decode_block, decode_frame,
+    encode_block, encode_frame,
 };
 use lasso::Rodeo;
 use std::sync::Arc;

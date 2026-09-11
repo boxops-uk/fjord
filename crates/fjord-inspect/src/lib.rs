@@ -25,7 +25,7 @@
 /// What a schema declares — what everything after parsing resolves against.
 /// The questions a code browser asks, answered in Rust rather than in the page.
 pub mod codeview;
-/// A real code index loaded from an image, queried in the page.
+/// A real code index loaded from a JSONL export, queried in the page.
 pub mod corpus;
 /// The database as a table: every row, as bytes and as a fact.
 pub mod database;
@@ -33,6 +33,8 @@ pub mod database;
 pub mod demo;
 /// The fuzzy matcher's DFA state, one consumed character at a time.
 pub mod fuzzy;
+/// A JSONL export read back into an in-memory store.
+pub mod jsonl;
 /// The lowered tree, and the types typecheck gave it.
 pub mod lowered;
 /// The plan: what the query does, and in what order.
@@ -53,7 +55,7 @@ pub mod value;
 /// What every view says the same way — a span, and a diagnostic.
 pub mod view;
 
-pub use corpus::{Loaded, load, load_json, loaded, loaded_json};
+pub use corpus::{Loaded, load_jsonl, load_jsonl_json, loaded, loaded_json};
 pub use database::{Database, PredicateRows, RowBytes, database, database_json};
 pub use demo::SCHEMA;
 pub use fuzzy::{FuzzyStep, FuzzyWalk, fuzzy, fuzzy_json};

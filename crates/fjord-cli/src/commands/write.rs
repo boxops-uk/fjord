@@ -48,7 +48,9 @@ pub fn run(target: &Target, files: &[PathBuf]) -> Result<Written, CliError> {
     )?;
 
     let mut seen = jsonl::Seen::default();
-    let mut batch: Vec<(PredicateId, WireFact)> = Vec::new();
+    // The name a line gave itself travels with its fact, because grouping below
+    // reorders them and a name matched back by position would follow the wrong fact.
+    let mut batch: Vec<(PredicateId, WireFact, Option<String>)> = Vec::new();
     let mut written = Written {
         lines: 0,
         created: 0,
@@ -67,11 +69,11 @@ pub fn run(target: &Target, files: &[PathBuf]) -> Result<Written, CliError> {
                 continue;
             }
 
-            let (predicate, fact) = seen
+            let (predicate, fact, named) = seen
                 .line(&schema, trimmed)
                 .map_err(|why| at_line(file, at + 1, &why))?;
 
-            batch.push((predicate, fact));
+            batch.push((predicate, fact, named));
             written.lines += 1;
 
             if batch.len() >= BATCH {
@@ -88,39 +90,53 @@ pub fn run(target: &Target, files: &[PathBuf]) -> Result<Written, CliError> {
 fn flush(
     connection: &mut fjord_client::Connection,
     seen: &mut jsonl::Seen,
-    batch: &mut Vec<(PredicateId, WireFact)>,
+    batch: &mut Vec<(PredicateId, WireFact, Option<String>)>,
     written: &mut Written,
 ) -> Result<(), CliError> {
     if batch.is_empty() {
         return Ok(());
     }
 
-    // **Grouped, because a block is a run of one predicate** — and the order within a
-    // group is the order the lines were read in, which is the order the ids come back in.
-    let mut grouped: std::collections::BTreeMap<u32, Vec<WireFact>> =
+    // **Grouped, because a block is a run of one predicate.** Each fact keeps the name
+    // its line gave it, so the ids that come back can be attributed without relying on
+    // the read order surviving the grouping — which it does not.
+    let mut grouped: std::collections::BTreeMap<u32, Vec<(WireFact, Option<String>)>> =
         std::collections::BTreeMap::new();
 
-    for (predicate, fact) in batch.iter() {
-        grouped.entry(predicate.0).or_default().push(fact.clone());
+    for (predicate, fact, named) in batch.drain(..) {
+        grouped.entry(predicate.0).or_default().push((fact, named));
     }
 
-    let blocks: Vec<(PredicateId, &[WireFact])> = grouped
+    // Sent in this order, so the ids come back in it.
+    let sending: Vec<(PredicateId, Vec<WireFact>)> = grouped
         .iter()
-        .map(|(id, facts)| (PredicateId(*id), facts.as_slice()))
+        .map(|(id, facts)| {
+            (
+                PredicateId(*id),
+                facts.iter().map(|(fact, _)| fact.clone()).collect(),
+            )
+        })
         .collect();
 
-    // **Asked for, because a later line may reference one of these.** Grouping reorders
-    // the facts, so what is handed back is matched against the order actually sent rather
-    // than against the order they were read.
+    let blocks: Vec<(PredicateId, &[WireFact])> = sending
+        .iter()
+        .map(|(id, facts)| (*id, facts.as_slice()))
+        .collect();
+
+    // **Asked for, because a later line may reference one of these.**
     let (sent, ids) = connection.write_blocks_reporting_ids(&blocks)?;
 
-    let in_send_order: Vec<(PredicateId, WireFact)> = grouped
-        .into_iter()
-        .flat_map(|(id, facts)| facts.into_iter().map(move |fact| (PredicateId(id), fact)))
-        .collect();
+    let named_in_send_order = grouped.into_iter().flat_map(|(id, facts)| {
+        facts
+            .into_iter()
+            .map(move |(_, named)| (PredicateId(id), named))
+    });
 
-    seen.written(&in_send_order, &ids);
-    batch.clear();
+    for ((predicate, named), id) in named_in_send_order.zip(&ids) {
+        if let Some(named) = named {
+            seen.promote(&named, predicate, *id);
+        }
+    }
 
     written.created += sent.created;
     written.deduped += sent.deduped;

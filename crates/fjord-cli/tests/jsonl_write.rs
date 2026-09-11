@@ -22,10 +22,43 @@ struct Serving {
     _dir: tempfile::TempDir,
 }
 
-impl Drop for Serving {
-    fn drop(&mut self) {
+impl Serving {
+    /// Stop the server, keeping the directory.
+    ///
+    /// `export` reads the store directly, which `ops-I1` gives to one process — so a
+    /// test that exports has to put the server down first and cannot simply drop this,
+    /// which would take the databases with it.
+    fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// Serve the same root again.
+    fn restart(&mut self) {
+        let ready = self.root.parent().expect("a parent").join("ready-again");
+        let _ = std::fs::remove_file(&ready);
+
+        self.child = Command::new(env!("CARGO_BIN_EXE_fjord"))
+            .arg("--data-dir")
+            .arg(&self.root)
+            .args(["serve", "--ready-file"])
+            .arg(&ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("the server starts");
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "the server never came back");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -257,9 +290,21 @@ fn a_target_written_in_an_earlier_batch_is_referenced_by_id() {
     let serving = serving();
 
     // The batch is 10,000 facts, so 25,001 lines is three batches.
+    //
+    // **Two predicates interleaved, and the extra files named.** A batch is grouped by
+    // predicate before it is sent, so the order the ids come back in is not the order the
+    // lines were read in — a single-predicate file passes whether or not a name is kept
+    // with its fact through that grouping, because there the two orders coincide.
     let mut lines = String::from(r#"{"id": "f", "predicate": "demo.File", "fact": "hot.py"}"#);
     lines.push('\n');
     for n in 0..25_000 {
+        if n % 100 == 0 {
+            lines.push_str(&format!(
+                r#"{{"id": "extra{n}", "predicate": "demo.File", "fact": "other{n}.py"}}"#
+            ));
+            lines.push('\n');
+        }
+
         lines.push_str(&format!(
             r#"{{"predicate": "demo.Decl", "fact": {{"file": "f", "name": "n{n}", "line": {n}}}}}"#
         ));
@@ -273,8 +318,8 @@ fn a_target_written_in_an_earlier_batch_is_referenced_by_id() {
     );
     assert!(ok, "{why}");
 
-    // Every line became a fact.
-    assert!(said.contains("25001 fact(s) written"), "{said}");
+    // Every line became a fact: the hot file, 250 others, and 25,000 declarations.
+    assert!(said.contains("25251 fact(s) written"), "{said}");
 
     // And the target was inlined only by the batch it shared — which is one batch's
     // worth, not all 25,000.
@@ -290,10 +335,85 @@ fn a_target_written_in_an_earlier_batch_is_referenced_by_id() {
         "the later batches should reference by id, not re-send the target: {said}"
     );
 
-    // The target itself is one fact however often it was named.
+    // Each file is one fact however often it was named.
     let (_, count, _) = fjord(
         &serving.root,
         &["query", "code", "P where demo.File P", "--count"],
     );
-    assert_eq!(count.trim(), "1");
+    assert_eq!(count.trim(), "251");
+}
+
+/// **An export written back is the same database** — which is the whole claim a portable
+/// format makes.
+///
+/// Asserted on the **content identity**, not on the bytes or the ids. Every id changes: a
+/// dump's are its own, and writing it back mints new ones. `ops-I4`'s identity is a
+/// multiset hash over each fact's *logical* form, so a copy under different numbering
+/// hashes the same — and if it did not, the format would be losing something.
+#[test]
+fn an_export_written_back_has_the_identity_it_started_with() {
+    let mut server = serving();
+
+    let seed = file_of(
+        &server,
+        "seed.jsonl",
+        r#"{"id": "1", "predicate": "demo.File", "fact": "store/keys.py"}
+{"id": "2", "predicate": "demo.File", "fact": "query/plan.py"}
+{"id": "3", "predicate": "demo.Decl", "fact": {"file": "1", "name": "put", "line": 12}}
+{"id": "4", "predicate": "demo.Decl", "fact": {"file": "1", "name": "get", "line": 30}}
+{"id": "5", "predicate": "demo.Decl", "fact": {"file": "2", "name": "plan", "line": 3}}
+{"predicate": "demo.Digest", "fact": {"file": "2"}, "value": {"sha": "abc"}}
+"#,
+    );
+
+    let (ok, _, why) = fjord(
+        &server.root,
+        &["write", "code", seed.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+
+    let (ok, sealed, why) = fjord(&server.root, &["finish", "code"]);
+    assert!(ok, "{why}");
+
+    let identity = sealed
+        .split("identity ")
+        .nth(1)
+        .map(|rest| rest.trim().to_owned())
+        .expect("finish reports an identity");
+
+    // Export reads the store directly, so the server goes down for it.
+    server.stop();
+
+    let dump = server.root.parent().expect("a parent").join("out.jsonl");
+    let (ok, said, why) = fjord(
+        &server.root,
+        &["export", "code", "--to", dump.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+    assert!(said.contains("6 fact(s)"), "{said}");
+
+    // A second database in the same root, built from that dump alone.
+    let schema = server.root.parent().expect("a parent").join("demo.sigla");
+    let (ok, _, why) = fjord(
+        &server.root,
+        &["create", "back", "--schema", schema.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+
+    server.restart();
+
+    let (ok, said, why) = fjord(
+        &server.root,
+        &["write", "back", dump.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+    assert!(said.contains("6 fact(s) written"), "{said}");
+
+    let (ok, resealed, why) = fjord(&server.root, &["finish", "back"]);
+    assert!(ok, "{why}");
+
+    assert!(
+        resealed.contains(&identity),
+        "the round trip changed the identity: {identity} is not in {resealed}"
+    );
 }

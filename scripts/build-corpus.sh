@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Index a checkout, export it as a store image, and put it where the site can fetch it.
+# Index a checkout, export it as JSONL, and put it where the site can fetch it.
 #
 #   ./scripts/build-corpus.sh [path-to-project-or-solution] [out-dir]
 #
@@ -11,12 +11,12 @@
 #
 #   index    a real compiler walks real source — Buildalyzer and Roslyn, `--styles`
 #            for the highlighting, into a real database through a real server
-#   finish   sealing is what computes the content identity; an image of a database
-#            still being written is an image of a moment nobody can name
-#   export   every row with the id it already has, because nothing in a browser can
-#            intern a fact (`fjord export`, and `fjord_store_mem::dump`)
-#   compose  the schema the image is keyed against, resolved through its imports —
-#            the page states it and the load refuses a mismatch
+#   finish   sealing is what computes the content identity; an export of a database
+#            still being written is a moment nobody can name
+#   export   every fact as JSONL, in dependency order — the portable format, which a
+#            browser can load because a reference only ever names an earlier line
+#   compose  the schema the export is read against, resolved through its imports — the
+#            page states it, and a predicate or field it does not declare is refused
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,12 +62,12 @@ mkdir -p "$out"
 # a glance. `scripts/check-docs.py` holds the retired names, so that collision is a
 # failed gate rather than a slow misunderstanding.
 echo "==> exporting"
-"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/corpus.fjmem"
+"$fjord" --data-dir "$scratch/db" export "code#$framework" --to "$out/corpus.jsonl"
 
 echo "==> composing the schema"
 "$fjord" --schema-path "$root/schemas" schema compose "$root/schemas/dotnet.sigla" \
     > "$out/corpus.sigla"
 
-image=$(wc -c < "$out/corpus.fjmem")
-packed=$(gzip -9 -c "$out/corpus.fjmem" | wc -c)
-echo "==> $out/corpus.fjmem: $image bytes ($packed gzipped)"
+raw=$(wc -c < "$out/corpus.jsonl")
+packed=$(gzip -9 -c "$out/corpus.jsonl" | wc -c)
+echo "==> $out/corpus.jsonl: $raw bytes ($packed gzipped)"

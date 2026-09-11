@@ -135,19 +135,24 @@ pub fn database(schema: &str) -> String {
     fjord_inspect::database_json(schema)
 }
 
-/// **Load a code index into the page** — a store image, keyed against `schema`.
+/// Load the page's corpus — the JSONL a `fjord export` writes.
 ///
-/// The image is what `fjord export` writes: every row of a real database with the
-/// id it already has. Nothing here interns anything, because nothing compiled to
-/// WebAssembly can — the write funnel reaches the fjall backend by name.
+/// **Nothing here interns a fact**, because nothing compiled to WebAssembly can: the
+/// write funnel reaches the fjall backend by name. It does not need to. A file whose
+/// references only ever name earlier lines needs *counting* rather than interning — each
+/// line takes the next sequence for its predicate, and a reference resolves through the
+/// ids already handed out.
 ///
-/// Answers a JSON report rather than throwing: a refused image is an ordinary
-/// thing for a page to have to show, and the commonest reason is a schema that
-/// has moved since the asset was built.
+/// So the ids differ from the database the file came from, and that costs nothing: a
+/// content identity is a multiset hash over each fact's logical form.
+///
+/// Answers a JSON report rather than throwing: a refused corpus is an ordinary thing for
+/// a page to have to show, and the commonest reason is a schema that has moved since the
+/// asset was built.
 #[wasm_bindgen]
 #[must_use]
-pub fn load_corpus(image: &[u8], schema: &str) -> String {
-    fjord_inspect::corpus::load_json(image, schema)
+pub fn load_corpus_jsonl(text: &str, schema: &str) -> String {
+    fjord_inspect::corpus::load_jsonl_json(text, schema)
 }
 
 /// What is loaded, without loading anything.

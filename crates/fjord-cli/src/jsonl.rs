@@ -3,9 +3,9 @@
 //! One JSON object per line:
 //!
 //! ```text
-//! {"id": "1", "predicate": "src.File", "fact": "store/keys.py"}
-//! {"id": "2", "predicate": "src.Decl", "fact": {"file": "1", "name": "put", "line": 12}}
-//! {"id": "3", "predicate": "src.Digest", "fact": {"file": "1"}, "value": {"sha256": "…"}}
+//! {"id": "f", "predicate": "src.File", "fact": "store/keys.py"}
+//! {"id": "2", "predicate": "src.FileDigest", "fact": {"file": "f"}, "value": {"digest": "a3f1…"}}
+//! {"predicate": "src.FileInfo", "fact": {"file": "f"}, "value": {"bytes": 812, "lines": 31, "endsInNewline": {"true_": {}}}}
 //! ```
 //!
 //! **Not the ingestion path an indexer should use.** A producer writing at volume speaks
@@ -30,7 +30,7 @@
 //! The server assigns ids, and a write stream answers with counts rather than with the
 //! ids it minted — so this end never learns what `1` became. It does not need to: a
 //! reference on the way in may be **the whole target fact**, nested, and the server
-//! interns it. So `{"file": "1"}` is expanded to the fact `1` named, and writing the same
+//! interns it. So `{"file": "f"}` is expanded to the fact `f` named, and writing the same
 //! target under twenty referrers interns it once and deduplicates the rest.
 //!
 //! The cost is that every fact seen so far is held, in order to inline it later. That is
@@ -71,41 +71,19 @@ impl Named {
 #[derive(Default)]
 pub struct Seen {
     by_id: std::collections::HashMap<String, Named>,
-    /// The ids named by the batch being built, in the order they were written, so the
-    /// ids a flush reports can be matched back to them.
-    pending: Vec<String>,
 }
 
 impl Seen {
-    /// Called once a batch has been written, with the ids the server reported.
+    /// Say what the server called a fact this file named.
     ///
-    /// **Matched by position**, which is the contract the reply states: the ids are the
-    /// top-level facts in the order they were sent. A mismatch in length is this end
-    /// having sent something it did not record, and is a bug here rather than a
-    /// malformed file — so it leaves the names pending rather than pairing them wrongly.
-    pub fn written(&mut self, sent: &[(PredicateId, WireFact)], ids: &[FactId]) {
-        if sent.len() != ids.len() {
-            return;
-        }
-
-        // Only the lines that gave themselves a name are in `pending`, and they are a
-        // subsequence of what was sent — so they are matched through the facts, not by
-        // counting.
-        let mut names = self
-            .pending
-            .drain(..)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .peekable();
-
-        for ((predicate, fact), id) in sent.iter().zip(ids) {
-            let Some(name) = names.peek() else { break };
-
-            if matches!(self.by_id.get(name.as_str()), Some(Named::Pending(held)) if held == fact) {
-                let name = names.next().expect("peeked");
-                self.by_id.insert(name, Named::Written(*predicate, *id));
-            }
-        }
+    /// **Told one at a time, by name.** Matching a batch's ids against its names by
+    /// *position* looks obvious and is wrong: a batch is grouped by predicate before it
+    /// is sent, so the order the ids come back in is not the order the lines were read
+    /// in. The caller carries each name alongside its fact through the grouping, where
+    /// nothing can separate them.
+    pub fn promote(&mut self, name: &str, predicate: PredicateId, id: FactId) {
+        self.by_id
+            .insert(name.to_owned(), Named::Written(predicate, id));
     }
 }
 
@@ -117,7 +95,11 @@ impl Seen {
     /// A sentence naming what was wrong: an id already used, a predicate the schema does
     /// not declare, a reference to an id not yet seen, or a value that does not fit its
     /// declared type.
-    pub fn line(&mut self, schema: &Schema, text: &str) -> Result<(PredicateId, WireFact), String> {
+    pub fn line(
+        &mut self,
+        schema: &Schema,
+        text: &str,
+    ) -> Result<(PredicateId, WireFact, Option<String>), String> {
         let line: Value = serde_json::from_str(text).map_err(|why| format!("not JSON: {why}"))?;
 
         let Some(object) = line.as_object() else {
@@ -178,10 +160,11 @@ impl Seen {
 
             self.by_id
                 .insert(named.clone(), Named::Pending(fact.clone()));
-            self.pending.push(named);
+
+            return Ok((id, fact, Some(named)));
         }
 
-        Ok((id, fact))
+        Ok((id, fact, None))
     }
 
     /// Coerce `json` to the declared type, or say where it did not fit.
