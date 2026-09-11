@@ -50,7 +50,7 @@
 use fjord_encoding::tuple::{Value, decode_key};
 use fjord_schema::{
     id::FactId,
-    schema::{LocalInterner, PredicateTy, Schema},
+    schema::{LocalInterner, PredicateId, PredicateTy, Schema},
 };
 
 use crate::{error::CatalogError, store::FjallDb};
@@ -106,13 +106,36 @@ pub fn compute(
     schema: &Schema,
     schema_fingerprint: u64,
 ) -> Result<Identity, CatalogError> {
-    let reader = db.reader();
+    over(&db.reader(), db.predicate_ids(), schema, schema_fingerprint)
+}
+
+/// The same, over any store that can be read.
+///
+/// **`ops-I4` is about content, not about where it is kept.** The walk below already
+/// says so — everything it does is `FactStore` — and only the two lines fetching a
+/// reader and a predicate list tied the whole to one backend. A caller holding a model
+/// store gets the same number for the same facts, which is what lets a battery compare
+/// two databases without building either on disk.
+///
+/// `predicates` is the ids to walk. A backend knows which trees exist; a caller that
+/// does not can pass every id the schema declares, since a predicate holding nothing
+/// contributes nothing.
+///
+/// # Errors
+///
+/// As [`compute`].
+pub fn over<S: FactStore>(
+    reader: &S,
+    predicates: impl IntoIterator<Item = PredicateId>,
+    schema: &Schema,
+    schema_fingerprint: u64,
+) -> Result<Identity, CatalogError> {
     let interner = LocalInterner::new(schema.interner().clone());
 
     let mut sum: u64 = 0;
     let mut facts: u64 = 0;
 
-    for predicate in db.predicate_ids() {
+    for predicate in predicates {
         let Some(declared) = schema.get(predicate) else {
             // A predicate with trees but no declaration: the schema and the data
             // disagree, and sealing that would record an identity for content this
@@ -138,14 +161,14 @@ pub fn compute(
             feed(&mut hash, &predicate.0.to_le_bytes());
 
             let key = decode_key(&interner, &entity.key, &key_ty).map_err(StoreError::Corrupt)?;
-            feed_value(&mut hash, &reader, schema, &interner, &key, 0)?;
+            feed_value(&mut hash, reader, schema, &interner, &key, 0)?;
 
             match &value_ty {
                 Some(ty) => {
                     feed(&mut hash, &[TAG_VALUE_SIDE]);
                     let value = fjord_encoding::tuple::decode_typed(&interner, &entity.value, ty)
                         .map_err(StoreError::Corrupt)?;
-                    feed_value(&mut hash, &reader, schema, &interner, &value, 0)?;
+                    feed_value(&mut hash, reader, schema, &interner, &value, 0)?;
                 }
                 None => feed(&mut hash, &[TAG_NO_VALUE_SIDE]),
             }

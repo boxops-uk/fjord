@@ -11,10 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use std::collections::HashMap;
-
-use fjord_schema::schema::{PredicateId, PredicateTy, Schema};
-
 const SCHEMA: &str = "schema demo {\n  \
      predicate File : string\n  \
      predicate Decl : { file : File, name : string, line : int }\n  \
@@ -856,178 +852,13 @@ fn an_empty_database_exports_an_empty_file() {
     assert!(said.contains("0 fact(s) written"), "{said}");
 }
 
-/// Draws for a generated document, cycled — the same tape shape
-/// [`fjord_wire::value::proptest`] uses, because the values worth drawing are the same
-/// ones.
-struct Draws {
-    ints: Vec<i64>,
-    texts: Vec<String>,
-    picks: Vec<u8>,
-    at_int: usize,
-    at_text: usize,
-    at_pick: usize,
-}
-
-impl Draws {
-    fn int(&mut self) -> i64 {
-        let value = self.ints[self.at_int % self.ints.len()];
-        self.at_int += 1;
-        value
-    }
-
-    fn text(&mut self) -> String {
-        let value = self.texts[self.at_text % self.texts.len()].clone();
-        self.at_text += 1;
-        value
-    }
-
-    fn pick(&mut self) -> usize {
-        let value = self.picks[self.at_pick % self.picks.len()] as usize;
-        self.at_pick += 1;
-        value
-    }
-}
-
-/// A JSONL document over `schema`: three facts of every predicate, references and all.
-///
-/// **Written by hand rather than by the exporter**, which is the point — a document a
-/// third party composed is what says the *grammar* is readable, where a round trip of
-/// the exporter's own output would agree with itself however wrong both halves were.
-///
-/// A reference is emitted as the target's whole line first and then as its local id, so
-/// the no-forward-reference rule holds by construction. It terminates because a
-/// generated schema's references point at predicates declared *earlier*
-/// ([`fjord_wire::value::proptest`] resolves them modulo the predicate's own index), so
-/// the walk strictly descends.
-fn a_document_over(schema: &Schema, draws: &mut Draws) -> String {
-    let mut out = String::new();
-    let mut written = Written {
-        next: 0,
-        by_key: HashMap::new(),
-    };
-
-    for index in 0..schema.len() {
-        let predicate = PredicateId(index as u32);
-        for _ in 0..3 {
-            a_line_of(predicate, schema, draws, &mut written, &mut out);
-        }
-    }
-
-    out
-}
-
-/// What the document has written, so a key is written once.
-///
-/// **Interning, because a key is an identity.** Two draws can land on one key with
-/// different values, and a database refuses that outright rather than picking a winner
-/// — so a document that emitted both would be testing the conflict rule instead of the
-/// format. The first line wins and every later reference to that key takes its id,
-/// which is what a producer does.
-struct Written {
-    next: u64,
-    by_key: HashMap<(u32, String), u64>,
-}
-
-/// One fact of `predicate`, its targets written first. Answers the local id it took.
-fn a_line_of(
-    predicate: PredicateId,
-    schema: &Schema,
-    draws: &mut Draws,
-    written: &mut Written,
-    out: &mut String,
-) -> u64 {
-    let declared = schema.get(predicate).expect("a declared predicate");
-
-    let key = a_value_of(declared.key().ty, schema, draws, written, out);
-    let value = declared
-        .value()
-        .map(|side| a_value_of(side.ty, schema, draws, written, out));
-
-    let at = (predicate.0, key.to_string());
-    if let Some(already) = written.by_key.get(&at) {
-        return *already;
-    }
-
-    written.next += 1;
-    let id = written.next;
-    written.by_key.insert(at, id);
-
-    let name = declared.name().unwrap_or_default();
-    let mut line = format!(
-        "{{\"id\":{id},\"predicate\":{},\"fact\":{key}",
-        serde_json::Value::from(name)
-    );
-    if let Some(value) = value {
-        line.push_str(&format!(",\"value\":{value}"));
-    }
-    line.push_str("}\n");
-    out.push_str(&line);
-
-    id
-}
-
-/// A well-typed JSON value for `ty`, emitting a line for every reference it holds.
-fn a_value_of(
-    ty: &PredicateTy,
-    schema: &Schema,
-    draws: &mut Draws,
-    written: &mut Written,
-    out: &mut String,
-) -> serde_json::Value {
-    match ty {
-        PredicateTy::Int => serde_json::Value::from(draws.int()),
-        PredicateTy::Str => serde_json::Value::from(draws.text()),
-
-        // The bytes a string cannot hold, rendered the way the format renders them.
-        PredicateTy::Bytes => {
-            let text = draws.text();
-            let mut bytes = text.into_bytes();
-            bytes.push(0xff);
-            let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-            serde_json::Value::from(hex)
-        }
-
-        PredicateTy::Fact(target) => {
-            serde_json::Value::from(a_line_of(*target, schema, draws, written, out))
-        }
-
-        PredicateTy::Record(fields) => serde_json::Value::Object(
-            fields
-                .iter()
-                .map(|(name, field)| {
-                    let name = schema
-                        .interner()
-                        .resolve(*name)
-                        .expect("a schema names its fields")
-                        .to_owned();
-                    (name, a_value_of(field, schema, draws, written, out))
-                })
-                .collect(),
-        ),
-
-        PredicateTy::Union(alternatives) => {
-            let chosen = &alternatives[draws.pick() % alternatives.len()];
-            let name = schema
-                .interner()
-                .resolve(chosen.name)
-                .expect("a schema names its alternatives")
-                .to_owned();
-
-            serde_json::Value::Object(
-                [(name, a_value_of(&chosen.ty, schema, draws, written, out))]
-                    .into_iter()
-                    .collect(),
-            )
-        }
-    }
-}
-
 proptest::proptest! {
-    // **Few cases, because each one is a server and five processes.** The generator's
-    // job here is reach rather than volume: a schema shape nobody would think to write
-    // by hand — a union of unions, a record of references, a value side that is a bare
-    // scalar — which the fixture above cannot enumerate and this finds in a handful of
-    // draws.
+    // **Few cases, because each one is a server and a dozen processes.** Reach is
+    // `commands::export`'s own battery, which puts thousands of documents through the
+    // reader and the writer in-process. What is left for this one is the part that only
+    // exists as a process: `fjord write`'s reader, the wire, the funnel and fjall — so
+    // it runs the same claim through the tool enough times to catch a disagreement
+    // between reading a document into a model store and writing one into a database.
     //
     // **No persisted seeds.** Proptest wants to write a counterexample beside the
     // source, and from a test binary it cannot find one — so it drops a file next to
@@ -1035,7 +866,7 @@ proptest::proptest! {
     // that nothing else in the repository keeps. A counterexample here is reported and
     // acted on, not carried.
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 8,
+        cases: 16,
         max_shrink_iters: 64,
         failure_persistence: None,
         ..proptest::prelude::ProptestConfig::default()
@@ -1048,22 +879,30 @@ proptest::proptest! {
     /// reader's parsing disagree — and the assertion is the same one a person would
     /// make by hand, that the database you get back is the database you had.
     #[test]
-    fn any_schema_and_document_survive_the_round_trip(
-        drawn in fjord_wire::value::proptest::arb_schema_and_fact()
+    fn any_schema_and_document_survive_the_binary(
+        drawn in fjord_wire::value::proptest::arb_schema_and_fact(),
+        reversed in proptest::prelude::any::<bool>(),
     ) {
-        let schema = drawn.schema();
-        let source = fjord_schema::syntax::print::print(&schema);
-
-        let mut draws = Draws {
-            ints: drawn.ints.clone(),
-            texts: drawn.texts.clone(),
-            picks: drawn.picks.clone(),
-            at_int: 0,
-            at_text: 0,
-            at_pick: 0,
+        // Reversed half the time, so the tool sees schemas whose references point at
+        // *later* predicates — the case a generated schema never reaches on its own,
+        // and the one the export's walk exists for.
+        let source = fjord_schema::syntax::print::print(&drawn.schema());
+        let source = if reversed {
+            fjord_cli::document::with_the_predicate_order_reversed(&source)
+        } else {
+            source
         };
 
-        let document = a_document_over(&schema, &mut draws);
+        let schema = fjord_schema::syntax::read("gen", &source)
+            .expect("a printed schema reads back");
+
+        let mut draws = fjord_cli::document::Draws::new(
+            drawn.ints.clone(),
+            drawn.texts.clone(),
+            drawn.picks.clone(),
+        );
+
+        let document = fjord_cli::document::a_document_over(&schema, &mut draws);
 
         let mut server = serving_against("gen", &source);
         the_round_trip_holds(&mut server, &document);

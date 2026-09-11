@@ -117,7 +117,6 @@ pub fn run(root: &Path, target: &Target, to: &Path, order: Order) -> Result<Dump
     })?;
 
     let db = entry.open_store()?;
-    let interner = LocalInterner::new(schema.interner().clone());
 
     // **One reader, so every predicate is scanned against one snapshot**: an export of a
     // database that moved under the walk would hold rows from two states.
@@ -126,17 +125,7 @@ pub fn run(root: &Path, target: &Target, to: &Path, order: Order) -> Result<Dump
     let file = std::fs::File::create(to)?;
     let mut out = std::io::BufWriter::new(file);
 
-    let mut numbering = Numbering {
-        local: HashMap::new(),
-        next: 1,
-    };
-
-    let facts = match order {
-        Order::Dependency => {
-            dependency_order(&reader, &schema, &interner, &mut numbering, &mut out)?
-        }
-        Order::Grouped => grouped_order(&reader, &schema, &interner, &mut numbering, &mut out)?,
-    };
+    let facts = write_to(&reader, &schema, order, &mut out)?;
 
     out.flush()?;
     drop(out);
@@ -145,6 +134,38 @@ pub fn run(root: &Path, target: &Target, to: &Path, order: Order) -> Result<Dump
         facts,
         bytes: std::fs::metadata(to)?.len(),
     })
+}
+
+/// Write every fact `reader` holds, as the format, in `order`. Answers how many.
+///
+/// **Separate from [`run`] because opening a store and writing a format are different
+/// jobs**, and only the second one is the format. A caller with rows already in hand —
+/// a battery over a model store, above all — writes them through this without a
+/// directory, a lock or a catalog anywhere in reach, which is what lets the grammar be
+/// tested at the volume a generator wants.
+///
+/// # Errors
+///
+/// A fact of a predicate the schema does not declare, a stored key or value that does
+/// not decode against it, a reference naming a fact `reader` does not hold, or whatever
+/// writing reports.
+pub fn write_to<S: FactStore, W: Write>(
+    reader: &S,
+    schema: &Schema,
+    order: Order,
+    out: &mut W,
+) -> Result<usize, CliError> {
+    let interner = LocalInterner::new(schema.interner().clone());
+
+    let mut numbering = Numbering {
+        local: HashMap::new(),
+        next: 1,
+    };
+
+    match order {
+        Order::Dependency => dependency_order(reader, schema, &interner, &mut numbering, out),
+        Order::Grouped => grouped_order(reader, schema, &interner, &mut numbering, out),
+    }
 }
 
 /// Every stored predicate, in an order where a component follows everything it reaches.
@@ -425,4 +446,103 @@ fn hex(bytes: &[u8]) -> String {
             let _ = write!(out, "{byte:02x}");
             out
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fjord_schema::schema::PredicateId;
+    use proptest::prelude::*;
+
+    /// What a document comes to when it is read into a model store: the store, and the
+    /// content identity of what is in it.
+    ///
+    /// **The real identity function**, over a model store rather than a directory —
+    /// `ops-I4` is about content and not about where it is kept. Two documents naming
+    /// the same facts under different local ids answer the same number, which is the
+    /// difference a round trip is allowed to make and the only one.
+    fn read_and_weigh(text: &str, schema: &Schema) -> (fjord_store_mem::MemStore, u64) {
+        let read = fjord_inspect::jsonl::read(text, schema).expect("the document reads");
+
+        let identity = fjord_store_fjall::identity::over(
+            &read.store,
+            (0..schema.len()).map(|index| PredicateId(index as u32)),
+            schema,
+            fjord_schema::fingerprint::of(schema),
+        )
+        .expect("an identity");
+
+        (read.store, identity.fingerprint)
+    }
+
+    proptest! {
+        // **Volume, because none of this costs a process.** Reading a document and
+        // writing one are the two halves of the format, and neither needs a server, a
+        // directory or a storage engine — so the generator runs here, and the battery
+        // in `tests/jsonl_write.rs` checks the same claim through the tool a few times
+        // over, where a process is what is being tested.
+        //
+        // 2,048 measured at 3.4s in a debug build, which is the budget a battery on the
+        // ordinary path gets. The number is here rather than left at proptest's 256
+        // because the generator's reach is the whole point of it: a `bytes` leaf is
+        // weighted at one in twenty, so the shapes that matter most are the ones a
+        // default run would see least.
+        #![proptest_config(ProptestConfig {
+            cases: 2048,
+            ..ProptestConfig::default()
+        })]
+
+        /// **Any schema, any document, either order: what goes in comes back.**
+        ///
+        /// Both halves of the format are under this — `fjord_inspect::jsonl` reads and
+        /// this module writes — and the assertion is the content identity, so a loss in
+        /// either moves the number while a renumbering does not.
+        #[test]
+        fn any_schema_and_document_survive_the_format(
+            drawn in fjord_wire::value::proptest::arb_schema_and_fact(),
+            compact in any::<bool>(),
+            reversed in any::<bool>(),
+        ) {
+            let source = fjord_schema::syntax::print::print(&drawn.schema());
+            let source = if reversed {
+                fjord_cli::document::with_the_predicate_order_reversed(&source)
+            } else {
+                source
+            };
+
+            let schema = fjord_schema::syntax::read("gen", &source)
+                .expect("a printed schema reads back");
+
+            let mut draws = fjord_cli::document::Draws::new(
+                drawn.ints.clone(),
+                drawn.texts.clone(),
+                drawn.picks.clone(),
+            );
+
+            let document = fjord_cli::document::a_document_over(&schema, &mut draws);
+            let (store, identity) = read_and_weigh(&document, &schema);
+
+            let order = if compact {
+                Order::Grouped
+            } else {
+                Order::Dependency
+            };
+
+            let mut written = Vec::new();
+            let facts =
+                write_to(&store, &schema, order, &mut written).expect("the store writes");
+
+            let text = String::from_utf8(written).expect("the format is UTF-8");
+            prop_assert_eq!(text.lines().count(), facts);
+
+            let (_, again) = read_and_weigh(&text, &schema);
+            prop_assert_eq!(
+                identity,
+                again,
+                "the round trip changed the database\n--- in\n{}\n--- out\n{}",
+                document,
+                text
+            );
+        }
+    }
 }
