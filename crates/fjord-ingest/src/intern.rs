@@ -295,7 +295,7 @@ fn resolve<S: FactSink>(
 
 /// The predicate a block declares, without decoding its facts.
 ///
-/// A **name**, not a number: a block names its predicate, so a splitter can group blocks
+/// A **name**, not a number: a block names its predicate, so a reader can group blocks
 /// without a schema and a caller resolves the name against whichever database it is
 /// writing into — the database's numbering never leaves it.
 ///

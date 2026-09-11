@@ -10,6 +10,7 @@
 mod cli;
 mod commands;
 mod config;
+mod jsonl;
 mod output;
 mod prompt;
 mod rows;
@@ -284,6 +285,16 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
             println!(
                 "created {} ({}) against {}",
                 created.name, created.instance, created.schema
+            );
+            Ok(())
+        }
+
+        Command::Write { name, files } => {
+            let written = commands::write::run(&context.target(name)?, files)?;
+
+            println!(
+                "read {} line(s): {} fact(s) written, {} already there",
+                written.lines, written.created, written.deduped
             );
             Ok(())
         }

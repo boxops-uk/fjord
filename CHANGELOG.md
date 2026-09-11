@@ -37,6 +37,65 @@ Deleting the declaration outright needs an offline source of types — descripto
 to a file by the CLI, cached and loaded by the client — which is the "may a fetched
 schema be cached" question the design left open.
 
+### `fjord write` takes JSONL, and the file-splitting design is gone
+
+**The simple way in, and deliberately not the fast one.** One JSON object per line:
+
+    {"id": "1", "predicate": "src.File", "fact": "store/keys.py"}
+    {"id": 2, "predicate": "src.Decl", "fact": {"file": "1", "name": "put", "line": 12}}
+    {"predicate": "src.Digest", "fact": {"file": "1"}, "value": {"sha256": "…"}}
+
+`id` names a fact **within the file** and nothing else — not the id the database will give
+it, and re-reading into a fresh database renumbers everything. That costs nothing:
+`ops-I4`'s content identity is a multiset hash over each fact's *logical* form, so a
+renumbered copy of a database is the same database.
+
+A reference carries the id of a fact written **earlier in the file**, and a forward
+reference is refused rather than held over. Refusing is what makes a reader one forward
+pass: nothing is buffered waiting for a target, and a cycle cannot be expressed. Every
+refusal names the file, the line and the field — `bad.jsonl:3: fact.file: `d` is a
+`demo.Decl`, and a `demo.File` is declared here`.
+
+This is not the path an indexer should take. A producer writing at volume speaks the wire
+protocol through a client library, where a fact is encoded once and a block carries
+hundreds; this is for a person or an agent writing a few facts by hand.
+
+**What went with it is the file-splitting design.** `find_sync`, `find_block` and `Scan`
+are deleted — 133 lines of scanner, 215 lines of tests for it, and the module doc arguing
+about false candidates and crafted checksums inside blobs. None of it had a production
+caller. It also takes with it a question the design could never answer: a damaged block
+and a false candidate are the same bytes to a scan, so resuming past one means resuming
+past the other, and a corruption `decode_block` would have reported becomes a file that
+quietly holds fewer facts.
+
+**The sync marker stays**, because it is on the wire: every `CopyData` payload carries one
+and two client implementations write it. It is a check rather than an index now —
+`decode_header` refuses bytes that do not begin with it — and a run of blocks is walked by
+the lengths the headers declare, which is exact where a scan was a guess.
+
+### A write can say what each fact was called · `I`/`i`
+
+`OPEN_WRITE_IDS` opens a write stream that reports the ids it minted, in an `IDS` frame
+just before the completion — `QUERY_PROFILE`/`PROFILE`'s shape exactly, and additive for
+the same reason: a client that opens with `W` neither sends `I` nor receives `i`, so no
+protocol bump and an indexer writing millions of facts pays nothing.
+
+**What it is for is a client interning a little of it itself.** A reference on the way in
+may be the whole target fact, which is what lets a producer keep no book of what it has
+sent. That is right until one target is referenced ten thousand times and the producer is
+re-sending the same bytes to be looked up and thrown away each time. Knowing the id lets it
+send that target once and reference it by id thereafter.
+
+The ids are the **top-level** facts in the order they were sent; a nested target is
+referenced rather than ingested in its own right and does not appear. A deduplicated fact
+still has one — the id it already had, which is the answer a caller caching it wants.
+`intern_block` was already collecting all of this and the server was discarding it.
+
+`fjord write` uses it, and the effect is measurable: 25,000 declarations referencing one
+file, across three batches, report **9,999** deduplications rather than 25,000. The first
+batch inlines the target because it has no id yet; the rest reference it by id and
+deduplicate nothing.
+
 ### A client can ask what shape a predicate is · `Y`/`y`
 
 **The encoding existed, both ends implemented it, and nothing asked the question it

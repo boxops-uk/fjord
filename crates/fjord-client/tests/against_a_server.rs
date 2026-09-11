@@ -2952,3 +2952,115 @@ fn a_fact_encoded_from_the_derived_tree_is_written_and_read_back() {
         WireValue::Record(Box::new([WireValue::Str("encode".to_owned())]))
     );
 }
+
+/// **A write says what each fact was called, and the id names that fact.**
+///
+/// Not merely that ids come back: that fetching one returns the fact it was reported for.
+/// An off-by-one in the order, or a nested target counted as a top-level fact, would
+/// leave a plausible list of well-formed ids naming the wrong rows.
+#[test]
+fn a_write_reports_the_id_of_every_fact_it_wrote() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let files = [file("a.rs"), file("b.rs"), file("c.rs")];
+    let (written, ids) = connection
+        .write_blocks_reporting_ids(&[(FILE, &files)])
+        .expect("the write reports ids");
+
+    assert_eq!(written.created, 3);
+    assert_eq!(ids.len(), 3, "one per top-level fact");
+
+    // Each id names the fact it was reported for, in the order they were sent. `fetch`
+    // answers a fact's **key**, which is what a reference resolves to.
+    let schema = schema();
+    for (id, expected) in ids.iter().zip(files.iter()) {
+        let found = connection
+            .fetch(&schema, &[*id], None)
+            .expect("the id resolves");
+
+        let Some(Found::Key(key)) = found.first() else {
+            panic!("{id:?} named nothing: {found:?}");
+        };
+        assert_eq!(*key, expected.key, "{id:?}");
+    }
+}
+
+/// **A deduplicated fact still has an id — the one it already had.**
+///
+/// Which is the answer a caller caching one wants: writing a target it has written
+/// before should hand back the same id, not nothing and not a new one.
+#[test]
+fn writing_a_fact_twice_reports_the_same_id_both_times() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let once = [file("a.rs")];
+
+    let (first, first_ids) = connection
+        .write_blocks_reporting_ids(&[(FILE, &once)])
+        .expect("written");
+    let (again, again_ids) = connection
+        .write_blocks_reporting_ids(&[(FILE, &once)])
+        .expect("written again");
+
+    assert_eq!((first.created, first.deduped), (1, 0));
+    assert_eq!(
+        (again.created, again.deduped),
+        (0, 1),
+        "the second is a dedup"
+    );
+    assert_eq!(first_ids, again_ids, "and it is the same fact");
+}
+
+/// **A nested target is referenced, not ingested**, so it is not in the list.
+///
+/// The count is what a caller lines its own facts up against, so a nested fact appearing
+/// here would shift every id after it onto the wrong fact.
+#[test]
+fn a_nested_target_is_not_reported_as_a_fact_of_its_own() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    // One decl, whose `file` is the whole target fact rather than an id — which is what
+    // `decl` builds, and the shape a producer holding no ids writes.
+    let decls = [decl("nested.rs", 1, "f")];
+
+    let (written, ids) = connection
+        .write_blocks_reporting_ids(&[(DECL, &decls)])
+        .expect("written");
+
+    assert_eq!(written.created, 2, "the decl and the file it names");
+    assert_eq!(ids.len(), 1, "but only the decl was sent");
+
+    // And the one reported is the decl, not the file it carried: a decl's key is a
+    // record, where a file's is a bare string.
+    let found = connection
+        .fetch(&schema(), &[ids[0]], None)
+        .expect("the id resolves");
+
+    let Some(Found::Key(WireValue::Record(fields))) = found.first() else {
+        panic!("the decl's key is a record, got {found:?}");
+    };
+    assert_eq!(fields.len(), 3, "file, line, name");
+}
+
+/// **A stream that did not ask gets no `IDS` frame**, which is what makes this additive.
+///
+/// A producer writing millions of facts pays nothing for a reply it has no use for, and
+/// a client that predates the frame never meets one.
+#[test]
+fn a_write_that_did_not_ask_for_ids_is_one_frame_as_it_always_was() {
+    let serving = start();
+    let mut connection = serving.open(Mode::ReadWrite);
+
+    let files = [file("a.rs"), file("b.rs")];
+    let written = connection.write(FILE, &files).expect("written");
+
+    assert_eq!(written.created, 2);
+
+    // The stream ended cleanly and the connection is still usable, which is the whole
+    // claim: nothing was left unread in the socket for the next stream to trip over.
+    let mut result = connection.query("P where src.File P").expect("a query");
+    assert_eq!(connection.drain(&mut result).expect("rows").len(), 2);
+}

@@ -25,81 +25,38 @@
 //! shape, silently; a name that is not there is [`WireError::UnknownPredicateName`], before
 //! a byte of payload is trusted.
 //!
-//! The name sits **after** the fixed-width fields on purpose — see below, a splitter must
-//! reach `length` at a fixed offset — and cannot contribute to a sync marker for the reason
-//! a string cannot: it is UTF-8, and UTF-8 never uses `0xF8`–`0xFF`.
+//! The name sits **after** the fixed-width fields, so a reader reaches `length` at a
+//! fixed offset and can skip a block it does not want without parsing it.
 //!
-//! # A marker is a candidate, and [`bytes`](crate::value::WireValue::Bytes) is why
+//! # The marker, and what it is now for
 //!
-//! A fact file must be splittable at an arbitrary offset — seek anywhere, scan
-//! forward to the next block, hand the rest to a worker — which is the property
-//! Glean's opaque sequential `Batch` cannot offer and the reason this format has a
-//! marker at all.
+//! A block opens with ten `0xFF` bytes. It was put there for a splitter — seek into a
+//! file at an arbitrary offset, scan forward to the next block, hand the rest to a
+//! worker — and that splitter was never built. Facts arrive over the socket, and the
+//! one file this format is written to is `--emit`'s golden, which is read from the
+//! start.
 //!
-//! [Operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) specifies the marker as "a
-//! reserved, structurally-illegal byte sequence (unused type-tag run the encoder
-//! never emits)", and describes every hit as *only a candidate* because "values
-//! carry arbitrary bytes (blobs/source text), so a marker can occur inside one".
-//! The first half needs amending for this codec; **the second half is exactly
-//! right, and holds here for the reason it gives**:
+//! **So the marker is a check rather than an index.** `decode_header` refuses bytes
+//! that do not begin with it, which catches a caller handing over the wrong offset,
+//! and the header's own CRC catches the rest. What went with the splitter is the
+//! machinery that scanned *for* it — and the question that machinery could never
+//! answer: a damaged block and a false candidate are the same bytes to a scan, so
+//! resuming past one means resuming past the other, and a corruption `decode_block`
+//! would have reported becomes a file that quietly holds fewer facts.
 //!
-//! - There are no type tags to reserve a run of. The value encoding is
-//!   [schema-driven](crate::value) and emits none.
-//! - A `bytes` payload is a length varint and then the bytes, raw — not validating
-//!   them is precisely what the family is for — so ten `0xFF` inside one are
-//!   ordinary data. **No fixed marker can be structurally impossible in a family
-//!   that carries arbitrary bytes.** Escaping the payload would buy the
-//!   impossibility back and cost what this module exists for: the same bytes are a
-//!   `CopyData` frame's payload and a run of a fact file, which is what makes "one
-//!   fact encoding, not two" checkable.
+//! It stays in the format because it is on the wire: every `CopyData` payload carries
+//! one, and two client implementations write it. Taking it out is a protocol change,
+//! not a tidy-up.
 //!
-//! What the encoding does buy is that a *false* candidate is rare rather than
-//! routine, and each part of that is still true:
-//!
-//!   1. **Strings contribute no `0xFF` at all.** A string is length-prefixed UTF-8,
-//!      and UTF-8 never uses `0xF8`–`0xFF` in any position.
-//!   2. **A varint contributes at most nine.** Continuation bytes are `0x80`–`0xFF`
-//!      and the final byte is below `0x80`, so a run ends where the varint does; the
-//!      longest possible is `u64::MAX`, which is `FF` nine times and then `01`.
-//!   3. **Runs cannot join across values.** A varint's last byte is below `0x80`,
-//!      so it is never `0xFF`, and a string's bytes never are.
-//!   4. **The header cannot contribute one.** `name_len`, `count` and `length` are
-//!      capped to keep their top bytes zero, so the only field free to be all-ones
-//!      is the four-byte checksum, and four is not ten.
-//!
-//! So a marker inside a block came from a `bytes` field or from nothing, and a
-//! splitter calls [`find_block`] rather than [`find_sync`]: it confirms the magic
-//! and the header checksum, and on failure **resumes scanning past that candidate**
-//! instead of giving up. That puts an *accidental* false boundary at roughly 2⁻³².
-//! It does not defeat a crafted one — a producer can write a correct CRC inside a
-//! blob, and a checksum is not a signature — which is a limit of scanning, not a
-//! fault to fix here.
-//!
-//! **Resuming has a price, and it is data loss.** A damaged block and a false
-//! candidate are the same bytes to a scan — a marker whose header does not validate
-//! — so scanning past one means scanning past the other. A block whose payload lost
-//! a bit is skipped, and the next *valid* block is returned in its place: a
-//! corruption [`decode_block`] would have reported as
-//! [`WireError::ChecksumMismatch`] becomes a file that quietly holds fewer facts.
-//! [`find_block`] therefore returns a [`Scan`], which carries the boundary and the
-//! skipped candidate both, and a caller that reads only [`Scan::block`] is choosing
-//! the silent answer.
-//!
-//! # A reader that can start at offset 0 should not scan at all
-//!
-//! Scanning is for **recovery**: a file cut mid-block, a flipped bit, a worker
-//! handed a byte range that begins in the middle of a block. It is not how a whole
-//! file is read. The header is fixed-width and [`decode_block`] already returns
-//! `OVERHEAD + name_len + length` as its consumed count, so walking that chain from
-//! offset 0 gives **exact** boundaries with no scanning and no guessing — no payload
-//! byte is ever weighed as a boundary at all. A parallel ingest should walk the
-//! chain to build its split points and hand workers exact offsets.
+//! **A run of blocks is walked by its own lengths.** `decode_block` returns
+//! `OVERHEAD + name_len + length` as its consumed count, so a reader steps from one
+//! block to the next exactly, with no payload byte ever weighed as a boundary.
 //!
 //! # Fixed-width fields, and little-endian
 //!
-//! The header is fixed-width where the payload is varints, because a splitter has to
+//! The header is fixed-width where the payload is varints, because a reader has to
 //! read `length` *before* it can trust anything else — a variable-width field would
-//! have to be parsed to be skipped, and the whole point is to skip. Little-endian
+//! have to be parsed to be skipped, and skipping is what walking the chain is. Little-endian
 //! because there is nothing to order: the storage codec's big-endian is an
 //! [I1](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i1) requirement, and this is the file where that
 //! requirement is not inherited.
@@ -112,9 +69,12 @@ use crate::{
     value::{WireFact, decode_fact, encode_fact},
 };
 
-/// The resynchronisation marker: ten `0xFF` bytes, one longer than the longest run
-/// a varint can make. A [`bytes`](crate::value::WireValue::Bytes) payload can hold
-/// one anyway — see the module docs, and use [`find_block`] to scan.
+/// The marker a block opens with: ten `0xFF` bytes, one longer than the longest run a
+/// varint can make.
+///
+/// A [`bytes`](crate::value::WireValue::Bytes) payload can hold one anyway — the family
+/// exists not to validate what it carries — which is why nothing looks for this in a
+/// payload. It is checked where a block is *expected*, by [`decode_header`].
 pub const SYNC: [u8; 10] = [0xFF; 10];
 
 /// Identifies a block header, so a candidate is rejected in four bytes before its
@@ -220,7 +180,7 @@ pub fn encode_block(
 
     // The checksum covers the header's own fields as well as the payload, so a
     // corrupted `count` or `length` is caught rather than trusted — which matters
-    // because `length` is what a splitter uses to skip.
+    // because `length` is what a reader steps over a block by.
     let mut header = Vec::with_capacity(HEADER_LEN - 4);
     header.extend_from_slice(&MAGIC);
     header.extend_from_slice(&name_len.to_le_bytes());
@@ -361,139 +321,6 @@ pub fn decode_block(bytes: &[u8], schema: &Schema) -> Result<(Vec<WireFact>, usi
     Ok((facts, OVERHEAD + name_len + header.length as usize))
 }
 
-/// The offset of the next marker at or after `from`, or `None`.
-///
-/// `memchr` finds the marker's first byte at memory bandwidth and the run is
-/// confirmed behind it — the "SIMD `memchr`-style scan" operations §8 calls for.
-///
-/// A hit is a **candidate**, not a block: this deliberately does not validate the
-/// header, because the two failures want telling apart. A candidate can be a
-/// `bytes` payload's own data rather than a boundary (see the module docs), so a
-/// splitter wants [`find_block`], which validates and scans on; this is the raw
-/// scan under it.
-#[must_use]
-pub fn find_sync(haystack: &[u8], from: usize) -> Option<usize> {
-    let mut at = from;
-
-    while at < haystack.len() {
-        let found = memchr::memchr(SYNC[0], &haystack[at..])? + at;
-
-        if haystack.len() - found >= SYNC.len() && haystack[found..found + SYNC.len()] == SYNC {
-            return Some(found);
-        }
-
-        at = found + 1;
-    }
-
-    None
-}
-
-/// What [`find_block`] found: the next boundary, **and** what it had to skip to
-/// reach it.
-///
-/// The two fields are independent, and reading only `block` is how a scan turns a
-/// reported corruption into silent data loss — see [`find_block`].
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Scan {
-    /// The offset of the next validated block at or after `from`, or `None`.
-    pub block: Option<usize>,
-    /// The first candidate that carried [`MAGIC`] and then failed validation, with
-    /// the failure. `Some` means bytes shaped like a block were skipped, and a scan
-    /// cannot say whether they were a damaged block or a blob's contents.
-    pub damaged: Option<(usize, WireError)>,
-}
-
-/// Scan for the next **validated** block at or after `from`.
-///
-/// The splitter's primitive: seek anywhere in a file, call this, and start reading
-/// whole blocks from [`Scan::block`]. A candidate is confirmed by [`MAGIC`] and then
-/// by the header checksum, and a candidate that fails is **scanned past** rather
-/// than surrendered to — which is the whole difference from [`find_sync`], and is
-/// required because a [`bytes`](crate::value::WireValue::Bytes) payload can hold a
-/// marker.
-///
-/// # Scanning past a failure can skip a real block, and [`Scan::damaged`] is the
-/// only warning
-///
-/// A scan cannot distinguish a *damaged block* from a *false candidate*: both are a
-/// marker whose header does not validate, and the bytes say nothing about which. So
-/// resuming past a failure is the only behaviour that recovers a file at all — a
-/// blob's own marker must not stop the scan — and it costs this: a block whose
-/// payload lost a bit is skipped, and the next validated block is returned in its
-/// place. Reading `block` alone therefore converts a corruption that
-/// [`decode_block`] would have *reported* as [`WireError::ChecksumMismatch`] into a
-/// file that quietly holds fewer facts. **A caller that reads `block` must read
-/// `damaged` too**, and treat it as the ambiguity it is: probable damage, not proven
-/// damage.
-///
-/// Only the first such candidate is kept, and only one past [`MAGIC`] — a blob of
-/// `0xFF` would otherwise report a candidate per byte. A candidate rejected on the
-/// magic is ordinary blob content and is not reported.
-///
-/// # What this defeats, and what it does not
-///
-/// Magic and a CRC32 put an *accidental* false boundary at roughly 2⁻³², and the
-/// caps on `name_len`, `count` and `length` reject most candidates before a
-/// checksum is ever computed. A **crafted** one is not defeated: a producer that
-/// writes a well-formed header, correct checksum and all, inside a blob gets a
-/// boundary here, because a checksum is not a signature. Scanning recovers a
-/// damaged file; it does not parse a hostile one. A caller that can read from
-/// offset 0 should walk the header chain instead — see the module docs; it never
-/// weighs a payload byte as a boundary, so neither ambiguity arises.
-///
-/// A block whose declared bytes run past the end of `haystack` is not a hit: the
-/// checksum cannot be computed without them. A worker handed a byte range therefore
-/// finds the boundaries it can read whole, and the truncated tail belongs to the
-/// next range.
-///
-/// **How that tail is reported turns on how much of the header the range holds**, and
-/// the quiet case is the one to design around. With the header complete, the tail is
-/// the benign instance of `damaged`, carrying [`WireError::LengthOutOfRange`] rather
-/// than a checksum failure. With the range ending *inside* the header — fewer than
-/// [`OVERHEAD`] bytes past the marker — there is no header yet to disbelieve, so the
-/// scan reports neither a block nor damage and answers `Scan { block: None, damaged:
-/// None }`: the same answer it gives for a range holding no block at all. Nothing
-/// distinguishes them, and nothing can, which is why a caller **splitting a file into
-/// ranges must overlap them by at least [`OVERHEAD`] bytes**. Ranges that meet exactly
-/// lose a block whose marker and header straddle the join: the first range cannot
-/// validate it and the second begins past its marker, so neither range finds it and
-/// neither reports anything missing.
-#[must_use]
-pub fn find_block(haystack: &[u8], from: usize) -> Scan {
-    let mut at = from;
-    let mut damaged = None;
-
-    while let Some(candidate) = find_sync(haystack, at) {
-        match decode_header(&haystack[candidate..]) {
-            Ok(_) => {
-                return Scan {
-                    block: Some(candidate),
-                    damaged,
-                };
-            }
-            // Neither is the shape of a block: `BadMagic` is ordinary blob content,
-            // and `UnexpectedEof` is a marker at the very end of the range.
-            Err(WireError::BadMagic | WireError::UnexpectedEof | WireError::NoSyncMarker) => {}
-            Err(why) => {
-                if damaged.is_none() {
-                    damaged = Some((candidate, why));
-                }
-            }
-        }
-
-        // Past the candidate's *first byte*, not past the marker. A payload ending
-        // in `0xFF` runs into the next block's marker and makes one long run, so the
-        // real boundary can start inside the candidate that just failed; skipping
-        // `SYNC.len()` would step over it and lose every block after.
-        at = candidate + 1;
-    }
-
-    Scan {
-        block: None,
-        damaged,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,255 +430,13 @@ mod tests {
         assert_eq!(longest_ff_run(&pair), 9);
     }
 
-    /// **A block can hold several markers and exactly one boundary**, and telling
-    /// the two apart is what [`find_block`] is for.
+    /// A run of blocks reads back as the facts that went in, walked by the lengths the
+    /// headers declare.
     ///
-    /// [`find_sync`] answers candidates: a blob carrying `0xFF` puts one inside the
-    /// payload, and a splitter that trusted it would read a fact's bytes as a
-    /// header. The header itself still cannot forge one — `name_len`, `count` and
-    /// `length` are capped to keep their top bytes zero, and four checksum bytes are
-    /// not ten — so a candidate past the block's start came from a value.
+    /// **The chain, not a scan.** `decode_block` returns what it consumed, so walking
+    /// from offset 0 gives exact boundaries with no payload byte ever weighed as one.
     #[test]
-    fn only_one_marker_in_a_block_is_a_boundary() {
-        use ::proptest::{
-            strategy::{Strategy, ValueTree},
-            test_runner::TestRunner,
-        };
-
-        const RUNS: usize = 400;
-
-        let mut runner = TestRunner::deterministic();
-        let mut with_a_candidate_inside = 0;
-
-        for _ in 0..RUNS {
-            let spec = arb_schema_and_fact()
-                .new_tree(&mut runner)
-                .unwrap()
-                .current();
-            let (_, block, _) = blocked(&spec);
-
-            assert_eq!(find_sync(&block, 0), Some(0));
-            assert_eq!(find_block(&block, 0).block, Some(0));
-            assert_eq!(
-                find_block(&block, 1).block,
-                None,
-                "a candidate inside a payload was reported as a second boundary"
-            );
-
-            with_a_candidate_inside += usize::from(find_sync(&block, 1).is_some());
-        }
-
-        assert!(
-            with_a_candidate_inside >= POPULATION_FLOOR,
-            "only {with_a_candidate_inside} of {RUNS} blocks held a candidate past their \
-             own marker, so validation was never the thing under test"
-        );
-    }
-
-    /// A schema of one predicate keyed by `bytes` — the family that can carry a
-    /// marker, and so the only one the scanning tests below have any use for.
-    fn blob_schema() -> fjord_schema::schema::Schema {
-        let mut rodeo = Rodeo::new();
-        let name = rodeo.get_or_intern("gen.P0");
-
-        fjord_schema::schema::Schema::new(
-            rodeo.into_reader(),
-            Arc::from(vec![Predicate {
-                name,
-                key: PredicateTy::Bytes,
-                value: None,
-            }]),
-        )
-    }
-
-    fn blob_fact(payload: &[u8]) -> WireFact {
-        WireFact {
-            predicate: PredicateId(0),
-            key: WireValue::Bytes(payload.to_vec()),
-            value: None,
-        }
-    }
-
-    /// Three blocks, of which the middle one is damaged by a flipped bit.
-    fn a_file_with_a_damaged_middle_block() -> (fjord_schema::schema::Schema, Vec<u8>, Vec<usize>) {
-        let schema = blob_schema();
-
-        let mut file = vec![];
-        let mut boundaries = vec![];
-        for payload in [b"one".as_slice(), b"two", b"three"] {
-            boundaries.push(file.len());
-            encode_block(&mut file, &schema, PredicateId(0), &[blob_fact(payload)])
-                .expect("a block");
-        }
-
-        // A bit inside the second block's payload: its header still parses and its
-        // caps still pass, so it fails on the checksum and nowhere earlier.
-        file[boundaries[1] + OVERHEAD + "gen.P0".len() + 1] ^= 0x01;
-
-        (schema, file, boundaries)
-    }
-
-    /// **A damaged block is scanned past, and [`Scan::damaged`] is what stops that
-    /// being silent data loss.**
-    ///
-    /// A flipped bit in a payload leaves a marker and a header that still parse, so
-    /// the scan rejects the block's *real* boundary and returns the next one. Read
-    /// through [`Scan::block`] alone, a file that [`decode_block`] would have failed
-    /// with [`WireError::ChecksumMismatch`] instead yields one block fewer and no
-    /// error at all — the corruption becomes a shorter answer. The scan cannot tell
-    /// this from a blob whose contents happen to carry a marker, so it reports both
-    /// halves and the caller decides.
-    #[test]
-    fn a_damaged_block_is_skipped_but_reported() {
-        let (schema, file, boundaries) = a_file_with_a_damaged_middle_block();
-
-        // The damaged block's boundary is real, and the raw scan still lands on it.
-        assert_eq!(find_sync(&file, 1), Some(boundaries[1]));
-        assert!(matches!(
-            decode_header(&file[boundaries[1]..]),
-            Err(WireError::ChecksumMismatch { .. })
-        ));
-
-        let scan = find_block(&file, 1);
-
-        // The trade, pinned: the block at `boundaries[1]` is skipped.
-        assert_eq!(
-            scan.block,
-            Some(boundaries[2]),
-            "a failed candidate is scanned past, damaged or not"
-        );
-
-        // And the trade is reported rather than taken in silence.
-        let (at, why) = scan
-            .damaged
-            .expect("the skipped block is reported, not lost in silence");
-        assert_eq!(at, boundaries[1]);
-        assert!(matches!(why, WireError::ChecksumMismatch { .. }));
-
-        // The block the scan did return is whole — the loss is the middle one only.
-        let (facts, _) = decode_block(&file[boundaries[2]..], &schema).expect("a block decodes");
-        assert_eq!(facts, vec![blob_fact(b"three")]);
-    }
-
-    /// **A clean file reports no damage**, so `damaged` distinguishes rather than
-    /// merely alarms: a `Some` that a whole file also produced would tell a caller
-    /// nothing, and the guard above would pass on a constant.
-    #[test]
-    fn an_undamaged_file_reports_no_damage() {
-        let schema = blob_schema();
-
-        let mut file = vec![];
-        let mut boundaries = vec![];
-        for payload in [b"one".as_slice(), b"two", b"three"] {
-            boundaries.push(file.len());
-            encode_block(&mut file, &schema, PredicateId(0), &[blob_fact(payload)])
-                .expect("a block");
-        }
-
-        for from in 0..file.len() {
-            let scan = find_block(&file, from);
-            assert_eq!(
-                scan.block,
-                boundaries.iter().copied().find(|b| *b >= from),
-                "scanning from offset {from}"
-            );
-            assert_eq!(scan.damaged, None, "scanning from offset {from}");
-        }
-    }
-
-    /// **A false candidate is scanned past, not surrendered to** — and the resume
-    /// steps one byte, not one marker.
-    ///
-    /// A payload ending in `0xFF` runs into the next block's marker and makes one
-    /// long run, so the real boundary begins *inside* the candidate that just
-    /// failed. Resuming at `candidate + SYNC.len()` would step over it and lose
-    /// every block after, silently: a scan that finds fewer boundaries reports no
-    /// error, it just returns fewer facts.
-    #[test]
-    fn a_false_candidate_is_scanned_past_one_byte_at_a_time() {
-        let schema = blob_schema();
-
-        // Every check but the checksum passes on this one: a marker, the magic, and
-        // a header whose three caps are all satisfied by zeros.
-        let mut poison = vec![];
-        poison.extend_from_slice(&SYNC);
-        poison.extend_from_slice(&MAGIC);
-        poison.extend_from_slice(&[0x00; 16]);
-        // And a tail that merges with the marker of whatever block comes next.
-        poison.extend_from_slice(&[0xFF; 3]);
-
-        let mut file = vec![];
-        encode_block(&mut file, &schema, PredicateId(0), &[blob_fact(&poison)]).expect("a block");
-        let second = file.len();
-        encode_block(&mut file, &schema, PredicateId(0), &[blob_fact(b"plain")]).expect("a block");
-
-        // The raw scan is fooled twice over: by the payload's own marker, and by the
-        // merged run that starts three bytes before the real boundary.
-        let candidate = find_sync(&file, 1).expect("a candidate inside the payload");
-        assert!(
-            candidate < second,
-            "the payload's own marker is not a boundary"
-        );
-        assert_eq!(
-            find_sync(&file, second - 3),
-            Some(second - 3),
-            "the payload's trailing 0xFF merge with the next block's marker"
-        );
-
-        assert_eq!(find_block(&file, 0).block, Some(0));
-        assert_eq!(find_block(&file, 1).block, Some(second));
-        assert_eq!(find_block(&file, second + 1).block, None);
-
-        // And the boundary it found is a block.
-        let (facts, used) = decode_block(&file[second..], &schema).expect("a block decodes");
-        assert_eq!(facts, vec![blob_fact(b"plain")]);
-        assert_eq!(used, file.len() - second);
-    }
-
-    /// **Validation defeats an accidental false boundary, not a crafted one.** A
-    /// whole valid block written inside a blob *is* a boundary to a scan, checksum
-    /// and all, because a CRC is a checksum and not a signature.
-    ///
-    /// Pinned rather than hedged in a doc comment: a reader that needs exact
-    /// boundaries against a producer it does not trust must walk the header chain
-    /// from offset 0, which never weighs a payload byte at all.
-    #[test]
-    fn a_crafted_block_inside_a_payload_is_indistinguishable_from_a_boundary() {
-        let schema = blob_schema();
-
-        let mut smuggled = vec![];
-        encode_block(
-            &mut smuggled,
-            &schema,
-            PredicateId(0),
-            &[blob_fact(b"inner")],
-        )
-        .expect("a block");
-
-        let mut file = vec![];
-        encode_block(&mut file, &schema, PredicateId(0), &[blob_fact(&smuggled)]).expect("a block");
-
-        let at = find_block(&file, 1)
-            .block
-            .expect("the crafted header validates");
-        assert!(
-            at < file.len(),
-            "the smuggled block sits inside the outer one"
-        );
-        assert_eq!(
-            decode_block(&file[at..], &schema).map(|(facts, _)| facts),
-            Ok(vec![blob_fact(b"inner")])
-        );
-
-        // The chain, by contrast, reads one block and lands exactly on the end.
-        let (_, used) = decode_block(&file, &schema).expect("the outer block decodes");
-        assert_eq!(used, file.len());
-    }
-
-    /// A block round-trips, and the splitter finds every boundary in a run of them —
-    /// from an arbitrary offset, which is the whole point of a marker.
-    #[test]
-    fn blocks_round_trip_and_split_from_any_offset() {
+    fn a_run_of_blocks_is_walked_by_its_own_lengths() {
         let mut rodeo = Rodeo::new();
         let name = rodeo.get_or_intern("gen.P0");
         let schema = fjord_schema::schema::Schema::new(
@@ -896,13 +481,9 @@ mod tests {
         }
         assert_eq!(seen, vec![a_facts, b_facts, c_facts.clone()]);
 
-        // And find the boundaries from anywhere, which is what a splitter does after
-        // seeking blindly into the middle of a file.
-        let boundaries: Vec<usize> = vec![0, a.len(), a.len() + b.len()];
-        for from in 0..file.len() {
-            let expected = boundaries.iter().copied().find(|b| *b >= from);
-            assert_eq!(find_sync(&file, from), expected, "scanning from {from}");
-        }
+        // The chain is exact: the walk consumed the file to the byte, so the boundaries
+        // it stepped over are the boundaries, with nothing weighed or guessed at.
+        assert_eq!(at, file.len());
     }
 
     /// An empty block is a block: zero facts, a real header, a real checksum. The

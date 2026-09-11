@@ -63,6 +63,8 @@ Two rules the frame layer holds and nothing above it needs to restate:
 | `h` | `SCHEMA_REPLY` | ← | The schema this session is served with, as source |
 | `Y` | `TYPES` | → | "What shape is everything you serve?" — no payload |
 | `y` | `TYPES_REPLY` | ← | Every predicate this session can name, as a type tree |
+| `I` | `OPEN_WRITE_IDS` | → | Open a write stream, and say what the facts were called |
+| `i` | `IDS` | ← | The id of each fact written, once, just before `C` |
 | `F` | `FETCH` | → | A batch of fact ids |
 | `f` | `FETCHED` | ← | One key each, positionally, or an absence |
 
@@ -411,6 +413,31 @@ boundaries with no scanning and no guessing — no payload byte is ever weighed 
 is what a parallel ingest should do to build its split points; the marker scan is for recovery,
 where the file is damaged or a worker was handed a range that begins mid-block.
 
+### Asking what the facts were called
+
+```text
+  →  I   open the stream                (instead of W)
+  →  d   [block]
+  →  c   done
+  ←  i   count, then each id            only on a stream opened with I
+  ←  C   created, deduped
+```
+
+A reference on the way in may be **the whole target fact**, which is what lets a producer
+keep no book of what it has already sent — the server interns it and deduplicates. That is
+right until one target is referenced ten thousand times, at which point the producer is
+re-sending the same bytes to be looked up and thrown away each time.
+
+`I` opens a stream that reports the ids it minted, so a producer can send that target once
+and reference it by id thereafter — **a client choosing to intern a little of it itself**.
+The ids are the **top-level** facts in the order they were sent; a nested target is
+referenced rather than ingested in its own right and does not appear. A deduplicated fact
+still has one: the id it already had, which is the answer a caller caching it wants.
+
+It is opt-in because an indexer writing millions of facts wants none of it — the ids come
+back at eight bytes a fact and it has nothing to do with them. A client that opens with `W`
+neither sends `I` nor receives `i`, which is what keeps this additive.
+
 ## The value encoding
 
 Both directions use the transport codec, and it differs from the storage codec in every choice:
@@ -505,7 +532,7 @@ remote form of `list` is a query over the virtual predicate `fjord.db.List`.
 
 | | |
 |---|---|
-| **Built** | The frame layer; the handshake including the schema check and the mode refusal; write streams; query streams in all four kinds; `H`/`h`; `Y`/`y`; `F`/`f`; `l` and the stale-listing refusal it makes possible; in-band per-stream cancellation; a reader task per connection and one fair writer over bounded queues; control frames for create/finish/remove; stream-level failure that leaves the connection usable |
+| **Built** | The frame layer; the handshake including the schema check and the mode refusal; write streams, and `I`/`i` for one that reports its ids; query streams in all four kinds; `H`/`h`; `Y`/`y`; `F`/`f`; `l` and the stale-listing refusal it makes possible; in-band per-stream cancellation; a reader task per connection and one fair writer over bounded queues; control frames for create/finish/remove; stream-level failure that leaves the connection usable |
 | **Deferred** | Per-stream flow-control windows |
 | **Opt-in** | TCP — default-closed, and `--listen-tcp` is the only way to open one |
 | **Not built** | Ingesting a fact **file** (the format is defined and the block encoding is shared; the splitter and the pipeline are not wired to a command) |

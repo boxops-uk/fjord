@@ -146,6 +146,34 @@ pub mod kinds {
     pub const READY: FrameKind = FrameKind(b'R');
     /// Client → server: open a write stream.
     pub const OPEN_WRITE: FrameKind = FrameKind(b'W');
+    /// Client → server: open a write stream, and **say what the facts were called**.
+    ///
+    /// A second kind rather than a flag in [`OPEN_WRITE`]'s payload, for the reason
+    /// [`QUERY_PROFILE`] is a second kind: that payload is empty, and a client that has
+    /// never heard of this neither sends it nor receives an [`IDS`] frame.
+    ///
+    /// **Why a client would want them.** A reference on the way in may be the whole
+    /// target fact, which is what lets a producer keep no book of what it has sent — and
+    /// the server interns and deduplicates it. That is the right trade until one target
+    /// is referenced ten thousand times, at which point the producer is re-sending the
+    /// same bytes to be looked up and thrown away each time. Knowing the id lets it send
+    /// that one target once and reference it by id thereafter, which is a client
+    /// choosing to intern a little of it itself.
+    ///
+    /// It is opt-in because an indexer writing millions of facts wants none of this: the
+    /// ids come back at eight bytes a fact, and it has nothing to do with them.
+    pub const OPEN_WRITE_IDS: FrameKind = FrameKind(b'I');
+    /// Server → client: what each fact was called, once, just before [`COMPLETE`].
+    ///
+    /// The **top-level** facts of the stream, in the order they were sent — a nested
+    /// target is referenced rather than ingested in its own right, and does not appear.
+    /// A deduplicated fact still has an id, which is the one it already had: that is the
+    /// answer a caller caching one wants.
+    ///
+    /// Sent only on a stream opened with [`OPEN_WRITE_IDS`], in [`PROFILE`]'s position
+    /// and for the same reason — the reply says what the stream did, and this is one
+    /// more thing it did.
+    pub const IDS: FrameKind = FrameKind(b'i');
     /// Client → server: run a query on a new stream.
     pub const QUERY: FrameKind = FrameKind(b'Q');
     /// Client → server: run a query, and report what it examined.
@@ -652,7 +680,48 @@ pub fn decode_complete(bytes: &[u8]) -> Result<(u64, u64), WireError> {
     Ok((first, second))
 }
 
+/// Encode an [`IDS`](kinds::IDS) payload: a count, then each id.
+///
+/// Varints rather than eight fixed bytes apiece, because an id is a snowflake whose high
+/// bits are a predicate tag — a database's first predicates make small numbers, and the
+/// common case is a stream of them.
 #[must_use]
+pub fn encode_ids(ids: &[FactId]) -> Vec<u8> {
+    let mut out = vec![];
+    varint::put_u64(&mut out, ids.len() as u64);
+
+    for id in ids {
+        varint::put_u64(&mut out, id.raw());
+    }
+
+    out
+}
+
+/// Read an [`IDS`](kinds::IDS) payload.
+///
+/// # Errors
+///
+/// [`WireError`] if the payload is malformed, or carries an id that is not one — a zero
+/// sequence is reserved, so eight zero bytes are detectably not a fact.
+pub fn decode_ids(bytes: &[u8]) -> Result<Vec<FactId>, WireError> {
+    let (count, mut at) = varint::get_u64(bytes)?;
+
+    let count = usize::try_from(count).map_err(|_| WireError::LengthOutOfRange {
+        declared: count,
+        available: bytes.len(),
+    })?;
+
+    let mut ids = Vec::with_capacity(count.min(4096));
+
+    for _ in 0..count {
+        let (raw, used) = varint::get_u64(&bytes[at..])?;
+        at += used;
+        ids.push(FactId::from_raw(raw));
+    }
+
+    Ok(ids)
+}
+
 /// One predicate, as a peer that has no interner and no parser can read it.
 ///
 /// The **whole** of what a writer needs: which predicate (`id`, because a block names a

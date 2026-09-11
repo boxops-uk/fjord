@@ -93,13 +93,14 @@ pub mod protocol;
 pub mod value;
 pub mod varint;
 
-pub use block::{BlockHeader, Scan, decode_block, encode_block, find_block, find_sync};
+pub use block::{BlockHeader, decode_block, encode_block};
 pub use desc::{Desc, decode_desc, encode_desc};
 pub use error::WireError;
 pub use frame::{FrameHeader, FrameKind, StreamId, decode_frame, encode_frame};
 pub use protocol::{
     Control, ControlOp, ControlReply, ErrorCode, Fetched, Mode, PredicateDesc, ProfileStep,
-    QueryProfile, Ready, Startup, decode_types, encode_types, kinds, types_of,
+    QueryProfile, Ready, Startup, decode_ids, decode_types, encode_ids, encode_types, kinds,
+    types_of,
 };
 pub use value::{WireFact, WireRef, WireValue, decode_fact, encode_fact, from_bytes, to_bytes};
 

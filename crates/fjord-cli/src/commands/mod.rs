@@ -15,6 +15,7 @@ pub mod rm;
 pub mod schema;
 pub mod serve;
 pub mod shell;
+pub mod write;
 
 use std::path::Path;
 

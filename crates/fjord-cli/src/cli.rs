@@ -140,6 +140,24 @@ pub enum Command {
         schema: PathBuf,
     },
 
+    /// Write facts from JSONL files
+    ///
+    /// One JSON object per line: `{"id": "1", "predicate": "src.File", "fact": "a.cs"}`.
+    /// A reference field carries the id of a fact written on an earlier line, and a
+    /// forward reference is refused rather than held over.
+    ///
+    /// The simple way in, not the fast one. A producer writing at volume speaks the wire
+    /// protocol through a client library; this is for a person or an agent writing a few
+    /// facts by hand. Needs a running server.
+    Write {
+        /// The database to write to, as `name` or `name@instance`
+        name: String,
+
+        /// The files to read. Blank lines and lines starting with `#` are skipped
+        #[arg(value_name = "FILE", required = true)]
+        files: Vec<PathBuf>,
+    },
+
     /// Seal a database: Writable to Complete, and immutable thereafter
     Finish {
         /// The database to seal, as `name` or `name@instance`
