@@ -113,6 +113,9 @@ fjord-ingest = { path = "../fjord-ingest" }
 # needs the two in one test binary.
 fjord-inspect = { path = "../fjord-inspect" }
 fjord-store = { path = "../fjord-store", features = ["proptest"] }
+# The schema-and-fact generator, for the round trip over a schema nobody wrote by hand.
+# Behind that crate's `proptest` feature for the reason `fjord-encoding` above is.
+fjord-wire = { path = "../fjord-wire", features = ["proptest"] }
 # The `arb_*` strategies are active under `cfg(test)` whether or not the
 # `proptest` feature is on, so the crate has to be here as well as being an
 # optional dependency.

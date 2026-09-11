@@ -11,6 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use std::collections::HashMap;
+
+use fjord_schema::schema::{PredicateId, PredicateTy, Schema};
+
 const SCHEMA: &str = "schema demo {\n  \
      predicate File : string\n  \
      predicate Decl : { file : File, name : string, line : int }\n  \
@@ -20,6 +24,9 @@ const SCHEMA: &str = "schema demo {\n  \
 struct Serving {
     child: Child,
     root: PathBuf,
+    /// The schema file the database was created against, for a test that creates a
+    /// second one from a dump.
+    schema: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -80,10 +87,16 @@ fn fjord(root: &Path, args: &[&str]) -> (bool, String, String) {
 
 /// A server over a database created against [`SCHEMA`].
 fn serving() -> Serving {
+    serving_against("demo", SCHEMA)
+}
+
+/// The same, against a schema of the caller's — for a fixture that has to declare
+/// shapes `SCHEMA` deliberately does not.
+fn serving_against(name: &str, source: &str) -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let root = dir.path().join("store");
-    let schema = dir.path().join("demo.sigla");
-    std::fs::write(&schema, SCHEMA).expect("written");
+    let schema = dir.path().join(format!("{name}.sigla"));
+    std::fs::write(&schema, source).expect("written");
 
     let (ok, _, why) = fjord(
         &root,
@@ -111,6 +124,7 @@ fn serving() -> Serving {
     Serving {
         child,
         root,
+        schema,
         _dir: dir,
     }
 }
@@ -399,7 +413,7 @@ fn an_export_written_back_has_the_identity_it_started_with() {
         .map(|rest| rest.trim().to_owned())
         .expect("finish reports an identity");
 
-    let schema = server.root.parent().expect("a parent").join("demo.sigla");
+    let schema = server.schema.clone();
     let scratch = server.root.parent().expect("a parent").to_owned();
 
     // **Both orders, because both claim to be the same facts.** They differ in what a
@@ -502,4 +516,556 @@ fn a_compact_export_writes_each_predicate_as_one_run() {
         vec!["demo.File", "demo.File", "demo.Decl", "demo.Decl"],
         "{text}"
     );
+}
+
+/// **Every construct the schema language has, in one database.**
+///
+/// `SCHEMA` above is the shape a person writes; this is the shape the *format* has to
+/// survive, and the two are not the same list. What is here because it was not there:
+/// a bare `int` and a bare `bytes` key, a record nested in a record, a union in a key
+/// and a union on the value side, an alternative with an empty payload and ones
+/// carrying a scalar, a record and a **reference**, a predicate that names itself, a
+/// pair that name each other, and one fact naming the same target twice.
+///
+/// The last two are what the ordering has to answer for. A self-reference and a
+/// mutually recursive pair are components a topological order cannot break, so
+/// `--compact` falls back to the depth-first walk inside them — a path nothing else
+/// reaches.
+const LANGUAGE: &str = r#"schema lang {
+  predicate Text : string
+  predicate Count : int
+  predicate Blob : bytes
+
+  predicate Span : { of : Text, at : { start : int, length : int } } -> { label : string, raw : bytes }
+
+  predicate Tagged : { pick : { none = 0 | some : int = 7 | pair : { a : int, b : string } = 900 | at : Text = 3 } }
+
+  predicate Maybe : { of : Text } -> { held : { nothing = 0 | just : Text = 1 } }
+
+  predicate Node : { name : string, parent : { nothing = 0 | just : Node = 1 } }
+
+  predicate Left : { name : string, right : { nothing = 0 | just : Right = 1 } }
+  predicate Right : { name : string, left : { nothing = 0 | just : Left = 1 } }
+
+  predicate Edge : { from : Node, to : Node }
+}
+"#;
+
+/// Facts over [`LANGUAGE`], one of every shape it can express.
+///
+/// The scalars are drawn at their **edges** rather than in the middle: `i64::MIN` and
+/// `i64::MAX` because a renderer that went through `f64` would lose them silently, the
+/// empty string and the empty byte string because a length-prefixed encoding is where
+/// an off-by-one lives, a NUL inside a string because the storage codec escapes it and
+/// JSON does not, and a string of JSON's own metacharacters because this is a format a
+/// person edits by hand.
+const LANGUAGE_FACTS: &str = r#"# one of every shape the language can express
+{"id": "empty", "predicate": "lang.Text", "fact": ""}
+{"id": "uni", "predicate": "lang.Text", "fact": "héllo → 😀"}
+{"id": "meta", "predicate": "lang.Text", "fact": "quote\" back\\slash \n \t end"}
+{"id": "nul", "predicate": "lang.Text", "fact": "a\u0000b"}
+{"predicate": "lang.Count", "fact": -9223372036854775808}
+{"predicate": "lang.Count", "fact": 9223372036854775807}
+{"predicate": "lang.Count", "fact": 0}
+{"predicate": "lang.Count", "fact": -1}
+{"predicate": "lang.Blob", "fact": ""}
+{"predicate": "lang.Blob", "fact": "00"}
+{"predicate": "lang.Blob", "fact": "ff00ff10a7"}
+{"predicate": "lang.Span", "fact": {"of": "uni", "at": {"start": 0, "length": 12}}, "value": {"label": "x", "raw": "deadbeef"}}
+{"predicate": "lang.Tagged", "fact": {"pick": {"none": {}}}}
+{"predicate": "lang.Tagged", "fact": {"pick": {"some": 42}}}
+{"predicate": "lang.Tagged", "fact": {"pick": {"pair": {"a": 1, "b": "two"}}}}
+{"predicate": "lang.Tagged", "fact": {"pick": {"at": "meta"}}}
+{"predicate": "lang.Maybe", "fact": {"of": "empty"}, "value": {"held": {"nothing": {}}}}
+{"predicate": "lang.Maybe", "fact": {"of": "uni"}, "value": {"held": {"just": "meta"}}}
+{"id": "n1", "predicate": "lang.Node", "fact": {"name": "root", "parent": {"nothing": {}}}}
+{"id": "n2", "predicate": "lang.Node", "fact": {"name": "child", "parent": {"just": "n1"}}}
+{"id": "n3", "predicate": "lang.Node", "fact": {"name": "leaf", "parent": {"just": "n2"}}}
+{"id": "l1", "predicate": "lang.Left", "fact": {"name": "l1", "right": {"nothing": {}}}}
+{"id": "r1", "predicate": "lang.Right", "fact": {"name": "r1", "left": {"just": "l1"}}}
+{"id": "l2", "predicate": "lang.Left", "fact": {"name": "l2", "right": {"just": "r1"}}}
+{"id": "r2", "predicate": "lang.Right", "fact": {"name": "r2", "left": {"just": "l2"}}}
+{"predicate": "lang.Edge", "fact": {"from": "n1", "to": "n3"}}
+{"predicate": "lang.Edge", "fact": {"from": "n2", "to": "n2"}}
+"#;
+
+/// The fact count and identity a `finish` reported.
+fn sealed_as(said: &str) -> (String, String) {
+    let facts = said
+        .split(": ")
+        .nth(1)
+        .and_then(|rest| rest.split(" facts").next())
+        .map(str::to_owned)
+        .expect("finish reports a fact count");
+
+    let identity = said
+        .split("identity ")
+        .nth(1)
+        .map(|rest| rest.trim().to_owned())
+        .expect("finish reports an identity");
+
+    (facts, identity)
+}
+
+/// Write `facts` into `code`, seal it, and check that an export written back seals to
+/// the same thing — **under both orders**, because both claim to be the same facts.
+///
+/// Asserted on the content identity and the fact count together. The identity is the
+/// claim; the count is what tells a dropped fact from a changed one when it fails.
+fn the_round_trip_holds(server: &mut Serving, facts: &str) {
+    let seed = file_of(server, "seed.jsonl", facts);
+    let (ok, _, why) = fjord(
+        &server.root,
+        &["write", "code", seed.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+
+    let (ok, sealed, why) = fjord(&server.root, &["finish", "code"]);
+    assert!(ok, "{why}");
+    let started_as = sealed_as(&sealed);
+
+    let schema = server.schema.clone();
+    let scratch = server.root.parent().expect("a parent").to_owned();
+
+    for (order, into) in [("dependency", "back"), ("grouped", "back_compact")] {
+        // Export reads the store directly, so the server goes down for it.
+        server.stop();
+
+        let dump = scratch.join(format!("{order}.jsonl"));
+        let mut args = vec!["export", "code", "--to", dump.to_str().expect("utf8")];
+        if order == "grouped" {
+            args.push("--compact");
+        }
+
+        let (ok, _, why) = fjord(&server.root, &args);
+        assert!(ok, "{order}: {why}");
+
+        let (ok, _, why) = fjord(
+            &server.root,
+            &["create", into, "--schema", schema.to_str().expect("utf8")],
+        );
+        assert!(ok, "{order}: {why}");
+
+        server.restart();
+
+        let (ok, _, why) = fjord(&server.root, &["write", into, dump.to_str().expect("utf8")]);
+        assert!(ok, "{order}: {why}");
+
+        let (ok, resealed, why) = fjord(&server.root, &["finish", into]);
+        assert!(ok, "{order}: {why}");
+
+        assert_eq!(
+            sealed_as(&resealed),
+            started_as,
+            "{order}: the round trip changed the database"
+        );
+    }
+}
+
+/// **Every construct survives, under both orders.**
+///
+/// The acceptance criterion for the format: what the language can say, the format can
+/// carry. A constructor this misses is one the round trip has never been asked about —
+/// which is how a `bytes` field spent a day being silently corrupted.
+#[test]
+fn every_construct_in_the_schema_language_survives_a_round_trip() {
+    let mut server = serving_against("lang", LANGUAGE);
+    the_round_trip_holds(&mut server, LANGUAGE_FACTS);
+}
+
+/// **A component that can cycle is written depth first, inside its own group.**
+///
+/// `lang.Left` and `lang.Right` name each other, so no order over the two predicates
+/// exists and `--compact` cannot group them the way it groups the rest. What it must
+/// not do is emit either group whole: the facts interleave, because that is the only
+/// order in which a reference names an earlier line.
+#[test]
+fn a_cyclic_component_interleaves_rather_than_grouping() {
+    let mut server = serving_against("lang", LANGUAGE);
+
+    let seed = file_of(&server, "seed.jsonl", LANGUAGE_FACTS);
+    let (ok, _, why) = fjord(
+        &server.root,
+        &["write", "code", seed.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+
+    server.stop();
+
+    let dump = server
+        .root
+        .parent()
+        .expect("a parent")
+        .join("compact.jsonl");
+    let (ok, _, why) = fjord(
+        &server.root,
+        &[
+            "export",
+            "code",
+            "--to",
+            dump.to_str().expect("utf8"),
+            "--compact",
+        ],
+    );
+    assert!(ok, "{why}");
+
+    let text = std::fs::read_to_string(&dump).expect("the dump reads");
+    let cycle: Vec<&str> = text
+        .lines()
+        .filter_map(|line| {
+            if line.contains("\"lang.Left\"") {
+                Some("L")
+            } else if line.contains("\"lang.Right\"") {
+                Some("R")
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(cycle, vec!["L", "R", "L", "R"], "{text}");
+}
+
+/// **The browser's reader of this format agrees with the tool's.**
+///
+/// There are two readers of one grammar — `fjord_cli::jsonl`, which turns a line into a
+/// fact on the wire, and `fjord_inspect::jsonl`, which turns one into a row in a
+/// `MemStore` for a page that cannot intern. They share no code, which is exactly how a
+/// `bytes` field came to be written as hex and read as base64 for a day.
+///
+/// So the export goes through the other one, and the facts it builds are queried. What
+/// this catches that nothing else does is a disagreement about the *grammar* — an
+/// encoding, an escape, an alternative's name — because a database and a `MemStore`
+/// built from one file have to answer a query the same way.
+#[test]
+fn the_browsers_reader_agrees_with_the_tools() {
+    let mut server = serving_against("lang", LANGUAGE);
+
+    let seed = file_of(&server, "seed.jsonl", LANGUAGE_FACTS);
+    let (ok, _, why) = fjord(
+        &server.root,
+        &["write", "code", seed.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+
+    server.stop();
+
+    let dump = server.root.parent().expect("a parent").join("both.jsonl");
+    let (ok, _, why) = fjord(
+        &server.root,
+        &["export", "code", "--to", dump.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+
+    let text = std::fs::read_to_string(&dump).expect("the dump reads");
+    let schema = fjord_schema::syntax::read("lang", LANGUAGE).expect("the schema reads");
+
+    let read = fjord_inspect::jsonl::read(&text, &schema).expect("the other reader accepts it");
+    assert_eq!(read.facts, text.lines().count(), "every line became a fact");
+
+    // The shapes an encoding disagreement hides in: a bytes payload, a string of
+    // JSON's own metacharacters, and a reference reached *through a union* — the three
+    // places the two readers could differ and still both look like they worked.
+    let answers = |query: &str| -> Vec<serde_json::Value> {
+        let rows = fjord_inspect::rows::run_over(&schema, query, read.store.clone());
+        assert!(
+            rows.diagnostics.is_empty(),
+            "{query}: {:?}",
+            rows.diagnostics
+        );
+        rows.rows.into_iter().map(|row| row.value).collect()
+    };
+
+    let blobs = answers("X where lang.Blob X");
+    assert_eq!(blobs.len(), 3, "{blobs:?}");
+
+    let spans = answers("S.value where S = lang.Span _");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    assert_eq!(
+        spans[0].get("raw").and_then(serde_json::Value::as_str),
+        Some("deadbeef"),
+        "the bytes payload came back as it went in: {spans:?}"
+    );
+
+    // Through the union: `Tagged`'s `at` arm names a `Text`, and the string it names is
+    // the one with the quote, the backslash, the newline and the tab in it.
+    let through = answers("{t = S} where lang.Tagged {pick = {at = T}}; T = lang.Text S");
+    assert_eq!(through.len(), 1, "{through:?}");
+    assert_eq!(
+        through[0].get("t").and_then(serde_json::Value::as_str),
+        Some("quote\" back\\slash \n \t end"),
+        "the metacharacters survived both readers: {through:?}"
+    );
+
+    let texts = answers("X where lang.Text X");
+    assert_eq!(texts.len(), 4, "{texts:?}");
+    assert!(
+        texts.iter().any(|text| text.as_str() == Some("a\u{0}b")),
+        "the NUL survived both readers: {texts:?}"
+    );
+}
+
+/// **A database holding no facts exports a file holding no lines**, and that file reads.
+///
+/// The degenerate end of the format. An exporter that wrote a header, or a reader that
+/// needed one, would be caught by nothing else — and an empty index is what a CI job
+/// that silently indexed nothing produces.
+#[test]
+fn an_empty_database_exports_an_empty_file() {
+    let mut server = serving_against("lang", LANGUAGE);
+
+    let (ok, _, why) = fjord(&server.root, &["finish", "code", "--allow-zero-facts"]);
+    assert!(ok, "{why}");
+
+    server.stop();
+
+    let dump = server.root.parent().expect("a parent").join("empty.jsonl");
+    let (ok, said, why) = fjord(
+        &server.root,
+        &["export", "code", "--to", dump.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+    assert!(said.contains("0 fact(s)"), "{said}");
+
+    let text = std::fs::read_to_string(&dump).expect("the dump reads");
+    assert!(text.is_empty(), "{text:?}");
+
+    let schema = fjord_schema::syntax::read("lang", LANGUAGE).expect("the schema reads");
+    let read = fjord_inspect::jsonl::read(&text, &schema).expect("an empty file reads");
+    assert_eq!(read.facts, 0);
+
+    // And the tool reads it back into a database of its own without complaint.
+    let (ok, _, why) = fjord(
+        &server.root,
+        &[
+            "create",
+            "back",
+            "--schema",
+            server.schema.to_str().expect("utf8"),
+        ],
+    );
+    assert!(ok, "{why}");
+
+    server.restart();
+
+    let (ok, said, why) = fjord(
+        &server.root,
+        &["write", "back", dump.to_str().expect("utf8")],
+    );
+    assert!(ok, "{why}");
+    assert!(said.contains("0 fact(s) written"), "{said}");
+}
+
+/// Draws for a generated document, cycled — the same tape shape
+/// [`fjord_wire::value::proptest`] uses, because the values worth drawing are the same
+/// ones.
+struct Draws {
+    ints: Vec<i64>,
+    texts: Vec<String>,
+    picks: Vec<u8>,
+    at_int: usize,
+    at_text: usize,
+    at_pick: usize,
+}
+
+impl Draws {
+    fn int(&mut self) -> i64 {
+        let value = self.ints[self.at_int % self.ints.len()];
+        self.at_int += 1;
+        value
+    }
+
+    fn text(&mut self) -> String {
+        let value = self.texts[self.at_text % self.texts.len()].clone();
+        self.at_text += 1;
+        value
+    }
+
+    fn pick(&mut self) -> usize {
+        let value = self.picks[self.at_pick % self.picks.len()] as usize;
+        self.at_pick += 1;
+        value
+    }
+}
+
+/// A JSONL document over `schema`: three facts of every predicate, references and all.
+///
+/// **Written by hand rather than by the exporter**, which is the point — a document a
+/// third party composed is what says the *grammar* is readable, where a round trip of
+/// the exporter's own output would agree with itself however wrong both halves were.
+///
+/// A reference is emitted as the target's whole line first and then as its local id, so
+/// the no-forward-reference rule holds by construction. It terminates because a
+/// generated schema's references point at predicates declared *earlier*
+/// ([`fjord_wire::value::proptest`] resolves them modulo the predicate's own index), so
+/// the walk strictly descends.
+fn a_document_over(schema: &Schema, draws: &mut Draws) -> String {
+    let mut out = String::new();
+    let mut written = Written {
+        next: 0,
+        by_key: HashMap::new(),
+    };
+
+    for index in 0..schema.len() {
+        let predicate = PredicateId(index as u32);
+        for _ in 0..3 {
+            a_line_of(predicate, schema, draws, &mut written, &mut out);
+        }
+    }
+
+    out
+}
+
+/// What the document has written, so a key is written once.
+///
+/// **Interning, because a key is an identity.** Two draws can land on one key with
+/// different values, and a database refuses that outright rather than picking a winner
+/// — so a document that emitted both would be testing the conflict rule instead of the
+/// format. The first line wins and every later reference to that key takes its id,
+/// which is what a producer does.
+struct Written {
+    next: u64,
+    by_key: HashMap<(u32, String), u64>,
+}
+
+/// One fact of `predicate`, its targets written first. Answers the local id it took.
+fn a_line_of(
+    predicate: PredicateId,
+    schema: &Schema,
+    draws: &mut Draws,
+    written: &mut Written,
+    out: &mut String,
+) -> u64 {
+    let declared = schema.get(predicate).expect("a declared predicate");
+
+    let key = a_value_of(declared.key().ty, schema, draws, written, out);
+    let value = declared
+        .value()
+        .map(|side| a_value_of(side.ty, schema, draws, written, out));
+
+    let at = (predicate.0, key.to_string());
+    if let Some(already) = written.by_key.get(&at) {
+        return *already;
+    }
+
+    written.next += 1;
+    let id = written.next;
+    written.by_key.insert(at, id);
+
+    let name = declared.name().unwrap_or_default();
+    let mut line = format!(
+        "{{\"id\":{id},\"predicate\":{},\"fact\":{key}",
+        serde_json::Value::from(name)
+    );
+    if let Some(value) = value {
+        line.push_str(&format!(",\"value\":{value}"));
+    }
+    line.push_str("}\n");
+    out.push_str(&line);
+
+    id
+}
+
+/// A well-typed JSON value for `ty`, emitting a line for every reference it holds.
+fn a_value_of(
+    ty: &PredicateTy,
+    schema: &Schema,
+    draws: &mut Draws,
+    written: &mut Written,
+    out: &mut String,
+) -> serde_json::Value {
+    match ty {
+        PredicateTy::Int => serde_json::Value::from(draws.int()),
+        PredicateTy::Str => serde_json::Value::from(draws.text()),
+
+        // The bytes a string cannot hold, rendered the way the format renders them.
+        PredicateTy::Bytes => {
+            let text = draws.text();
+            let mut bytes = text.into_bytes();
+            bytes.push(0xff);
+            let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+            serde_json::Value::from(hex)
+        }
+
+        PredicateTy::Fact(target) => {
+            serde_json::Value::from(a_line_of(*target, schema, draws, written, out))
+        }
+
+        PredicateTy::Record(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(name, field)| {
+                    let name = schema
+                        .interner()
+                        .resolve(*name)
+                        .expect("a schema names its fields")
+                        .to_owned();
+                    (name, a_value_of(field, schema, draws, written, out))
+                })
+                .collect(),
+        ),
+
+        PredicateTy::Union(alternatives) => {
+            let chosen = &alternatives[draws.pick() % alternatives.len()];
+            let name = schema
+                .interner()
+                .resolve(chosen.name)
+                .expect("a schema names its alternatives")
+                .to_owned();
+
+            serde_json::Value::Object(
+                [(name, a_value_of(&chosen.ty, schema, draws, written, out))]
+                    .into_iter()
+                    .collect(),
+            )
+        }
+    }
+}
+
+proptest::proptest! {
+    // **Few cases, because each one is a server and five processes.** The generator's
+    // job here is reach rather than volume: a schema shape nobody would think to write
+    // by hand — a union of unions, a record of references, a value side that is a bare
+    // scalar — which the fixture above cannot enumerate and this finds in a handful of
+    // draws.
+    //
+    // **No persisted seeds.** Proptest wants to write a counterexample beside the
+    // source, and from a test binary it cannot find one — so it drops a file next to
+    // this one that the tree's `proptest-regressions/` ignore rule does not match, and
+    // that nothing else in the repository keeps. A counterexample here is reported and
+    // acted on, not carried.
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 8,
+        max_shrink_iters: 64,
+        failure_persistence: None,
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// **Any schema the language admits, any document over it, both orders.**
+    ///
+    /// The fixture beside this one names the constructors; this one combines them. What
+    /// it is looking for is a shape where the export's ordering, its rendering or the
+    /// reader's parsing disagree — and the assertion is the same one a person would
+    /// make by hand, that the database you get back is the database you had.
+    #[test]
+    fn any_schema_and_document_survive_the_round_trip(
+        drawn in fjord_wire::value::proptest::arb_schema_and_fact()
+    ) {
+        let schema = drawn.schema();
+        let source = fjord_schema::syntax::print::print(&schema);
+
+        let mut draws = Draws {
+            ints: drawn.ints.clone(),
+            texts: drawn.texts.clone(),
+            picks: drawn.picks.clone(),
+            at_int: 0,
+            at_text: 0,
+            at_pick: 0,
+        };
+
+        let document = a_document_over(&schema, &mut draws);
+
+        let mut server = serving_against("gen", &source);
+        the_round_trip_holds(&mut server, &document);
+    }
 }
