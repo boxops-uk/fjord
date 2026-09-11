@@ -19,6 +19,9 @@
 #            time is how the loader walks it anyway
 #   compose  the schema the export is read against, resolved through its imports — the
 #            page states it, and a predicate or field it does not declare is refused
+#   back     the export written into a database of its own, whose content identity must
+#            be the one it came from — the round trip, over the only artifact anybody
+#            actually ships
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -53,7 +56,11 @@ done
 fjord="$root/target/release/fjord"
 
 echo "==> sealing code#$framework"
-"$fjord" --data-dir "$scratch/db" finish "code#$framework"
+sealed=$("$fjord" --data-dir "$scratch/db" finish "code#$framework")
+echo "$sealed"
+
+# The number the round trip below has to arrive back at.
+identity="${sealed##*identity }"
 
 mkdir -p "$out"
 
@@ -69,6 +76,41 @@ echo "==> exporting"
 echo "==> composing the schema"
 "$fjord" --schema-path "$root/schemas" schema compose "$root/schemas/dotnet.sigla" \
     > "$out/corpus.sigla"
+
+# **The round trip, on the real artifact.** The batteries put generated documents and a
+# hand-written fixture through the format; this puts the thing that ships through it —
+# twenty-four thousand facts a compiler wrote, unions carrying references, predicates
+# that name each other, a styles payload in `bytes`. A format nobody can write back is
+# not portable, and the only honest check of that is the whole file.
+#
+# Asserted on the content identity, which is a multiset hash over each fact's *logical*
+# form: every id differs on the way back, and if that were all that differed the numbers
+# still match. If they do not, the export lost something.
+echo "==> writing it back"
+"$fjord" --data-dir "$scratch/db" create back --schema "$out/corpus.sigla" > /dev/null
+
+"$fjord" --data-dir "$scratch/db" serve --ready-file "$scratch/back.ready" >> "$scratch.log" 2>&1 &
+server=$!
+trap 'kill "$server" 2>/dev/null || true' EXIT
+for _ in $(seq 1 300); do
+    [ -f "$scratch/back.ready" ] && break
+    sleep 0.1
+done
+
+"$fjord" --data-dir "$scratch/db" write back "$out/corpus.jsonl" > /dev/null
+
+kill "$server" 2>/dev/null || true
+wait "$server" 2>/dev/null || true
+trap - EXIT
+
+resealed=$("$fjord" --data-dir "$scratch/db" finish back)
+back="${resealed##*identity }"
+
+if [ "$identity" != "$back" ]; then
+    echo "the round trip changed the database: $identity going out, $back coming back" >&2
+    exit 1
+fi
+echo "==> round trip holds: $identity"
 
 raw=$(wc -c < "$out/corpus.jsonl")
 packed=$(gzip -9 -c "$out/corpus.jsonl" | wc -c)

@@ -4,7 +4,9 @@ use std::cmp::Ordering;
 use crate::error::StoreCodecError;
 use fjord_schema::{
     id::FactId,
-    schema::{LocalInterner, PredicateId, PredicateTy, PredicateTyNamed, Symbol},
+    schema::{
+        LocalInterner, PREDICATE_ID_SIZE, PredicateId, PredicateTy, PredicateTyNamed, Symbol,
+    },
 };
 
 pub const MARK_NULL: u8 = 0x00;
@@ -779,7 +781,7 @@ pub fn encode_typed(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCod
 /// [chapter 3]: ../../../website/content/storage.md#a-stored-key-is-flat
 pub fn encode_key(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodecError> {
     let (PredicateTy::Record(field_tys), Value::Record(fields)) = (ty, value) else {
-        return encode_typed(ty, value);
+        return within_limit(encode_typed(ty, value)?);
     };
 
     if field_tys.len() != fields.len() {
@@ -793,7 +795,35 @@ pub fn encode_key(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodec
         encode_typed_at(&mut enc, field_ty, field_value)?;
     }
 
-    Ok(out)
+    within_limit(out)
+}
+
+/// The longest a key's encoded bytes may be.
+///
+/// **The storage engine's limit, minus what the store puts in front of it.** A stored
+/// key is the four-byte predicate tag then these bytes, and the engine holds a key's
+/// length in a `u16` — so the whole thing is capped at 65,535 and a key's own share is
+/// four less.
+///
+/// It is stated here because this is where a key's bytes are made, and because the
+/// alternative is where it used to be answered: an `assert!` inside the backend, reached
+/// from ordinary input — one over-long path in an index, one long line in a JSONL file
+/// — which panicked a worker and poisoned the merge lock behind it, taking the database
+/// out of service until the server was restarted.
+///
+/// A **value** is not limited here. The engine holds a value's length in a `u32`, which
+/// is four gigabytes and past what a fact is for, so nothing reachable meets it.
+pub const MAX_KEY_BYTES: usize = u16::MAX as usize - PREDICATE_ID_SIZE;
+
+fn within_limit(key: Vec<u8>) -> Result<Vec<u8>, StoreCodecError> {
+    if key.len() > MAX_KEY_BYTES {
+        return Err(StoreCodecError::KeyTooLong {
+            len: key.len(),
+            max: MAX_KEY_BYTES,
+        });
+    }
+
+    Ok(key)
 }
 
 /// A fact reference against the field it sits in: it must name the **declared**
@@ -2155,6 +2185,75 @@ pub(crate) mod tests {
     use super::proptest::*;
     use super::*;
     use ::proptest::prelude::*;
+
+    /// **A key too long for the store is refused here, not asserted on below.**
+    ///
+    /// The backend holds a key's length in a `u16` and answers an over-long one with an
+    /// `assert!`. That is reachable from ordinary input — one long path in an index, one
+    /// long line in a JSONL file — and a panic in a write worker poisoned the merge lock
+    /// behind it, so the *next* valid write to that database failed too. The refusal
+    /// belongs where the bytes are made, because that is the one place every producer
+    /// passes through.
+    ///
+    /// Asserted **at the boundary**, since a limit tested only far past it is a limit
+    /// nobody has checked the arithmetic of: `MAX_KEY_BYTES` is the engine's 65,535 less
+    /// the four-byte predicate tag the store writes in front, and an off-by-four here
+    /// would be a panic in production and a passing test.
+    #[test]
+    fn a_key_longer_than_the_store_can_hold_is_refused() {
+        let fits = encode_key(
+            &PredicateTy::Str,
+            &Value::Str("x".repeat(MAX_KEY_BYTES - 2)),
+        )
+        .expect("a key at the limit encodes");
+        assert_eq!(fits.len(), MAX_KEY_BYTES);
+
+        let over = encode_key(
+            &PredicateTy::Str,
+            &Value::Str("x".repeat(MAX_KEY_BYTES - 1)),
+        );
+        assert!(
+            matches!(
+                over,
+                Err(StoreCodecError::KeyTooLong { len, max })
+                    if len == MAX_KEY_BYTES + 1 && max == MAX_KEY_BYTES
+            ),
+            "{over:?}"
+        );
+    }
+
+    /// The same for a key made of **several** fields, because the limit is on what the
+    /// store is handed and not on any one field.
+    #[test]
+    fn a_record_key_is_measured_whole() {
+        let mut rodeo = lasso::Rodeo::new();
+        let ty = PredicateTy::Record(Arc::from([
+            (rodeo.get_or_intern("a"), PredicateTy::Str),
+            (rodeo.get_or_intern("b"), PredicateTy::Str),
+        ]));
+
+        let half = "y".repeat(MAX_KEY_BYTES / 2);
+        let value = Value::Record(Box::from([
+            ("a".to_owned(), Value::Str(half.clone())),
+            ("b".to_owned(), Value::Str(half)),
+        ]));
+
+        assert!(
+            matches!(
+                encode_key(&ty, &value),
+                Err(StoreCodecError::KeyTooLong { .. })
+            ),
+            "two fields under the limit each, over it together"
+        );
+    }
+
+    /// A **value** is not measured, and that is deliberate: the engine holds a value's
+    /// length in a `u32`, so nothing a fact can carry reaches it.
+    #[test]
+    fn a_long_value_is_not_a_long_key() {
+        let long = Value::Str("z".repeat(MAX_KEY_BYTES * 4));
+        assert!(encode_typed(&PredicateTy::Str, &long).is_ok());
+    }
     use std::sync::Arc;
 
     #[test]

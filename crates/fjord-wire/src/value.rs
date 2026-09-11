@@ -142,6 +142,16 @@ pub fn encode_value(
     ty: &PredicateTy,
     value: &WireValue,
 ) -> Result<(), WireError> {
+    encode_value_at(out, schema, ty, value, 0)
+}
+
+fn encode_value_at(
+    out: &mut Vec<u8>,
+    schema: &Schema,
+    ty: &PredicateTy,
+    value: &WireValue,
+    depth: usize,
+) -> Result<(), WireError> {
     // Dispatched on the declared type exhaustively, then on the value: a joint match
     // needs a wildcard, and that wildcard absorbs a new scalar family into a run-time
     // `TypeMismatch` where the compiler could have named the site.
@@ -182,7 +192,7 @@ pub fn encode_value(
             let WireValue::Ref(reference) = value else {
                 return Err(mismatch());
             };
-            encode_ref(out, schema, *target, reference)
+            encode_ref(out, schema, *target, reference, depth)
         }
 
         PredicateTy::Record(field_tys) => {
@@ -197,7 +207,7 @@ pub fn encode_value(
             // Concatenation, and that is the whole of it: no marker, no arity, no
             // terminator. The schema supplies all three.
             for ((_, field_ty), field) in field_tys.iter().zip(fields.iter()) {
-                encode_value(out, schema, field_ty, field)?;
+                encode_value_at(out, schema, field_ty, field, depth)?;
             }
             Ok(())
         }
@@ -220,7 +230,7 @@ pub fn encode_value(
             // order-preserving form, for the reason every number on this wire is one:
             // nothing here is sorted.
             varint::put_u64(out, u64::from(*disc));
-            encode_value(out, schema, &alt.ty, payload)
+            encode_value_at(out, schema, &alt.ty, payload, depth)
         }
     }
 }
@@ -230,6 +240,7 @@ fn encode_ref(
     schema: &Schema,
     target: PredicateId,
     reference: &WireRef,
+    depth: usize,
 ) -> Result<(), WireError> {
     match reference {
         WireRef::Id(id) => {
@@ -252,23 +263,41 @@ fn encode_ref(
                     "nested fact is of a different predicate than the field declares",
                 ));
             }
+            // **The same bound the decoder keeps**, so a producer is told by its own
+            // library rather than by the far end — and so that a client cannot overflow
+            // its own stack composing a fact it could never send.
+            if depth >= MAX_NESTED_DEPTH {
+                return Err(WireError::TooDeep {
+                    max: MAX_NESTED_DEPTH,
+                });
+            }
+
             varint::put_u64(out, REF_NESTED);
-            encode_fact(out, schema, fact)
+            encode_fact_at(out, schema, fact, depth + 1)
         }
     }
 }
 
 /// Append a fact's key, and its value side if the predicate has one.
 pub fn encode_fact(out: &mut Vec<u8>, schema: &Schema, fact: &WireFact) -> Result<(), WireError> {
+    encode_fact_at(out, schema, fact, 0)
+}
+
+fn encode_fact_at(
+    out: &mut Vec<u8>,
+    schema: &Schema,
+    fact: &WireFact,
+    depth: usize,
+) -> Result<(), WireError> {
     let declared = schema
         .get(fact.predicate)
         .ok_or(WireError::UnknownPredicate(fact.predicate.0))?;
     let predicate = declared.predicate();
 
-    encode_value(out, schema, &predicate.key, &fact.key)?;
+    encode_value_at(out, schema, &predicate.key, &fact.key, depth)?;
 
     match (&predicate.value, &fact.value) {
-        (Some(value_ty), Some(value)) => encode_value(out, schema, value_ty, value),
+        (Some(value_ty), Some(value)) => encode_value_at(out, schema, value_ty, value, depth),
         (None, None) => Ok(()),
         // No presence flag is written, so these two are unrecoverable at the far
         // end rather than merely wrong: the reader consults the schema and would
@@ -292,11 +321,38 @@ pub fn to_bytes(schema: &Schema, fact: &WireFact) -> Result<Vec<u8>, WireError> 
 
 // ---- decoding --------------------------------------------------------------
 
+/// How deep a chain of **nested references** a peer may send.
+///
+/// **A bound, because decoding follows the peer's nesting with the peer's own
+/// recursion.** A nested reference holds a whole fact, whose key may hold another, and
+/// a schema whose reference graph has a cycle — `Node { parent : Node }`, or
+/// `csharp.Class` and `Interface` naming each other — lets that go on forever. Twenty
+/// kilobytes on the socket was enough to overflow the stack and **abort the server
+/// process**, which is not a thing a message is allowed to do.
+///
+/// The number is the one [`fjord_store_fjall`'s identity walk] already uses for the same
+/// shape at rest, and it is far past what data reaches: a namespace nested sixty-four
+/// deep is not a namespace. Value nesting inside each fact is bounded separately, by the
+/// schema's own limit of 64 on type depth, so the stack a decode can use is the product
+/// of two small numbers rather than the peer's choice.
+///
+/// [`fjord_store_fjall`'s identity walk]: https://github.com/boxops-uk/fjord/blob/main/crates/fjord-store-fjall/src/identity.rs
+pub const MAX_NESTED_DEPTH: usize = 64;
+
 /// Read a value of type `ty`, returning it and how many bytes it consumed.
 pub fn decode_value(
     bytes: &[u8],
     schema: &Schema,
     ty: &PredicateTy,
+) -> Result<(WireValue, usize), WireError> {
+    decode_value_at(bytes, schema, ty, 0)
+}
+
+fn decode_value_at(
+    bytes: &[u8],
+    schema: &Schema,
+    ty: &PredicateTy,
+    depth: usize,
 ) -> Result<(WireValue, usize), WireError> {
     match ty {
         PredicateTy::Int => {
@@ -319,7 +375,7 @@ pub fn decode_value(
         }
 
         PredicateTy::Fact(target) => {
-            let (reference, used) = decode_ref(bytes, schema, *target)?;
+            let (reference, used) = decode_ref(bytes, schema, *target, depth)?;
             Ok((WireValue::Ref(reference), used))
         }
 
@@ -328,7 +384,7 @@ pub fn decode_value(
             let mut at = 0;
 
             for (_, field_ty) in field_tys.iter() {
-                let (field, used) = decode_value(&bytes[at..], schema, field_ty)?;
+                let (field, used) = decode_value_at(&bytes[at..], schema, field_ty, depth)?;
                 fields.push(field);
                 at += used;
             }
@@ -344,7 +400,7 @@ pub fn decode_value(
                 .find(|alt| u64::from(alt.disc) == tag)
                 .ok_or(WireError::UnknownDiscriminant(tag))?;
 
-            let (payload, payload_used) = decode_value(&bytes[used..], schema, &alt.ty)?;
+            let (payload, payload_used) = decode_value_at(&bytes[used..], schema, &alt.ty, depth)?;
 
             Ok((
                 WireValue::Union {
@@ -382,6 +438,7 @@ fn decode_ref(
     bytes: &[u8],
     schema: &Schema,
     target: PredicateId,
+    depth: usize,
 ) -> Result<(WireRef, usize), WireError> {
     let (form, used) = varint::get_u64(bytes)?;
 
@@ -412,7 +469,16 @@ fn decode_ref(
             Ok((WireRef::Id(id), used + id_used))
         }
         REF_NESTED => {
-            let (fact, fact_used) = decode_fact(&bytes[used..], schema, target)?;
+            // **Counted here**, because this is the one edge that can repeat without
+            // the schema bounding it: a nested fact's key can hold another reference,
+            // and a reference graph that cycles lets a peer choose the depth.
+            if depth >= MAX_NESTED_DEPTH {
+                return Err(WireError::TooDeep {
+                    max: MAX_NESTED_DEPTH,
+                });
+            }
+
+            let (fact, fact_used) = decode_fact_at(&bytes[used..], schema, target, depth + 1)?;
             Ok((WireRef::Nested(Box::new(fact)), used + fact_used))
         }
         // A branch index is a varint precisely so that a third form — a block-local
@@ -429,16 +495,25 @@ pub fn decode_fact(
     schema: &Schema,
     predicate: PredicateId,
 ) -> Result<(WireFact, usize), WireError> {
+    decode_fact_at(bytes, schema, predicate, 0)
+}
+
+fn decode_fact_at(
+    bytes: &[u8],
+    schema: &Schema,
+    predicate: PredicateId,
+    depth: usize,
+) -> Result<(WireFact, usize), WireError> {
     let found = schema
         .get(predicate)
         .ok_or(WireError::UnknownPredicate(predicate.0))?;
     let declared = found.predicate();
 
-    let (key, mut at) = decode_value(bytes, schema, &declared.key)?;
+    let (key, mut at) = decode_value_at(bytes, schema, &declared.key, depth)?;
 
     let value = match &declared.value {
         Some(value_ty) => {
-            let (value, used) = decode_value(&bytes[at..], schema, value_ty)?;
+            let (value, used) = decode_value_at(&bytes[at..], schema, value_ty, depth)?;
             at += used;
             Some(value)
         }

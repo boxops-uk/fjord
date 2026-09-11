@@ -908,3 +908,54 @@ proptest::proptest! {
         the_round_trip_holds(&mut server, &document);
     }
 }
+
+/// **One bad line is refused, and the database is still there afterwards.**
+///
+/// A key longer than the store can hold used to reach an `assert!` inside the storage
+/// engine. The panic took a write worker with it and **poisoned the merge lock behind
+/// it**, so the next perfectly good write to that database failed too — one long line
+/// in a file, and the database was out of service until somebody restarted the server.
+///
+/// Both halves are asserted, and the second is the one that matters: a refusal that
+/// leaves the database unusable is not a refusal. The message has to name the limit as
+/// well, because the only thing a person can do about this is make the key shorter.
+#[test]
+fn an_over_long_key_is_refused_and_the_database_survives() {
+    let serving = serving();
+
+    // `demo.File` is a bare string key, so the key *is* the string.
+    let too_long = file_of(
+        &serving,
+        "long.jsonl",
+        &format!(
+            "{{\"predicate\": \"demo.File\", \"fact\": \"{}\"}}\n",
+            "x".repeat(70_000)
+        ),
+    );
+
+    let (ok, _, why) = fjord(
+        &serving.root,
+        &["write", "code", too_long.to_str().expect("utf8")],
+    );
+
+    assert!(!ok, "an over-long key is refused");
+    assert!(
+        why.contains("longer than the") && why.contains("a stored key may be"),
+        "the refusal names the limit: {why}"
+    );
+    assert!(!why.contains("panicked"), "a refusal, not a panic: {why}");
+
+    // **The database is still usable.** This is the assertion the panic failed.
+    let after = file_of(
+        &serving,
+        "after.jsonl",
+        "{\"predicate\": \"demo.File\", \"fact\": \"short.py\"}\n",
+    );
+
+    let (ok, said, why) = fjord(
+        &serving.root,
+        &["write", "code", after.to_str().expect("utf8")],
+    );
+    assert!(ok, "the database still takes writes: {why}");
+    assert!(said.contains("1 fact(s) written"), "{said}");
+}

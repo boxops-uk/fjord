@@ -98,10 +98,8 @@ fn intern_one<S: FactSink>(
         .clone();
 
     let key = resolve(sink, schema, &declared.key, &fact.key, counts)?;
-    let key_bytes = encode_key(&declared.key, &key).map_err(|_| IngestError::TypeMismatch {
-        what: "a key",
-        detail: "could not be encoded against its declared type",
-    })?;
+    let key_bytes =
+        encode_key(&declared.key, &key).map_err(|why| IngestError::Codec { what: "a key", why })?;
 
     // An absent value side is *no bytes*, matching what `fact::encode` writes for a
     // predicate without one — so a fact written by hand and the same fact ingested
@@ -110,9 +108,9 @@ fn intern_one<S: FactSink>(
         (None, None) => Vec::new(),
         (Some(value_ty), Some(value)) => {
             let value = resolve(sink, schema, value_ty, value, counts)?;
-            encode_typed(value_ty, &value).map_err(|_| IngestError::TypeMismatch {
+            encode_typed(value_ty, &value).map_err(|why| IngestError::Codec {
                 what: "a value side",
-                detail: "could not be encoded against its declared type",
+                why,
             })?
         }
         (Some(_), None) => {
