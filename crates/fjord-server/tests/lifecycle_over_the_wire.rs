@@ -91,6 +91,16 @@ impl Serving {
 }
 
 fn start() -> Serving {
+    start_with(Schemas::new(""))
+}
+
+/// The same, with the catalogue the shipped server serves.
+///
+/// [`start`] passes `""` — a server answering no virtual predicate at all, which is
+/// what most of this file wants because it is testing the lifecycle rather than the
+/// catalogue. A battery about what a session bound to *no database* can ask needs the
+/// real thing, because that schema is the whole of what such a session sees.
+fn start_with(schemas: Schemas) -> Serving {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("fjord.sock");
     let root = dir.path().join("store");
@@ -99,7 +109,7 @@ fn start() -> Serving {
     let fingerprint = fjord_schema::fingerprint::of(&schema);
 
     let catalog = Catalog::open(&root).expect("a store root");
-    let (registry, _listing) = Registry::open(catalog, Schemas::new("")).expect("a registry");
+    let (registry, _listing) = Registry::open(catalog, schemas).expect("a registry");
 
     let listener = Listener::bind(&socket).expect("a socket");
     thread::spawn(move || {
@@ -498,10 +508,55 @@ fn removing_a_database_a_session_holds_is_refused() {
     );
 }
 
-/// A control session is bound to no database, and says so rather than guessing at one.
+/// **A control session can ask the one question it is for.**
+///
+/// It is bound to no database, and the first thing anyone wants of a server is the
+/// list of them — which used to be the one question a session could not be opened to
+/// ask. It handshakes against the catalogue schema, so answering a query over that
+/// schema is the server agreeing with what it already told the client.
 #[test]
-fn a_control_session_has_no_database_to_query() {
-    let serving = start();
+fn a_control_session_can_query_the_catalogue() {
+    let serving = start_with(Schemas::default());
+    let mut control = Client::control_session(&serving, Mode::ReadWrite);
+    control.control(ControlOp::Create, "code", false);
+    control.control(ControlOp::Create, "other", false);
+
+    control.send(kinds::QUERY, StreamId(2), b"X where fjord.db.List X");
+
+    // A row description, then a row per database, then the end of the stream.
+    let (header, payload) = control.recv();
+    assert_eq!(
+        header.kind,
+        FrameKind::ROW_DESCRIPTION,
+        "{:?}",
+        error_of(&payload)
+    );
+
+    let mut rows = 0;
+    loop {
+        let (header, _) = control.recv();
+        match header.kind {
+            FrameKind::DATA_ROW => rows += 1,
+            // The listing's digest, which a query reading `fjord.db.List` is sent so a
+            // resume can be refused when the catalogue moves under it.
+            kinds::LISTING_DIGEST => {}
+            kinds::COMPLETE => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    assert_eq!(rows, 2, "one row per database");
+}
+
+/// **A stored predicate is refused for what it is**, not for the session's shape.
+///
+/// A control session's schema is the catalogue and nothing else, so `src.File` is not
+/// a predicate it has — which is a compile error naming the schema, and a better
+/// answer than "name a database at startup" was. The refusal is still a refusal; what
+/// changed is that it says the true thing.
+#[test]
+fn a_control_session_has_no_stored_predicate_to_read() {
+    let serving = start_with(Schemas::default());
     let mut control = Client::control_session(&serving, Mode::ReadWrite);
     control.control(ControlOp::Create, "code", false);
 
@@ -509,15 +564,31 @@ fn a_control_session_has_no_database_to_query() {
     let (header, payload) = control.recv();
 
     assert_eq!(header.kind, FrameKind::ERROR);
-    assert_eq!(error_of(&payload).0, ErrorCode::UnknownDatabase);
+    let (code, message) = error_of(&payload);
+    assert_eq!(code, ErrorCode::BadQuery, "{message}");
+    assert!(message.contains("src.File"), "{message}");
 
-    // Naming one that does not exist is the other half of the same rule: a session
-    // binds a database or it binds none, and never something almost right.
+    // Naming a database that does not exist is a different rule and still holds: a
+    // session binds a database or it binds none, and never something almost right.
     let (_client, header, payload) = Client::hello(&serving, "nope", Mode::ReadOnly);
     assert_eq!(header.kind, FrameKind::ERROR);
     let (code, message) = error_of(&payload);
     assert_eq!(code, ErrorCode::UnknownDatabase);
     assert!(message.contains("nope"), "{message}");
+}
+
+/// **A write still needs somewhere to put a fact.** Reading the catalogue is a
+/// question about the server; writing is a change to a database, and there is none.
+#[test]
+fn a_control_session_still_cannot_write() {
+    let serving = start();
+    let mut control = Client::control_session(&serving, Mode::ReadWrite);
+
+    control.send(kinds::OPEN_WRITE, StreamId(2), b"");
+    let (header, payload) = control.recv();
+
+    assert_eq!(header.kind, FrameKind::ERROR);
+    assert_eq!(error_of(&payload).0, ErrorCode::UnknownDatabase);
 }
 
 /// A lifecycle request the store declines comes back as a **refusal**, with the reason

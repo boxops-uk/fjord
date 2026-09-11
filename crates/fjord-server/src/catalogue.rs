@@ -427,6 +427,32 @@ fn digest_of(tables: &[Table]) -> u64 {
 }
 
 /// A store that answers the catalogue from memory and everything else from `inner`.
+/// The store behind a session bound to **no database**.
+///
+/// A control session's schema is the catalogue and nothing else, so every predicate a
+/// query over it can name is virtual and [`Catalogued`] answers all of them from
+/// memory. What sits underneath still has to be a [`FactStore`], because the executor
+/// is generic over one — and the honest answer for "the facts this session's database
+/// holds" is that there is no database, so there are none.
+///
+/// A type of its own rather than an empty model store: nothing here should have a
+/// keyspace to get out of step with, and a reader of `Catalogued<Nothing>` can see at
+/// the type that the catalogue is all there is.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Nothing;
+
+impl FactStore for Nothing {
+    type Scan = std::iter::Empty<Result<(ByteView, FactId), StoreError>>;
+
+    fn scan(&self, _lo: &[u8], _hi: Option<&[u8]>) -> Result<Self::Scan, StoreError> {
+        Ok(std::iter::empty())
+    }
+
+    fn point(&self, _id: FactId) -> Result<Option<Entity>, StoreError> {
+        Ok(None)
+    }
+}
+
 pub struct Catalogued<S> {
     inner: S,
     catalogue: Arc<Catalogue>,

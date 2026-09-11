@@ -225,6 +225,36 @@ struct Writing {
     ids: Option<Vec<fjord_schema::id::FactId>>,
 }
 
+/// What a session's queries read.
+///
+/// **A session bound to no database can still ask a question**, because the catalogue
+/// is a schema like any other and its predicates are answered from what the server
+/// knows rather than from a keyspace. So the query path needs a schema and a store,
+/// and a `Database` is only one way of having both — which is what this says.
+///
+/// Cheap to clone, because a chunk hands it to a blocking task and there is one per
+/// chunk.
+#[derive(Clone)]
+enum Reading {
+    /// A database: its own schema, and its own store underneath.
+    Database(Arc<Database>),
+    /// No database — the server's catalogue, and nothing stored behind it.
+    ///
+    /// Every predicate such a session can name is virtual, so [`Catalogued`] answers
+    /// all of them and [`Nothing`](catalogue::Nothing) is the honest floor.
+    Catalogue(Arc<Schema>),
+}
+
+impl Reading {
+    /// The schema a query compiles against.
+    fn schema(&self) -> &Arc<Schema> {
+        match self {
+            Reading::Database(database) => &database.schema,
+            Reading::Catalogue(schema) => schema,
+        }
+    }
+}
+
 /// What a connection knows, once the handshake has settled it.
 ///
 /// Immutable and shared: the mode is resolved **once** at establishment (`ops-I6`),
@@ -655,11 +685,26 @@ impl StreamTask {
     }
 
     /// The database this session is bound to, or the fault of asking without one.
+    ///
+    /// **For the things that genuinely need one**: a write has nowhere to put a fact,
+    /// and a fetch has nothing to read. A *query* does not — see [`Handler::reading`].
     fn database(&self) -> Result<&Arc<Database>, ServerError> {
         self.session
             .database
             .as_ref()
             .ok_or(ServerError::NoDatabase)
+    }
+
+    /// What this session's queries read: its database, or the catalogue alone.
+    ///
+    /// Never a fault. A session bound to no database handshook against the catalogue
+    /// schema and was told its fingerprint; refusing to answer a query over the very
+    /// schema it was handed would be the server disagreeing with itself.
+    fn reading(&self) -> Reading {
+        match &self.session.database {
+            Some(database) => Reading::Database(Arc::clone(database)),
+            None => Reading::Catalogue(Arc::clone(self.session.registry.schema())),
+        }
     }
 
     /// Carry out a lifecycle request.
@@ -1054,15 +1099,15 @@ impl StreamTask {
             .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?
             .to_owned();
 
-        let database = Arc::clone(self.database()?);
+        let reading = self.reading();
         let prepared = {
             let queued = std::time::Instant::now();
             let stats = Arc::clone(stats);
-            let database = Arc::clone(&database);
+            let schema = Arc::clone(reading.schema());
             let registry = Arc::clone(&self.session.registry);
             blocking::run(move || {
                 stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
-                prepare(&database, &registry, &source)
+                prepare(&schema, &registry, &source)
             })
             .await?
         };
@@ -1071,7 +1116,7 @@ impl StreamTask {
         let mut total: u64 = 0;
 
         loop {
-            let database = Arc::clone(&database);
+            let reading = reading.clone();
             let plan = prepared.plan.clone();
             let token = self.cancel.clone();
             let resume = cursor.take();
@@ -1085,7 +1130,7 @@ impl StreamTask {
                 blocking::run(move || {
                     stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
                     count_chunk(
-                        &database,
+                        &reading,
                         listing.as_ref(),
                         reads_listing,
                         &plan,
@@ -1135,16 +1180,16 @@ impl StreamTask {
             .map_err(|_| ServerError::Protocol("a query that is not UTF-8".to_owned()))?
             .to_owned();
 
-        let database = Arc::clone(self.database()?);
+        let reading = self.reading();
         let prepared = {
             let queued = std::time::Instant::now();
             let stats = Arc::clone(stats);
-            let database = Arc::clone(&database);
+            let schema = Arc::clone(reading.schema());
             let source = source.clone();
             let registry = Arc::clone(&self.session.registry);
             blocking::run(move || {
                 stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
-                prepare(&database, &registry, &source)
+                prepare(&schema, &registry, &source)
             })
             .await?
         };
@@ -1235,7 +1280,7 @@ impl StreamTask {
         let mut profile = Profile::for_plan(&prepared.plan);
 
         loop {
-            let database = Arc::clone(&database);
+            let reading = reading.clone();
             let plan = prepared.plan.clone();
             let shape = prepared.shape.clone();
             let token = self.cancel.clone();
@@ -1267,7 +1312,7 @@ impl StreamTask {
                 blocking::run(move || {
                     stats.blocking_dispatched(queued.elapsed().as_micros() as u64);
                     let chunk = run_chunk(
-                        &database,
+                        &reading,
                         listing.as_ref(),
                         &Chunking {
                             plan: &plan,
@@ -1351,7 +1396,7 @@ impl StreamTask {
                     self.stream,
                     &protocol::encode_profile(&describe_profile(
                         &prepared.plan,
-                        &database.schema,
+                        reading.schema(),
                         &profile,
                     )),
                 )
@@ -1553,13 +1598,7 @@ struct Chunk {
 }
 
 /// Compile, and work out what the rows will look like. No execution.
-fn prepare(
-    database: &Database,
-    registry: &Registry,
-    source: &str,
-) -> Result<Prepared, ServerError> {
-    let schema = &database.schema;
-
+fn prepare(schema: &Schema, registry: &Registry, source: &str) -> Result<Prepared, ServerError> {
     let mut compilation = Compilation::new(source, schema);
     let plan = compilation.plan();
 
@@ -1598,8 +1637,7 @@ fn prepare(
     // stripe's lock in turn, which is a report standing briefly in front of the write
     // path it reports on. Neither is paid for by a query that did not name it.
     let reads = |name: &str| {
-        database
-            .schema
+        schema
             .find_position(name)
             .is_some_and(|(id, _)| catalogue::reads(&plan, id))
     };
@@ -1619,7 +1657,7 @@ fn prepare(
             Vec::new()
         };
 
-        Catalogue::materialise(&database.schema, &listing, &interning)?.map(Arc::new)
+        Catalogue::materialise(schema, &listing, &interning)?.map(Arc::new)
     } else {
         None
     };
@@ -1641,6 +1679,14 @@ fn prepare(
 /// — see its own doc comment for the narrow race this exists to fail safely
 /// through, rather than by reasoning about timing further.
 const UNKNOWN_WORLD: &[u8] = b"unknown-world";
+
+/// The base world stamp of a session bound to **no database**.
+///
+/// Not a database's identity, because there is no database — and distinct from
+/// [`UNKNOWN_WORLD`], which exists to never match. This one *does* match itself: a
+/// control session's answers depend on the catalogue alone, and the digest folded in
+/// beside it is what moves when the catalogue does.
+const NO_DATABASE_WORLD: &[u8] = b"no-database";
 
 /// The reader for one chunk, **and the world stamp a resume cursor built from it
 /// should carry** — see [`fjord_store_fjall::world`].
@@ -1730,7 +1776,7 @@ fn with_listing_digest(
 /// per row in the middle of what `bench/FINDINGS.md` §9 measured. This shares the
 /// executor and shares nothing else.
 fn count_chunk(
-    database: &Database,
+    reading: &Reading,
     catalogue: Option<&Arc<Catalogue>>,
     reads_listing: bool,
     plan: &Plan,
@@ -1738,24 +1784,53 @@ fn count_chunk(
     cancel: &CancellationToken,
     examined_ceiling: u64,
 ) -> Result<(u64, Option<Cursor>), ServerError> {
-    let (store, world) = stamped_reader(database);
-    let world = with_listing_digest(
-        world,
-        catalogue.map(Arc::as_ref),
-        reads_listing,
-        &database.schema,
-    );
+    let schema = reading.schema();
+    let stamp = |base: Box<[u8]>| {
+        with_listing_digest(base, catalogue.map(Arc::as_ref), reads_listing, schema)
+    };
 
-    match catalogue {
-        Some(catalogue) => counting(
-            Catalogued::new(store, Arc::clone(catalogue)),
-            plan,
-            resume,
-            cancel,
-            examined_ceiling,
-            world,
-        ),
-        None => counting(store, plan, resume, cancel, examined_ceiling, world),
+    // The same four cases [`run_chunk`] has, and for the same reasons — the accumulator
+    // is what differs, not what is being read.
+    match reading {
+        Reading::Database(database) => {
+            let (store, base) = stamped_reader(database);
+            let world = stamp(base);
+
+            match catalogue {
+                Some(catalogue) => counting(
+                    Catalogued::new(store, Arc::clone(catalogue)),
+                    plan,
+                    resume,
+                    cancel,
+                    examined_ceiling,
+                    world,
+                ),
+                None => counting(store, plan, resume, cancel, examined_ceiling, world),
+            }
+        }
+
+        Reading::Catalogue(_) => {
+            let world = stamp(Box::from(NO_DATABASE_WORLD));
+
+            match catalogue {
+                Some(catalogue) => counting(
+                    Catalogued::new(catalogue::Nothing, Arc::clone(catalogue)),
+                    plan,
+                    resume,
+                    cancel,
+                    examined_ceiling,
+                    world,
+                ),
+                None => counting(
+                    catalogue::Nothing,
+                    plan,
+                    resume,
+                    cancel,
+                    examined_ceiling,
+                    world,
+                ),
+            }
+        }
     }
 }
 
@@ -1840,7 +1915,7 @@ fn resolve<S: fjord_store::fact_store::FactStore>(
 
 /// Run at most `work.budget` rows, from the start or from `resume`.
 fn run_chunk(
-    database: &Database,
+    reading: &Reading,
     catalogue: Option<&Arc<Catalogue>>,
     work: &Chunking<'_>,
     resume: Option<Cursor>,
@@ -1856,31 +1931,62 @@ fn run_chunk(
     // Two calls rather than one boxed store, because `FactStore::Scan` is an associated
     // type: a `dyn FactStore` would have to erase the scan too, which costs an
     // allocation and a virtual call **per row** on the hot path, to save one line here.
-    let (store, world) = stamped_reader(database);
-    let world = with_listing_digest(
-        world,
-        catalogue.map(Arc::as_ref),
-        work.reads_listing,
-        &database.schema,
-    );
+    let schema = reading.schema();
 
-    match catalogue {
-        Some(catalogue) => over(
-            Catalogued::new(store, Arc::clone(catalogue)),
-            database,
-            work,
-            resume,
-            profile,
-            world,
-        ),
-        None => over(store, database, work, resume, profile, world),
+    let stamp = |base: Box<[u8]>| {
+        with_listing_digest(base, catalogue.map(Arc::as_ref), work.reads_listing, schema)
+    };
+
+    match reading {
+        // **One call, because it takes the snapshot and stamps it together.** Asking
+        // twice would read the store at two moments and label the second with the
+        // first's world.
+        Reading::Database(database) => {
+            let (store, base) = stamped_reader(database);
+            let world = stamp(base);
+
+            match catalogue {
+                Some(catalogue) => over(
+                    Catalogued::new(store, Arc::clone(catalogue)),
+                    schema,
+                    work,
+                    resume,
+                    profile,
+                    world,
+                ),
+                None => over(store, schema, work, resume, profile, world),
+            }
+        }
+
+        // **A session with no database has no base world, and needs none**: everything
+        // it can read is the catalogue, whose digest the stamp folds in. A constant
+        // base is the whole truth about the other half — two such sessions are looking
+        // at the same nothing, and a `create` between two pages still moves the digest
+        // and refuses the resume.
+        Reading::Catalogue(_) => {
+            let world = stamp(Box::from(NO_DATABASE_WORLD));
+
+            match catalogue {
+                Some(catalogue) => over(
+                    Catalogued::new(catalogue::Nothing, Arc::clone(catalogue)),
+                    schema,
+                    work,
+                    resume,
+                    profile,
+                    world,
+                ),
+                // A query over the catalogue schema that reads no virtual predicate
+                // reads nothing, and there is nothing for it to read.
+                None => over(catalogue::Nothing, schema, work, resume, profile, world),
+            }
+        }
     }
 }
 
 /// [`run_chunk`], once the store is known.
 fn over<S: fjord_store::fact_store::FactStore>(
     store: S,
-    database: &Database,
+    schema: &Schema,
     work: &Chunking<'_>,
     resume: Option<Cursor>,
     profile: &mut Profile,
@@ -1933,7 +2039,7 @@ fn over<S: fjord_store::fact_store::FactStore>(
         let wire = rows::to_wire(&shape.ty, value)?;
 
         let mut buffer = vec![];
-        encode_value(&mut buffer, &database.schema, &shape.ty, &wire)?;
+        encode_value(&mut buffer, schema, &shape.ty, &wire)?;
         rows.push(buffer);
     }
 
