@@ -75,7 +75,7 @@ use crate::{
     plan::{
         Access, Address, Arith, Compare as CompareRel, Computed, DerivedBind, FieldPath, Guide,
         Level, Plan, Project, RangeEdge, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step,
-        Test,
+        Test, ValueTest,
     },
     reorder::{Deps, Placement, StmtDeps, reorder},
     syntax::{
@@ -520,10 +520,14 @@ impl Body {
     }
 }
 
-/// The seek and residuals of one level, built field by field.
+/// The seek, residuals and value tests of one level, built field by field.
 struct SeekBuilder {
     parts: Vec<SeekKeyPart>,
     residuals: Vec<Residual>,
+    /// Filters on the row's **value**, which narrow nothing and cost a point read
+    /// apiece — so they are collected apart from the residuals and applied after
+    /// them, never folded into the seek.
+    value_tests: Vec<ValueTest>,
     /// Whether the seek prefix is still **contiguous from field 0**.
     ///
     /// A seek is a byte prefix of the stored key, so it can only be extended while
@@ -576,6 +580,7 @@ impl SeekBuilder {
         Self {
             parts: vec![],
             residuals: vec![],
+            value_tests: Vec::new(),
             building: true,
             guide: None,
             range: None,
@@ -597,14 +602,20 @@ impl SeekBuilder {
             seek_key: self.seek_key(),
         };
         let residuals = std::mem::take(&mut self.residuals).into();
+        let value_tests = std::mem::take(&mut self.value_tests).into();
 
         match self.guide.take() {
             Some(guide) => Source::Guided {
                 access,
                 guide,
                 residuals,
+                value_tests,
             },
-            None => Source::Seek { access, residuals },
+            None => Source::Seek {
+                access,
+                residuals,
+                value_tests,
+            },
         }
     }
 

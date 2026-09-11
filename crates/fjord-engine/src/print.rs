@@ -1771,6 +1771,7 @@ mod tests {
                 seek_key: SeekKey::Prefix(Box::new([])),
             },
             residuals: Box::new([]),
+            value_tests: Box::new([]),
         };
 
         let compiled = Plan {

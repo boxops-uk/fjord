@@ -9,7 +9,7 @@ use crate::{
     levenshtein::{Automaton, FuzzyAnchor, State as GuideState},
     plan::{
         Access, Address, Arith, Computed, FieldPath, Guide, Plan, PlanFingerprint, Project,
-        RangeEdge, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+        RangeEdge, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test, ValueTest,
     },
 };
 use fjord_encoding::{
@@ -1435,6 +1435,23 @@ impl<S: FactStore> StackFrame<S> {
                 &current,
             )? {
                 None => {
+                    // **The value, last and only if asked.** Everything above this
+                    // reads the key, which the scan already has; this reads the value,
+                    // which is a point read per candidate row
+                    // ([I6](../../../website/content/invariants.md#i6)). Running it
+                    // after the residuals is what keeps that cost off every row they
+                    // would have dropped anyway.
+                    let tests = source.value_tests();
+
+                    if !tests.is_empty()
+                        && let Some(test) = Self::check_value_tests(store, tests, &current)?
+                    {
+                        // Numbered past the residuals, so a watcher reading "filter 3"
+                        // counts the source's filters in the order they run.
+                        deadline.rejected(depth, &current, source.residuals().len() + test);
+                        continue;
+                    }
+
                     self.current = Some(current.clone());
                     return Ok(Some(current));
                 }
@@ -1480,6 +1497,70 @@ impl<S: FactStore> StackFrame<S> {
         }
 
         Ok(true)
+    }
+
+    /// Which **value** test dropped this row, or `None` if it survived them all.
+    ///
+    /// **One point read, however many tests there are.** The value is fetched once and
+    /// every test reads a span of it, so a level filtering on three fields of one card
+    /// costs the same lookup as one filtering on a single field.
+    ///
+    /// The tests read bytes, exactly as a residual does — the same [`ResidualOp`] over
+    /// the same kind of span — because a value is encoded the way a key is. What is
+    /// different is only where the bytes came from.
+    fn check_value_tests(
+        store: &S,
+        tests: &[ValueTest],
+        register: &Register,
+    ) -> Result<Option<usize>, FjordError> {
+        let entity = store
+            .point(register.fact_id)?
+            .ok_or(StoreError::DanglingFactId(register.fact_id))?;
+
+        let value = entity.value;
+        let mut offsets = FieldOffsets::new();
+
+        for (at, test) in tests.iter().enumerate() {
+            let span = field_span(&mut offsets, &value, &test.path)?;
+            let field = &value[span];
+
+            let ok = match &test.op {
+                ResidualOp::EqConst(bytes) => field == bytes.as_ref(),
+                ResidualOp::Prefix(bytes) => field.starts_with(bytes.as_ref()),
+                ResidualOp::NotEqConst(bytes) => field != bytes.as_ref(),
+                ResidualOp::NotPrefix(bytes) => !field.starts_with(bytes.as_ref()),
+                ResidualOp::CmpConst { op, value: bound } => op.holds(field.cmp(bound.as_ref())),
+
+                // A union's tag, which is a constant comparison like the rest — and
+                // the one that matters most here, because the fields worth filtering
+                // on a symbol card are its kinds.
+                ResidualOp::DiscriminantEq(disc) => {
+                    field.starts_with(UnionTag::new(*disc).as_bytes())
+                }
+
+                // **The register-relative forms are not reachable here**, and that is
+                // flatten's doing rather than an omission: a value test is built from a
+                // comparison against a constant. A register-relative one would compare
+                // a value against another row's field, which needs both in hand at
+                // once and is a shape nothing asks for yet.
+                ResidualOp::EqRegisterField { .. }
+                | ResidualOp::EqRegisterFactId(_)
+                | ResidualOp::CmpRegisterField { .. }
+                | ResidualOp::CmpSelfField { .. }
+                | ResidualOp::CmpRegisterValue { .. }
+                | ResidualOp::Fuzzy { .. } => {
+                    return Err(FjordError::ValueTestUnsupported(
+                        "a value is compared against a constant, not against a register",
+                    ));
+                }
+            };
+
+            if !ok {
+                return Ok(Some(at));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Which residual dropped this row, or `None` if it survived them all.
@@ -4707,6 +4788,7 @@ mod tests {
                 seek_key: SeekKey::Prefix(i64_field(key).into_boxed_slice()),
             },
             residuals: Box::new([]),
+            value_tests: Box::new([]),
         }
     }
 
@@ -4848,6 +4930,7 @@ mod tests {
                             seek_key: SeekKey::Prefix(Box::new([])),
                         },
                         residuals: Box::new([]),
+                        value_tests: Box::new([]),
                     }]),
                     binds: Box::new([Address::new(0)]),
                 }),
@@ -6432,6 +6515,7 @@ mod tests {
                 }])),
             },
             residuals: Box::new([]),
+            value_tests: Box::new([]),
         }])))
     }
 
@@ -6519,6 +6603,7 @@ mod tests {
                     seek_key: SeekKey::Prefix(i64_field(key).into_boxed_slice()),
                 },
                 residuals: Box::new([]),
+                value_tests: Box::new([]),
             }])))
         };
 
@@ -7718,6 +7803,116 @@ mod tests {
         );
     }
 
+    /// **A filter on a field of a fact's value**, which is the thing
+    /// [I6](../../../website/content/invariants.md#i6) used to make unaskable.
+    ///
+    /// The value is not in the key, so this narrows nothing: every row the seek yields
+    /// is a candidate and the test decides it afterwards, at a point read apiece. What
+    /// the guard pins is that the decision is *right* — the row whose value field
+    /// matches comes back and the other does not — and that the reads happen, because
+    /// a filter that silently passed everything would look identical in the answer of
+    /// a one-row fixture.
+    #[test]
+    fn a_value_test_filters_on_a_field_of_the_value() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert_valued(p, i64_field(1), 1, i64_field(100));
+        store.insert_valued(p, i64_field(2), 2, i64_field(200));
+        store.insert_valued(p, i64_field(3), 3, i64_field(100));
+
+        let (spy, calls) = PointSpy::new(store);
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek_filtered(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+                Box::new([ValueTest {
+                    path: FieldPath::field(0),
+                    op: ResidualOp::EqConst(i64_field(100).into_boxed_slice()),
+                }]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let rows = collect_rows(spy, plan, &interner_with(&[])).unwrap();
+        assert_eq!(rows, vec![Value::Int(1), Value::Int(3)]);
+
+        // One point read per candidate, including the row it rejected — which is the
+        // cost this shape has and a key residual does not.
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            3,
+            "a value test reads the value of every row the seek let through"
+        );
+    }
+
+    /// **Several tests, one read.** A level filtering on two fields of one value pays
+    /// the same lookup as one filtering on a single field: the value is fetched once
+    /// and each test reads a span of it.
+    #[test]
+    fn several_value_tests_cost_one_point_read() {
+        let p = PredicateId(0);
+
+        let mut store = MemStore::new();
+        store.insert_valued(
+            p,
+            i64_field(1),
+            1,
+            compose(&[&i64_field(100), &i64_field(7)]),
+        );
+        store.insert_valued(
+            p,
+            i64_field(2),
+            2,
+            compose(&[&i64_field(100), &i64_field(9)]),
+        );
+
+        let (spy, calls) = PointSpy::new(store);
+        let plan = Plan {
+            nvars: 1,
+            body: Step::levels([Level::seek_filtered(
+                Access {
+                    predicate_id: p,
+                    seek_key: SeekKey::Prefix(Box::new([])),
+                },
+                Box::new([Address::new(0)]),
+                Box::new([]),
+                Box::new([
+                    ValueTest {
+                        path: FieldPath::field(0),
+                        op: ResidualOp::EqConst(i64_field(100).into_boxed_slice()),
+                    },
+                    ValueTest {
+                        path: FieldPath::field(1),
+                        op: ResidualOp::EqConst(i64_field(9).into_boxed_slice()),
+                    },
+                ]),
+            )]),
+            head: Project::RegisterField {
+                address: Address::new(0),
+                path: FieldPath::field(0),
+                ty: PredicateTy::Int,
+            },
+        };
+
+        let rows = collect_rows(spy, plan, &interner_with(&[])).unwrap();
+        assert_eq!(rows, vec![Value::Int(2)]);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "two rows, two reads — not four"
+        );
+    }
+
     // I6 — values never enter the scan hot loop. A key-only query (scan +
     // key-field residual + key-field projection) never fetches from `entities`.
     #[test]
@@ -8132,6 +8327,7 @@ mod tests {
                         anchor,
                     },
                     residuals: Box::new([]),
+                    value_tests: Box::new([]),
                 }]),
                 binds: Box::new([Address::new(0)]),
             })]),

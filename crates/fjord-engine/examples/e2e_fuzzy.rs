@@ -229,6 +229,7 @@ fn guided(term: &str, distance: u8, range: &str, anchor: FuzzyAnchor) -> Plan {
                     anchor,
                 },
                 residuals: Box::new([]),
+                value_tests: Box::new([]),
             }]),
             binds: Box::new([Address::new(0)]),
         })]),

@@ -7,6 +7,7 @@ use fjord_schema::schema::{PredicateId, PredicateTyNamed};
 
 use crate::plan::{
     Address, Plan, Project, Residual, ResidualOp, SeekKey, SeekKeyPart, Source, Step, Test,
+    ValueTest,
 };
 
 /// One place a local row's identity would be observable.
@@ -102,12 +103,24 @@ pub fn escapes(plan: &Plan, is_local: &impl Fn(PredicateId) -> bool) -> Vec<Esca
                 // A guide narrows what a seek visits and names no register, so
                 // it can carry no identity out of a local row — the seek key and
                 // the residuals are still the whole of what escapes.
-                Source::Seek { access, residuals }
+                Source::Seek {
+                    access,
+                    residuals,
+                    value_tests,
+                }
                 | Source::Guided {
-                    access, residuals, ..
+                    access,
+                    residuals,
+                    value_tests,
+                    ..
                 } => {
                     seek_key_escapes(&access.seek_key, &bound, &mut found);
                     residual_escapes(residuals, &bound, &mut found);
+
+                    // **A value test escapes exactly as a residual does.** It reads
+                    // different bytes, but a `ResidualOp` naming a register names it
+                    // whichever side of the fact it is comparing against.
+                    value_test_escapes(value_tests, &bound, &mut found);
                 }
 
                 Source::Fetch {
@@ -191,6 +204,28 @@ fn residual_escapes(
 ) {
     for residual in residuals {
         if let ResidualOp::EqRegisterFactId(address) = &residual.op
+            && let Some(predicate) = local_at(*address, bound)
+        {
+            found.push(Escape::ResidualFactId {
+                address: *address,
+                predicate,
+            });
+        }
+    }
+}
+
+/// The same over a source's **value tests**.
+///
+/// A separate walk rather than a widened `residual_escapes`, because the two lists are
+/// separate on the source: folding them here would mean holding a `Vec` of one type
+/// built from two, to save a four-line loop.
+fn value_test_escapes(
+    tests: &[ValueTest],
+    bound: &[(Address, PredicateId)],
+    found: &mut Vec<Escape>,
+) {
+    for test in tests {
+        if let ResidualOp::EqRegisterFactId(address) = &test.op
             && let Some(predicate) = local_at(*address, bound)
         {
             found.push(Escape::ResidualFactId {
@@ -437,6 +472,7 @@ mod tests {
                         path: FieldPath::field(0),
                         predicate_id: LOCAL,
                         residuals: Box::new([]),
+                        value_tests: Box::new([]),
                     }]),
                     binds: Box::new([Address::new(1)]),
                 }),
@@ -466,6 +502,7 @@ mod tests {
                         path: FieldPath::field(0),
                         predicate_id: BASE,
                         residuals: Box::new([]),
+                        value_tests: Box::new([]),
                     }]),
                     binds: Box::new([Address::new(1)]),
                 }),
@@ -489,6 +526,7 @@ mod tests {
                             seek_key: SeekKey::Prefix(Box::new([])),
                         },
                         residuals: Box::new([]),
+                        value_tests: Box::new([]),
                     },
                     Source::Seek {
                         access: Access {
@@ -496,6 +534,7 @@ mod tests {
                             seek_key: SeekKey::Prefix(Box::new([])),
                         },
                         residuals: Box::new([]),
+                        value_tests: Box::new([]),
                     },
                 ]),
                 binds: Box::new([Address::new(0)]),

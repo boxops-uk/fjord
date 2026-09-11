@@ -466,6 +466,35 @@ pub struct Residual {
     pub op: ResidualOp,
 }
 
+/// A filter on a field of a fact's **value**, rather than of its key.
+///
+/// The same [`FieldPath`] and the same [`ResidualOp`] as a [`Residual`], over
+/// different bytes — a value's, which is why it is a separate list rather than a flag
+/// on that one. What differs is not the test but where the bytes come from, and that
+/// difference is the whole cost.
+///
+/// # It is a filter, and it can never be a seek
+///
+/// A value is not in the key, so nothing here narrows a scan: every row the seek and
+/// the key residuals let through is a candidate, and this decides it afterwards. A plan
+/// showing it any other way would suggest a narrowing that is not happening.
+///
+/// # What it costs, and why that is stated rather than hidden
+///
+/// Reading a value is a point read ([I6](../../../website/content/invariants.md#i6)), so
+/// a level carrying one of these pays a lookup **per candidate row** — including for
+/// rows this then rejects, which is the part a projection never pays. That is why the
+/// planner puts these last, after every cheaper narrowing, and why the profile counts
+/// them: a filter doing four hundred point reads to keep twenty should say so.
+///
+/// [`Source::Fetch`] is the exception and gets them free: it has already read the
+/// entity to reach the key, and the value came with it.
+#[derive(Debug, Clone)]
+pub struct ValueTest {
+    pub path: FieldPath,
+    pub op: ResidualOp,
+}
+
 /// Where one level's rows come from, and the filters that apply to rows out of
 /// **this** source.
 ///
@@ -478,6 +507,12 @@ pub enum Source {
     Seek {
         access: Access,
         residuals: Box<[Residual]>,
+        /// Tests on the row's **value**, applied after `residuals` and costing a point
+        /// read per surviving candidate. Empty on every plan that asks about keys
+        /// alone, which is what keeps [I6]'s key-only path free of value reads.
+        ///
+        /// [I6]: ../../../website/content/invariants.md#i6
+        value_tests: Box<[ValueTest]>,
     },
     /// **The fact a reference names** — one row, reached by id rather than by
     /// scanning for it.
@@ -505,6 +540,9 @@ pub enum Source {
         path: FieldPath,
         predicate_id: PredicateId,
         residuals: Box<[Residual]>,
+        /// As [`Source::Seek`]'s, and **free here**: reaching the key already read the
+        /// entity, so the value is in hand and no second lookup is owed.
+        value_tests: Box<[ValueTest]>,
     },
 
     /// **A scan walked by an automaton** — the same range a [`Seek`](Source::Seek)
@@ -524,6 +562,8 @@ pub enum Source {
         access: Access,
         guide: Guide,
         residuals: Box<[Residual]>,
+        /// As [`Source::Seek`]'s.
+        value_tests: Box<[ValueTest]>,
     },
 }
 
@@ -535,6 +575,26 @@ impl Source {
             Source::Seek { residuals, .. }
             | Source::Fetch { residuals, .. }
             | Source::Guided { residuals, .. } => residuals,
+        }
+    }
+
+    /// The **value** tests rows out of this source are filtered by, after the
+    /// residuals above and at the cost of a point read apiece.
+    #[must_use]
+    pub fn value_tests(&self) -> &[ValueTest] {
+        match self {
+            Source::Seek { value_tests, .. }
+            | Source::Fetch { value_tests, .. }
+            | Source::Guided { value_tests, .. } => value_tests,
+        }
+    }
+
+    /// The value tests, to add one to.
+    pub fn value_tests_mut(&mut self) -> &mut Box<[ValueTest]> {
+        match self {
+            Source::Seek { value_tests, .. }
+            | Source::Fetch { value_tests, .. }
+            | Source::Guided { value_tests, .. } => value_tests,
         }
     }
 
@@ -599,7 +659,33 @@ impl Level {
     #[must_use]
     pub fn seek(access: Access, binds: Box<[Address]>, residuals: Box<[Residual]>) -> Self {
         Self {
-            sources: Box::new([Source::Seek { access, residuals }]),
+            sources: Box::new([Source::Seek {
+                access,
+                residuals,
+                value_tests: Box::new([]),
+            }]),
+            binds,
+        }
+    }
+
+    /// The same, filtered on the row's **value** as well as its key.
+    ///
+    /// A separate constructor rather than a fourth argument on [`seek`](Level::seek),
+    /// because the empty case is every plan that asks about keys alone and spelling it
+    /// out at each of those would say nothing.
+    #[must_use]
+    pub fn seek_filtered(
+        access: Access,
+        binds: Box<[Address]>,
+        residuals: Box<[Residual]>,
+        value_tests: Box<[ValueTest]>,
+    ) -> Self {
+        Self {
+            sources: Box::new([Source::Seek {
+                access,
+                residuals,
+                value_tests,
+            }]),
             binds,
         }
     }
@@ -621,6 +707,7 @@ impl Level {
                 path,
                 predicate_id,
                 residuals,
+                value_tests: Box::new([]),
             }]),
             binds,
         }
@@ -1185,93 +1272,103 @@ impl Fingerprint {
         self.len(residuals.len());
         for residual in residuals {
             self.path(&residual.path);
-            match &residual.op {
-                ResidualOp::EqConst(bytes) => {
-                    self.byte(0);
-                    self.bytes(bytes);
-                }
-                ResidualOp::Prefix(bytes) => {
-                    self.byte(1);
-                    self.bytes(bytes);
-                }
-                ResidualOp::EqRegisterField { address, path } => {
-                    self.byte(2);
-                    self.address(*address);
-                    self.path(path);
-                }
-                ResidualOp::EqRegisterFactId(address) => {
-                    self.byte(3);
-                    self.address(*address);
-                }
-                // Distinct tags from their positive twins, and that is
-                // load-bearing rather than tidy: a cursor is accepted on a plan
-                // fingerprint, so two plans differing only in the polarity of a
-                // residual would otherwise accept each other's and resume against
-                // the wrong filter ([chapter 5]).
-                //
-                // [chapter 5]: ../../../website/content/executor.md
-                ResidualOp::NotEqConst(bytes) => {
-                    self.byte(4);
-                    self.bytes(bytes);
-                }
-                ResidualOp::NotPrefix(bytes) => {
-                    self.byte(5);
-                    self.bytes(bytes);
-                }
-                // Distinct tags again, and the operator inside the tag rather than
-                // beside it: two plans differing only in `<` against `<=` must not
-                // accept each other's cursors, and folding the relation into the
-                // fingerprint is what says so.
-                ResidualOp::CmpConst { op, value } => {
-                    self.byte(6);
-                    self.byte(op.tag());
-                    self.bytes(value);
-                }
-                ResidualOp::CmpRegisterField { op, address, path } => {
-                    self.byte(7);
-                    self.byte(op.tag());
-                    self.address(*address);
-                    self.path(path);
-                }
-                ResidualOp::CmpSelfField { op, path } => {
-                    self.byte(8);
-                    self.byte(op.tag());
-                    self.path(path);
-                }
-                ResidualOp::CmpRegisterValue { op, address } => {
-                    self.byte(9);
-                    self.byte(op.tag());
-                    self.address(*address);
-                }
-                // Its own tag, and the discriminant inside it: two plans matching
-                // two different alternatives of one union differ in nothing else,
-                // and a cursor from one resuming into the other would answer the
-                // wrong alternative's rows from the point it stopped.
-                ResidualOp::DiscriminantEq(disc) => {
-                    self.byte(10);
-                    self.int(u64::from(*disc));
-                }
-                // The term and the distance both enter, because two plans
-                // searching for different terms differ in nothing else a
-                // fingerprint can see — and a cursor from one resuming into the
-                // other would answer a different question from the point it
-                // stopped. The term is owned text, so unlike an interned name it
-                // is safe to hash (see [`Guide`]).
-                // The anchoring folds into the tag rather than sitting beside it,
-                // as `Compare` does above: `~` and `~<` over one term at one
-                // distance differ in nothing else a fingerprint can see, and a
-                // cursor from one resuming into the other would answer a
-                // different question from the point it stopped.
-                ResidualOp::Fuzzy {
-                    term,
-                    distance,
-                    anchor,
-                } => {
-                    self.byte(11);
-                    self.byte(anchor.tag());
-                    self.byte(*distance);
-                    self.bytes(term.as_bytes());
-                }
+            self.residual_op(&residual.op);
+        }
+    }
+
+    /// One comparison, into the plan's byte form.
+    ///
+    /// Shared by [`residuals`](Self::residuals) and
+    /// [`value_tests`](Self::value_tests) because the operators are the same: what
+    /// differs between a key residual and a value test is which bytes it reads, and
+    /// the source's own tag already says that.
+    fn residual_op(&mut self, op: &ResidualOp) {
+        match op {
+            ResidualOp::EqConst(bytes) => {
+                self.byte(0);
+                self.bytes(bytes);
+            }
+            ResidualOp::Prefix(bytes) => {
+                self.byte(1);
+                self.bytes(bytes);
+            }
+            ResidualOp::EqRegisterField { address, path } => {
+                self.byte(2);
+                self.address(*address);
+                self.path(path);
+            }
+            ResidualOp::EqRegisterFactId(address) => {
+                self.byte(3);
+                self.address(*address);
+            }
+            // Distinct tags from their positive twins, and that is
+            // load-bearing rather than tidy: a cursor is accepted on a plan
+            // fingerprint, so two plans differing only in the polarity of a
+            // residual would otherwise accept each other's and resume against
+            // the wrong filter ([chapter 5]).
+            //
+            // [chapter 5]: ../../../website/content/executor.md
+            ResidualOp::NotEqConst(bytes) => {
+                self.byte(4);
+                self.bytes(bytes);
+            }
+            ResidualOp::NotPrefix(bytes) => {
+                self.byte(5);
+                self.bytes(bytes);
+            }
+            // Distinct tags again, and the operator inside the tag rather than
+            // beside it: two plans differing only in `<` against `<=` must not
+            // accept each other's cursors, and folding the relation into the
+            // fingerprint is what says so.
+            ResidualOp::CmpConst { op, value } => {
+                self.byte(6);
+                self.byte(op.tag());
+                self.bytes(value);
+            }
+            ResidualOp::CmpRegisterField { op, address, path } => {
+                self.byte(7);
+                self.byte(op.tag());
+                self.address(*address);
+                self.path(path);
+            }
+            ResidualOp::CmpSelfField { op, path } => {
+                self.byte(8);
+                self.byte(op.tag());
+                self.path(path);
+            }
+            ResidualOp::CmpRegisterValue { op, address } => {
+                self.byte(9);
+                self.byte(op.tag());
+                self.address(*address);
+            }
+            // Its own tag, and the discriminant inside it: two plans matching
+            // two different alternatives of one union differ in nothing else,
+            // and a cursor from one resuming into the other would answer the
+            // wrong alternative's rows from the point it stopped.
+            ResidualOp::DiscriminantEq(disc) => {
+                self.byte(10);
+                self.int(u64::from(*disc));
+            }
+            // The term and the distance both enter, because two plans
+            // searching for different terms differ in nothing else a
+            // fingerprint can see — and a cursor from one resuming into the
+            // other would answer a different question from the point it
+            // stopped. The term is owned text, so unlike an interned name it
+            // is safe to hash (see [`Guide`]).
+            // The anchoring folds into the tag rather than sitting beside it,
+            // as `Compare` does above: `~` and `~<` over one term at one
+            // distance differ in nothing else a fingerprint can see, and a
+            // cursor from one resuming into the other would answer a
+            // different question from the point it stopped.
+            ResidualOp::Fuzzy {
+                term,
+                distance,
+                anchor,
+            } => {
+                self.byte(11);
+                self.byte(anchor.tag());
+                self.byte(*distance);
+                self.bytes(term.as_bytes());
             }
         }
     }
@@ -1309,30 +1406,67 @@ impl Fingerprint {
         }
     }
 
+    /// A source's value tests, into the plan's byte form.
+    ///
+    /// **Part of what a cursor's plan hash covers**, like a residual: a resumed page
+    /// whose filter has changed is a different question, and answering it from an old
+    /// cursor would hand back rows the new filter rejects.
+    ///
+    /// **Nothing at all when there are none**, which is not a micro-optimisation: a
+    /// fingerprint that moves refuses every cursor in flight against it, and writing a
+    /// zero here would have moved *every* plan's — including the overwhelming majority
+    /// that ask about keys alone and mean exactly what they meant before. Omitting it
+    /// keeps the break to the queries that actually gained a filter.
+    ///
+    /// Injective, because everything written before it is self-delimiting: a seek key,
+    /// a residual list and this one all carry their own lengths, so appending a
+    /// non-empty list cannot reproduce the bytes of some other plan that appended
+    /// nothing.
+    fn value_tests(&mut self, tests: &[ValueTest]) {
+        if tests.is_empty() {
+            return;
+        }
+
+        self.len(tests.len());
+
+        for test in tests {
+            self.path(&test.path);
+            self.residual_op(&test.op);
+        }
+    }
+
     fn source(&mut self, source: &Source) {
         match source {
-            Source::Seek { access, residuals } => {
+            Source::Seek {
+                access,
+                residuals,
+                value_tests,
+            } => {
                 self.byte(0);
                 self.int(u64::from(access.predicate_id.0));
                 self.seek_key(&access.seek_key);
                 self.residuals(residuals);
+                self.value_tests(value_tests);
             }
             Source::Fetch {
                 reference,
                 path,
                 predicate_id,
                 residuals,
+                value_tests,
             } => {
                 self.byte(1);
                 self.address(*reference);
                 self.path(path);
                 self.int(u64::from(predicate_id.0));
                 self.residuals(residuals);
+                self.value_tests(value_tests);
             }
             Source::Guided {
                 access,
                 guide,
                 residuals,
+                value_tests,
             } => {
                 self.byte(2);
                 self.int(u64::from(access.predicate_id.0));
@@ -1342,6 +1476,7 @@ impl Fingerprint {
                 self.byte(guide.distance);
                 self.bytes(guide.term.as_bytes());
                 self.residuals(residuals);
+                self.value_tests(value_tests);
             }
         }
     }
@@ -1474,6 +1609,7 @@ mod tests {
                         anchor,
                     },
                     residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                    value_tests: Box::new([]),
                 }]);
                 body[0] = Step::Level(l);
             })
@@ -1501,6 +1637,7 @@ mod tests {
                         },
                     },
                     residuals: Box::new([]),
+                    value_tests: Box::new([]),
                 }]);
                 body[0] = Step::Level(l);
             })
@@ -1534,6 +1671,7 @@ mod tests {
                             seek_key: SeekKey::Prefix(Box::new([1, 2])),
                         },
                         residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                        value_tests: Box::new([]),
                     }]);
                     body[0] = Step::Level(l);
                 }),
@@ -1548,6 +1686,7 @@ mod tests {
                             seek_key: SeekKey::Prefix(Box::new([1, 3])),
                         },
                         residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                        value_tests: Box::new([]),
                     }]);
                     body[0] = Step::Level(l);
                 }),
@@ -1565,6 +1704,7 @@ mod tests {
                             }])),
                         },
                         residuals: Box::new([]),
+                        value_tests: Box::new([]),
                     }]);
                     body[0] = Step::Level(l);
                 }),
@@ -1588,6 +1728,7 @@ mod tests {
                             },
                         },
                         residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                        value_tests: Box::new([]),
                     }]);
                     body[0] = Step::Level(l);
                 }),
@@ -1608,6 +1749,7 @@ mod tests {
                             },
                         },
                         residuals: l.sources[0].residuals().to_vec().into_boxed_slice(),
+                        value_tests: Box::new([]),
                     }]);
                     body[0] = Step::Level(l);
                 }),
@@ -2813,6 +2955,7 @@ pub mod proptest {
                                 None => Source::Seek {
                                     access: access.clone(),
                                     residuals,
+                                    value_tests: Box::new([]),
                                 },
                                 Some(guide) => Source::Guided {
                                     access: access.clone(),
@@ -2823,6 +2966,7 @@ pub mod proptest {
                                         anchor: guide.anchor,
                                     },
                                     residuals,
+                                    value_tests: Box::new([]),
                                 },
                             }
                         })
