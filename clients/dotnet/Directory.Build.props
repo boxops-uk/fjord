@@ -27,7 +27,7 @@
          client is refused at the handshake — which means the version bumps in the same
          commit that re-pastes the constant, never later. README.md's flag-day section
          names the guard that checks each of the remaining steps. -->
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Company>Boxops</Company>
     <Authors>Boxops</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

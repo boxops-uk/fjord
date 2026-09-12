@@ -121,7 +121,8 @@ honest list.
 <span class="pill ok">server + client</span>
 <span class="pill ok">CLI + shell</span>
 <span class="pill ok">parallel ingest</span>
-<span class="pill todo">file ingestion</span>
+<span class="pill ok">JSONL in and out</span>
+<span class="pill todo">bulk file ingestion</span>
 <span class="pill todo">stored derivation</span>
 </p>
 

@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-encoding"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fjord-schema",
  "lasso",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "byteview",
  "codespan-reporting",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-inspect"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "codespan-reporting",
  "fjord-encoding",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-schema"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "codespan-reporting",
  "lasso",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "byteview",
  "fjord-encoding",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-store-mem"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "byteview",
  "fjord-encoding",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-wasm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fjord-inspect",
  "wasm-bindgen",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "fjord-wire"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fjord-schema",
  "lasso",
