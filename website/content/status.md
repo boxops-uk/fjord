@@ -36,7 +36,7 @@ built rather than described as if it were.
 
 | Missing | What it means for you | Gating |
 |---|---|---|
-| **Ingestion from files** | Facts arrive over the wire from a producer. The file format, block encoding and splitting rule are all defined and shared with the wire path; the pipeline is not wired to a command | Was gated on parallel ingestion, which is now done |
+| **Bulk ingestion from files** | `fjord write` reads JSONL and is deliberately the simple way in rather than the fast one — it sends over the same socket as any client, and a reference to a fact in the batch being built travels as a copy of the target rather than as an id. A producer writing at volume still speaks the wire protocol through a client library | Nothing; the shape a fast path would take is the question, not the plumbing |
 | **Stored derivation** | A derived predicate cannot be *declared*. Derived data is written by hand — which is what four predicates in the sample schema are | The schema DSL (done) plus the re-derivation decision below |
 | **Arrays and sets** | A one-to-many is one fact per element. Marker bands are reserved | An open design question, not a missing implementation |
 | **A code-search UI** | `fjord-viewer` is retired: it proved a viewer is an ordinary consumer of the protocol, and what replaces it is a browser application rather than a Rust binary. [Clients](clients.html#the-viewer) has the three things it needs from this side | A WebSocket listener carrying the same frames |

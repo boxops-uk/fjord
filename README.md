@@ -83,7 +83,7 @@ an attested `fjord-docs-site.tar.gz`, servable from the root of any static host.
 
 ## Where it stands
 
-> **Status: `0.3.0`, a pre-release.** Built and guarded: the storage codec and the fjall store,
+> **Status: `0.4.0`, a pre-release.** Built and guarded: the storage codec and the fjall store,
 > a suspendable executor that resumes exactly, the sigla front end end to end — text to `Plan`
 > to rows, joins *through fact references* included — the schema language, union types and
 > schema identity, the wire protocol with a second implementation in another language, parallel
@@ -91,7 +91,7 @@ an attested `fjord-docs-site.tar.gz`, servable from the root of any static host.
 > but the client, and a code browser over a real index that answers in the page from an
 > exported dump of it. The engine compiles to WebAssembly, and the book above is that build.
 >
-> **Not built:** authentication, stored derivation, ingestion from files, arrays and sets,
+> **Not built:** authentication, stored derivation, bulk ingestion from files, arrays and sets,
 > per-predicate statistics. [`CHANGELOG.md`](CHANGELOG.md) is the full inventory — including,
 > deliberately, what each release does not contain — and [`PLAN.md`](PLAN.md) is the roadmap.
 >

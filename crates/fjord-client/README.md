@@ -8,8 +8,8 @@ you depend on.
 
 ```toml
 [dependencies]
-fjord-client = "0.3.0"
-fjord-schema = "0.3.0"
+fjord-client = "0.4.0"
+fjord-schema = "0.4.0"
 ```
 
 What it is made of is `fjord-wire` and a socket. It depends on no storage engine, no query

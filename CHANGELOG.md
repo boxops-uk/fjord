@@ -5,7 +5,168 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
-## Unreleased
+## 0.4.0 — 2026-09-12
+
+**Breaking: the exported store image is gone, and `fjord export` writes JSONL.** An
+artifact exported by `0.3.0` cannot be read by this — regenerate it, which for the code
+browser's corpus is `scripts/build-corpus.sh`. The wire protocol is unchanged at version 4:
+both new frames are additive, so a client that neither sends nor receives them needs no
+rebuild.
+
+The round's shape: **one portable format instead of two**. JSON ingestion was half a design
+— sync markers, a scanner, a block format nobody read — and the store image beside it was a
+workaround for the browser that had become a second thing to document and test. Both are
+replaced by JSONL, which `fjord write` reads, `fjord export` writes, the browser loads, and
+which round-trips to the identity it started from.
+
+Getting there found three defects, and each of them had gone unseen for the same reason: a
+guard whose fixture could not express the fault. A `bytes` field was being silently
+corrupted between the writer and the reader; an over-long key panicked a write worker and
+took the database out of service; and twenty kilobytes of nested references on a socket
+aborted the server process. The coverage that replaced those guards is a fixture naming
+every constructor the language has, a property at 2,048 cases, and the round trip running
+in CI over the real corpus.
+
+
+### JSONL is the portable format, and the store image is gone
+
+`fjord export` writes the grammar `fjord write` reads, so an export can be written back —
+and the round trip comes out with the identity it started with, which is what a portable
+format has to be able to claim. There is one format to document, test and explain rather
+than two, and a reader for it is `json.loads` per line.
+
+The walk emits **targets first, depth first**, because storage groups by predicate and
+that is not dependency order: a reference has to name a line already gone past, which is
+the reader's rule whether the writer is a person or the exporter. References cannot cycle
+— a key's bytes do not exist until its targets have ids — so it needs no cycle check.
+
+`--compact` groups a predicate's facts into one run, the predicates still ordered by what
+they reference. It is the cheaper export — one group resident, no dependency walk — at
+**2.5 s and 299 MB against 6.0 s and 364 MB** on 550,000 facts. The file is the same size
+either way; the default keeps a fact's targets in the lines above it, which is the order a
+person reads.
+
+**The browser reads it too, and `fjord export --format image` is gone with it.** Nothing
+compiled to WebAssembly can intern a fact, and a file whose references only name earlier
+lines does not need interning — it needs counting, a sequence per predicate handed out as
+the lines go by. `fjord_store_mem::dump` keeps the walk and loses the format;
+`fjord_inspect::jsonl` is what the page loads through.
+
+Measured rather than assumed: on the code browser's corpus, 3.46 MB of JSONL against about
+1 MB of image, about the same gzipped, and ~175 ms to load against ~60 ms — a parse and a
+key encode the image skipped. Paid once per load, for a format anybody can read.
+
+`fjord_schema::refs` lifts the strongly-connected-component ordering out of `fingerprint`,
+which already needed "every component after the components it reaches" and had Tarjan's for
+it. `identity::over` and `export::write_to` are the same cut: `ops-I4` is about content and
+not about where it is kept, and writing a format is not opening a store.
+
+### A `bytes` field survived the round trip only by not being tested
+
+**`fjord write` decoded base64 where `fjord export` writes hex.** The two alphabets
+overlap, so a hex string decoded without complaint into three-quarters of the wrong bytes:
+each round trip grew the payload 1.5× and moved the database's identity, and nothing said
+so. Hex on both sides now — and hex rather than base64 on purpose, because the narrow
+alphabet is what makes the opposite mistake loud. `AP8Qpw==` is refused on the line it is
+on; `00ff10a7` read as base64 never was.
+
+The guard could not see it: the fixture schema declared `string`, `int` and a reference, so
+the round trip was asserting over facts that could not express the fault. What replaced it
+is a fixture naming **every constructor the language has** — a bare `int` and `bytes` key, a
+record inside a record, a union in a key and on the value side, alternatives with an empty
+payload and with a scalar, a record and a reference, a predicate that names itself, a pair
+that name each other — with the scalars at their edges: `i64::MIN` and `i64::MAX`, the empty
+string, the empty byte string, a NUL inside a string, and a string of JSON's own
+metacharacters.
+
+Beside it, a property at **2,048 cases** over generated schemas and documents, in-process
+against the real reader, writer and identity function; and a second at 16 through the binary,
+a socket and fjall. The generator only points references backwards, so predicate order was
+already dependency order and the export's walk was unreachable by it — renaming the *i*th
+predicate to `Z{n-1-i}` inverts the ids and reaches it.
+
+**And the round trip now runs on the artifact that ships.** `scripts/build-corpus.sh` writes
+its own export back into a database and compares the content identity, and CI builds the
+corpus — so 24,612 facts a compiler wrote, unions carrying references, predicates that name
+each other and a `bytes` payload go through the format on every run.
+
+### Two inputs that panicked now answer
+
+**No input to this program should panic.** A fatal error is fine; a deliberate one, with a
+message. Two were not.
+
+**A key longer than the store can hold.** The backend keeps a key's length in a `u16` and
+answers an over-long one with an `assert!`. One long path in an index or one long line in a
+JSONL file reached it, the panic took a write worker, and the poisoned merge lock behind it
+failed the *next* valid write too — the database out of service until somebody restarted the
+server. `encode_key` refuses at `MAX_KEY_BYTES` now, which is the engine's 65,535 less the
+four-byte predicate tag the store writes in front. That is the one place every producer of a
+key passes through, so the write funnel, the model store and both readers get it at once.
+`IngestError::Codec` carries the codec's own sentence rather than replacing it with a guess
+about types, which is where an over-long key used to land.
+
+**A chain of nested references.** Decoding follows a peer's nesting with the decoder's own
+recursion, and a schema whose reference graph cycles — `Node { parent : Node }`, or
+`csharp.Class` and `Interface`, which is every shipped index — puts the depth in the
+sender's hands. **Twenty kilobytes on a socket aborted the server process.** Bounded at 64,
+the number the identity walk already uses for the same shape at rest, and bounded on the
+encode side too so a producer is told by its own library instead of overflowing its own
+stack. Real data is nowhere near it: the corpus re-indexes to the identity it had.
+
+The rest of the write path was swept rather than assumed — deeply nested JSON, a
+200,000-key object, duplicate keys, a megabyte-long local id, invalid UTF-8, a float and an
+integer past `i64::MAX` where an int is declared, a schema nested 5,000 deep. Every one is a
+refusal that names the file, the line and the field.
+
+### `fjord shell` opens without a database
+
+The first thing anyone asks a server is which databases it has, and that was the one
+question the shell could not be opened to ask.
+
+    $ fjord --data-dir ./db shell
+    fjord shell — the catalogue on ./db/fjord.sock
+      2 virtual predicate(s) · `:list` for the databases, `:connect <db>` to read one
+    catalogue> X where fjord.db.List X
+
+Half of it already existed. A session naming no database has always handshaked — against
+the catalogue schema, whose fingerprint the registry hands it — and then `query` refused it
+with "name one at startup". The server was disagreeing with what it had just told the
+client.
+
+**What a query needs is a schema and a store, and a `Database` is only one way of having
+both.** `prepare` and `over` wanted a schema all along and now take one;
+`catalogue::Nothing` is the floor under a control session — a `FactStore` that scans nothing
+and points to nothing, which is the honest answer to what facts such a session's database
+holds.
+
+A write still answers `UnknownDatabase`; there is nowhere to put a fact. A query naming a
+stored predicate is now refused **for what it is** — `src.File` is not a predicate of the
+catalogue — where "name a database at startup" described the session when the thing the
+person got wrong was the query.
+
+### The executor can filter on a field of a fact's value
+
+Groundwork, not yet reachable from sigla. A `ValueTest` is a `FieldPath` and a
+`ResidualOp`: the same comparison a key residual makes, over the value's bytes rather than
+the key's, because a value is encoded the way a key is. That brought the whole comparison
+vocabulary with it, union tag tests included — which is the one that matters most, since
+the fields worth filtering on a symbol card are its kinds.
+
+**It is a filter and can never be a seek.** A value is not in the key, so nothing here
+narrows a scan: every row the seek and the key residuals let through is a candidate, and
+this decides it afterwards at a point read apiece — including for rows it rejects, which is
+the cost a projection never pays. Running last keeps that off every row something cheaper
+would have dropped, and `Source::Fetch` gets them free because reaching the key already read
+the entity. One read however many tests.
+
+**No existing plan's fingerprint moved.** Writing an empty list into the plan encoding would
+have changed every plan's hash — and a fingerprint that moves refuses every cursor in flight
+against it. Paying that for queries that ask about keys alone and mean exactly what they
+meant before is the wrong trade, so the field is omitted when empty; it stays injective
+because everything before it carries its own length.
+
+`I6`'s key-only path is untouched and its guard still says so. `flatten` still reports
+`nyi/value-match`, and making it build these is the next piece.
 
 ### The .NET indexer learns its shapes from the server
 
