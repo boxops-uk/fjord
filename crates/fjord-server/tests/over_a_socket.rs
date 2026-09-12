@@ -1064,9 +1064,15 @@ fn a_cancel_ends_one_stream(over: Over) {
 
 /// A frame that needs a database, on a session bound to none, is refused as
 /// [`ErrorCode::UnknownDatabase`] with a message saying what to do — the one kind of
-/// session `create` is sent on is also one a query must not silently default on.
+/// session `create` is sent on is also one a *write* must not silently default on.
+///
+/// **A query is not one of those frames.** Such a session handshakes against the
+/// catalogue and can read it; what it cannot do is read a predicate no schema of its
+/// own declares, and that is a compile error naming the predicate rather than a
+/// statement about the session. The two refusals are different because the mistakes
+/// are: one is asking the wrong thing, the other is asking in the wrong place.
 #[test]
-fn a_query_on_a_session_naming_no_database_is_refused() {
+fn a_frame_needing_a_database_on_a_session_with_none_is_refused() {
     over_every_door(a_query_with_no_database_is_refused);
 }
 
@@ -1085,15 +1091,19 @@ fn a_query_with_no_database_is_refused(over: Over) {
     let (header, _) = client.recv();
     assert_eq!(header.kind, kinds::READY, "a control session is legitimate");
 
+    // A predicate no schema of this session's declares: the query is wrong, and the
+    // refusal names it rather than the session.
     client.send(kinds::QUERY, StreamId(1), b"F where src.File F");
     let (header, payload) = client.recv();
     assert_eq!(header.kind, FrameKind::ERROR);
     let (code, message) = protocol::decode_error(&payload).expect("an error frame");
-    assert_eq!(code, ErrorCode::UnknownDatabase);
-    assert!(
-        message.contains("names no database"),
-        "the message says what to do: {message}"
-    );
+    assert_eq!(code, ErrorCode::BadQuery, "{message}");
+    assert!(message.contains("src.File"), "{message}");
+
+    // The write half of the same rule is
+    // `lifecycle_over_the_wire::a_control_session_still_cannot_write`, and it has to be
+    // there rather than here: this session is read-only, so `ops-I6` refuses a write
+    // for its *mode* before the question of a database is reached.
 }
 
 /// A per-predicate claim the database does not hold draws the schema-mismatch code

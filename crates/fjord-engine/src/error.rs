@@ -39,6 +39,15 @@ pub enum FjordError {
     #[error("advance of closed frame")]
     AdvanceAfterClose,
 
+    /// A **value test** carrying a comparison it cannot make.
+    ///
+    /// Unreachable from a compiled query: flatten builds a value test only from a
+    /// comparison against a constant, because that is the only shape whose other side
+    /// is in hand when the value is. A hand-built plan can carry another, and this
+    /// refuses it rather than deciding the row on a guess.
+    #[error("a value test cannot compare that way: {0}")]
+    ValueTestUnsupported(&'static str),
+
     /// A resume cursor naming more levels than the plan has. A
     /// [`Cursor`](crate::iter::Cursor) is bytes-only and rebuilt from the
     /// wire, so a cursor that does not match the plan it is resumed against is

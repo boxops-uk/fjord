@@ -295,9 +295,17 @@ pub enum Command {
     /// Needs a running server, and works over the socket like any other client. Type
     /// :help inside it for the shell's own commands — :type, :plan, :schema and the
     /// rest.
+    ///
+    /// The database is optional: bare, the shell opens on the catalogue, which is the
+    /// only way to find out what databases there are without already knowing a name.
     Shell {
         /// The database to connect to, as `name` or `name@instance`
-        database: String,
+        ///
+        /// Optional. Without one the shell opens on the catalogue — the virtual
+        /// `fjord.db.*` predicates and nothing else — which is how you find out what
+        /// databases there are when you do not already know a name. `:connect <db>`
+        /// is how you go from that listing to reading one.
+        database: Option<String>,
     },
 
     /// Read schemas as files, before any database holds one

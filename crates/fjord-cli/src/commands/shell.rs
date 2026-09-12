@@ -328,8 +328,17 @@ impl Repl {
     }
 
     /// What the prompt says, which is which database is answering.
+    ///
+    /// **A shell bound to no database is a different thing**, and the prompt is where
+    /// that belongs: what is answering is the server's catalogue, so the prompt says
+    /// so rather than showing an empty name and letting a person wonder which database
+    /// they are in.
     #[must_use]
     pub fn prompt(&self) -> String {
+        if self.database.is_empty() {
+            return "catalogue> ".to_owned();
+        }
+
         format!("{}> ", self.database)
     }
 
@@ -1081,11 +1090,19 @@ pub fn run(target: &Target) -> Result<(), CliError> {
     // says nothing leaves a person to guess whether `\?` or `:help` or `help` is the
     // one — and this shell has commands the last one did not, prints rows in a shape
     // the last one did not, and pages. Each of those is a sentence long.
-    println!("fjord shell — `{}` on {}", repl.database, target.endpoint);
-    println!(
-        "  {} predicate(s) · rows print as jsonl · :help for commands",
-        repl.schema.len()
-    );
+    if repl.database.is_empty() {
+        println!("fjord shell — the catalogue on {}", target.endpoint);
+        println!(
+            "  {} virtual predicate(s) · `:list` for the databases, `:connect <db>` to read one",
+            repl.schema.len()
+        );
+    } else {
+        println!("fjord shell — `{}` on {}", repl.database, target.endpoint);
+        println!(
+            "  {} predicate(s) · rows print as jsonl · :help for commands",
+            repl.schema.len()
+        );
+    }
 
     let mut editor: Editor<SiglaHelper, DefaultHistory> =
         Editor::new().map_err(|error| CliError::Shell(error.to_string()))?;
@@ -1217,6 +1234,40 @@ mod tests {
         let mut out = Vec::new();
         repl.handle(line, &mut out).expect("the session survives");
         String::from_utf8(out).expect("utf-8")
+    }
+
+    /// **A shell opens without a database**, which is the only way to find out what
+    /// databases there are before you know a name.
+    ///
+    /// The whole arc in one battery, because each half is only useful with the other:
+    /// the session opens on the catalogue, the catalogue answers, a stored predicate is
+    /// refused for what it is rather than for the session's shape, and `:connect` moves
+    /// the same session onto a database and reads it.
+    #[test]
+    fn a_shell_opens_on_the_catalogue_and_reaches_a_database_from_it() {
+        let serving = serving(3);
+        let mut repl = Repl::connect(&Target::at(&serving.socket, "")).expect("a session");
+
+        // The prompt says what is answering. An empty name here would leave a person
+        // guessing which database they were in.
+        assert_eq!(repl.prompt(), "catalogue> ");
+
+        let listed = typed(&mut repl, "X where fjord.db.List X");
+        assert!(listed.contains("code"), "{listed}");
+
+        // **A stored predicate is refused by name.** The catalogue does not declare
+        // one, which is a better answer than "name a database at startup" — that told
+        // a person about the session when the thing they got wrong was the query.
+        let refused = typed(&mut repl, "X where code.File X");
+        assert!(refused.contains("code.File"), "{refused}");
+
+        // And the same session moves onto a database, which is what the listing was for.
+        let connected = typed(&mut repl, ":connect code");
+        assert!(connected.contains("code"), "{connected}");
+        assert_eq!(repl.prompt(), "code> ");
+
+        let rows = typed(&mut repl, "X where code.File X");
+        assert!(rows.contains(".py"), "{rows}");
     }
 
     /// The paths a row can travel: one page at a time, and all at once.

@@ -86,6 +86,7 @@ fn guided_plan(term: &str, distance: u8, range: Option<&str>, anchor: FuzzyAncho
                     anchor,
                 },
                 residuals: Box::new([]),
+                value_tests: Box::new([]),
             }]),
             binds: Box::new([Address::new(0)]),
         })]),

@@ -473,7 +473,12 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
 
         // **Always over the wire**, and it never silently opens a store root a server
         // might hold: it connects, or says nothing is listening.
-        Command::Shell { database } => commands::shell::run(&context.target(database)?),
+        // **An empty address is a session bound to no database**, which is what the
+        // wire has always called a control session — so the optional argument needs no
+        // second path here, only a name the resolver reads as "none".
+        Command::Shell { database } => {
+            commands::shell::run(&context.target(database.as_deref().unwrap_or(""))?)
+        }
 
         // **Files, not databases.** Nothing here opens a store root except `diff`, and
         // that one reads sidecars (`ops-I7`) — so all three work while a server holds

@@ -368,16 +368,27 @@ Three things are worth knowing:
 Rendering is **always** client-side: the wire carries the binary format and the server never
 produces JSON.
 
-## `fjord shell <name>`
+## `fjord shell [name]`
 
 ```bash
 fjord --data-dir ./db shell code
+fjord --data-dir ./db shell            # the catalogue: which databases are there?
 ```
 
 Always over the wire, even against a server on the same machine — so the format has a permanent
 exerciser and `:more` holds a real cursor across a real round trip. Queries compile on *your*
 machine, against the schema the server says it serves, so `:plan` and `:type` answer without
 running anything.
+
+**The name is optional, because the first thing anyone asks a server is which databases it has.**
+Bare, the shell opens on the **catalogue** — the virtual `fjord.db.*` predicates and nothing else
+— so `:list`, or `X where fjord.db.List X`, answers without your having to know a name first.
+`:connect <db>` then moves the same session onto one.
+
+A session bound to no database is a session bound to no database: it can read the catalogue and
+nothing else. A query naming a stored predicate is refused for what it is — `src.File` is not a
+predicate of the catalogue — rather than for the session's shape, and writing needs somewhere to
+put a fact, so it stays refused.
 
 Full command list: [Shell reference](shell.html).
 
