@@ -56,7 +56,15 @@ pub fn intern_fact<S: FactSink>(
 
 /// Ingest a whole [block](fjord_wire::block) of facts.
 ///
-/// The write stream's unit: a `CopyData` frame's payload is exactly this.
+/// **The reference implementation, and no longer the path a server takes.**
+/// [`fuse_block`](crate::fused::fuse_block) is what the write stream calls: it walks
+/// the wire and writes storage bytes in one pass, where this decodes a whole
+/// `WireFact` tree and encodes from that.
+///
+/// It stays because the two must agree byte for byte and something has to be the thing
+/// agreed *with*. `fused_agrees` and `fused_agrees_always` compare the rows both leave
+/// in a store, over a hand-written fixture and over generated schemas; this is the side
+/// of that comparison whose obviousness is the point.
 ///
 /// # Errors
 ///

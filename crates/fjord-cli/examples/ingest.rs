@@ -24,7 +24,9 @@
 //! - `dedup:cold` − `dedup:warm` is what the **cache removes** — the same claim
 //!   `interning_reads_a_key_once_however_many_references_name_it` makes as a count, priced.
 //! - `block` − `create` is the transport codec, which is the only part of the write path
-//!   the read ladder already had an opinion about.
+//!   the read ladder already had an opinion about. It is the *fused* codec — the block
+//!   rung calls [`fuse_block`], which is the server's path, rather than the reference
+//!   implementation it is checked against.
 //!
 //! # Why a write bench needs a database per iteration
 //!
@@ -48,7 +50,10 @@ use std::time::{Duration, Instant};
 
 use fjord_cli::{sample_schema, workload::Corpus};
 use fjord_encoding::tuple::{Value, encode_key};
-use fjord_ingest::{intern_block, intern_fact};
+use fjord_ingest::{
+    fused::{Scratch, fuse_block},
+    intern_fact,
+};
 use fjord_schema::schema::{PredicateId, PredicateTy, Schema};
 use fjord_store_fjall::store::FjallDb;
 use fjord_wire::encode_block;
@@ -358,8 +363,13 @@ fn intern(options: &Options, schema: &Schema, through_blocks: bool) -> Vec<Row> 
     ) -> (u64, u64) {
         let (mut created, mut interns) = (0u64, 0u64);
         if through_blocks {
+            // One scratch pool per block, which is what the server holds: it is made
+            // inside the blocking task that ingests the block and dropped with it, so
+            // an instrument that kept one across the whole corpus would report a pool
+            // warmer than any real ingest gets.
             for bytes in blocks {
-                let out = intern_block(sink, schema, bytes).expect("the block ingests");
+                let mut scratch = Scratch::new();
+                let out = fuse_block(sink, schema, bytes, &mut scratch).expect("the block ingests");
                 created += out.created as u64;
                 interns += out.seen() as u64;
             }

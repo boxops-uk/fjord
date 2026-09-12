@@ -9,7 +9,14 @@
 //! terminate. Design: [the storage
 //! model](../../../website/content/storage.md#interning-a-nested-fact).
 //!
-//! Two behaviours to keep in mind when changing the walk, each pinned by a test:
+//! **There are two walks, and only one of them runs in a server.** [`fused`] reads the
+//! wire and writes storage bytes in a single pass, and is what a write stream calls;
+//! [`intern`] decodes a whole tree and encodes from it, and stays as the reference the
+//! fused walk is compared against row by row. A change to one that is not a change to
+//! the other is a change to what the database holds, which is what those comparisons
+//! are for.
+//!
+//! Two behaviours to keep in mind when changing either walk, each pinned by a test:
 //!
 //! - **Type-correctness does not imply ingestibility.** One message may name a target
 //!   twice with two different value sides; the second occurrence finds what the first
@@ -21,6 +28,8 @@
 //!   (`a_staged_block_that_fails_keeps_what_it_had_already_written`).
 
 pub mod error;
+/// Wire bytes to storage bytes in one pass — the path a write stream takes.
+pub mod fused;
 pub mod intern;
 pub mod sink;
 

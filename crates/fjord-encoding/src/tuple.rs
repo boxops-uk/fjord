@@ -815,7 +815,14 @@ pub fn encode_key(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodec
 /// is four gigabytes and past what a fact is for, so nothing reachable meets it.
 pub const MAX_KEY_BYTES: usize = u16::MAX as usize - PREDICATE_ID_SIZE;
 
-fn within_limit(key: Vec<u8>) -> Result<Vec<u8>, StoreCodecError> {
+/// Refuse a key that is longer than [`MAX_KEY_BYTES`].
+///
+/// **Takes a slice, because not every caller owns a `Vec`.** A path that writes its
+/// key straight into a reused buffer — `fjord-ingest`'s fused walk — has the same
+/// obligation as [`encode_key`] and nothing to hand it: the check is what stands
+/// between ordinary input and the backend's `assert!`, so it is stated once here
+/// rather than twice.
+pub fn refuse_over_long_key(key: &[u8]) -> Result<(), StoreCodecError> {
     if key.len() > MAX_KEY_BYTES {
         return Err(StoreCodecError::KeyTooLong {
             len: key.len(),
@@ -823,6 +830,11 @@ fn within_limit(key: Vec<u8>) -> Result<Vec<u8>, StoreCodecError> {
         });
     }
 
+    Ok(())
+}
+
+fn within_limit(key: Vec<u8>) -> Result<Vec<u8>, StoreCodecError> {
+    refuse_over_long_key(&key)?;
     Ok(key)
 }
 
