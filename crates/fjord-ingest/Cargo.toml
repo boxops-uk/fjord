@@ -29,6 +29,23 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 fjord-wire = { path = "../fjord-wire", features = ["proptest"] }
+# The counting allocator, for `fused_is_allocation_free` and `examples/write_allocations`.
+# It installs its own `#[global_allocator]`, so it belongs to the crates that measure
+# themselves and never to one that already has one — `fjord-cli`'s manifest says the
+# same thing from the other side.
+allocation-counter = "0.8.1"
+# The read path, which `examples/write_allocations` prints beside the write path so the
+# two are comparable numbers rather than two arguments. The engine does not depend on
+# this crate, so a dev-only edge here is no cycle — and it is dev-only because writing
+# a fact never runs a query. `FrozenStore` behind `fjord-store`'s `proptest` feature is
+# the allocation-free store the engine's own I9 guard reads from; `MemStore`'s scan
+# clones a `Vec` per row and would report the model store's cost as the executor's.
+fjord-engine = { path = "../fjord-engine" }
+fjord-store = { path = "../fjord-store", features = ["proptest"] }
+tokio-util = "0.7.18"
+# `dump::rows_of`, which walks a real store's rows so the differential guards can
+# compare them byte for byte.
+fjord-store-mem = { path = "../fjord-store-mem" }
 lasso = { workspace = true }
 proptest = "1.11.0"
 tempfile = "3.24.0"

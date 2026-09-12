@@ -57,7 +57,10 @@ use fjord_engine::{
     iter::{Cursor, Executor, Iteratee, Profile, Stream, WorldStamp},
     plan::{Plan, SeekKey, Source, Step, Test},
 };
-use fjord_ingest::{Ingested, intern_block};
+use fjord_ingest::{
+    Ingested,
+    fused::{Scratch, fuse_block},
+};
 use fjord_schema::{
     fingerprint::Identity,
     schema::{LocalInterner, PredicateId, PredicateTy, Schema},
@@ -975,8 +978,14 @@ impl StreamTask {
 
             let per_block = self.session.registry.block_commits();
             blocking::run(move || {
+                // **One pool for the block**, which is where it belongs: the buffers
+                // are reused fact to fact and the block is thousands of them, so the
+                // handful this costs is amortised to nothing — and a pool held across
+                // blocks would have to cross a blocking task to get here.
+                let mut scratch = Scratch::new();
+
                 if !per_block {
-                    return intern_block(working.db.as_ref(), &working.schema, &block)
+                    return fuse_block(working.db.as_ref(), &working.schema, &block, &mut scratch)
                         .map_err(ServerError::from);
                 }
 
@@ -986,7 +995,7 @@ impl StreamTask {
                 // what the per-fact path leaves behind too, and `ops-I5`'s idempotence is
                 // what makes re-sending it safe.
                 let staged = working.db.staged();
-                let interned = intern_block(&staged, &working.schema, &block);
+                let interned = fuse_block(&staged, &working.schema, &block, &mut scratch);
                 staged.commit()?;
                 interned.map_err(ServerError::from)
             })
@@ -1002,7 +1011,7 @@ impl StreamTask {
         writing.created += out.created as u64;
         writing.deduped += out.deduped as u64;
 
-        // Only where they were asked for: `intern_block` collects them either way, and
+        // Only where they were asked for: `fuse_block` collects them either way, and
         // keeping them for a stream that will not report them is an allocation per fact
         // for nothing.
         if let Some(ids) = writing.ids.as_mut() {

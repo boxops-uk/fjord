@@ -637,15 +637,19 @@ dependencies = [
 name = "fjord-ingest"
 version = "0.4.0"
 dependencies = [
+ "allocation-counter",
  "fjord-encoding",
+ "fjord-engine",
  "fjord-schema",
  "fjord-store",
  "fjord-store-fjall",
+ "fjord-store-mem",
  "fjord-wire",
  "lasso",
  "proptest",
  "tempfile",
  "thiserror",
+ "tokio-util",
 ]
 
 [[package]]
