@@ -272,20 +272,23 @@ fn fuse_value<S: FactSink>(
         // Nested records *are* framed, unlike a key's top level.
         PredicateTy::Record(fields) => {
             let mut at = 0;
-            enc.record(|inner| {
+            enc.record(|inner| -> Result<(), IngestError> {
                 for (_, field) in fields.iter() {
                     // The sink and the pool cannot cross this closure, so the walk of a
                     // nested record is done against a second borrow of the same state —
-                    // see `fuse_record_fields`.
-                    at +=
-                        fuse_record_field(sink, schema, field, &wire[at..], inner, scratch, counts)
-                            .map_err(|_| fjord_encoding::error::StoreCodecError::BadRecord)?;
+                    // see `fuse_record_fields`. Its errors are this crate's and travel
+                    // out intact; see the note on the union arm below.
+                    at += fuse_record_field(
+                        sink,
+                        schema,
+                        field,
+                        &wire[at..],
+                        inner,
+                        scratch,
+                        counts,
+                    )?;
                 }
                 Ok(())
-            })
-            .map_err(|why| IngestError::Codec {
-                what: "a nested record",
-                why,
             })?;
             Ok(at)
         }
@@ -299,15 +302,21 @@ fn fuse_value<S: FactSink>(
                 .ok_or(WireError::UnknownDiscriminant(tag))?;
 
             let mut inner_used = 0;
-            enc.union(alt.disc, |inner| {
-                inner_used =
-                    fuse_record_field(sink, schema, &alt.ty, &wire[used..], inner, scratch, counts)
-                        .map_err(|_| fjord_encoding::error::StoreCodecError::BadRecord)?;
+            // **The closure's error is ours, not the codec's.** Interning a nested
+            // reference happens in here, and its failures — a same-key-different-value
+            // conflict above all — are not encoding faults. Flattening them to
+            // `BadRecord` made the fused walk report a wrong reason for a right refusal.
+            enc.union(alt.disc, |inner| -> Result<(), IngestError> {
+                inner_used = fuse_record_field(
+                    sink,
+                    schema,
+                    &alt.ty,
+                    &wire[used..],
+                    inner,
+                    scratch,
+                    counts,
+                )?;
                 Ok(())
-            })
-            .map_err(|why| IngestError::Codec {
-                what: "a union",
-                why,
             })?;
 
             Ok(used + inner_used)
