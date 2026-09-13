@@ -744,11 +744,17 @@ impl FjallDb {
         predicate: PredicateId,
     ) -> Result<Predicate, StoreError> {
         let trees = Trees {
+            // **A memtable filter on the keys tree, and deliberately not on the other
+            // one.** Interning asks the keys tree "is this key present?" once per fact,
+            // and while an index is being built the answer is no — which the memtable
+            // could only establish by descending its skiplist, since a filter covers the
+            // sealed tables and not the live one. The `entities` tree is the opposite:
+            // it is read by fact id, always for a row that is there, so a filter there
+            // would be paid on every insert and collected never.
             keys: db
-                .keyspace(
-                    &format!("{KEYS_KEYSPACE_PREFIX}{}", predicate.0),
-                    KeyspaceCreateOptions::default,
-                )
+                .keyspace(&format!("{KEYS_KEYSPACE_PREFIX}{}", predicate.0), || {
+                    KeyspaceCreateOptions::default().memtable_filter(true)
+                })
                 .map_err(StoreError::backend)?,
             entities: db
                 .keyspace(
