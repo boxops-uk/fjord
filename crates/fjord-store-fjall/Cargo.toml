@@ -23,6 +23,12 @@ fjord-schema = { path = "../fjord-schema" }
 fjord-store = { path = "../fjord-store" }
 byteview = { workspace = true }
 fjall = { workspace = true }
+# **The interning maps' hasher.** A created fact hashes its index key three to five
+# times — the stripe cache's two generations, and a staged block's pending map — and
+# those keys are peer-supplied, so the default SipHash was 5% of the write path and a
+# non-randomised hash would be a collision surface a writer controls. foldhash is
+# randomly seeded per process, which keeps that shut, and measures +3.7% end to end.
+foldhash = "0.2"
 # Entropy for the instance ULID, and nothing else.
 getrandom = "0.3"
 lasso = { workspace = true }

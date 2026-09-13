@@ -372,7 +372,7 @@ struct Staging {
     batch: fjall::OwnedWriteBatch,
     /// `index key → (id, value)` for facts created in this batch. The trees cannot
     /// answer for them yet, and the stripe cache is allowed to forget them.
-    pending: std::collections::HashMap<Vec<u8>, (FactId, Vec<u8>)>,
+    pending: foldhash::HashMap<Vec<u8>, (FactId, Vec<u8>)>,
 }
 
 /// **One commit for a whole block** — [12f](../../../PLAN.md), and a deliberate trade.
@@ -1336,7 +1336,7 @@ impl FjallDb {
             db: self,
             staging: std::cell::RefCell::new(Staging {
                 batch: self.db.batch(),
-                pending: std::collections::HashMap::new(),
+                pending: foldhash::HashMap::default(),
             }),
         }
     }

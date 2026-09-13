@@ -43,7 +43,7 @@
 //! lock is what supplies the `&mut` a promote needs. The budget is then **divided**
 //! across stripes, never multiplied by them.
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 use fjord_schema::id::FactId;
 
@@ -100,8 +100,8 @@ impl LookupCache {
     /// from the one it replaces, which is a better estimate than any constant.
     pub(crate) fn new(budget: usize) -> Self {
         Self {
-            young: HashMap::new(),
-            old: HashMap::new(),
+            young: HashMap::default(),
+            old: HashMap::default(),
             young_bytes: 0,
             budget: budget.max(cost(0, 0)),
             hits: 0,
@@ -143,12 +143,31 @@ impl LookupCache {
     }
 
     fn insert_young(&mut self, key: Box<[u8]>, entry: Cached) {
+        // **The budget becomes a capacity at the first write, and not before.**
+        //
+        // Reserving in [`LookupCache::new`] is what the comment there refuses, and for
+        // a good reason — a server opens every database under its store root and most
+        // of them are sealed, so a budget-sized table per database would be megabytes
+        // that can never be written to. Growing from nothing is not the only
+        // alternative though: a map that has never taken an insert has never been
+        // written to either, so reserving *here* costs a sealed database nothing, and
+        // the first entry is also the first time an entry's size is known. Without it
+        // the first generation rehashes its way up from zero, which measured 5% of the
+        // write path in `hashbrown::reserve_rehash`.
+        if self.young.capacity() == 0 {
+            let each = cost(key.len(), entry.value.len());
+            self.young.reserve(self.budget / each.max(1));
+        }
+
         if self.young_bytes >= self.budget {
             // The generation being retired is the best available estimate of how many
             // entries the next one will hold.
             let previously = self.young.len();
             self.old = std::mem::take(&mut self.young);
-            self.young = HashMap::with_capacity(previously);
+            self.young = HashMap::with_capacity_and_hasher(
+                previously,
+                foldhash::fast::RandomState::default(),
+            );
             self.young_bytes = 0;
         }
 
