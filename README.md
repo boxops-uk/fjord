@@ -28,6 +28,14 @@ Underneath: facts in an LSM ([fjall](https://github.com/fjall-rs/fjall)) under a
 order-preserving codec, and a typed Datalog whose core is deliberately small — every
 construct it has, it has because a query needed it.
 
+Fjall is currently taken from [a fork](https://github.com/boxops-uk/fjall), pinned by
+commit, for two write-path changes that are [proposed
+upstream](https://github.com/fjall-rs/fjall) and not released yet. Nothing published from
+this repository depends on it — every crate on crates.io here is a client of the wire
+protocol — so the fork is a build-time fact for the server and not something a consumer
+inherits. The `[patch.crates-io]` section of the workspace manifest says what it is for
+and when it goes.
+
 ## Try it without installing anything
 
 The design book **runs the engine**. It is compiled to WebAssembly and shipped inside the page,

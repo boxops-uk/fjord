@@ -38,3 +38,20 @@ memchr = "2.8.2"
 lasso = "0.7.3"
 serde = { version = "1.0.150", features = ["derive"] }
 thiserror = "2.0.18"
+
+# **The storage engine, from our fork, until these land upstream.**
+#
+# Two changes fjall does not have yet: the journal writer is released before the
+# memtable apply, which is most of the write path's contention, and a keyspace may put
+# a Bloom filter on its active memtable, which is most of interning's cost. Both are
+# proposed upstream; this section is how we ship in the meantime and the thing to delete
+# when they are released.
+#
+# **Pinned by commit, never by branch.** A branch would let the engine under a `--locked`
+# build move without the lockfile saying so, which is the one failure mode a pin exists
+# to prevent. Every published crate here is a client of the wire protocol and reaches
+# neither of these, so no consumer of ours inherits the patch — `[patch]` is ignored for
+# a published package, and this is only load-bearing for our own binaries.
+[patch.crates-io]
+fjall = { git = "https://github.com/boxops-uk/fjall", rev = "94e83cd8da343f7f8068ff6d0e8a60e722d34a62" }
+lsm-tree = { git = "https://github.com/boxops-uk/lsm-tree", rev = "d249c6c38f9f89bf604d1811821246a47cecd360" }
