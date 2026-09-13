@@ -5,6 +5,95 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## 0.5.0 — 2026-09-13
+
+**The storage engine is a fork.** fjall and lsm-tree are taken from
+[boxops-uk/fjall](https://github.com/boxops-uk/fjall) and
+[boxops-uk/lsm-tree](https://github.com/boxops-uk/lsm-tree), pinned by commit, for two
+write-path changes that are proposed upstream and not released yet. Nothing published from
+this repository depends on either — every crate on crates.io here is a client of the wire
+protocol — so the fork is a build-time fact for the server and is inherited by no consumer.
+The `[patch.crates-io]` section of the workspace manifest says what it is for and when it
+goes.
+
+**Nothing on disk moved.** The fork changes lock scope, adds an in-memory filter and
+allocates sequence numbers in runs; none of that touches serialisation, so a `0.4.0`
+database opens under this and vice versa. The wire protocol is unchanged at version 4. This
+is a minor rather than a patch release because the storage layer underneath changed, which
+is the thing this series uses a minor bump to say.
+
+### Writes are roughly twice as fast under concurrency
+
+Two million facts, eight concurrent writers, on an eight-core Linux box:
+
+| writers | 0.4.0 | 0.5.0 |
+|---|---|---|
+| 1 | 164,199 | 198,712 |
+| 4 | 239,086 | 418,973 |
+| 8 | 243,632 | 517,078 |
+| 32 | 233,574 | 488,769 |
+
+The shape matters more than the height. `0.4.0` peaked at four writers and declined after —
+adding writers made it worse. This climbs to eight and holds a plateau to sixty-four.
+Inverting Amdahl, the share of a write spent in a database-wide critical section falls from
+about 63% to about 29%.
+
+Three changes, in the order they matter:
+
+- **The journal writer is released before the memtable apply.** `WriteBatch::commit` held
+  fjall's one database-wide mutex across the journal append *and* the memtable insert for
+  every row in the batch — a serial region proportional to rows rather than bytes. The
+  append must stay serial; the memtable inserts need not, since each keyspace's memtable
+  takes its own lock.
+
+- **A keyspace may put a Bloom filter on its active memtable.** Every sealed table had one;
+  the memtable, which every point read consults first, did not — so interning's "is this key
+  present?" paid a full descent through a 64 MiB skiplist to learn the answer is no, which
+  during a load it always is. Enabled on the `keys` tree and deliberately not on `entities`:
+  a filter is only worth its write cost to a tree whose reads miss, and `entities` is read by
+  fact id for a row that is always there.
+
+- **Interning stops hashing every key five times.** A created fact hashed its index key
+  three to five times with SipHash across the stripe cache's two generations and a staged
+  block's pending map; foldhash instead, which is randomly seeded per process, because those
+  keys arrive from a peer. The lookup cache also reserves at its first insert rather than
+  rehashing its way up from empty — a sealed database still reserves nothing, since a map
+  that never takes a write never reserves.
+
+### Ordering, and why it needed care
+
+Releasing the journal lock early is unsafe on its own, silently. Visibility is a single
+watermark, so a write may only advance it once every lower-numbered write has landed — an
+ordering the mutex was providing by accident. Without something in its place a batch can
+publish while an earlier one is still inserting, and a reader is handed a consistent-looking
+snapshot with rows missing from it.
+
+`lsm_tree::VisibleSeqno` now owns that rule: taking a sequence number hands back a guard, and
+the watermark cannot reach it until the guard finishes. There is no method that skips the
+queue, which is what caught a hole a fjall-only fix would have left — lsm-tree's own version
+upgrades take sequence numbers too, from memtable rotation, ingest, and compaction on a
+background thread. The guard finishes on drop, so an error path cannot leak a number and
+freeze the watermark for the life of the process.
+
+Twelve tests cover it, six on the gate and six through a real database, one per caller that
+takes a sequence number. Each holds a batch inside the window between its journal append and
+its memtable insert and runs another writer to completion beside it.
+
+### Fixed
+
+- **A conflict inside a union reported the wrong reason.** The fused write path interns
+  nested references from inside `TupleEncoder::record` and `union`, whose closures had to
+  return the codec's error — so an `ops-I5` same-key-different-value reject raised in there
+  was flattened to `BadRecord`, telling a producer its fact was malformed rather than that
+  the key was taken. The refusal was always correct; only the reason was wrong. Both
+  encoder forms are now generic over the caller's error, as the decoder's already was.
+  Present since `0.4.0`.
+
+### Also
+
+- `fjord-ingest`'s `examples/write_allocations` prints the write path, the read path beside
+  it, what fusing the wire decode saves, and where the rest of the cost is, in one run.
+
 ## 0.4.0 — 2026-09-12
 
 **Breaking: the exported store image is gone, and `fjord export` writes JSONL.** An

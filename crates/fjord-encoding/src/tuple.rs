@@ -1062,13 +1062,21 @@ impl<'a> TupleEncoder<'a> {
     /// Counted against the same depth bound a record is, and null-escaping inside it
     /// for the same reason: within a group a bare `0x00` is the terminator, and a
     /// payload that could be one has to be told apart from it.
-    pub fn union<R>(
+    /// **Generic over the caller's error**, as [`TupleDecoder::record`] already is.
+    ///
+    /// A caller that does real work inside the closure — the ingest path interns a
+    /// nested fact reference there — has errors of its own that are not the codec's. A
+    /// closure forced to return [`StoreCodecError`] has to throw those away, and the
+    /// caller then reports a wrong reason for a right refusal: a same-key-different-value
+    /// conflict surfaced as `BadRecord`, which is a defect a differential test found
+    /// rather than a cosmetic one.
+    pub fn union<R, E: From<StoreCodecError>>(
         &mut self,
         disc: u32,
-        f: impl FnOnce(&mut TupleEncoder<'_>) -> Result<R, StoreCodecError>,
-    ) -> Result<R, StoreCodecError> {
+        f: impl FnOnce(&mut TupleEncoder<'_>) -> Result<R, E>,
+    ) -> Result<R, E> {
         if self.record_depth == MAX_RECORD_DEPTH {
-            return Err(StoreCodecError::BadRecord);
+            return Err(StoreCodecError::BadRecord.into());
         }
 
         self.out.extend_from_slice(UnionTag::new(disc).as_bytes());
@@ -1084,12 +1092,13 @@ impl<'a> TupleEncoder<'a> {
         Ok(result)
     }
 
-    pub fn record<R>(
+    /// Generic over the caller's error, for the reason [`TupleEncoder::union`] gives.
+    pub fn record<R, E: From<StoreCodecError>>(
         &mut self,
-        f: impl FnOnce(&mut TupleEncoder<'_>) -> Result<R, StoreCodecError>,
-    ) -> Result<R, StoreCodecError> {
+        f: impl FnOnce(&mut TupleEncoder<'_>) -> Result<R, E>,
+    ) -> Result<R, E> {
         if self.record_depth == MAX_RECORD_DEPTH {
-            return Err(StoreCodecError::BadRecord);
+            return Err(StoreCodecError::BadRecord.into());
         }
 
         self.out.push(MARK_RECORD);
@@ -2848,7 +2857,7 @@ pub(crate) mod tests {
         // Records and fact-refs go through the encoder.
         let mut empty_rec = Vec::new();
         TupleEncoder::new(&mut empty_rec)
-            .record(|_| Ok(()))
+            .record(|_| Ok::<_, StoreCodecError>(()))
             .unwrap();
         assert_eq!(empty_rec, [0x22, 0x00]);
 
@@ -2856,7 +2865,7 @@ pub(crate) mod tests {
         TupleEncoder::new(&mut rec_of_zero)
             .record(|enc| {
                 enc.put_i64(0);
-                Ok(())
+                Ok::<_, StoreCodecError>(())
             })
             .unwrap();
         assert_eq!(rec_of_zero, [0x22, 0x48, 0x00]);
@@ -2873,7 +2882,7 @@ pub(crate) mod tests {
             TupleEncoder::new(&mut b)
                 .union(disc, |enc| {
                     enc.put_i64(payload);
-                    Ok(())
+                    Ok::<_, StoreCodecError>(())
                 })
                 .unwrap();
             b
@@ -3192,7 +3201,7 @@ pub(crate) mod tests {
         TupleEncoder::new(&mut bytes)
             .union(0, |enc| {
                 enc.put_str("payload");
-                Ok(())
+                Ok::<_, StoreCodecError>(())
             })
             .unwrap();
 
@@ -3731,7 +3740,7 @@ pub(crate) mod tests {
         TupleEncoder::new(&mut out)
             .union(0, |enc| {
                 enc.put_null();
-                Ok(())
+                Ok::<_, StoreCodecError>(())
             })
             .unwrap();
 
