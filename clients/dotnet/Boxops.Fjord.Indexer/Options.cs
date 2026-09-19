@@ -148,21 +148,19 @@ internal sealed record Options
     /// rather than per database — so this is how much of that the indexer asks for.
     /// </para>
     /// <para>
-    /// <b>This was 1, and the measurement behind that is now history.</b> It was set from a
-    /// run in which four writers cost ~10% and moved nothing, because <c>queueing</c> was
-    /// already near zero — the writer was not the ceiling. That was true and it was
-    /// confounded: the walk could not saturate one writer, so no writer count could have
-    /// looked good. Later runs against <c>dotnet/runtime</c> found the writers themselves
-    /// were the ceiling — "what they wait on is shared, and it is the server" — with 6.1M
-    /// facts costing 54.7M interning attempts, a <c>keys</c> probe apiece plus staging,
-    /// commit and wire decode.
+    /// <b>This was 1, and the reasoning behind it was sound and confounded.</b> Four
+    /// writers once cost ~10% and moved nothing, because <c>queueing</c> was already near
+    /// zero — the writer was not the ceiling. True, and a property of a walk that could not
+    /// saturate one writer rather than of writer capacity: no count could have looked good.
+    /// Later runs against <c>dotnet/runtime</c> found the writers <i>were</i> the ceiling,
+    /// and named what they waited on — 54.7M interning attempts, "a <c>keys</c> probe
+    /// apiece plus staging, commit and wire decode".
     /// </para>
     /// <para>
-    /// <b>Fjord 0.5.1 moved that ceiling.</b> The probe is answered by a Bloom filter over
-    /// the active memtable, and the journal writer is released before the memtable apply,
-    /// so writers no longer queue behind one another for most of a commit. Re-measured on
-    /// 40 projects of <c>dotnet/runtime</c>'s shared framework at <c>--jobs 8</c>, 361k
-    /// facts, one repeat each:
+    /// <b>Fjord 0.5.1 answers that probe from a Bloom filter over the active memtable and
+    /// releases the journal writer before the memtable apply</b>, which is those two waits
+    /// exactly. Re-measured on 40 projects of <c>dotnet/runtime</c>'s shared framework at
+    /// <c>--jobs 8</c>, 361k facts:
     /// </para>
     /// <code>
     ///  writers   facts/s   queueing
@@ -172,28 +170,34 @@ internal sealed record Options
     ///        8    37,541       0.1s
     /// </code>
     /// <para>
-    /// <b>1.37× at four, where the same shape used to fall.</b> Four and eight are within
-    /// noise of each other — 2.9% apart on medians of three, against a 10% spread inside
-    /// the four-writer group — so eight is not chosen for being faster. It is chosen
-    /// because a default is for a caller who has measured nothing, and the two ways to be
-    /// wrong are not symmetric: on a denser corpus (1.56M facts) four writers left a
-    /// <b>56.6s</b> stall that eight cleared, while eight costs a few percent and ~50% more
-    /// summed writer time where four is optimal. Capped at the core count for the same
-    /// reason <see cref="Jobs"/> is.
+    /// 1.37× at four, where the same shape used to fall away — 55,652, 54,443 and 51,020
+    /// facts/s at one, four and eight over 111 projects.
+    /// </para>
+    /// <para>
+    /// <b>Eight is not faster than four.</b> Medians of three put them 2.9% apart against a
+    /// 10% spread inside the four-writer group, and eight wins one repeat of three; eight
+    /// also burns ~50% more summed writer time for the same throughput. It is eight because
+    /// the two ways to be wrong are not symmetric and a default is for a caller who has
+    /// measured nothing: on a denser corpus (1.56M facts) four left a <b>56.6s</b> stall
+    /// that eight cleared, while eight costs a few percent where four is optimal.
+    /// </para>
+    /// <para>
+    /// <b>A constant, and not capped at the core count.</b> Capping would be the original
+    /// mistake in a new shape. Writers are a <i>transport</i> ceiling: a write stream spends
+    /// its life waiting on the server, which is another process and may be another machine,
+    /// so how many cores <i>this</i> one has says nothing about how many streams that one
+    /// absorbs. <see cref="Jobs"/> is compute and is capped for that reason; this is not,
+    /// and the two are deliberately not tied — tying them together was the first mistake
+    /// here and it should not be repeated against a different quantity.
     /// </para>
     /// <para>
     /// <b>The knee moves with facts per declaration, not with file count.</b> Any schema
-    /// change that emits more facts per declaration moves it, so this is right for a stated
-    /// corpus and no other — re-measure rather than reason about it.
-    /// </para>
-    /// <para>
-    /// <b>Not tied to <see cref="Jobs"/>, deliberately.</b> They are independent ceilings,
-    /// one compute and one transport, and tying them together was the original mistake.
-    /// <c>--emit</c> forces one writer regardless, because its file is a deterministic run
-    /// of blocks.
+    /// change emitting more facts per declaration moves it, so this is right for a stated
+    /// corpus and no other — re-measure rather than reason about it. <c>--emit</c> forces
+    /// one writer regardless, because its file is a deterministic run of blocks.
     /// </para>
     /// </remarks>
-    public int Writers { get; init; } = Math.Min(8, Environment.ProcessorCount);
+    public int Writers { get; init; } = 8;
 
     /// <summary>Let the design-time build restore first. Off is much faster when it is already restored.</summary>
     public bool Restore { get; init; } = true;
@@ -283,7 +287,7 @@ internal sealed record Options
           --max-projects <n>    stop after n projects
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
           --writers <n>         concurrent write streams, one connection each
-                                (default: min(8, cores); `--emit` forces 1)
+                                (default: 8; `--emit` forces 1)
           --no-refs             declarations only: no cross-references
           --no-lines            do not write the line table (src.FileLine)
           --styles              also write syntax highlighting (src.FileLineStyles)
@@ -330,7 +334,7 @@ internal sealed record Options
         var at = $"{DefaultSocket}{FjordAddress.Separator}code";
         int batch = 4096, maxFiles = 0, maxProjects = 0;
         var jobs = Math.Min(4, Environment.ProcessorCount);
-        var writers = Math.Min(8, Environment.ProcessorCount);
+        var writers = 8;
         bool references = true, restore = true;
         bool lines = true, docs = true, styles = false;
         string? repo = null, revision = null, framework = null;
