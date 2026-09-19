@@ -49,9 +49,12 @@ thiserror = "2.0.18"
 #
 # **Pinned by commit, never by branch.** A branch would let the engine under a `--locked`
 # build move without the lockfile saying so, which is the one failure mode a pin exists
-# to prevent. Every published crate here is a client of the wire protocol and reaches
+# to prevent. The commits are on the forks' `ship` branch, which is deliberately not
+# their `experiment/write-path`: that carries a flat-combining write pipeline which
+# measures to nothing at the commit sizes this database writes, and is not worth its
+# concurrency risk here. Every published crate here is a client of the wire protocol and reaches
 # neither of these, so no consumer of ours inherits the patch — `[patch]` is ignored for
 # a published package, and this is only load-bearing for our own binaries.
 [patch.crates-io]
-fjall = { git = "https://github.com/boxops-uk/fjall", rev = "098bd1c6e8256a3751e6246c124662d11fa578d1" }
-lsm-tree = { git = "https://github.com/boxops-uk/lsm-tree", rev = "c9aacb9cfd50ae82f0e188f22211fcb8acbf575d" }
+fjall = { git = "https://github.com/boxops-uk/fjall", rev = "85f2ee50b3b609d3f18f5e66f80c0f86cc98fe46" }
+lsm-tree = { git = "https://github.com/boxops-uk/lsm-tree", rev = "4ba4cfdfd25df81ce52c92694161121db5bef7b8" }

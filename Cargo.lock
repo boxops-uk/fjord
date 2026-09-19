@@ -529,7 +529,7 @@ checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 [[package]]
 name = "fjall"
 version = "3.1.8"
-source = "git+https://github.com/boxops-uk/fjall?rev=098bd1c6e8256a3751e6246c124662d11fa578d1#098bd1c6e8256a3751e6246c124662d11fa578d1"
+source = "git+https://github.com/boxops-uk/fjall?rev=85f2ee50b3b609d3f18f5e66f80c0f86cc98fe46#85f2ee50b3b609d3f18f5e66f80c0f86cc98fe46"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -1193,7 +1193,7 @@ dependencies = [
 [[package]]
 name = "lsm-tree"
 version = "3.1.8"
-source = "git+https://github.com/boxops-uk/lsm-tree?rev=c9aacb9cfd50ae82f0e188f22211fcb8acbf575d#c9aacb9cfd50ae82f0e188f22211fcb8acbf575d"
+source = "git+https://github.com/boxops-uk/lsm-tree?rev=4ba4cfdfd25df81ce52c92694161121db5bef7b8#4ba4cfdfd25df81ce52c92694161121db5bef7b8"
 dependencies = [
  "byteorder-lite",
  "byteview",
