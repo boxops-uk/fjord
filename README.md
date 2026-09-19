@@ -91,7 +91,7 @@ an attested `fjord-docs-site.tar.gz`, servable from the root of any static host.
 
 ## Where it stands
 
-> **Status: `0.4.0`, a pre-release.** Built and guarded: the storage codec and the fjall store,
+> **Status: `0.5.0`, a pre-release.** Built and guarded: the storage codec and the fjall store,
 > a suspendable executor that resumes exactly, the sigla front end end to end — text to `Plan`
 > to rows, joins *through fact references* included — the schema language, union types and
 > schema identity, the wire protocol with a second implementation in another language, parallel

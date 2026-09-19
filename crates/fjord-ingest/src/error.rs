@@ -63,6 +63,21 @@ pub enum IngestError {
     },
 }
 
+/// **So the codec's own errors survive a closure that also does ingest work.**
+///
+/// `TupleEncoder::record` and `union` are generic over the caller's error; this is what
+/// lets the fused walk hand them `IngestError` and keep a conflict raised inside a union
+/// intact instead of flattening it to `BadRecord`. The `what` is unavoidably generic —
+/// the call site that knows it is the one that wraps deliberately.
+impl From<fjord_encoding::error::StoreCodecError> for IngestError {
+    fn from(why: fjord_encoding::error::StoreCodecError) -> Self {
+        Self::Codec {
+            what: "a value",
+            why,
+        }
+    }
+}
+
 impl IngestError {
     /// Whether this is the peer's fault rather than the database's — what decides
     /// between failing the stream and taking the database out of service.

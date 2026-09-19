@@ -218,10 +218,14 @@ a second handle on the same directory would fight `ops-I1`'s lock; the real cold
 
 ## What a fused walk still owes
 
-1. **Error fidelity.** `TupleEncoder::record` and `union` take a closure returning the
-   codec's error, so an ingest error raised inside one is flattened to
-   `IngestError::Codec`, losing its own words. The fix is to give the encoder a form
-   generic over the caller's error.
+1. ~~**Error fidelity.**~~ Done, and it was not the cosmetic item this list called it.
+   `TupleEncoder::record` and `union` required a closure returning the codec's error, so
+   an `IngestError` raised inside one — the walk interns a nested reference in there —
+   was thrown away and replaced with `BadRecord`. A same-key-different-value conflict
+   inside a union therefore told the caller their fact was malformed rather than that the
+   key was taken. Both are now generic over the caller's error, as `TupleDecoder::record`
+   already was. `fused_agrees_always` found it: the reference path said `Conflict` and the
+   fused path said `Codec`, on roughly one run in three.
 2. **The `take_blob` duplication.** `fjord_wire::value::take_blob` is private and
    `fused.rs` reimplements it as `blob`. It should be exposed rather than copied — two
    readings of a length-prefixed blob is exactly the kind of pair that drifts.
