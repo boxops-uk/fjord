@@ -491,19 +491,31 @@ fn a_killed_create_leaves_nothing_or_a_whole_database() {
         // `code` is the one being built when the process died. Either it is not
         // there, or it is whole — and whole means openable, Writable, and with every
         // predicate's trees present.
-        // A surviving scratch directory is proof the kill landed *inside* a create:
-        // the guard that removes it runs no destructors under `abort`. Counted so the
-        // test can say it reached the case it exists for.
-        let scratch_left = fs::read_dir(&root)
+        //
+        // **A scratch that still holds something is proof the kill landed inside a
+        // create**, since the guard that removes it runs no destructors under `abort`.
+        // An *empty* one proves the opposite and must not be read as a violation:
+        // `create` renames the built instance out of the scratch and then drops the
+        // guard, so between those two lines the database is legitimately visible with
+        // an empty scratch beside it. Treating any scratch as mid-create made this
+        // assert fire on that window — rarely, and more often once writes got faster
+        // and a fixed kill delay started landing in it.
+        let scratch_mid_build = fs::read_dir(&root)
             .expect("a listing")
             .filter_map(Result::ok)
-            .any(|e| e.file_name().to_string_lossy().starts_with(".create-"));
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".create-"))
+            .any(|e| {
+                fs::read_dir(e.path())
+                    .map(|mut held| held.next().is_some())
+                    .unwrap_or(false)
+            });
 
-        if scratch_left {
+        if scratch_mid_build {
             killed_mid_create += 1;
             assert!(
                 !listing.entries.iter().any(|e| e.name() == "code"),
-                "delay {delay_ms}ms: a database was visible while its scratch build                  was still there"
+                "delay {delay_ms}ms: a half-built database was visible — its scratch \
+                 still holds the build"
             );
         }
 
