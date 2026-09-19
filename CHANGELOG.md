@@ -5,6 +5,29 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## 0.5.1 — 2026-09-19
+
+**What `0.5.0` was meant to be.** That tag exists but was never released: its CI run failed
+on a test and the release job was skipped, so no artifact was ever published. Everything in
+the `0.5.0` entry below is in this, and the only difference is the fix that unblocked it.
+
+### Fixed
+
+- **A crash-atomicity test read an empty scratch directory as a half-built database.**
+  `Catalog::create` renames the built instance out of its scratch and *then* drops the guard
+  that removes it, so between those two lines a database is legitimately visible with an
+  empty scratch beside it. `a_killed_create_leaves_nothing_or_a_whole_database` treated any
+  surviving `.create-` directory as proof the kill landed mid-create, and a process killed
+  in that window produced exactly the state it called a violation. It now counts only a
+  scratch that still *holds* something, which is what mid-create looks like — the instance
+  is built inside the scratch before it is moved out — so a genuinely half-built database
+  still fires it.
+
+  Nothing about the atomicity was at risk: the rename is atomic, and the separate checks
+  that a visible database is `Writable` and complete are unchanged. The window is short and
+  had never been hit before; this release roughly doubles write throughput, so a fixed kill
+  delay started landing in it.
+
 ## 0.5.0 — 2026-09-13
 
 **The storage engine is a fork.** fjall and lsm-tree are taken from
