@@ -594,7 +594,8 @@ collision nobody would have predicted.
 --max-files <n>       stop after n source files
 --max-projects <n>    stop after n projects
 --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
---writers <n>         concurrent write streams, one connection each (default: 1)
+--writers <n>         concurrent write streams, one connection each
+                      (default: min(8, cores); `--emit` forces 1)
 --framework <tfm>     index only this target framework (default: one database per
                       framework the checkout compiles for, named <at>#<tfm>)
 --configuration <c>   the configuration this index is resolved against, recorded as

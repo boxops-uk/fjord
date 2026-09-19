@@ -148,40 +148,52 @@ internal sealed record Options
     /// rather than per database — so this is how much of that the indexer asks for.
     /// </para>
     /// <para>
-    /// <b>One by default, because that is what has been measured.</b> This was set to
-    /// follow <see cref="Jobs"/> on the reasoning that the two sides of a run should be
-    /// sized alike, and a 16-file corpus said otherwise: four writers cost ~10%
-    /// throughput and moved nothing, because <c>queueing</c> was already near zero — the
-    /// writer was not the ceiling, so more of them could only add connections and
-    /// handshakes. Most of that is fixed cost and would vanish at scale, but "would" is
-    /// not a measurement, and a default should not be an argument.
+    /// <b>This was 1, and the measurement behind that is now history.</b> It was set from a
+    /// run in which four writers cost ~10% and moved nothing, because <c>queueing</c> was
+    /// already near zero — the writer was not the ceiling. That was true and it was
+    /// confounded: the walk could not saturate one writer, so no writer count could have
+    /// looked good. Later runs against <c>dotnet/runtime</c> found the writers themselves
+    /// were the ceiling — "what they wait on is shared, and it is the server" — with 6.1M
+    /// facts costing 54.7M interning attempts, a <c>keys</c> probe apiece plus staging,
+    /// commit and wire decode.
     /// </para>
     /// <para>
-    /// <b>Measured, and the answer is the corpus rather than a number.</b> Over 5.8M facts
-    /// from 111 src-only projects of <c>dotnet/runtime</c>'s shared framework: 55,652
-    /// facts/s at one writer, 54,443 at four, 51,020 at eight — worse each time. Over 6.1M
-    /// facts from 40 of them: 51,013 at one writer and 64,849 at four — <b>1.27× better</b>.
-    /// Same flag, same machine, opposite sign. So one is the right default for a caller who
-    /// has measured nothing, and it is not the right answer everywhere.
+    /// <b>Fjord 0.5.1 moved that ceiling.</b> The probe is answered by a Bloom filter over
+    /// the active memtable, and the journal writer is released before the memtable apply,
+    /// so writers no longer queue behind one another for most of a commit. Re-measured on
+    /// 40 projects of <c>dotnet/runtime</c>'s shared framework at <c>--jobs 8</c>, 361k
+    /// facts, one repeat each:
+    /// </para>
+    /// <code>
+    ///  writers   facts/s   queueing
+    ///        1    28,287       5.4s
+    ///        2    31,288       1.2s
+    ///        4    38,640       0.3s
+    ///        8    37,541       0.1s
+    /// </code>
     /// <para>
-    /// <b>The writers are the ceiling on both.</b> At one writer, the writer is inside
-    /// <c>Write</c> for 116.5s of a 122.0s walk; at four, each is busy 93% of a shorter
-    /// one, and four of them buy 1.31× rather than anything near four — so what they wait
-    /// on is shared, and it is the server. 6.1M facts sent are 54.7M interning attempts
-    /// (5,431,545 created, 49,289,453 deduped), which is a <c>keys</c> probe apiece plus
-    /// staging, commit and wire decode.
+    /// <b>1.37× at four, where the same shape used to fall.</b> Four and eight are within
+    /// noise of each other — 2.9% apart on medians of three, against a 10% spread inside
+    /// the four-writer group — so eight is not chosen for being faster. It is chosen
+    /// because a default is for a caller who has measured nothing, and the two ways to be
+    /// wrong are not symmetric: on a denser corpus (1.56M facts) four writers left a
+    /// <b>56.6s</b> stall that eight cleared, while eight costs a few percent and ~50% more
+    /// summed writer time where four is optimal. Capped at the core count for the same
+    /// reason <see cref="Jobs"/> is.
     /// </para>
     /// <para>
-    /// <b><c>contended</c> is no longer the number to read here, and used to be
-    /// misleading.</b> It stood at ~48% of a walker's time because
-    /// <see cref="Boxops.Fjord.Client.FactSink"/> held a predicate's batch lock across an
-    /// enqueue that blocks — so a writer's backpressure was counted as producer
-    /// serialisation. It is ~0 now, and the wait it was hiding is in <c>queueing</c>,
-    /// where it belongs.
+    /// <b>The knee moves with facts per declaration, not with file count.</b> Any schema
+    /// change that emits more facts per declaration moves it, so this is right for a stated
+    /// corpus and no other — re-measure rather than reason about it.
     /// </para>
+    /// <para>
+    /// <b>Not tied to <see cref="Jobs"/>, deliberately.</b> They are independent ceilings,
+    /// one compute and one transport, and tying them together was the original mistake.
+    /// <c>--emit</c> forces one writer regardless, because its file is a deterministic run
+    /// of blocks.
     /// </para>
     /// </remarks>
-    public int Writers { get; init; } = 1;
+    public int Writers { get; init; } = Math.Min(8, Environment.ProcessorCount);
 
     /// <summary>Let the design-time build restore first. Off is much faster when it is already restored.</summary>
     public bool Restore { get; init; } = true;
@@ -270,8 +282,8 @@ internal sealed record Options
           --max-files <n>       stop after n source files
           --max-projects <n>    stop after n projects
           --jobs <n>            builds, and files walked, at once (default: 4, or fewer cores)
-          --writers <n>         concurrent write streams, one connection each (default: 1;
-                                raise it when the report's `queueing` is a real share of the run)
+          --writers <n>         concurrent write streams, one connection each
+                                (default: min(8, cores); `--emit` forces 1)
           --no-refs             declarations only: no cross-references
           --no-lines            do not write the line table (src.FileLine)
           --styles              also write syntax highlighting (src.FileLineStyles)
@@ -318,7 +330,7 @@ internal sealed record Options
         var at = $"{DefaultSocket}{FjordAddress.Separator}code";
         int batch = 4096, maxFiles = 0, maxProjects = 0;
         var jobs = Math.Min(4, Environment.ProcessorCount);
-        int? writers = null;
+        var writers = Math.Min(8, Environment.ProcessorCount);
         bool references = true, restore = true;
         bool lines = true, docs = true, styles = false;
         string? repo = null, revision = null, framework = null;
@@ -460,7 +472,7 @@ internal sealed record Options
             MaxFiles = maxFiles,
             MaxProjects = maxProjects,
             Jobs = jobs,
-            Writers = writers ?? 1,
+            Writers = writers,
             References = references,
             Lines = lines,
             Styles = styles,
