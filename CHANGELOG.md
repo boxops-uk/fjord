@@ -5,6 +5,53 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## Unreleased
+
+### Changed
+
+- **The design book is MDX, and there is one renderer.** The pages were Markdown read by
+  two parsers — `website/build.py` in Python, and a TypeScript port of the same dialect in
+  `web/` — with a smoke check comparing them page for page, because a dialect that drifts
+  between two parsers is a page that reads differently depending on which copy you found.
+  That bought a copy of the book needing no toolchain, and cost a hand-written parser on
+  each side plus a dialect that could only hold what both had been taught. What publishes
+  is `web/dist` and has been since the bundle took over, so the generated site is deleted
+  and the pages are now one MDX file each under `web/src/content/`, compiled into the
+  application: prose where prose is enough, and a component where it is not.
+
+  Every anchor in the book is unchanged — `mdx/headings.mjs` computes them the way the
+  Markdown renderer did, and exports each page's list, which the search index reads rather
+  than parsing the pages a second time. `:::demo` and `:::note` are now `<Demo>` and
+  `<Callout>`, which can hold anything a page can. The smoke check keeps its comparison and
+  changes the oracle: every block a page's source writes against the blocks the built page
+  shows, which guards the same silent defect — a component mapping that goes missing
+  renders the children and drops the wrapper, and a table becomes six paragraphs that still
+  read fine — with no second parser to maintain for it.
+
+- **The link gate is asked of fjord.** Whether a link resolves is a question about a graph —
+  does the page it names exist, does that page declare the anchor — and this repository
+  builds the database for that question. `scripts/check-links.py` writes the book as facts
+  against `scripts/docs.sigla` (`doc.Page`, `doc.Anchor`, `doc.Link`) and asks two sigla
+  queries with negation, replacing the two regular expressions that were checks 1 and 2 of
+  the drift gate.
+
+  Two things fell out of it. The facts come from **the site's own MDX parse**, so an anchor
+  the gate accepts is an anchor a reader can land on — the regex it replaced matched
+  `^#{1,6} ` without tracking code fences, so it invented eight anchors no page declares and
+  would have passed any link that named one. And the query does not care *which* page a link
+  names, so every citation of the book anywhere in the tree is checked rather than only the
+  ones spelling `invariants`: that found **twelve dead anchors** live in crate doc comments,
+  all fixed here.
+
+### Fixed
+
+- **Twelve citations in the crates named anchors that do not exist** — `storage.html#storage-codec-vs-transport-codec`
+  for `…-versus-…`, `query-language.html#derived-facts` for a section called *Arithmetic*,
+  `storage.html#factid-allocation-i11` for *Fact ids are snowflakes (I11)*, and
+  `operations.html#6-wire-protocol--the-write-stream` for a section that moved to a page of
+  its own three releases ago. Invisible to the old gate, which only ever checked citations
+  of the invariant registry.
+
 ## 0.5.1 — 2026-09-19
 
 **What `0.5.0` was meant to be.** That tag exists but was never released: its CI run failed

@@ -116,6 +116,7 @@ cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger
 python3 scripts/check-guards.py     # the ledger is exact, owned and built
+python3 scripts/check-links.py      # every link in the book resolves, asked of fjord itself
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
 (cd web && npm run smoke)           # the book's own engine, driven in a browser

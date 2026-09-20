@@ -240,14 +240,30 @@ jobs:
       # the check that fails if `resolve_from` ever reaches `FsSources`.
       - name: A schema resolves with no filesystem
         run: cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown --locked
-      # The drift gate: site links and anchors resolve, invariant citations in the
-      # crates resolve to the registry, nothing references a retired doc, no
-      # build-plan phase number survives in code or the book, and nothing describes a
-      # retired *name* as live — a deleted schema, a retired crate, a deleted script,
-      # a removed flag, a retired predicate. Each check is a way the documentation
-      # actually went stale once, and the last is the one four hand sweeps missed.
+      # The drift gate: nothing references a retired doc, no build-plan phase number
+      # survives in code or the book, nothing describes a retired *name* as live — a
+      # deleted schema, a retired crate, a deleted script, a removed flag, a retired
+      # predicate — and the figures the book prints are the ones the tree computes.
+      # Each check is a way the documentation actually went stale once, and the
+      # retired-name sweep is the one four hand sweeps missed.
       - name: Documentation is consistent
         run: python3 scripts/check-docs.py
+      # **The link gate, asked of the product.** Whether a link resolves is a question
+      # about a graph — does the page exist, does it declare the anchor — so it is two
+      # sigla queries against a fjord database of the book rather than a regular
+      # expression over it. The facts come from the site's own MDX parse, so an anchor
+      # the gate accepts is an anchor a reader can land on; the regex this replaced
+      # matched `#` inside code fences and invented eight that no page declares.
+      #
+      # `npm ci` because the fact producer runs the site's remark plugins, and the
+      # release binary built above is the one it asks.
+      - name: The book's dependencies, for the link gate
+        run: npm ci
+        working-directory: web
+      - name: Every link in the book resolves
+        run: python3 scripts/check-links.py
+      - name: The link gate's mutation controls
+        run: python3 -m unittest scripts/test_check_links.py
 
   package:
     name: package

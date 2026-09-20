@@ -55,7 +55,7 @@
 //! is what this graph already says about it.
 //!
 //! [chapter 7]: ../../../web/src/content/query-language.mdx
-//! [derived binds]: ../../../web/src/content/query-language.mdx#derived-facts
+//! [derived binds]: ../../../web/src/content/query-language.mdx#arithmetic
 
 use fjord_schema::schema::Symbol;
 

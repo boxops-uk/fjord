@@ -165,7 +165,7 @@ pub struct FjallDb {
     predicates: RwLock<Arc<BTreeMap<u32, Arc<Predicate>>>>,
     /// **The striped merge frontier**: per-key exclusion, and the cache behind the
     /// same lock — see [`FjallDb::intern`] and
-    /// [chapter 3](../../../web/src/content/storage.mdx#the-other-half-of-the-bijection--one-key-one-fact).
+    /// [chapter 3](../../../web/src/content/storage.mdx#the-other-half-one-key-names-exactly-one-fact).
     ///
     /// One mutex per stripe, held across a whole resolve-or-create. The cache lives
     /// *inside* it rather than beside it because the two want exactly the same

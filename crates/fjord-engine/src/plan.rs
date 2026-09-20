@@ -784,7 +784,7 @@ pub enum Project {
 /// Every arm is a pure function of the bindings, with no iteration and no hidden
 /// state, and that purity is the load-bearing part: it is what lets a [`Cursor`]
 /// save only generator positions and recompute the rest
-/// ([chapter 7](../../../web/src/content/query-language.mdx#derived-facts)).
+/// ([chapter 7](../../../web/src/content/query-language.mdx#arithmetic)).
 ///
 /// Arithmetic is the first producer of a computed value in the language, and it
 /// arrived as new arms rather than as a reshape — which is what this seam is for.

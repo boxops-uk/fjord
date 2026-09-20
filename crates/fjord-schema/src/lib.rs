@@ -6,7 +6,7 @@
 //! stored row *is called*.
 //!
 //! Design of record: [chapter 6](https://github.com/boxops-uk/fjord/blob/main/web/src/content/schema-language.mdx) for the
-//! type model, [chapter 3](https://github.com/boxops-uk/fjord/blob/main/web/src/content/storage.mdx#factid-allocation-i11)
+//! type model, [chapter 3](https://github.com/boxops-uk/fjord/blob/main/web/src/content/storage.mdx#fact-ids-are-snowflakes-i11)
 //! for the id.
 
 /// The string interner this crate's public API is built over.

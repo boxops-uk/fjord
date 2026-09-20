@@ -37,7 +37,7 @@
 //! # What the grammar has grown since
 //!
 //! One token: **`!=`**, a *denial*
-//! ([chapter 7](../../../web/src/content/query-language.mdx#denying-a-value)). The audit above was written
+//! ([chapter 7](../../../web/src/content/query-language.mdx#a-denial)). The audit above was written
 //! to make later work add *meaning* to constructs that already parse, and this is the one
 //! thing since that did not already parse — worth recording rather than folding into the table,
 //! because the table is what the original audit found and this is a later addition to it.

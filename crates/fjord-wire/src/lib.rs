@@ -82,7 +82,6 @@
 //! [I3]: ../../web/src/content/invariants.mdx#i3
 //! [I13]: ../../web/src/content/invariants.mdx#i13
 //! [settled]: ../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
-//! [operations §6 and §8]: ../../web/src/content/operations.mdx#6-wire-protocol--the-write-stream
 
 pub mod block;
 pub mod crc;

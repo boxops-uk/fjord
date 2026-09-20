@@ -1359,7 +1359,7 @@ impl Flattener<'_> {
     /// actually resolves depends on the order, and `emit` reports what does not.
     /// What this excludes is the derived bind — a record mentioning a captured
     /// variable, a string prefix — which is in no register and would have to be
-    /// built ([chapter 7](../../../web/src/content/query-language.mdx#derived-facts)).
+    /// built ([chapter 7](../../../web/src/content/query-language.mdx#arithmetic)).
     fn names_a_location(&self, node: NodeId) -> bool {
         match self.ast.store().kind(node) {
             ExprKind::Var(_) | ExprKind::Fact(..) => true,

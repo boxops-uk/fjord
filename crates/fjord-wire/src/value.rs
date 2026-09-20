@@ -6,7 +6,7 @@
 //! that is the central design decision rather than a shortcut. Both peers have the
 //! schema — the handshake compares the client's expected schema fingerprint against
 //! the DB's before a byte of data flows
-//! ([operations §6](https://github.com/boxops-uk/fjord/blob/main/web/src/content/operations.mdx#6-wire-protocol--the-write-stream)),
+//! ([the handshake](https://github.com/boxops-uk/fjord/blob/main/web/src/content/wire-protocol.mdx#the-handshake)),
 //! and [I13](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i13) freezes a DB's schema at create — so
 //! the field names, their order and their types are known to the reader in advance.
 //! Sending them again is sending what the reader already has.

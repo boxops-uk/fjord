@@ -50,7 +50,7 @@ impl Register {
 /// The fact case is the original register and the one
 /// [I5](../../../web/src/content/invariants.mdx#i5) is about — the whole row, fields decoded
 /// lazily at a read site. The value case is a *derived bind*'s output
-/// ([chapter 7](../../../web/src/content/query-language.mdx#derived-facts)): a pure function of
+/// ([chapter 7](../../../web/src/content/query-language.mdx#arithmetic)): a pure function of
 /// the fact slots, which is exactly why the [`Cursor`] does not store one and a
 /// resume recomputes it instead.
 ///
@@ -2681,7 +2681,7 @@ pub enum Transition {
 /// **Pure, and that is the invariant the resume path depends on**: no store, no
 /// iteration, nothing but the bindings already in `state`. It is called again after
 /// a restore and must produce what it produced before
-/// ([chapter 7](../../../web/src/content/query-language.mdx#derived-facts)) — which is why the
+/// ([chapter 7](../../../web/src/content/query-language.mdx#arithmetic)) — which is why the
 /// registers it reads are only ones bound by *earlier* steps, and why a cursor
 /// stores nothing for it.
 ///

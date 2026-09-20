@@ -13,7 +13,7 @@
 //!
 //! This is deliberately **not** the transport codec: rows leaving the executor
 //! are framed by a different, non-order-preserving encoding that never touches
-//! stored bytes ([chapter 3](../../../web/src/content/storage.mdx#storage-codec-vs-transport-codec)).
+//! stored bytes ([chapter 3](../../../web/src/content/storage.mdx#storage-codec-versus-transport-codec)).
 
 pub mod error;
 pub mod tuple;
