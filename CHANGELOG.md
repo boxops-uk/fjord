@@ -1456,7 +1456,7 @@ anybody wants the type, and because `print::literal` emits `0x…`: without the 
 would be the one place the printer produces text sigla cannot read back.
 
 **`MARK_BYTES` is `0x53`, appended, so `bytes` sorts after a union rather than beside a
-string.** That reads oddly and is not taste: [I3](website/content/invariants.md#i3) freezes the
+string.** That reads oddly and is not taste: [I3](web/src/content/invariants.mdx#i3) freezes the
 marker table and I15 checks the format stamp for *equality* at open, so renumbering is a
 `codec` bump and a `codec` bump makes every database written by 0.1.0 unopenable. The wart is
 taken, and the ordering is unobservable — a field has one declared type, a union discriminates
@@ -1520,7 +1520,7 @@ Ln < 1200` opens the scan at line 1000 rather than at line 1 — the cost of a w
 the cost of its offset. Measured on the fixture shape rather than argued: the folded plan reads
 its ten rows where the filtered one reads a hundred to answer the same ten.
 
-It is [I1](website/content/invariants.md#i1) being spent, and the half of it that had never
+It is [I1](web/src/content/invariants.mdx#i1) being spent, and the half of it that had never
 been: the encoding is order-preserving, so one contiguous run of the *value* order is one
 contiguous run of the *key* order, which is what makes the range the exact answer rather than a
 superset. The registry said as much and said no query lowered one; now one does.

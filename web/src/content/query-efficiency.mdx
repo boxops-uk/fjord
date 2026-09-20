@@ -1,7 +1,7 @@
----
-title: Query efficiency
-description: What a query costs is the rows it examines, not the rows it answers — the four decisions flatten makes per key field, what closes a seek prefix, and how to read the difference back off a plan.
----
+export const meta = {
+  "title": "Query efficiency",
+  "description": "What a query costs is the rows it examines, not the rows it answers — the four decisions flatten makes per key field, what closes a seek prefix, and how to read the difference back off a plan."
+}
 
 Two queries that answer the same rows can differ by five orders of magnitude, and the
 difference is never in the answer. It is in how many rows the executor had to look at to find
@@ -27,12 +27,14 @@ answers five rows out of a 8.6 M-row predicate does 8.6 M rows of work and looks
 demo database. The ratio is the number to watch, and it is the only one that moves with the
 corpus.
 
-:::note Why not "rows returned"
+<Callout tone="note" label={`Why not "rows returned"`}>
+
 Every other limit in this engine counts output. A scan whose residuals reject every row
 produces nothing while doing all the work, so a ceiling that counted rows *answered* would
 read zero on exactly the query that needs stopping. That is why the executor's own limit —
 [the ceiling](#the-ceiling-is-deployment-policy) — counts input.
-:::
+
+</Callout>
 
 ## Four decisions, one per key field
 
@@ -229,7 +231,8 @@ N where test.Bar {id = I}; test.Foo {id = I, name = N}
 `test.Bar` is scanned; `test.Foo` is sought once per row of it. Which of the two you want on
 the outside is the one that is small, or the one that is already narrowed.
 
-:::warn A join can still be a residual
+<Callout tone="warn" label={`A join can still be a residual`}>
+
 Being bound is not enough — the field has to be reachable in the key order too:
 
 ```sigla
@@ -242,7 +245,8 @@ N where test.Named {name = N, of = F}; F = test.Foo {id = 1, name = _}
 `test.Named` is keyed `{name, of}`. `F` is bound and its id is right there, but `name` is
 captured in front of it, so the reference compare is a residual over the whole predicate. Add
 what you know about `name` and the same query seeks.
-:::
+
+</Callout>
 
 ## Read the plan, then the profile
 
@@ -261,9 +265,7 @@ per step, to stderr. The plan's vocabulary is small and worth recognising on sig
 Live, against the demo schema — the leading field is a reference, so a constant `file` seeks
 and a constant `name` behind it filters:
 
-:::demo plan
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
+<Demo kind="plan">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
 ## The ceiling is deployment policy
 
@@ -280,12 +282,14 @@ It is a limit on input, and it is deployment policy: it refuses a run, it never 
 answer, and it is not part of a plan's fingerprint — so a cursor is not tied to the ceiling
 that was in force when it was minted.
 
-:::note Bounding the *result* is a different question
+<Callout tone="note" label={`Bounding the *result* is a different question`}>
+
 `--limit`, `:more` and a paged web tier cut a result short and hand back a cursor; the query
 is unchanged and resumes exactly where it stopped. That is [suspend and
 resume](executor.html#the-cursor-bytes-and-nothing-else), not a limit. The ceiling is for the
 run that would never have produced the rows in the first place.
-:::
+
+</Callout>
 
 ## When the answer is the schema
 

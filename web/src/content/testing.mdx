@@ -1,7 +1,7 @@
----
-title: Testing method
-description: Property-first, generator-first, model-based — the three tiers, the mechanical guards for non-functional rules, and the corpus that keeps the language honest.
----
+export const meta = {
+  "title": "Testing method",
+  "description": "Property-first, generator-first, model-based — the three tiers, the mechanical guards for non-functional rules, and the corpus that keeps the language honest."
+}
 
 The method here is worth reading even if you never touch the code, because it is the reason to
 believe the rest of these docs. Nearly every bug in this project's history — codec off-by-ones, a
@@ -78,12 +78,14 @@ already-bound registers. A random plan is almost always invalid and tests only t
   store, generate a query, generate a *schedule of where to suspend*, and assert the result is
   invariant under the schedule. That is what caught the resume-duplicate bug.
 
-:::note Generators are a co-owned artifact
+<Callout tone="note" label={`Generators are a co-owned artifact`}>
+
 A strategy that degenerates leaves a property green and vacuous, so the generators' own
 **populations are asserted** — median size, every construct reached, statements/joins/constants
 per query, rows produced. A census over the resume battery was written first and failed on five of
 the six shapes it claimed to reach.
-:::
+
+</Callout>
 
 ## Mechanical guards for non-functional rules
 

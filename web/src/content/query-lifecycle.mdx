@@ -1,7 +1,7 @@
----
-title: A query, step by step
-description: From the text on the client to the rows coming back — the compile, the frames, the plan, the nested loop, the chunk boundary and the resume token, in order.
----
+export const meta = {
+  "title": "A query, step by step",
+  "description": "From the text on the client to the rows coming back — the compile, the frames, the plan, the nested loop, the chunk boundary and the resume token, in order."
+}
 
 This page follows one query all the way through. Nothing here is a simplification of a
 layer described elsewhere; where a subject has more depth, there is a link.
@@ -79,10 +79,12 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
 with a bad-query code, it fetches the schema and recompiles locally purely to render the
 caret. Same diagnostic, one extra round trip only on the failure path.
 
-:::note Two compilers, one authority
+<Callout tone="note" label={`Two compilers, one authority`}>
+
 The rule where they could disagree: **the server decides what runs.** A client-side compile
 is there to answer fast and to show a plan — never to be the thing whose verdict counts.
-:::
+
+</Callout>
 
 ## 4. One frame, on a new stream
 
@@ -131,9 +133,7 @@ The tree the first two phases build is lossless and grammar-shaped — one node 
 leaf per token, spans throughout. That is what lets an editor light up the source from a
 node, and what lets a recovered parse point at the byte that went wrong:
 
-:::demo parse
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
+<Demo kind="parse">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
 Two things are worth pulling out.
 
@@ -183,9 +183,7 @@ efficiency](query-efficiency.html) is the whole rule.
 The same compilation, over the demo schema, with the plan the engine actually emits — its
 levels, its registers, and the access each step uses:
 
-:::demo plan
-N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..
-:::
+<Demo kind="plan">{`N where code.Decl {file = F, name = N, line = _}; F = code.File P; P = "src/u"..`}</Demo>
 
 ## 8. The row descriptor, once
 
@@ -235,9 +233,7 @@ The driver, one transition at a time — the registers as the machine fills them
 they are yielded, and the rows a residual read and dropped, which are invisible in the answer
 and are most of what a query costs:
 
-:::demo run guided
-N where code.Decl {file = _, name = N, line = L}; L > 15
-:::
+<Demo kind="run" guided>{`N where code.Decl {file = _, name = N, line = L}; L > 15`}</Demo>
 
 ## 10. Encoding a row
 

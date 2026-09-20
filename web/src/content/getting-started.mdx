@@ -1,7 +1,7 @@
----
-title: Getting started
-description: Get the binaries, create a database, start a server, write some facts, and ask it a question — in about five minutes.
----
+export const meta = {
+  "title": "Getting started",
+  "description": "Get the binaries, create a database, start a server, write some facts, and ask it a question — in about five minutes."
+}
 
 By the end of this page you will have a database on disk — files, declarations and the
 references between them — a server in front of it, and answers to a few questions about it.
@@ -25,7 +25,8 @@ directory.
 
 ## 1. Get the binaries
 
-:::note Prebuilt binaries
+<Callout tone="note" label={`Prebuilt binaries`}>
+
 Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord` for
 Linux x86_64, which skips this whole step:
 
@@ -40,7 +41,8 @@ That one needs glibc 2.34 or newer — Ubuntu 22.04, Debian 12, RHEL 9 and later
 distro, Alpine or a `scratch` container. Both carry the same allocator, but every number the
 project publishes is measured on the first, so they are the second choice rather than the
 first.
-:::
+
+</Callout>
 
 ```bash
 cargo build --release --bin fjord
@@ -112,11 +114,13 @@ fjord serve
 rather than a race. The socket path is derived from the store root, which is how a client
 finds a server without being told where the data is.
 
-:::warn Socket paths are short for a reason
+<Callout tone="warn" label={`Socket paths are short for a reason`}>
+
 A Unix socket path has a hard length limit of about 100 bytes. If your store root is deep,
 pass `--socket /tmp/fjord.sock` explicitly and name it in the address —
 `/tmp/fjord.sock//code`.
-:::
+
+</Callout>
 
 ## 4. Put some facts in it
 

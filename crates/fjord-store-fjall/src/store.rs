@@ -1,16 +1,16 @@
 //! The store layer — the fjall [`FactStore`].
 //!
-//! The layout is [chapter 3](../../../website/content/storage.md): a `keys` row is
+//! The layout is [chapter 3](../../../web/src/content/storage.mdx): a `keys` row is
 //! `predicate_id (4B BE) ++ encoded_key → fact_id (8B BE)`, an `entities` row is
 //! `fact_id (8B BE) → [key_len u32 BE][encoded_key][value]`, and the two halves of
-//! a fact are written in one batch ([I12](../../../website/content/invariants.md#i12)).
+//! a fact are written in one batch ([I12](../../../web/src/content/invariants.mdx#i12)).
 //!
 //! Three implementation decisions this module makes; chapter 3 records the
 //! reasoning and the measurements behind the first two.
 //!
 //! - **Both column families are split per predicate** — `keys.<id>` and
 //!   `entities.<id>`. Per-predicate trees are what
-//!   [operations §9](../../../website/content/operations.md) asks for: independent
+//!   [operations §9](../../../web/src/content/operations.mdx) asks for: independent
 //!   bulk-ingest trees, prefix-disjointness aligned with physical isolation, an
 //!   O(1) wholesale drop when a derived predicate is recomputed, and per-predicate
 //!   size/cardinality for free. Splitting `entities` too is what the snowflake
@@ -28,12 +28,12 @@
 //!   per-predicate tree makes it redundant. It costs 4 highly-compressible bytes
 //!   and buys byte-identical rows across this store and
 //!   `MemStore` (`fjord-store-mem`) — which is what lets the
-//!   resume battery ([I4](../../../website/content/invariants.md#i4)) transfer to fjall
+//!   resume battery ([I4](../../../web/src/content/invariants.mdx#i4)) transfer to fjall
 //!   unchanged, since the engine's `Cursor` is bytes-only and
 //!   re-seeks by exactly these bytes.
 //!
 //! `FjallDb` is the long-lived handle and owns the id allocator
-//! ([I11](../../../website/content/invariants.md#i11)); [`FjallDb::reader`] hands the executor
+//! ([I11](../../../web/src/content/invariants.mdx#i11)); [`FjallDb::reader`] hands the executor
 //! the `(handle, snapshot)` pair it consumes.
 
 use std::{
@@ -101,7 +101,7 @@ const ENTITIES_KEYSPACE_PREFIX: &str = "entities.";
 /// manifest of its own. So a copy that has delivered this file and not every keyspace
 /// manifest is past this guard, and what happens then is
 /// [`CatalogError::FactsDoNotMatch`](crate::error::CatalogError::FactsDoNotMatch)'s
-/// doc and [operations](../../../website/content/operations.md#publish-by-rename-required-for-a-live-root).
+/// doc and [operations](../../../web/src/content/operations.mdx#publish-by-rename-required-for-a-live-root).
 const FJALL_VERSION_MARKER: &str = "version";
 
 /// One predicate's two trees. Cheap to clone — fjall handles are `Arc`-backed.
@@ -122,7 +122,7 @@ struct StoredFact {
 /// this call is what put it there.
 ///
 /// `created` is not bookkeeping. Interning is how a nested reference becomes an id
-/// ([chapter 3](../../../website/content/storage.md#interning-a-nested-fact)), and a
+/// ([chapter 3](../../../web/src/content/storage.mdx#interning-a-nested-fact)), and a
 /// target named under a thousand parents is one row — so the count a write stream
 /// reports back, and the dedup `ops-I5` promises, are both this flag summed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +132,7 @@ pub struct Interned {
 }
 
 /// A predicate's trees plus its own id allocator
-/// ([I11](../../../website/content/invariants.md#i11)).
+/// ([I11](../../../web/src/content/invariants.mdx#i11)).
 struct Predicate {
     trees: Trees,
     /// The next sequence to hand out.
@@ -165,7 +165,7 @@ pub struct FjallDb {
     predicates: RwLock<Arc<BTreeMap<u32, Arc<Predicate>>>>,
     /// **The striped merge frontier**: per-key exclusion, and the cache behind the
     /// same lock — see [`FjallDb::intern`] and
-    /// [chapter 3](../../../website/content/storage.md#the-other-half-of-the-bijection--one-key-one-fact).
+    /// [chapter 3](../../../web/src/content/storage.mdx#the-other-half-of-the-bijection--one-key-one-fact).
     ///
     /// One mutex per stripe, held across a whole resolve-or-create. The cache lives
     /// *inside* it rather than beside it because the two want exactly the same
@@ -262,7 +262,7 @@ impl Drop for Interning<'_> {
 /// The striping needs no lock ordering, and the reason is a fact about interning rather
 /// than a discipline anyone has to keep: *a parent's key has no bytes until its children
 /// have ids*, so a worker interns leaf-then-parent and every critical section has closed
-/// before the next opens ([chapter 3](../../../website/content/storage.md#interning-a-nested-fact)).
+/// before the next opens ([chapter 3](../../../web/src/content/storage.mdx#interning-a-nested-fact)).
 /// The whole no-deadlock argument is that sentence.
 ///
 /// So the sentence is checked. A future change that resolved a child *inside*
@@ -318,7 +318,7 @@ impl NotNested {
 ///
 /// The trade is gap size against write count. A crash abandons whatever is left of the
 /// current claim, so 1,024 leaves at most that many holes per predicate — invisible, since
-/// [I11](../../../website/content/invariants.md#i11) asks for unique and never-reused, not dense — and
+/// [I11](../../../web/src/content/invariants.mdx#i11) asks for unique and never-reused, not dense — and
 /// costs one small write per thousand facts, which is nothing beside the fact writes
 /// themselves.
 const RESERVATION_CHUNK: u64 = 1024;
@@ -452,7 +452,7 @@ impl Staged<'_> {
 }
 
 /// Both of a fact's rows, into one batch — the `keys` index entry and the `entities`
-/// record, which [I12](../../../website/content/invariants.md#i12) requires to travel together.
+/// record, which [I12](../../../web/src/content/invariants.mdx#i12) requires to travel together.
 fn stage_rows(
     batch: &mut fjall::OwnedWriteBatch,
     handle: &Predicate,
@@ -578,7 +578,7 @@ impl FjallDb {
     }
 
     /// Check the [format stamp](fjord_store::format), or write it if this
-    /// database is new ([I15](../../../website/content/invariants.md#i15)).
+    /// database is new ([I15](../../../web/src/content/invariants.mdx#i15)).
     ///
     /// `holds_facts` is what separates the two cases, and it is asked of the
     /// keyspace listing rather than of the stamp: an *unstamped* database with
@@ -656,7 +656,7 @@ impl FjallDb {
     /// readable and unsealed — the trees are merged one at a time and each merge is
     /// atomic, so what has happened is that some are tidier than others.
     ///
-    /// [operations §5]: ../../website/content/operations.md
+    /// [operations §5]: ../../web/src/content/operations.mdx
     pub fn compact(&self) -> Result<(), StoreError> {
         let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
 
@@ -801,7 +801,7 @@ impl FjallDb {
     /// The predicate's highest allocated sequence, or 0 if it holds no facts.
     ///
     /// An `entities` key **is** a fact id, big-endian, so the tree's last key is
-    /// the high-water mark ([I11](../../../website/content/invariants.md#i11)).
+    /// the high-water mark ([I11](../../../web/src/content/invariants.mdx#i11)).
     ///
     /// **On its own this is not enough, and the reason is worth keeping.** Deriving the
     /// allocator from the data cannot disagree with what is stored — but only while every
@@ -896,7 +896,7 @@ impl FjallDb {
     /// fact, and inheriting a bulk primitive's contract is how a duplicate key came
     /// to silently strand a fact in release builds. So it pays the lookup, and the
     /// semantics are the ones the merge frontier already commits to
-    /// ([operations §5](../../../website/content/operations.md)):
+    /// ([operations §5](../../../web/src/content/operations.mdx)):
     ///
     /// - a **byte-identical** fact dedups — the id already assigned comes back, and
     ///   nothing is written;
@@ -907,7 +907,7 @@ impl FjallDb {
     ///
     /// This is a check, not a lock: two threads writing the *same key* at once can
     /// both miss it and both write. What rules that out is
-    /// [ops-I1](../../../website/content/operations.md)'s single writer per DB, not this
+    /// [ops-I1](../../../web/src/content/operations.mdx)'s single writer per DB, not this
     /// lookup — which is here for the sequential mistake, the one that actually
     /// happens.
     ///
@@ -933,7 +933,7 @@ impl FjallDb {
     ///
     /// The rule [`put`](Self::put) documents, lifted out to be reached from bytes as
     /// well as from a typed value — which is what
-    /// [interning a nested reference](../../../website/content/storage.md#interning-a-nested-fact)
+    /// [interning a nested reference](../../../web/src/content/storage.mdx#interning-a-nested-fact)
     /// needs, since a fact arriving on the wire is bytes by the time its target has
     /// to be looked up. There is one implementation of the rule rather than two,
     /// which matters because the rule is `ops-I5`'s and drifting halves of it would
@@ -945,10 +945,10 @@ impl FjallDb {
     ///   ([`StoreError::KeyAlreadyWritten`]).
     ///
     /// Never last-writer-wins and never first-writer-wins — either is
-    /// order-dependent, which [ops-I4](../../../website/content/operations.md) forbids.
+    /// order-dependent, which [ops-I4](../../../web/src/content/operations.mdx) forbids.
     ///
     /// This is a check, not a lock: see [`put`](Self::put) for why
-    /// [ops-I1](../../../website/content/operations.md)'s single writer per DB is what
+    /// [ops-I1](../../../web/src/content/operations.mdx)'s single writer per DB is what
     /// rules out the concurrent case.
     ///
     /// # Errors
@@ -1004,7 +1004,7 @@ impl FjallDb {
         // read, then write, holding one stripe throughout — because this is a
         // read-modify-write and anything less lets two writers both find the key absent
         // and both create it, stranding one entity under a `keys` row the other
-        // overwrote ([I12](../../../website/content/invariants.md#i12)).
+        // overwrote ([I12](../../../web/src/content/invariants.mdx#i12)).
         //
         // Per *key* rather than per database, which is the difference between a
         // mechanism and a bottleneck: the exclusion is exactly as wide as the thing being
@@ -1120,7 +1120,7 @@ impl FjallDb {
     ///
     /// The counter is the only source of sequences, so uniqueness needs no coordination
     /// between writers: `fetch_add` is the whole of it. A sequence consumed by a write
-    /// that then fails is not handed out again — [I11](../../../website/content/invariants.md#i11) asks
+    /// that then fails is not handed out again — [I11](../../../web/src/content/invariants.mdx#i11) asks
     /// for unique and never-reused, not dense.
     ///
     /// **What the claim adds is survival across a crash.** Recovering the mark from
@@ -1272,8 +1272,8 @@ impl FjallDb {
     }
 
     /// Write one fact from **encoded bytes**, allocating its id, with both column
-    /// families in a single batch ([I11](../../../website/content/invariants.md#i11),
-    /// [I12](../../../website/content/invariants.md#i12)).
+    /// families in a single batch ([I11](../../../web/src/content/invariants.mdx#i11),
+    /// [I12](../../../web/src/content/invariants.mdx#i12)).
     ///
     /// The primitive under [`put`](Self::put), and the one bulk ingestion builds
     /// on — it allocates blocks of sequences and writes through the same layout.
@@ -1350,7 +1350,7 @@ impl FjallDb {
     /// How many read snapshots fjall currently considers open.
     ///
     /// fjall's snapshot tracker is the only thing that knows, and this is what the
-    /// [I8](../../../website/content/invariants.md#i8) guard asserts against: a scan or store
+    /// [I8](../../../web/src/content/invariants.mdx#i8) guard asserts against: a scan or store
     /// handle that outlives its query shows up here as a snapshot that is still
     /// pinning LSM blocks and a superseded generation. Exposed because "the
     /// executor released it" is only believable if the storage engine agrees.
@@ -1469,7 +1469,7 @@ impl FjallDb {
     }
 
     /// A read view for one query: an immutable snapshot plus the keyspace handles
-    /// ([I8](../../../website/content/invariants.md#i8) — `Executor::enumerate` consumes this and
+    /// ([I8](../../../web/src/content/invariants.mdx#i8) — `Executor::enumerate` consumes this and
     /// drops it on every exit path, so nothing is pinned across an idle portal).
     pub fn reader(&self) -> FjallStore {
         let predicates = self
@@ -1558,7 +1558,7 @@ impl Iterator for FjallScan {
 /// This is the one place stored bytes become a [`FactId`], which is where the
 /// reserved sequence has to be enforced: sequence 0 exists precisely so that
 /// zeroed or truncated bytes are *detectably* not a fact
-/// ([I11](../../../website/content/invariants.md#i11)), and a property nothing checks is only
+/// ([I11](../../../web/src/content/invariants.mdx#i11)), and a property nothing checks is only
 /// an intention. Unchecked, a corrupt row's `FactId(0)` travels on and surfaces
 /// as a dangling reference at projection — several layers from the row that is
 /// actually wrong.
@@ -1584,8 +1584,8 @@ fn decode_fact_id(bytes: &[u8]) -> Result<FactId, StoreError> {
 /// `keys` row → `(row bytes, fact id)`.
 ///
 /// The key becomes a `ByteView` by refcount move, never a copy — the register
-/// holds the whole row ([I5](../../../website/content/invariants.md#i5)) and the hot loop
-/// allocates nothing per row ([I9](../../../website/content/invariants.md#i9)).
+/// holds the whole row ([I5](../../../web/src/content/invariants.mdx#i5)) and the hot loop
+/// allocates nothing per row ([I9](../../../web/src/content/invariants.mdx#i9)).
 fn row_to_item(row: fjall::Guard) -> Result<(ByteView, FactId), StoreError> {
     let (key, value) = row.into_inner().map_err(StoreError::backend)?;
     let fact_id = decode_fact_id(&value)?;
@@ -1807,7 +1807,7 @@ mod tests {
         ids
     }
 
-    /// [I12](../../../website/content/invariants.md#i12) in its observable form: the two column
+    /// [I12](../../../web/src/content/invariants.mdx#i12) in its observable form: the two column
     /// families are in exact bijection, and every `keys` row's key bytes match the
     /// ones stored in its entity. Returns the number of facts checked.
     ///
@@ -1925,7 +1925,7 @@ mod tests {
             }
         }
 
-        /// [I12](../../../website/content/invariants.md#i12) over generated writes: the two
+        /// [I12](../../../web/src/content/invariants.mdx#i12) over generated writes: the two
         /// column families are in bijection after every seeding run.
         #[test]
         fn no_half_present_facts_after_writes(facts in arb_facts()) {
@@ -2115,7 +2115,7 @@ mod tests {
     /// **Every reopen mints a new incarnation** — the whole of what makes a
     /// [`world::BaseIdentity::Writable`](crate::world::BaseIdentity::Writable)
     /// stamp refuse a cursor from before a reopen without reasoning about what the
-    /// reopen actually recovered ([I4](../../../website/content/invariants.md#i4)).
+    /// reopen actually recovered ([I4](../../../web/src/content/invariants.mdx#i4)).
     ///
     /// No crash is simulated here, deliberately: the guarantee this test states —
     /// "a previous incarnation is always refused" — does not depend on anything
@@ -2183,7 +2183,7 @@ mod tests {
         );
     }
 
-    /// [I15](../../../website/content/invariants.md#i15) — a database says which encoding wrote
+    /// [I15](../../../web/src/content/invariants.mdx#i15) — a database says which encoding wrote
     /// it, and a build that does not understand the answer refuses it.
     ///
     /// The three cases are the whole rule: a new directory is **stamped**, a
@@ -2343,7 +2343,7 @@ mod tests {
     /// tag is [`StoreError::FactIdPredicateMismatch`]. The last two surface at
     /// *open*, because the allocator's high-water mark is recovered from the last
     /// key of the tree — which is exactly why they must be errors: a corrupt last
-    /// key silently mis-recovering the mark would reissue ids ([I11](../../../website/content/invariants.md#i11)).
+    /// key silently mis-recovering the mark would reissue ids ([I11](../../../web/src/content/invariants.mdx#i11)).
     #[test]
     fn a_corrupt_entities_row_is_refused_by_name() {
         let predicate = PredicateId(1);
@@ -2448,7 +2448,7 @@ mod tests {
         batch.commit().expect("remove the stamp");
     }
 
-    /// [I11](../../../website/content/invariants.md#i11) — a `FactId` is stable, unique, and
+    /// [I11](../../../web/src/content/invariants.mdx#i11) — a `FactId` is stable, unique, and
     /// never reused within a DB.
     ///
     /// Uniqueness across predicates is structural (the tag partitions the space),
@@ -2541,7 +2541,7 @@ mod tests {
         );
     }
 
-    /// [I11](../../../website/content/invariants.md#i11) — sequence 0 is reserved so that
+    /// [I11](../../../web/src/content/invariants.mdx#i11) — sequence 0 is reserved so that
     /// zeroed or corrupt bytes are *detectably* not a fact. That only holds if
     /// the decode boundary enforces it, so it is checked both as a unit and
     /// end to end, on a row written behind the store's back.
@@ -2687,7 +2687,7 @@ mod tests {
     /// So this asserts the property that closes it: after a reopen, the next id is past
     /// the whole claimed range, not past the last row. One fact is written here and 1,024
     /// sequences are burned, which is exactly the trade — a hole in the sequence, which
-    /// [I11](../../../website/content/invariants.md#i11) permits, bought against an id meaning two
+    /// [I11](../../../web/src/content/invariants.mdx#i11) permits, bought against an id meaning two
     /// different things, which it does not.
     #[test]
     fn a_reopened_allocator_resumes_past_what_was_claimed_not_past_what_was_written() {
@@ -2737,7 +2737,7 @@ mod tests {
         );
     }
 
-    /// **[I12](../../../website/content/invariants.md#i12)'s other half, mechanically: one key names
+    /// **[I12](../../../web/src/content/invariants.mdx#i12)'s other half, mechanically: one key names
     /// one fact, however many threads reach for it at once.**
     ///
     /// The guard this invariant could not have while the write-once rule was held by
@@ -2966,11 +2966,11 @@ mod tests {
     /// watchdog: the child then dies before a single fact is durable and the parent
     /// fails its own non-vacuity check, having learned nothing about I12.
     ///
-    /// [chapter 3]: ../../website/content/storage.md
+    /// [chapter 3]: ../../web/src/content/storage.mdx
     const CRASH_PREDICATES: u32 = 4;
     const CRASH_COMMITTED_PREFIX: u32 = 8;
 
-    /// [I12](../../../website/content/invariants.md#i12) — a fact is never half-present, **including
+    /// [I12](../../../web/src/content/invariants.mdx#i12) — a fact is never half-present, **including
     /// across a crash**.
     ///
     /// `no_half_present_facts_after_writes` covers the bijection under ordinary

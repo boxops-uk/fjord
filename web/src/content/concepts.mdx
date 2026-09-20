@@ -1,7 +1,7 @@
----
-title: Concepts
-description: Facts, predicates, keys and values — the model in one page, with the lifecycle that makes a database an artifact.
----
+export const meta = {
+  "title": "Concepts",
+  "description": "Facts, predicates, keys and values — the model in one page, with the lifecycle that makes a database an artifact."
+}
 
 Two names to keep straight:
 
@@ -34,12 +34,14 @@ data, read only when a query actually asks for it.
 
 The rule that follows is short and worth memorising:
 
-:::note If a query needs to match on it, it belongs in the key
+<Callout tone="note" label={`If a query needs to match on it, it belongs in the key`}>
+
 Queries seek and filter on keys and never touch values, so a value can live somewhere else
 and stay out of the hot path — which is [invariant I6](invariants.html#i6), and shapes the
 whole storage and execution design. A field you put on the value side is a field you can
 read but not search.
-:::
+
+</Callout>
 
 ### The types you can use
 
@@ -141,9 +143,7 @@ the codec and the on-disk layout.
 Both halves of every fact, for a whole database, are worth seeing at once — the stored key
 as bytes, the same key decoded, and the value beside it:
 
-:::demo store
-N where code.Decl {file = _, name = N, line = _}
-:::
+<Demo kind="store">{`N where code.Decl {file = _, name = N, line = _}`}</Demo>
 
 Step the run and the shaded band is the stretch of the map the scan is walking. It is a
 band rather than a scattering because the keys are sorted, and the encoding is built so

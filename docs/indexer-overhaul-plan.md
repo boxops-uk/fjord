@@ -37,7 +37,7 @@ Read in full: issues #28–#32 and #34; `clients/dotnet/Boxops.Fjord.Indexer/` (
 nine files) and `Boxops.Fjord.Client/` (1,236 LOC); `schemas/code.sigla`; **`bench/FINDINGS.md`
 §§12, 14, 15, 15a–c, 16, 16a–b, 17, 17a–b**; the Glean transcription's §1 and §2, retired since
 (D14); `docs/gitnexus.md`
-§§16–17; `website/content/schema-language.md`; `crates/fjord-store-fjall/src/catalog.rs`;
+§§16–17; `web/src/content/schema-language.mdx`; `crates/fjord-store-fjall/src/catalog.rs`;
 `crates/fjord-client/src/address.rs`; `PLAN.md:3215-3240`; `.github/workflows/release.yml`.
 
 | # | Coupling | Direction | Where |

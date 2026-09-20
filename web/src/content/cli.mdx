@@ -1,7 +1,7 @@
----
-title: CLI reference
-description: Every command the `fjord` binary has, the address grammar every client shares, and the configuration layering — plus what is deliberately not there yet.
----
+export const meta = {
+  "title": "CLI reference",
+  "description": "Every command the fjord binary has, the address grammar every client shares, and the configuration layering — plus what is deliberately not there yet."
+}
 
 One binary, `fjord`. Every database-taking command accepts any address form, so "local or
 remote" is a property of the **address**, not of the command — which is why there is no
@@ -165,13 +165,15 @@ connection is answered `Busy` and closed, so a client backs off knowing why rath
 under a burst large enough to outrun the small budget for saying so, the excess is closed without
 a word instead — which is what the kernel would have done with it. Both are counted.
 
-:::warn `--commit-per-block` trades exactly one thing
+<Callout tone="warn" label={`\`--commit-per-block\` trades exactly one thing`}>
+
 Committing per fact is 41% of interning, so a bulk load pays a large fixed tax for a guarantee it
 may not need. With this on, a fact's id is handed out before its bytes are durable — so a crash
 mid-ingest may leave a database holding a reference to a fact that was never written. That is
 caught at `finish`, which walks every reference, and the database **refuses to seal**. The cost is
 re-running the index, never a wrong answer from one that sealed.
-:::
+
+</Callout>
 
 ## `fjord create <name>`
 

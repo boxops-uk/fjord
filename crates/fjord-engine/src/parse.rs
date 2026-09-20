@@ -4,7 +4,7 @@
 //! ([chapter 7]): it accepts the full intended feature surface and leaves
 //! *meaning* — including "not yet implemented" — to typecheck and flatten.
 //!
-//! [chapter 7]: ../../../website/content/query-language.md
+//! [chapter 7]: ../../../web/src/content/query-language.mdx
 
 use codespan_reporting::diagnostic::Label;
 

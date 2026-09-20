@@ -6,7 +6,7 @@
 //! [`catalog`] is the store root — databases as artifacts, the sidecar
 //! ([`meta`]), the embedded schema copy ([`schema_doc`]) and the root lock, with
 //! the filesystem itself as the catalog
-//! ([`ops-I7`](../../../website/content/operations.md)).
+//! ([`ops-I7`](../../../web/src/content/operations.mdx)).
 //!
 //! [`error::CatalogError`] is the lifecycle's error type, and it is *this*
 //! crate's rather than the seam's: a sidecar path, a held root lock and a
@@ -15,7 +15,7 @@
 //! [`StoreError`](fjord_store::error::StoreError) so a seam fault still bubbles
 //! through one `?`.
 //!
-//! Design of record: [chapter 3](../../../website/content/storage.md).
+//! Design of record: [chapter 3](../../../web/src/content/storage.mdx).
 
 pub mod catalog;
 pub mod error;

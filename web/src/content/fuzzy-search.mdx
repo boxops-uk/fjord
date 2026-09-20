@@ -1,7 +1,7 @@
----
-title: Fuzzy search, step by step
-description: A gentle, executable walkthrough of the Levenshtein DFA — its rows, transitions, accepting and dead states — then where a fuzzy match may sit in a query, what it refuses, and what guiding a seek actually saves.
----
+export const meta = {
+  "title": "Fuzzy search, step by step",
+  "description": "A gentle, executable walkthrough of the Levenshtein DFA — its rows, transitions, accepting and dead states — then where a fuzzy match may sit in a query, what it refuses, and what guiding a seek actually saves."
+}
 
 Fuzzy search answers a small question: **is this stored string within a chosen number of
 single-character edits of my term?** In sigla, `"parse"~1` allows one insertion, deletion,
@@ -22,9 +22,7 @@ The allowed distance here is one, so the row is **capped at two**. Two means “
 once a cost is outside the limit, its exact size cannot change any decision the automaton
 makes. Capping is what gives the machine a finite number of possible states.
 
-:::demo dfa
-{"term":"cat","candidate":"c","distance":1}
-:::
+<Demo kind="dfa">{`{"term":"cat","candidate":"c","distance":1}`}</Demo>
 
 ## 2. Consume one character at a time
 
@@ -36,9 +34,7 @@ Step through `cat`. Watch the zero move diagonally across the row as each candid
 matches the next term character. The final cell is the distance to the **whole** term. When it
 is at most the limit, the current prefix is an accepting state.
 
-:::demo dfa
-{"term":"cat","candidate":"cat","distance":1}
-:::
+<Demo kind="dfa">{`{"term":"cat","candidate":"cat","distance":1}`}</Demo>
 
 This is deterministic: a row plus the next character has only one possible next row. The row
 contains everything the machine needs to know about the prefix already consumed; it never
@@ -49,23 +45,17 @@ needs the earlier rows again.
 A substitution appears when the candidate takes a different character at the same position.
 Here `u` replaces `a`. The walk still ends at distance one, so `cut` is accepted for `cat~1`.
 
-:::demo dfa
-{"term":"cat","candidate":"cut","distance":1}
-:::
+<Demo kind="dfa">{`{"term":"cat","candidate":"cut","distance":1}`}</Demo>
 
 An insertion is one extra candidate character. The cheapest path holds its place in the term
 while it consumes that character; the later matching characters can then carry on.
 
-:::demo dfa
-{"term":"cat","candidate":"cart","distance":1}
-:::
+<Demo kind="dfa">{`{"term":"cat","candidate":"cart","distance":1}`}</Demo>
 
 A deletion is the mirror image: the candidate omits a term character. The row can advance
 through that term character without consuming another candidate character.
 
-:::demo dfa
-{"term":"cat","candidate":"ct","distance":1}
-:::
+<Demo kind="dfa">{`{"term":"cat","candidate":"ct","distance":1}`}</Demo>
 
 There are not three special-case matchers. The minimum used to build every cell accounts for
 all three edits at once, including combinations when the allowed distance is two or three.
@@ -80,9 +70,7 @@ Walk `zzzz` until the demonstration stops. After `zz`, every cell is beyond one 
 suffix can undo those differences, so the state is dead. The remaining characters are not
 read because a dead state can never become live again.
 
-:::demo dfa
-{"term":"cat","candidate":"zzzz","distance":1}
-:::
+<Demo kind="dfa">{`{"term":"cat","candidate":"zzzz","distance":1}`}</Demo>
 
 That is more than an early rejection. Stored strings are in key order, so all keys beginning
 with the same dead prefix sit together. The executor can seek past that whole band and reopen
@@ -105,9 +93,7 @@ Walk `cattle` against `cat~<1` and watch it stop early. `ca` is one edit from `c
 answer is settled three characters in — and it settles for `cattle`, `catalogue` and
 `cathedral` alike, because every extension of a matching prefix matches too.
 
-:::demo dfa
-{"term":"cat","candidate":"cattle","distance":1,"anchored":true}
-:::
+<Demo kind="dfa">{`{"term":"cat","candidate":"cattle","distance":1,"anchored":true}`}</Demo>
 
 That last sentence is the load-bearing one. Under `~` a longer key eventually goes dead and
 the executor seeks past the band; under `~<` a longer key is an *answer*, so once a prefix
@@ -129,13 +115,9 @@ A fuzzy pattern can guide storage only when it reaches the next string field in 
 In this schema, `search.Name` has one string key field, so the compiler places a **guided**
 access in the plan. Change the term or distance and the real compiler replans it immediately.
 
-:::demo plan
-schema search {
+<Demo kind="plan" schema={`schema search {
   predicate Name : string
-}
----
-N where search.Name N; N = "parse"~1
-:::
+}`}>{`N where search.Name N; N = "parse"~1`}</Demo>
 
 Results still arrive in stored key order, not ranked by edit distance. The DFA decides which
 parts of that order may contain answers; it is not a scoring or sorting stage. An ordinary
@@ -153,9 +135,7 @@ descends into a second tier: each click advances one DFA transition while the ou
 paused. After the last character, the DFA returns its accept-or-reject decision and the transport
 continues through executor transitions. The two counters always say which machine is moving.
 
-:::demo run guided
-N where code.Decl {file = _, name = N, line = _}; N = "parse"~1
-:::
+<Demo kind="run" guided>{`N where code.Decl {file = _, name = N, line = _}; N = "parse"~1`}</Demo>
 
 The distinction is physical, not semantic. A guide and a residual answer the same fuzzy
 question; a guide can additionally avoid reading key ranges that its dead states prove cannot
@@ -277,7 +257,8 @@ A hop is a re-opened scan, and it is not free: roughly ten rows' worth on fjall.
 pays where the dead bands are wide, which is the usual case for a long term at a small
 distance, and pays least where an anchor has already done the narrowing.
 
-:::note What the guarantee actually is
+<Callout tone="note" label={`What the guarantee actually is`}>
+
 `doubling_the_predicate_does_not_double_the_rows_examined` is the guard: as the predicate
 grows 46 k → 228 k, the filtered scan grows with it and the guided count moves 40 → 47. A
 guided source that answered correctly by reading the whole predicate would pass every other
@@ -285,7 +266,8 @@ test in the tree and be worthless, so that property is the one the feature is he
 `…_when_anchored` is its twin, and there is a second one for `~<` alone:
 `a_guided_prefix_seek_never_seeks_past_an_accepting_prefix` reads a band of two hundred keys
 that all match and asserts the scan was opened **once**.
-:::
+
+</Callout>
 
 ## 10. Stop and resume without storing DFA state
 
@@ -297,9 +279,7 @@ and consumed characters, so the cursor format needs no fuzzy-search exception.
 Use the same run again, moving backwards as well as forwards. The executor reconstruction, DFA
 table, and explanation follow the trace rather than relying on a hidden live iterator.
 
-:::demo run guided
-N where code.Decl {file = _, name = N, line = _}; N = "parse"~1
-:::
+<Demo kind="run" guided>{`N where code.Decl {file = _, name = N, line = _}; N = "parse"~1`}</Demo>
 
 So a guided source takes the same cursor entry a plain seek takes, is a witness for a negation
 exactly as a seek is, and nothing downstream of the row can tell the two apart. That is the

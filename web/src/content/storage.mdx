@@ -1,7 +1,7 @@
----
-title: Storage model
-description: Two column families, one keyspace per predicate, an order-preserving codec, snowflake fact ids, the atomic two-map write, and how a nested reference becomes an id.
----
+export const meta = {
+  "title": "Storage model",
+  "description": "Two column families, one keyspace per predicate, an order-preserving codec, snowflake fact ids, the atomic two-map write, and how a nested reference becomes an id."
+}
 
 Fjord stores every fact twice, in two sorted key–value maps, and the split is the reason
 queries are fast at what they are fast at.
@@ -72,13 +72,15 @@ Splitting `entities` is possible **only** because a fact id carries its predicat
 is handed a bare id and no predicate, so an untagged id would turn identity lookup into a
 search across every tree.
 
-:::note What it costs
+<Callout tone="note" label={`What it costs`}>
+
 Creating a keyspace costs about **30 ms** (directory create plus fsyncs), so `create`
 materialises every predicate's trees up front from the schema rather than lazily — a
 twenty-seven-predicate schema is a measurable but one-off cost at create, not a surprise on
 first write. The split also means memtable budgets are per tree rather than global, which is
 an obligation the design records rather than a free win.
-:::
+
+</Callout>
 
 ## The tuple codec
 
@@ -119,9 +121,7 @@ Every stored key of a whole database, in the order a scan meets them, as bytes a
 The claim above is checkable here: read down the hex column and it ascends, and read down the
 decoded column beside it and the values ascend in the same order.
 
-:::demo store
-P where code.File P; P = "src/"..
-:::
+<Demo kind="store">{`P where code.File P; P = "src/"..`}</Demo>
 
 Step it and the range being walked is shaded across the rows. `"src/"..` is a prefix, so the
 band starts inside the predicate rather than at its first row — the range is bytes, and the
@@ -219,11 +219,13 @@ A fact reference has its **own** fixed-width marker rather than sharing the inte
 so a value's bytes are self-describing without the schema and the `Int`/`Fact` distinction is
 enforced at the byte level.
 
-:::warn Every value marker stays below `MARK_ESCAPE`
+<Callout tone="warn" label={`Every value marker stays below \`MARK_ESCAPE\``}>
+
 That is why the reserved band stops at `0xFE`. A new type numbered `0xFF` would silently
 invert string ordering across a record boundary — so the ceiling is part of what I3 freezes,
 not a spare byte.
-:::
+
+</Callout>
 
 For a future **container** type, the reserved band is not the whole decision: length-prefixed
 or terminator-delimited is a choice *inside* the encoding, and a length-prefixed array cannot
@@ -336,13 +338,15 @@ critical sections run strictly leaf-then-parent and are never nested — it hold
 stripe, releases it, then takes the parent's. The property that makes interning total is the
 property that makes it parallelisable.
 
-:::warn Per-key exclusion is the weakest thing that works
+<Callout tone="warn" label={`Per-key exclusion is the weakest thing that works`}>
+
 A lock-free compare-and-swap on the `keys` tree would **not** be enough, and neither would
 anything that lets a resolve proceed without excluding the writer of the same key. A write
 batch is atomic on recovery but **not isolated** from a concurrent reader: a reader can see the
 `keys` insert before the `entities` insert of the same batch. With one writer that question
 never arose. So the stripe is held across the read *and* the commit.
-:::
+
+</Callout>
 
 The guard is `store::concurrent_interning_of_one_key_creates_one_fact` — N threads racing on
 one key, one id handed to all of them, the bijection intact. Single-threaded, the striping

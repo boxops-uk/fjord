@@ -1,7 +1,7 @@
----
-title: Operations
-description: The lifecycle, the ten operational invariants, ownership and locking, deployment shapes, and the operational gaps this design names rather than hides.
----
+export const meta = {
+  "title": "Operations",
+  "description": "The lifecycle, the ten operational invariants, ownership and locking, deployment shapes, and the operational gaps this design names rather than hides."
+}
 
 Operational rules live in their own namespace — always written `ops-Ix`, never confused with the
 engine invariants. Individual commands reference them by number.
@@ -101,11 +101,13 @@ So after sealing:
   journal included. Not a logical fact count, and not a promise about later: it is measured after
   the final fsync, which is the only moment the number is both honest and stable.
 
-:::warn Never remove a `*.jnl` from a sealed directory
+<Callout tone="warn" label={`Never remove a \`*.jnl\` from a sealed directory`}>
+
 Not as a tidy-up and not behind a flag. Recovery is the backend's, and a database whose journal
 was deleted from underneath it has an undefined next open. If the residual matters for your
 packaging, copy the tables and re-ingest, or wait on the upstream request §20 names.
-:::
+
+</Callout>
 
 ## Running a server
 

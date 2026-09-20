@@ -1,7 +1,7 @@
----
-title: Building from source
-description: The workspace, the build and test commands, the generated grammar, the .NET client, and what each crate is for.
----
+export const meta = {
+  "title": "Building from source",
+  "description": "The workspace, the build and test commands, the generated grammar, the .NET client, and what each crate is for."
+}
 
 Fjord is a Cargo workspace. There is no build system on top of it, no code generation
 step you have to run by hand, and no vendored C.
@@ -24,13 +24,15 @@ cargo fmt --all
 narrowing to one package as crates are extracted would be a ledger that had stopped
 counting.
 
-:::note The coverage ledger
+<Callout tone="note" label={`The coverage ledger`}>
+
 `cargo test -- --ignored --list` prints every test that is written but not yet live.
 `scripts/check-guards.py` separates guards from test machinery and checks the exact names,
 claims and owners against an independent manifest. The ledger currently holds **seventeen**
 pending guards. Work that touches one is finished only when it is implemented, un-ignored
 and green. See [Testing method](testing.html).
-:::
+
+</Callout>
 
 ### Generated code
 
@@ -166,20 +168,20 @@ fjord/
 ├── PLAN.md              the roadmap, and the record of settled decisions
 ├── wasm/                the WebAssembly shell — its own workspace, built by
 │                       scripts/build-wasm.sh, never by a cargo build at the root
-├── web/                 the interactive site: the book with the engine running in it,
-│                       and the copy that publishes
-└── website/             the book's pages, and the generator that needs no toolchain
+└── web/                 the interactive site: this book, with the engine running in it,
+                        its pages under web/src/content/
 ```
 
-**This book is the design of record.** The pages are ordinary Markdown under
-`website/content/`, and two renderers read them: `website/build.py`, whose output needs no
-toolchain to read, and `web/`, which parses the same files and runs the engine inside them.
-CI builds both, the generated one with `--strict`, so a page falling out of the nav is a
-failed check rather than a silent loss — and the two are compared page for page, because a
-dialect that drifts is a page that reads differently depending on which copy you found.
+**This book is the design of record.** Each page is one MDX file under `web/src/content/`,
+compiled into the site like any other module: prose where prose is enough, and a component
+where it is not — so a diagram is drawn with the browser rather than described in dashes,
+and a demo is the engine rather than a picture of its output. The smoke check counts every
+block a page's source writes against the blocks the built page shows, because the way a
+component mapping breaks is silent: a table whose wrapper goes missing is six paragraphs
+that still read fine.
 
 **What publishes is `web/`.** Every push to main deploys that bundle to
-<https://boxops-uk.github.io/fjord/> — after the suite, the drift gate, and the bundle being
+[https://boxops-uk.github.io/fjord/](https://boxops-uk.github.io/fjord/) — after the suite, the drift gate, and the bundle being
 driven in a real browser — and every release carries it as `fjord-docs-site.tar.gz`, attested
 like the binaries. A page there is a path, and the bundle carries a document per route —
 `storage.html` and `storage/index.html` — so a static host answers a page with the page and

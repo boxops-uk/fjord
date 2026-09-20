@@ -36,10 +36,6 @@
 #           static file server can serve, attested like the binaries. The bundle is
 #           uploaded on every run and attached to releases.
 #
-#           The generated site (`website/build.py`) is still built here, because the
-#           smoke check compares the two renderers page for page; what publishes is
-#           the bundle.
-#
 #   pages   publishes main's site to GitHub Pages, and only main's: a pull request or
 #           a release branch never moves the public docs. Runs after `test`, so a red
 #           suite or a failed drift gate never publishes.
@@ -244,11 +240,6 @@ jobs:
       # the check that fails if `resolve_from` ever reaches `FsSources`.
       - name: A schema resolves with no filesystem
         run: cargo check -p fjord-schema --no-default-features --target wasm32-unknown-unknown --locked
-      # The website is the design book. `--strict` turns the generator's own
-      # warnings — a page missing from the nav, a nav entry with no page — into a
-      # failure, so the book cannot silently lose a page.
-      - name: Website builds clean
-        run: python3 website/build.py --strict
       # The drift gate: site links and anchors resolve, invariant citations in the
       # crates resolve to the registry, nothing references a retired doc, no
       # build-plan phase number survives in code or the book, and nothing describes a
@@ -415,12 +406,6 @@ jobs:
       - name: Lint
         run: npm run lint
         working-directory: web
-      # **The other renderer**, built here because the smoke check reads it: it compares
-      # the two page for page — headings, tables, code blocks, callouts and demos — and
-      # the two parsers are in different languages, so nothing but that check keeps the
-      # dialects together. `--strict` again for the same reason `test` uses it.
-      - name: The generated site, for the two-renderer comparison
-        run: python3 website/build.py --strict
       # **The bundle, driven in a real browser before it ships.** A unit test here would
       # mock the one thing worth checking — that a module built from the engine loads
       # under a browser's own loader and answers what the host suite says it answers —

@@ -10,11 +10,11 @@ book, not here.
 
 | What | Where |
 |---|---|
-| **The design book** (for humans — architecture, rationale, reference) | [`website/content/`](website/README.md) — the pages. What **publishes** at <https://boxops-uk.github.io/fjord/> on every push to main is the interactive site, [`web/`](web/README.md); `python3 website/serve.py` browses the generated copy, which needs no toolchain. The reading order is [`website/nav.json`](website/nav.json), read by both |
-| **The invariant registry** (statement · why · guard · status) | [`website/content/invariants.md`](website/content/invariants.md) — know these by number |
+| **The design book** (for humans — architecture, rationale, reference) | [`web/src/content/`](web/src/content/) — one MDX page each, compiled into the interactive site [`web/`](web/README.md), which **publishes** at <https://boxops-uk.github.io/fjord/> on every push to main. The reading order is [`web/src/content/nav.json`](web/src/content/nav.json) |
+| **The invariant registry** (statement · why · guard · status) | [`web/src/content/invariants.mdx`](web/src/content/invariants.mdx) — know these by number |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | What a code-intelligence product could ship on this — read **before claiming a question is or is not answerable** | [`docs/gitnexus.md`](docs/gitnexus.md) |
-| What was measured, and the method — the register is **closed until a 1.0 pass**; cite it for a lesson, never for a current figure | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](website/content/performance.md) |
+| What was measured, and the method — the register is **closed until a 1.0 pass**; cite it for a lesson, never for a current figure | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](web/src/content/performance.mdx) |
 | A plan too long to live in `PLAN.md` — one file per issue, tracked so that a plan under review is reviewable | [`scratchpad/`](scratchpad/) — **the current revision only**; a superseded one is deleted, not kept beside it |
 
 ## Module map — a workspace, bottom to top
@@ -53,10 +53,11 @@ of its own crate.
 a `cdylib` that only builds for `wasm32-unknown-unknown`; as a workspace member
 it would break `cargo build` on the host and quietly narrow the coverage ledger.
 It is built by `scripts/build-wasm.sh` and consumed by `web/`, the interactive
-site — both consumers of the tree, in the way `clients/dotnet` is. `web/` renders
-**the same pages** `website/` generates, parsed from `website/content/` rather
-than copied, with `:::demo` blocks that run the engine; its smoke check compares
-the two renderers page for page. It is the bundle CI publishes, and a page here
+site — both consumers of the tree, in the way `clients/dotnet` is. `web/` **is**
+the design book: `src/content/` holds one MDX page each, compiled into the
+application, with `<Demo>` elements that run the engine; its smoke check counts
+every block the source writes against the blocks the page shows. It is the
+bundle CI publishes, and a page here
 is a *path*, so the base it is served from is compiled in — `SITE_BASE`, which
 the `site` job sets from the repository's name for the Pages copy and leaves at
 `/` for the tarball a release carries. Its components are Astryx
@@ -111,7 +112,6 @@ python3 -m unittest scripts/test_check_exhaustive.py  # the exhaustiveness probe
 python3 -m unittest scripts/test_check_docs.py    # the drift gate's mutation controls
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
-python3 website/build.py --strict   # the design book builds clean (CI runs this)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps \
   -p fjord-schema -p fjord-wire -p fjord-client -p fjord-db   # the published crates' rustdoc
 
@@ -170,7 +170,7 @@ the present risk — what would go wrong and why it would be invisible — never
 how the code got here. Everything else the code, the tests or the book should say.
 
 - **Keep:** the risk a guard protects ("reading X here would silently Y"), and citations of
-  invariants by number, linking the [registry](website/content/invariants.md).
+  invariants by number, linking the [registry](web/src/content/invariants.mdx).
 - **Don't write:** narrative ("this used to…", "at first we…"), design essays, comparisons to
   other systems, or references to build phases — design rationale belongs in the book,
   history belongs in git.
@@ -261,7 +261,7 @@ Distilled from what actually went wrong; the book carries each in full.
 
 ## Testing method (the distilled version)
 
-The full method is [testing](website/content/testing.md); the parts that shape a change:
+The full method is [testing](web/src/content/testing.mdx); the parts that shape a change:
 
 - **Generators are a first-class, co-owned artifact.** Every domain type owns a canonical
   strategy in a `proptest` support module (`tuple::proptest`, `plan::proptest`,
@@ -289,7 +289,7 @@ The full method is [testing](website/content/testing.md); the parts that shape a
 Server-side rulesets, no bypass actors — they apply to admins too. **Enforced:** signed
 commits everywhere; no force-push; linear history, PR-required, no deletion on `main` and
 `release/*`; the `test` check (pinned-toolchain fmt + clippy, the suite, the ledger, the
-website building clean) and the `build` check gate those branches; `attest` gates
+drift gate) and the `build` check gate those branches; `attest` gates
 `release/*`; tags cannot be re-pointed, `v*` tags cannot be deleted. Merges are squash or
 rebase only. `GITHUB_TOKEN` is read-only and workflows may not approve PRs.
 

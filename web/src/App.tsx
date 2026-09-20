@@ -1,7 +1,7 @@
 import { Theme } from '@astryxdesign/core/theme'
 import { Layout } from './book/Layout'
 import { PageView } from './book/PageView'
-import { rendered } from './book/content'
+import { toc } from './book/content'
 import { useMode } from './book/mode'
 import { slugOf, useLocation } from './book/router'
 import { Browse } from './Browse'
@@ -30,7 +30,7 @@ export default function App() {
           {slug === 'browse' ? <Browse /> : <Playground />}
         </Layout>
       ) : (
-        <Layout slug={slug} toc={rendered(slug)?.toc ?? []} onToggleMode={toggle}>
+        <Layout slug={slug} toc={toc(slug)} onToggleMode={toggle}>
           <PageView slug={slug} hash={hash} />
         </Layout>
       )}

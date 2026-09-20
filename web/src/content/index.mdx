@@ -1,7 +1,7 @@
----
-title: Fjord DB
-description: A database of facts about code. Index once, seal the result, then ask it questions in a small typed query language — from a file you can copy anywhere.
----
+export const meta = {
+  "title": "Fjord DB",
+  "description": "A database of facts about code. Index once, seal the result, then ask it questions in a small typed query language — from a file you can copy anywhere."
+}
 
 Fjord DB stores **facts**: small typed records, like *`Crc32` is declared in `Crc32.cs`, at
 line 7*. You describe the shape of your facts once, write them in, and then seal the
@@ -13,15 +13,17 @@ for is a **code index** — files, declarations, references, the build graph: ev
 behind *go to definition* and *find all references*. That is what the sample schema
 describes, and what every number in this book was measured against.
 
-<div class="cards">
-  <a class="card" href="getting-started.html"><b>Getting started →</b>
+<div className="authored">
+<div className="cards">
+  <a className="card" href="getting-started.html"><b>Getting started →</b>
     <span>Build the binaries, create a database, serve it, ask it something.</span></a>
-  <a class="card" href="walkthrough.html"><b>A guided tour →</b>
+  <a className="card" href="walkthrough.html"><b>A guided tour →</b>
     <span>A real session, end to end, with the output it actually printed.</span></a>
-  <a class="card" href="concepts.html"><b>Concepts →</b>
+  <a className="card" href="concepts.html"><b>Concepts →</b>
     <span>Facts, predicates, keys and values — the model, in one page.</span></a>
-  <a class="card" href="query-language.html"><b>sigla reference →</b>
+  <a className="card" href="query-language.html"><b>sigla reference →</b>
     <span>Every construct the language has, with the rows each one returns.</span></a>
+</div>
 </div>
 
 ## The idea, in three parts
@@ -90,9 +92,7 @@ them. Ask for those references to be expanded and you get the people themselves:
 The engine that answers a query like that is compiled to WebAssembly and running here, over
 a small code index: four files, seven declarations, and the references between them.
 
-:::demo run guided
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
+<Demo kind="run" guided>{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
 Every demo in this book is that engine — not a recording, and not a JavaScript imitation.
 This walkthrough keeps its query fixed so each transition can explain itself; open it in the
@@ -100,31 +100,35 @@ playground to edit the query and explore everything the engine exposes.
 
 ## What is built
 
-:::note Status
+<Callout tone="note" label={`Status`}>
+
 The engine, the storage layer, the language, the wire protocol, the server, the client,
 the CLI and the shell are **built and guarded**. Ingestion from **files** and **stored
 derivation** are not, and the code-search viewer is retired — what replaces it is a browser
 application ([clients](clients.html#the-viewer)). [Status & roadmap](status.html) has the
 honest list.
-:::
 
+</Callout>
+
+<div className="authored">
 <p>
-<span class="pill ok">codec</span>
-<span class="pill ok">executor + resume</span>
-<span class="pill ok">fjall store</span>
-<span class="pill ok">sigla front end</span>
-<span class="pill ok">fuzzy search</span>
-<span class="pill ok">fuzzy prefix search</span>
-<span class="pill ok">schema DSL</span>
-<span class="pill ok">union types</span>
-<span class="pill ok">wire protocol</span>
-<span class="pill ok">server + client</span>
-<span class="pill ok">CLI + shell</span>
-<span class="pill ok">parallel ingest</span>
-<span class="pill ok">JSONL in and out</span>
-<span class="pill todo">bulk file ingestion</span>
-<span class="pill todo">stored derivation</span>
+<span className="pill ok">codec</span>
+<span className="pill ok">executor + resume</span>
+<span className="pill ok">fjall store</span>
+<span className="pill ok">sigla front end</span>
+<span className="pill ok">fuzzy search</span>
+<span className="pill ok">fuzzy prefix search</span>
+<span className="pill ok">schema DSL</span>
+<span className="pill ok">union types</span>
+<span className="pill ok">wire protocol</span>
+<span className="pill ok">server + client</span>
+<span className="pill ok">CLI + shell</span>
+<span className="pill ok">parallel ingest</span>
+<span className="pill ok">JSONL in and out</span>
+<span className="pill todo">bulk file ingestion</span>
+<span className="pill todo">stored derivation</span>
 </p>
+</div>
 
 ## Where to go next
 
@@ -144,8 +148,10 @@ honest list.
   carries `fjord` with SLSA provenance — dynamically linked for glibc 2.34 and newer,
   statically linked beside it for anything older — and this site as a bundle.
 
-:::note About these docs
+<Callout tone="note" label={`About these docs`}>
+
 This site **is** the Fjord design book — the design of record, including the invariant
 registry. Where it says something is built, the repository has a test that says so; where
 something is not built, it is listed as not built rather than described as if it were.
-:::
+
+</Callout>

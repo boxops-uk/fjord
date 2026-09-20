@@ -1,7 +1,7 @@
 //! **The run, one transition at a time** — the whole of it, in one answer.
 //!
 //! The executor is a defunctionalised state machine
-//! ([I7](../../../website/content/invariants.md#i7)): `depth`, a stack of
+//! ([I7](../../../web/src/content/invariants.mdx#i7)): `depth`, a stack of
 //! frames, and a loop whose every iteration is exactly one transition. So a
 //! debugger is not a second interpreter — it is that loop, driven a step at a
 //! time, with the machine's own state read between steps.

@@ -9,10 +9,10 @@
 //! rather than a compiled DFA. Three consequences, and each is load-bearing:
 //!
 //! - It is a fixed-size `Copy` value, so a transition allocates nothing
-//!   ([I9](../../../website/content/invariants.md#i9)).
+//!   ([I9](../../../web/src/content/invariants.mdx#i9)).
 //! - It is **re-entrant at any string** — replay the candidate from
 //!   [`Automaton::start`] — which is the whole of why a guided scan needs no
-//!   cursor state of its own ([I4](../../../website/content/invariants.md#i4)).
+//!   cursor state of its own ([I4](../../../web/src/content/invariants.mdx#i4)).
 //! - There is no per-query construction cost to repay, which matters because a
 //!   query answering three rows would never repay one.
 //!
@@ -254,7 +254,7 @@ impl Automaton {
     /// [`live`](Self::live) has already stopped the walk.
     ///
     /// Allocates nothing: [`State`] is a fixed-size `Copy` value
-    /// ([I9](../../../website/content/invariants.md#i9)).
+    /// ([I9](../../../web/src/content/invariants.mdx#i9)).
     pub fn matches<E>(&self, candidate: impl Iterator<Item = Result<char, E>>) -> Result<bool, E> {
         let mut state = self.start();
 
@@ -294,7 +294,7 @@ impl Automaton {
     /// stops it drifting into a silent refusal.
     ///
     /// Allocates nothing: [`State`] is a fixed-size `Copy` value
-    /// ([I9](../../../website/content/invariants.md#i9)).
+    /// ([I9](../../../web/src/content/invariants.mdx#i9)).
     pub fn matches_prefix<E>(
         &self,
         candidate: impl Iterator<Item = Result<char, E>>,
@@ -371,7 +371,7 @@ fn next_scalar(c: char) -> Option<char> {
 /// against one term wants [`Automaton::matches`] instead, which is this without
 /// the per-candidate build — the executor holds its automaton for the life of the
 /// level precisely so a rejected row allocates nothing
-/// ([I9](../../../website/content/invariants.md#i9)).
+/// ([I9](../../../web/src/content/invariants.mdx#i9)).
 ///
 /// **A term the automaton will not build for is no match**, rather than a wrong
 /// answer. Both real paths refuse such a term by name long before this — the

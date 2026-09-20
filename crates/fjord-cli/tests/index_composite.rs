@@ -13,7 +13,7 @@
 //! leave the database that issued it ([I11]). Both are expressible here with no new
 //! mechanism, and "expressible" means rows rather than a plan.
 //!
-//! [I11]: ../../../website/content/invariants.md#i11
+//! [I11]: ../../../web/src/content/invariants.mdx#i11
 
 use std::sync::Arc;
 

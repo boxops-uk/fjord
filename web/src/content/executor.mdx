@@ -1,7 +1,7 @@
----
-title: Executor & resume
-description: The plan IR, the register file, the frame stack, the one driver loop — and the bytes-only cursor that lets a query stop and pick up exactly where it left off.
----
+export const meta = {
+  "title": "Executor & resume",
+  "description": "The plan IR, the register file, the frame stack, the one driver loop — and the bytes-only cursor that lets a query stop and pick up exactly where it left off."
+}
 
 The back end is small on purpose: one plan shape, one driver loop, three step kinds, and a
 resume token that fits in a socket.
@@ -38,12 +38,14 @@ A query **is** a nested loop, and the order of `body` is the loop nesting. It is
 sequence because `reorder` produces one order; two collections joined by an index would be two
 sources of truth for one ordering with nothing to say which wins.
 
-:::warn `body.len()` is not the number of loops
+<Callout tone="warn" label={`\`body.len()\` is not the number of loops`}>
+
 It counts *steps*. `Plan::levels()` counts loop levels, and a `Cursor` holds one row per
 **level**. The two were the same number before derive steps existed, and the cursor's length
 check said `>` rather than `!=` as a result — which let a short cursor half-replay a plan and
 carry on from the wrong place.
-:::
+
+</Callout>
 
 ### The count is the construct
 
@@ -126,9 +128,7 @@ row be unable to tell the difference.
 A seek and a scan side by side: the outer level here seeks, because the leading key field is
 a constant, and the inner one filters what it reads. The badges on each step say which.
 
-:::demo plan
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
+<Demo kind="plan">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
 ### A test is not a level
 
@@ -147,12 +147,14 @@ Neither of its outcomes is new to the machine: passing is ascending with the reg
 untouched, failing is the same backtrack an exhausted level does. That is why it needed no new
 frame kind and no new direction.
 
-:::note The architectural rule that keeps this small
+<Callout tone="note" label={`The architectural rule that keeps this small`}>
+
 A new construct may add a `Source`, a `Test`, a residual operator or a computed-value arm. **It
 may not add a `Step`.** A step is a case in the driver *and* a case in the cursor *and* an
 obligation to re-prove that resume is exact — and "additive" has never been true of one. A test
 asserting `Step` has exactly three variants is the cheapest guard in the project.
-:::
+
+</Callout>
 
 ### Fetching through a reference
 
@@ -235,14 +237,16 @@ encodings and quietly matches nothing. Reading a slot names the kind it wants, a
 is a reported error rather than a panic: flatten cannot emit one, but a plan arriving off the
 wire can.
 
-:::invariant I5 — a register holds the whole row
+<Callout tone="invariant" label={`I5 — a register holds the whole row`}>
+
 The *field* a variable denotes lives in the **plan**, not the register. So a generator binding
 N variables is N refcount bumps on the same row — no per-field decode at bind time. Fields
 decode lazily, at read and projection sites only.
 
 *Guard:* `exec::bind_is_refcount_not_decode` — a decode-counting probe asserts that binding N
 variables triggers zero field decodes.
-:::
+
+</Callout>
 
 Why it must be that way: at bind time you do not yet know which fields will be read. A row may
 be bound and then discarded when an inner loop finds no match, so decoding eagerly does work
@@ -257,14 +261,16 @@ access to field *k* walks `0..=k` and caches the boundaries, later accesses are 
 fields beyond the cache's capacity are walked on demand and not cached. It never spills to the
 heap.
 
-:::invariant I9 — the hot path is allocation-free per row
+<Callout tone="invariant" label={`I9 — the hot path is allocation-free per row`}>
+
 Reused scratch buffers, refcount-bump clones, inline offset caches that never spill. Copy out
 only at escape boundaries: a suspend, and a string or bytes projection.
 
 *Guard:* `exec::scan_is_alloc_free_per_row` — a counting global allocator asserts that scanning
 N and 2N rows allocates the same **count and bytes**. A positive control proves the allocator is
 actually linked, so a broken dev-dependency cannot make the guard pass vacuously.
-:::
+
+</Callout>
 
 The honest caveat the project records with it: that guard runs a **single-level** plan. Opening
 a level allocates — a fresh prefix buffer, an upper bound, a new store scan — so a *join*
@@ -318,13 +324,12 @@ One transition per click. `depth` moves down as a level opens and up as one drai
 registers hold the rows the machine is standing on, and a yield is a row leaving the machine
 — the same loop, driven by hand:
 
-:::demo run guided
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
+<Demo kind="run" guided>{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
 ### Why a state machine and not recursion
 
-:::invariant I7 — the executor is a defunctionalised state machine, on purpose
+<Callout tone="invariant" label={`I7 — the executor is a defunctionalised state machine, on purpose`}>
+
 The driver plus the frame stack are the explicit reification of a recursive `concatMap`, chosen
 so that **execution can suspend to bytes**. Native recursion, closures and coroutines cannot: a
 suspended closure pins live iterators and a snapshot. Do not "simplify" the driver back into
@@ -332,7 +337,8 @@ recursion.
 
 *Guard:* structural — enforced by the resume battery (byte-resume is impossible under a
 recursive rewrite) plus review.
-:::
+
+</Callout>
 
 "Defunctionalised" means what a recursive implementation would keep on the *call stack* — the
 continuation, where each nested loop had got to — is instead an explicit **data structure**.
@@ -384,12 +390,14 @@ pointer beyond the fingerprint, no snapshot — nothing a socket could not carry
 - An entry says **which source** produced the row, because that is not recoverable from the
   row: alternatives can overlap, and the sources after the live one have not run yet.
 
-:::note The recompute rule
+<Callout tone="note" label={`The recompute rule`}>
+
 In an immutable database a store read is a pure function of its inputs, so anything determined
 by the bindings and the frozen base may be **recomputed on restore instead of saved**. Derived
 binds are the special case that named it; a fetch by fact id and a filter's verdict are the
 rest. What the cursor holds is what a *scan* cannot recompute: its position.
-:::
+
+</Callout>
 
 ### The token says which run it belongs to
 
@@ -482,7 +490,8 @@ are read by locking every interning stripe in turn and thrash on every write —
 that crosses requests over it is refused by name (`VolatileResume`) rather than validated
 against a digest that would always disagree.
 
-:::invariant I4 — resume equals an uninterrupted run
+<Callout tone="invariant" label={`I4 — resume equals an uninterrupted run`}>
+
 Resuming from a cursor produces exactly the rows, in exactly the order, that an uninterrupted
 run would have.
 
@@ -490,15 +499,18 @@ run would have.
 over generated `(plan, store)` pairs **and a generated interruption schedule**: suspend at every
 boundary, in every combination, and compare against a run to completion. Green on both the
 in-memory store and the real one, where the two must also agree row for row and id for id.
-:::
 
-:::invariant I8 — the snapshot is released at suspend
+</Callout>
+
+<Callout tone="invariant" label={`I8 — the snapshot is released at suspend`}>
+
 A query reads an immutable snapshot, and every stop — suspend, cancel, terminal unwind —
 releases it. A paused query never holds storage open.
 
 *Guard:* `i8_snapshot::snapshot_released_at_suspend`, which cross-checks a drop probe against
 the storage engine's own count of open snapshots.
-:::
+
+</Callout>
 
 ## Suspend, cancel, unwind — three different things
 
@@ -517,14 +529,16 @@ handing back a resumable position, because a cursor of one row per level has no 
 represent a mid-descent position. A resumable time slice needs that extra bit plus a fresh
 proof that resuming from it is exact.
 
-:::note Why resume owns a battery and not a review rule
+<Callout tone="note" label={`Why resume owns a battery and not a review rule`}>
+
 Resume bugs are the archetypal invisible bug: happy paths pass, and only one exact
 suspend-at-this-boundary schedule duplicates or skips a row. The reference implementation is
 the argument — Glean's per-query dedup set lives in the executor's stack and is **not** part of
 the continuation, so a paged run and an uninterrupted run can differ observably, in results, in
 production. A property checked at every generated cut point is what catches that class before
 it ships; nothing about it is visible to inspection.
-:::
+
+</Callout>
 
 ## What a run examined, and the most it may
 

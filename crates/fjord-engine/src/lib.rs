@@ -8,9 +8,9 @@
 //! Everything physical is below this crate — the schema, the id, the codec, the
 //! store — so what is left here is a description of a query and a machine that
 //! executes one. Design of record:
-//! [chapter 4](../../../website/content/executor.md) for the machine,
-//! [chapter 5](../../../website/content/executor.md) for resume, and
-//! [chapter 7](../../../website/content/query-language.md) for the compiler.
+//! [chapter 4](../../../web/src/content/executor.mdx) for the machine,
+//! [chapter 5](../../../web/src/content/executor.mdx) for resume, and
+//! [chapter 7](../../../web/src/content/query-language.mdx) for the compiler.
 
 pub mod borrow;
 pub mod budget;
@@ -45,7 +45,7 @@ pub mod parser;
 // Test-support surface: the plan runners the executor batteries import, plus a
 // re-export of the store-shaped half, which lives in `fjord-store`. Gated so
 // `--features proptest` exposes them to consumers outside `cfg(test)` too (see
-// `website/content/testing.md`).
+// `web/src/content/testing.mdx`).
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixtures;
 

@@ -19,7 +19,7 @@ corrected.
 ## The three corrections
 
 **1 · Identical redeclaration across two files rejects, and the book says it does not.**
-`website/content/schema-language.md:227-228`:
+`web/src/content/schema-language.mdx:227-228`:
 
 > - **The real error is genuine redeclaration** — two *different* definitions of one
 >   fully-qualified name, as opposed to the same file reached twice.

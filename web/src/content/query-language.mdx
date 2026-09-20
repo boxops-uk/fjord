@@ -1,7 +1,7 @@
----
-title: sigla query language
-description: Every construct sigla has — patterns, statements, binds, constraints, denials, comparisons, arithmetic, negation, disjunction, subqueries and references — with the rows each one returns.
----
+export const meta = {
+  "title": "sigla query language",
+  "description": "Every construct sigla has — patterns, statements, binds, constraints, denials, comparisons, arithmetic, negation, disjunction, subqueries and references — with the rows each one returns."
+}
 
 sigla is a typed, Datalog-flavoured query language. A query is a **head pattern**, the word
 `where`, and a list of **statements**:
@@ -19,9 +19,7 @@ compiler decides the order.
 The lexer is the first thing that sees a query, and it is lossless: every byte of the source
 is in exactly one token, including the whitespace and the ones it rejects.
 
-:::demo lex
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
+<Demo kind="lex">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
 ## Grammar
 
@@ -148,14 +146,10 @@ that reads a variable the next statement binds is moved rather than refused.
 Both spellings, compiled: the plan below is the same whichever way round the two statements
 are typed, and swapping them in the box is the fastest way to see that.
 
-:::demo plan
-schema test {
+<Demo kind="plan" schema={`schema test {
   predicate Foo : { id : int, name : string } -> string
   predicate Ref : { of : Foo }
-}
----
-P where test.Ref {of = P}; P = test.Foo {id = 1}
-:::
+}`}>{`P where test.Ref {of = P}; P = test.Foo {id = 1}`}</Demo>
 
 ### A bind means one of four things
 
@@ -199,11 +193,13 @@ to narrow, and the same constraint filters instead:
 X where test.Foo {name = X}; X = "a"..       → ann; ann
 ```
 
-:::note This is not a residual you can move
+<Callout tone="note" label={`This is not a residual you can move`}>
+
 Applying a constraint afterwards as a filter would answer the same rows and read the whole
 predicate to find them. The whole point of collecting it before ordering is that the level
 that captures the variable can seek with it.
-:::
+
+</Callout>
 
 ### A fuzzy match: `~`
 
@@ -260,12 +256,14 @@ either may guide a seek or run as a filter depending only on where the field sit
 Where a level carries both, `~` takes the guide — its automaton dies on a long key, so it is
 the one with dead bands to seek past — and `~<` holds as a residual.
 
-:::note A short term matches everything
+<Callout tone="note" label={`A short term matches everything`}>
+
 A term no longer than the distance is within it of the **empty** prefix, and every stored
 string starts with that — so `"a"~<1` answers the whole predicate. That is what the definition
 says rather than an oversight, and it is left legal rather than refused: it is exactly what a
 search box does on the first keystroke. Anchor it with `..`, or type another character.
-:::
+
+</Callout>
 
 ### A denial: `!=`
 
@@ -511,12 +509,14 @@ the fetched fact as an ordinary register from there on. Two reads of one referen
 fetch. A chain of references is a chain of fetches. And because the fetch is an outer level,
 its register can splice into the seek of a level below it.
 
-:::note Why the two stay distinct in the plan
+<Callout tone="note" label={`Why the two stay distinct in the plan`}>
+
 A register holds its own row's key bytes *and* the ids inside them. Splicing key bytes where
 an id belongs compares a key against an id and quietly matches nothing — the characteristic
 bug of this design. The IR keeps `Fetch` and an id compare as different things so that cannot
 be written by accident.
-:::
+
+</Callout>
 
 A row on the way out carries a reference as a `FactId` (`#4:1`). To see the fact it names, ask
 the client to expand it — `query --expand`, `:expand` — which is a protocol question, not a
@@ -582,9 +582,7 @@ prefix open, what closes it, what never seeks, and how to read the difference ba
 Live, against the demo schema — the leading field is a reference, so a constant `file`
 seeks and a constant `name` behind it filters:
 
-:::demo plan
-N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
-:::
+<Demo kind="plan">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
 ## Errors and refusals
 
@@ -630,9 +628,7 @@ Each of those is a code, and each is reachable from here. `code.Nonesuch`, a fie
 predicate does not declare, a comparison between a string and a number — the diagnostic
 comes back with its code and the span it is about:
 
-:::demo types
-N where code.Decl {file = _, name = N, line = L}; L > 15
-:::
+<Demo kind="types">{`N where code.Decl {file = _, name = N, line = L}; L > 15`}</Demo>
 
 ### Not implemented yet
 

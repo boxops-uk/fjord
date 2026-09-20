@@ -1,7 +1,7 @@
----
-title: Schema language
-description: The .sigla schema DSL — blocks, predicates, types, imports, identity and compatibility. Field order is key order, so read that part twice.
----
+export const meta = {
+  "title": "Schema language",
+  "description": "The .sigla schema DSL — blocks, predicates, types, imports, identity and compatibility. Field order is key order, so read that part twice."
+}
 
 A schema is a text file, conventionally `.sigla`. It declares namespaces and the predicates
 in them. A database is created **against** a schema, embeds a canonical copy of it, and is
@@ -31,15 +31,13 @@ Here is one, live: the engine reads it, lowers it, and lists what it declares. B
 rename a type, drop a brace, give two alternatives the same tag — and the diagnostic is the
 one the compiler emits, with the code a test asserts on.
 
-:::demo schema
-schema code {
+<Demo kind="schema">{`schema code {
   type What = { data : string = 5 | func : int = 2 }
 
   predicate File : string
   predicate Decl : { file : File, name : string, line : int } -> string
   predicate Kind : { decl : Decl, what : What }
-}
-:::
+}`}</Demo>
 
 ## Grammar
 
@@ -83,13 +81,15 @@ Three things about the shape:
   the grammar nothing, because a field name is never in a position where a keyword could
   start something.
 
-:::note Permissive early, narrow later
+<Callout tone="note" label={`Permissive early, narrow later`}>
+
 Everything the grammar accepts and the type model cannot yet hold — arrays, `maybe`,
 `set`, `enum`, `evolves`, a `stored` derivation — **parses**, and then draws one specific
 `nyi/…` diagnostic naming it. A construct rejected by the *grammar* reports as a syntax
 error pointing between two tokens, which tells a reader nothing about why the thing they
 wrote is unavailable. See [what is not available yet](#what-is-not-available-yet).
-:::
+
+</Callout>
 
 ## Types
 
@@ -172,12 +172,14 @@ predicates in the sample schema were once declared alphabetically out of habit; 
 **56,274 rows examined per row produced** on an ordinary join, and made find-references
 unanswerable. The fix was to move a field.
 
-:::warn Declaring a key alphabetically is a choice
+<Callout tone="warn" label={`Declaring a key alphabetically is a choice`}>
+
 It makes the index shape a consequence of what the fields happen to be called. If the same
 data is wanted in two orders, declare it twice — that is what `codemarkup.SymbolByName`,
 `codemarkup.FileXRef`, `codemarkup.RelationOf` and `csharp.DefinitionBySymbol` are, and each
 of them says so in a comment.
-:::
+
+</Callout>
 
 Two other placement rules worth internalising:
 
@@ -218,11 +220,13 @@ fjord --schema-path ./schemas schema check ./app.sigla
 fingerprint 0x72e0ddfeda09028f
 ```
 
-:::note Write `./file.sigla`, not `file.sigla`
+<Callout tone="note" label={`Write \`./file.sigla\`, not \`file.sigla\``}>
+
 The entry file's *own directory* is the first root — and a bare relative filename has no
 directory component, so a schema that imports a sibling will not resolve when named as
 `app.sigla`. Use `./app.sigla` or an absolute path (or pass the directory as `--schema-path`).
-:::
+
+</Callout>
 
 Resolution semantics, in four lines:
 
@@ -327,13 +331,15 @@ The migration path for a breaking change is the one the workflow already implies
 new artifact. There is no `evolves` and no query-time projection layer, which is why
 subset containment is enough and cannot fail the way a richer compatibility check can.
 
-:::note What subset containment costs
+<Callout tone="note" label={`What subset containment costs`}>
+
 Adding an *optional* field is Breaking here. Under this rule the migration is a new
 predicate name and a rewrite of every query that used the old one. That is a real cost, and
 it is accepted deliberately: the alternative is a per-type default table and a projection
 layer, and [I13](invariants.html#i13) freezes the schema at create so there is no second
 schema for a projection to live between.
-:::
+
+</Callout>
 
 ## Where a schema is used
 
@@ -448,7 +454,8 @@ Four shapes in it are worth reading before designing anything similar:
   is a complete index and needs no sentinel. **fjord ships no codec and defines no
   vocabulary** — a producer writes what its tokeniser already emits, and names it.
 
-:::note The worked example is LSP, and none of it is fjord's
+<Callout tone="note" label={`The worked example is LSP, and none of it is fjord's`}>
+
 `Boxops.Fjord.Indexer --styles` runs Roslyn's `Classifier` — what Visual Studio colours
 with — and writes LSP `SemanticTokens.data` under the `style-encoding` value `roslyn-lsp-1`:
 five integers per token, `[deltaLine, deltaStart, length, tokenType, tokenModifiers]`, over a
@@ -473,7 +480,8 @@ would differ between two indexes of the same repository, and a sealed identity h
 facts. Appending to it is safe and renumbering is not, exactly as for a schema union. A
 producer for another language names its own encoding and its own legend, and this predicate
 does not change.
-:::
+
+</Callout>
 
 ### `schemas/codemarkup.sigla` — one surface a UI can read
 
@@ -511,12 +519,14 @@ All three are **citations rather than inventions**, and that is deliberate: they
 so their discriminants froze the day the layer shipped and every future value has to arrive
 through `other`. LSP's `SymbolKind` has not moved since 3.x.
 
-:::warn A bitmask is lost, and it is stated rather than hidden
+<Callout tone="warn" label={`A bitmask is lost, and it is stated rather than hidden`}>
+
 SCIP's `SymbolRole` is a bitmask — a reference can be a definition *and* an import at once. A
 sigla union cannot express that, and an `int` of flags would be a field no query could usefully
 match on. `Role` is therefore the mutually-exclusive projection a UI filters by, and a producer
 needing the full mask loses information here.
-:::
+
+</Callout>
 
 Every predicate is redundant with a language layer by construction — the same facts keyed for
 the question a UI asks. In Glean these are `stored` derived predicates; here `nyi/derivation`
@@ -561,12 +571,14 @@ project that compiled the file it sits in, across three namespaces filled by thr
 producers. Neither is expressible across three separate databases, because a `FactId` does
 not leave the database that issued it ([I11](invariants.html#i11)).
 
-:::note Two module graphs disagree on purpose
+<Callout tone="note" label={`Two module graphs disagree on purpose`}>
+
 `bundle.ModuleImport` is the bundler's graph, read from stats after resolution and
 tree-shaking; `typescript.FileImport` is the source graph, read from the import statements as
 written. A module in one and not the other is a module that was shaken out — the interesting
 answer, not a bug.
-:::
+
+</Callout>
 
 ### `schemas/config.sigla` — what a database was built for
 
@@ -590,7 +602,8 @@ It is **per-database**, so it cannot record a per-project or per-file axis:
 `{dimension = "define", value = "DEBUG"}` says the run defined `DEBUG`, not which projects
 did. Where an axis varies inside one index, the fact that varies carries it.
 
-:::note A database that does not state its position encoding is read as `utf16`
+<Callout tone="note" label={`A database that does not state its position encoding is read as \`utf16\``}>
+
 `position-encoding` is `utf8` or `utf16`, and it is the unit **every** offset and column in
 the database counts in — one declaration per database, as SCIP settled it, rather than a
 unit per span. A mixed-encoding database is deliberately not expressible.
@@ -600,7 +613,8 @@ Roslyn and the TypeScript compiler both count UTF-16 code units. Stating it is s
 point. The unit that agrees with neither is a renderer walking `chars()`, which counts
 Unicode scalar values — one per codepoint where the producer counted two for anything above
 the BMP, and the symptom is a link drawn over the wrong text, which reads as a styling bug.
-:::
+
+</Callout>
 
 There are also **virtual** predicates — `fjord.db.List` (the store root as rows) and
 `fjord.db.Interning` (the write path's own counters, per database) — declared in

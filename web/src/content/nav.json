@@ -1,5 +1,5 @@
 {
-  "//": "The reading order, and the only copy of it: website/build.py renders the sidebar from this, and web/ imports it. A slug here with no content/<slug>.md is a build warning, and so is a page with no entry.",
+  "//": "The reading order, and the only copy of it: the sidebar and the route list both read it. A slug here with no src/content/<slug>.mdx has no page behind it, and a page with no entry is unreachable from the reading order.",
   "groups": [
     {
       "label": "Start here",

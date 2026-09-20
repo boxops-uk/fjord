@@ -4,7 +4,7 @@
 //! [`commands`]; this file is deliberately thin, because the interesting decisions
 //! are about *ownership* and *addressing* rather than about argument parsing.
 //!
-//! See [operations §4](../../../website/content/operations.md) for the tree and §2 for the
+//! See [operations §4](../../../web/src/content/operations.mdx) for the tree and §2 for the
 //! addressing rules it is built to obey.
 
 mod cli;
@@ -28,7 +28,7 @@ pub use fjord_cli::sample_schema;
 ///
 /// `fjord serve` runs one scan per connection, and answering it allocates all the way
 /// out — in the store below the executor and in the row path above it, never on the
-/// per-row path [I9](../../../website/content/invariants.md#i9) guards. On glibc those
+/// per-row path [I9](../../../web/src/content/invariants.mdx#i9) guards. On glibc those
 /// threads contend on per-arena mutexes and park inside `malloc`, so
 /// throughput stops rising with cores while nothing in the engine looks wrong — the
 /// contention is invisible to every guard above it, and only a stack sample under load

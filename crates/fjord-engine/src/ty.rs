@@ -24,7 +24,7 @@
 //! rolls its substitution back so a mistake in one field cannot poison its
 //! siblings, and checking continues.
 //!
-//! [chapter 7]: ../../../website/content/query-language.md
+//! [chapter 7]: ../../../web/src/content/query-language.mdx
 
 use std::sync::Arc;
 

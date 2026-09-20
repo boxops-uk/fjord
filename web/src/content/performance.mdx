@@ -1,7 +1,7 @@
----
-title: Performance
-description: The measurement method, the capacity target every number is read against, and what has actually been measured — with the two findings that changed the design.
----
+export const meta = {
+  "title": "Performance",
+  "description": "The measurement method, the capacity target every number is read against, and what has actually been measured — with the two findings that changed the design."
+}
 
 The project separates the **method** (how a number is held to evidence, and what target it
 is read against — this page) from the **register** of what has actually been measured —
@@ -15,10 +15,12 @@ recursion — change how a query is planned and what the language can express. S
 below are a record of what was true of a tree that no longer exists: read the shapes and the
 lessons, and expect the absolutes to be re-taken.
 
-:::note Ratios travel, absolutes do not
+<Callout tone="note" label={`Ratios travel, absolutes do not`}>
+
 Every absolute below is from one box: 8 cores, 32 GB, Linux 6.8, release build. Read the ratios
 and the shapes; re-measure the absolutes on your own hardware.
-:::
+
+</Callout>
 
 ## The target
 
@@ -31,7 +33,7 @@ replaces.
 | **Corpus** | 20 M facts, one repository, ~30 k files | `dotnet/runtime`'s `src/` tree is 18.2 M facts across 22 predicates — 1.8 GB unsealed, 728 MB once sealed |
 | **Population** | 1,000 concurrent users per instance | An order of magnitude below where the code-search mix saturates, so the target has headroom |
 | **Mix** | The code-search workload: prefix search, paged to 50 | The traffic a product actually sends; a generic mix is not |
-| **Interactive latency** | p50 < 25 ms, p99 < 250 ms | Measured p50 is 3.1 ms at 2,048 users — an 8× margin for hardware that is not this box |
+| **Interactive latency** | p50 &lt; 25 ms, p99 &lt; 250 ms | Measured p50 is 3.1 ms at 2,048 users — an 8× margin for hardware that is not this box |
 | **Freshness** | A full re-index, not an append | A Complete database is immutable, so freshness is an indexing-throughput question |
 
 What is deliberately **not** targeted:
@@ -152,12 +154,14 @@ A think-time sweep, rather than arithmetic:
 | 1,024 | 102 q/s | 61 q/s | 2.6 ms | 16.5 ms | 83% |
 | 2,048 | 205 q/s | 64 q/s | 4.4 ms | 20.7 ms | 92% |
 
-:::note A trap worth knowing
+<Callout tone="note" label={`A trap worth knowing`}>
+
 **Achieved-below-offered is not saturation.** At 512 users the server was at 49% CPU and still
 "missed" 19% of the offered rate — because a user waiting inside a five-second join is not issuing
 anything. When a class's service time exceeds the think time, offered load is fiction and the
 honest reading is the CPU column beside it.
-:::
+
+</Callout>
 
 ### The product's own traffic: ~6,000 q/s
 

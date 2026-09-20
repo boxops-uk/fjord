@@ -46,7 +46,7 @@ impl fmt::Display for Address {
 /// The leading field is a separate component rather than the first element of one
 /// slice, so an *empty* path — a plan naming no field at all — cannot be spelled.
 ///
-/// [chapter 3]: ../../../website/content/storage.md
+/// [chapter 3]: ../../../web/src/content/storage.mdx
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldPath {
     field: usize,
@@ -90,7 +90,7 @@ impl FieldPath {
     /// where nothing has ordered anything. See [phase 8.6 D-d].
     ///
     /// [`FjordError::DiscriminantMismatch`]: crate::error::FjordError::DiscriminantMismatch
-    /// [phase 8.6 D-d]: ../../../website/content/storage.md
+    /// [phase 8.6 D-d]: ../../../web/src/content/storage.mdx
     #[must_use]
     pub fn payload(&self, disc: u32) -> Self {
         self.then(disc as usize)
@@ -174,7 +174,7 @@ pub enum SeekKey {
     /// appended after a partial field would compare the next field against bytes
     /// belonging to this one, matching nothing, silently.
     ///
-    /// [I1]: ../../../website/content/invariants.md#i1
+    /// [I1]: ../../../web/src/content/invariants.mdx#i1
     PrefixRange {
         parts: Box<[SeekKeyPart]>,
         prefix: Box<[u8]>,
@@ -185,7 +185,7 @@ pub enum SeekKey {
     /// `Ln >= 1000; Ln < 1200` on the field that ends the prefix is the half-open
     /// byte slice `[prefix ++ enc(1000), prefix ++ enc(1200))` of that bucket, and
     /// that is not a coincidence: the encoding is order-preserving
-    /// ([I1](../../../website/content/invariants.md#i1)), so one run of the value order
+    /// ([I1](../../../web/src/content/invariants.mdx#i1)), so one run of the value order
     /// *is* one run of the key order. The filter form answers the same rows by
     /// reading the bucket from its start and dropping everything below the bound,
     /// which costs the offset rather than the window.
@@ -245,7 +245,7 @@ pub enum SeekKeyPart {
     /// and matches nothing, silently. The id is already in the register, so following
     /// a reference reads nothing from `entities` and [I6] stays structural.
     ///
-    /// [I6]: ../../../website/content/invariants.md#i6
+    /// [I6]: ../../../web/src/content/invariants.mdx#i6
     RegisterFactId(Address),
 }
 
@@ -313,8 +313,8 @@ pub enum ResidualOp {
     /// [`UnionTag`](fjord_encoding::tuple::UnionTag), because that is what it is: a
     /// value of one alternative begins with that alternative's tag, so this reads a
     /// borrowed span of the register's key and compares it against a stack buffer —
-    /// no decode, no allocation ([I9](../../../website/content/invariants.md#i9)), nothing
-    /// fetched ([I6](../../../website/content/invariants.md#i6)).
+    /// no decode, no allocation ([I9](../../../web/src/content/invariants.mdx#i9)), nothing
+    /// fetched ([I6](../../../web/src/content/invariants.mdx#i6)).
     ///
     /// Its own arm rather than a [`Prefix`](ResidualOp::Prefix) carrying those bytes,
     /// for two reasons. A plan is read by people, and `alternative 3` says what
@@ -326,7 +326,7 @@ pub enum ResidualOp {
     /// `field < constant` and its three siblings.
     ///
     /// **A byte comparison, and that is not a shortcut.** The key encoding is
-    /// order-preserving ([I1](../../../website/content/invariants.md#i1)), so the lexicographic
+    /// order-preserving ([I1](../../../web/src/content/invariants.mdx#i1)), so the lexicographic
     /// order of two encoded fields of the same type *is* their value order — which is
     /// the property the whole storage model rests on, used here for the first time
     /// somewhere other than a seek. No decode, no allocation, no value read.
@@ -358,7 +358,7 @@ pub enum ResidualOp {
     ///
     /// The one comparison that cannot be a byte compare: the other side is a
     /// computed `Value`, not encoded bytes, and encoding it per row would allocate
-    /// ([I9](../../../website/content/invariants.md#i9)). So this decodes the *field* instead —
+    /// ([I9](../../../web/src/content/invariants.mdx#i9)). So this decodes the *field* instead —
     /// a fixed-width integer read, which allocates nothing — and compares numbers.
     /// Integers only, which typecheck already guarantees of anything arithmetic
     /// produced.
@@ -481,7 +481,7 @@ pub struct Residual {
 ///
 /// # What it costs, and why that is stated rather than hidden
 ///
-/// Reading a value is a point read ([I6](../../../website/content/invariants.md#i6)), so
+/// Reading a value is a point read ([I6](../../../web/src/content/invariants.mdx#i6)), so
 /// a level carrying one of these pays a lookup **per candidate row** — including for
 /// rows this then rejects, which is the part a projection never pays. That is why the
 /// planner puts these last, after every cheaper narrowing, and why the profile counts
@@ -511,7 +511,7 @@ pub enum Source {
         /// read per surviving candidate. Empty on every plan that asks about keys
         /// alone, which is what keeps [I6]'s key-only path free of value reads.
         ///
-        /// [I6]: ../../../website/content/invariants.md#i6
+        /// [I6]: ../../../web/src/content/invariants.mdx#i6
         value_tests: Box<[ValueTest]>,
     },
     /// **The fact a reference names** — one row, reached by id rather than by
@@ -527,7 +527,7 @@ pub enum Source {
     /// A source rather than a step, because a point read is a relation of at most
     /// one row and the machine's job over it is a scan's exactly: open, drain, move
     /// on. That is what keeps `enumerate` unchanged
-    /// ([the query-surface note](../../../website/content/query-language.md)).
+    /// ([the query-surface note](../../../web/src/content/query-language.mdx)).
     ///
     /// `predicate_id` is the field's **declared** referent, and is checked against
     /// the id actually stored. It is not redundant with [`FactId::predicate`]: every
@@ -645,7 +645,7 @@ impl Source {
 ///
 /// `binds` is the level's, not a source's: every alternative binds the same
 /// variables, which is what makes a register mean one thing whichever branch
-/// filled it (see [the query-surface note](../../../website/content/query-language.md)).
+/// filled it (see [the query-surface note](../../../web/src/content/query-language.mdx)).
 #[derive(Debug, Clone)]
 pub struct Level {
     pub sources: Box<[Source]>,
@@ -784,7 +784,7 @@ pub enum Project {
 /// Every arm is a pure function of the bindings, with no iteration and no hidden
 /// state, and that purity is the load-bearing part: it is what lets a [`Cursor`]
 /// save only generator positions and recompute the rest
-/// ([chapter 7](../../../website/content/query-language.md#derived-facts)).
+/// ([chapter 7](../../../web/src/content/query-language.mdx#derived-facts)).
 ///
 /// Arithmetic is the first producer of a computed value in the language, and it
 /// arrived as new arms rather than as a reshape — which is what this seam is for.
@@ -797,7 +797,7 @@ pub enum Computed {
     /// An **integer** field of a bound row, decoded.
     ///
     /// Integers only, because arithmetic is integers only — which is what keeps
-    /// this allocation-free ([I9](../../../website/content/invariants.md#i9)): a fixed-width read
+    /// this allocation-free ([I9](../../../web/src/content/invariants.mdx#i9)): a fixed-width read
     /// into an `i64`, with no `String` built per row. A string-valued arm would
     /// need one, and there is nothing yet that would use it.
     Field {
@@ -883,7 +883,7 @@ pub enum Test {
     /// Each source is drained only until its **first** row: the question is whether a
     /// witness exists, not how many there are. So a negation costs at most one
     /// matching row per row the level above it produces, and reads only `keys`
-    /// ([I6](../../../website/content/invariants.md#i6) is about values, and a probe fetches
+    /// ([I6](../../../web/src/content/invariants.mdx#i6) is about values, and a probe fetches
     /// none).
     Absent(Box<[Source]>),
 
@@ -955,7 +955,7 @@ impl Plan {
     }
 
     /// This plan's identity, for a resume cursor to carry
-    /// ([`PlanFingerprint`], [chapter 5](../../../website/content/executor.md)).
+    /// ([`PlanFingerprint`], [chapter 5](../../../web/src/content/executor.mdx)).
     ///
     /// Recomputed on demand rather than cached in the struct: a `Plan` is public
     /// and its fields are `pub`, so a cached value would be a second source of
@@ -986,7 +986,7 @@ impl Plan {
 }
 
 /// A **plan's identity**, as a resume cursor carries it
-/// ([chapter 5](../../../website/content/executor.md)).
+/// ([chapter 5](../../../web/src/content/executor.mdx)).
 ///
 /// A cursor's entries are paired with the plan's levels *by order*, and until this
 /// existed the only thing checked before that pairing was how many there were — so
@@ -1307,7 +1307,7 @@ impl Fingerprint {
             // residual would otherwise accept each other's and resume against
             // the wrong filter ([chapter 5]).
             //
-            // [chapter 5]: ../../../website/content/executor.md
+            // [chapter 5]: ../../../web/src/content/executor.mdx
             ResidualOp::NotEqConst(bytes) => {
                 self.byte(4);
                 self.bytes(bytes);
@@ -2201,7 +2201,7 @@ mod tests {
 /// Draws are unconstrained small numbers **resolved modulo the legal options**,
 /// so no case is wasted and shrinking yields a *minimal valid* counterexample
 /// rather than garbage — the generator is the type checker in reverse. See
-/// [`website/content/testing.md`](../../../website/content/testing.md).
+/// [`web/src/content/testing.mdx`](../../../web/src/content/testing.mdx).
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use std::collections::BTreeSet;
@@ -2641,7 +2641,7 @@ pub mod proptest {
         /// register to two key layouts, which needs the exported-value rule the
         /// language cannot ask for yet ([the query-surface note]).
         ///
-        /// [the query-surface note]: ../../../website/content/query-language.md
+        /// [the query-surface note]: ../../../web/src/content/query-language.mdx
         sources: Vec<Option<ResidualSpec>>,
         /// The range this level's scan is bounded to, if any — making its
         /// [`SeekKey`] a [`SeekKey::Bounded`].
@@ -2812,8 +2812,8 @@ pub mod proptest {
         /// fact, ids included, since the numbering matches what the real
         /// per-predicate allocator hands out ([I11]).
         ///
-        /// [I4]: ../../../website/content/invariants.md#i4
-        /// [I11]: ../../../website/content/invariants.md#i11
+        /// [I4]: ../../../web/src/content/invariants.mdx#i4
+        /// [I11]: ../../../web/src/content/invariants.mdx#i11
         pub fn facts(&self) -> impl Iterator<Item = (PredicateId, Vec<u8>, u64)> + '_ {
             self.facts.iter().enumerate().flat_map(|(predicate, keys)| {
                 keys.iter().enumerate().map(move |(i, key)| {
@@ -3024,7 +3024,7 @@ pub mod proptest {
 
     /// A composite key is its encoded fields back-to-back — the encoding is
     /// self-delimiting (I2), so no lengths or separators are needed, and no record
-    /// wrapper of its own ([chapter 3](../../../website/content/storage.md)).
+    /// wrapper of its own ([chapter 3](../../../web/src/content/storage.mdx)).
     pub fn encode_key(key: &[FieldVal]) -> Vec<u8> {
         let fields: Vec<Vec<u8>> = key.iter().map(FieldVal::encode).collect();
         let fields: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();

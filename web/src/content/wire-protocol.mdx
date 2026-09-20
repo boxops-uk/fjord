@@ -1,7 +1,7 @@
----
-title: Wire protocol
-description: Frames, streams, the handshake, the four query kinds, the write stream, block format and the value encoding — everything a second implementation needs.
----
+export const meta = {
+  "title": "Wire protocol",
+  "description": "Frames, streams, the handshake, the four query kinds, the write stream, block format and the value encoding — everything a second implementation needs."
+}
 
 One socket, framed and multiplexed. Everything talks it: the CLI, the shell, the viewer, and a
 C# client that shares no code with the server. Protocol version is **4**.
@@ -95,11 +95,13 @@ The schema claim has two halves, and both are checks the client chooses:
   the freeze invariant actually says, and what lets a producer writing six of a database's
   twenty-seven predicates connect without restating the other twenty-one.
 
-:::note There is no credential field
+<Callout tone="note" label={`There is no credential field`}>
+
 Access control is entirely the transport's job — socket permissions, or a gateway in front of
 opted-in TCP. That is only safe because binding is default-closed, and it is stated as an
 invariant (`ops-I10`) rather than left as an omission.
-:::
+
+</Callout>
 
 ## Asking what you may ask
 
@@ -112,6 +114,10 @@ A database carries the schema it was created against, so a client's built-in cop
 opinion. `h` is the answer, and it is what lets a client describe the right predicates, compile
 a query before sending it, and show a plan. **Virtual predicates are included**, because the
 question is what may be asked rather than what the database holds.
+
+**A session bound to no database answers too**, with the catalogue alone — which is exactly
+what a tool doing `create` or `list` may ask about, and all it may ask about. `h` and `y` take
+that same fallback, so the two cannot disagree about what is being served.
 
 ### The same question, for a client with no parser
 
@@ -171,12 +177,14 @@ That never leaves the database on this wire. A block header carries the predicat
 and a row carries no predicate at all — so a client keeps no table that could fall out of step,
 and this is one of the reasons the header spends the bytes on a name.
 
-:::warn A `FactId`'s tag is the *database's* numbering
+<Callout tone="warn" label={`A \`FactId\`'s tag is the *database's* numbering`}>
+
 The one place the numbering is visible to a consumer. A `FactId` packs its owning predicate's
 id in its high bits ([I11](invariants.html#i11)), so a consumer that decodes a returned
 reference's tag against a **hardcoded** table reads the wrong predicate the day the numbering
 moves. Ask the schema — `h` above — or treat an id as opaque and hand it back to `F`.
-:::
+
+</Callout>
 
 ## A query stream
 
@@ -342,11 +350,13 @@ writers hold it shared, `finish` takes it exclusive.
 **Failure is per stream, not per fact.** A rejected block fails the write stream; the connection
 and its other streams survive. A conflict names the offending key.
 
-:::note A fact that interned cleanly and then conflicted stays written
+<Callout tone="note" label={`A fact that interned cleanly and then conflicted stays written`}>
+
 Its target was legitimately named and legitimately defined, facts are immutable, and interning
 is idempotent — so retrying the whole message after fixing the conflict dedups against it. What
 a transaction would prevent here is a wasted row, not a wrong answer.
-:::
+
+</Callout>
 
 ### Blocks
 

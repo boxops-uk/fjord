@@ -13,8 +13,8 @@ import { IconButton } from '@astryxdesign/core/IconButton'
 import { Kbd } from '@astryxdesign/core/Kbd'
 import { HStack } from '@astryxdesign/core/Stack'
 import { GROUPS } from './content'
-import type { Heading } from './markdown'
-import { route } from './markdown'
+import type { Heading } from './content'
+import { route } from './links'
 import { navigate } from './router'
 import { ScrollRootProvider } from './scrollRoot'
 import { Search } from './Search'
@@ -116,7 +116,7 @@ export function Layout({
   const column = useRef<HTMLDivElement>(null)
 
   const items = useMemo(
-    () => toc.map(({ anchor, text, level }) => ({ id: anchor, label: text, level })),
+    () => toc.map(({ id, text, level }) => ({ id, label: text, level })),
     [toc],
   )
 

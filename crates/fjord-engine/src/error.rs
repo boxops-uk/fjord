@@ -74,7 +74,7 @@ pub enum FjordError {
     CursorTruncated,
 
     /// A resume cursor built from a **different plan** — the hole the level count
-    /// leaves open ([chapter 5](../../../website/content/executor.md)).
+    /// leaves open ([chapter 5](../../../web/src/content/executor.mdx)).
     ///
     /// A cursor's entries are paired with the plan's levels *by order*, so two
     /// plans of the same shape over overlapping predicates would accept each
@@ -108,7 +108,7 @@ pub enum FjordError {
     /// same-database resume after a reopen, and — on a Writable database — a resume
     /// after a write has crossed the chunk boundary, which the two of them
     /// otherwise answer as a silent hybrid of two states
-    /// ([I4](../../../website/content/invariants.md#i4)).
+    /// ([I4](../../../web/src/content/invariants.mdx#i4)).
     #[error("resume cursor was read against a different world")]
     CursorWorld,
 

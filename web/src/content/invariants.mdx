@@ -1,7 +1,7 @@
----
-title: Invariants
-description: The rules this design is checked against — fifteen engine invariants and ten operational ones, each with the guard test that pins it.
----
+export const meta = {
+  "title": "Invariants",
+  "description": "The rules this design is checked against — fifteen engine invariants and ten operational ones, each with the guard test that pins it."
+}
 
 An invariant here is not documentation of intent. Each one names a **guard test**, guards are
 written *up front* (the property statement is the spec), and a phase is finished only when the
@@ -15,7 +15,8 @@ cargo test -- --ignored --list   # the coverage ledger: guards written, not yet 
 Two namespaces, never conflated: **`I1`–`I15`** are engine rules; **`ops-I1`–`ops-I10`** are
 operational ones and are always written with the prefix.
 
-:::note Reading a guard name
+<Callout tone="note" label={`Reading a guard name`}>
+
 The prefix is the subsystem, not a Rust path: `codec::` is `fjord-encoding/src/tuple.rs`,
 `exec::` is `fjord-engine/src/iter.rs`, `store::` is `fjord-store-fjall/src/store.rs`,
 `fingerprint::` is `fjord-schema/src/fingerprint.rs`, `flatten::` is
@@ -25,7 +26,8 @@ greppable. Guards named by a bare file (`i8_snapshot::`, `i13_embedded_schema::`
 `dependency_closure::`) are integration tests in that crate's `tests/` directory —
 `i8_snapshot` in `fjord-store-fjall`, which since the storage seam became its own crate is
 the only one that can see both implementations of it.
-:::
+
+</Callout>
 
 ## Engine invariants
 

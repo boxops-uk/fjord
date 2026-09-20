@@ -2,7 +2,7 @@
 //!
 //! Against a sink that stores nothing, so the number is the walk's and not fjall's.
 //! `N` and `2N` allocate the same, which is the technique
-//! [I9](../../../website/content/invariants.md#i9)'s own guard uses: equal counts mean
+//! [I9](../../../web/src/content/invariants.mdx#i9)'s own guard uses: equal counts mean
 //! nothing scales with the fact.
 //!
 //! What the walk costs *with* a store, and what it saves against the reference

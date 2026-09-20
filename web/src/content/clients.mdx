@@ -1,7 +1,7 @@
----
-title: Clients & the viewer
-description: The .NET client and real indexer, the code-search viewer, and what it takes to write a client of your own.
----
+export const meta = {
+  "title": "Clients & the viewer",
+  "description": "The .NET client and real indexer, the code-search viewer, and what it takes to write a client of your own."
+}
 
 Everything that talks to Fjord is a client of one protocol. There is no privileged path: the
 CLI, the shell, the viewer and a C# program written outside the repository all use the same
@@ -171,11 +171,13 @@ The three things it will need from this side are already here or named:
 
 ## Writing a client
 
-:::note There is no JavaScript client
+<Callout tone="note" label={`There is no JavaScript client`}>
+
 `@boxops-uk` is reserved on npm for when there is one, and a reserved scope is not a
 deliverable. Two implementations exist — this one and the Rust client — and the protocol is
 what a third would be written against, not either of them.
-:::
+
+</Callout>
 
 The protocol is [documented frame by frame](wire-protocol.html). A minimal read-only client is:
 

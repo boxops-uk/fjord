@@ -511,7 +511,7 @@ check('the drawer closes on escape', (await page.$$('dialog[open]')).length === 
 
 // ---------------------------------------------------------------- the book --
 //
-// The pages are `website/content/`, parsed here rather than copied, and the
+// The pages are `src/content/`, compiled into this application, and the
 // demos in them are this same engine. Both halves are checked: that every page
 // in the reading order renders, and that a demo on one of them runs.
 
@@ -1031,20 +1031,50 @@ check(
     (await paper()) !== before,
 )
 
-// **One book, two renderers.** The generated site parses these pages in Python
-// and this one parses them in TypeScript, and a dialect that drifts between them
-// is a page that reads differently depending on which copy you found. Compared
-// per page, and only when `website/site/` has been built — the comparison is
-// worth having and is not worth failing the check for being absent.
-const generated = new URL('../website/site/', import.meta.url)
-if (existsSync(new URL('index.html', generated))) {
-  const order = JSON.parse(readFileSync(new URL('../website/nav.json', import.meta.url), 'utf8'))
+// **Every block a page writes is a block the page shows.**
+//
+// A page is MDX and the components it renders through are a lookup table, so the
+// way this breaks is silent: a mapping that goes missing renders the children and
+// drops the wrapper, and a table becomes six paragraphs that still read fine. So
+// the source is counted and the DOM is counted, and they have to agree — the same
+// comparison the two renderers used to give each other, with the page's own text
+// as the oracle instead of a second parser of it.
+{
+  const content = new URL('./src/content/', import.meta.url)
+  const order = JSON.parse(readFileSync(new URL('nav.json', content), 'utf8'))
     .groups.flatMap((group) => group.pages.map((entry) => entry.slug))
-  const count = (text, needle) => text.split(needle).length - 1
   const drift = []
 
   for (const slug of order) {
-    const html = readFileSync(new URL(`${slug}.html`, generated), 'utf8')
+    const source = readFileSync(new URL(`${slug}.mdx`, content), 'utf8').split('\n')
+    const there = { h2: 0, h3: 0, tables: 0, code: 0, demos: 0, callouts: 0 }
+    let fenced = false
+    let inTable = false
+
+    for (const line of source) {
+      const text = line.trim()
+      if (text.startsWith('```')) {
+        if (fenced) fenced = false
+        else {
+          fenced = true
+          there.code++
+        }
+        continue
+      }
+      if (fenced) continue
+
+      // A table is one block of pipe rows, however many rows it has.
+      if (text.startsWith('|')) {
+        if (!inTable) there.tables++
+        inTable = true
+      } else inTable = false
+
+      if (text.startsWith('## ')) there.h2++
+      else if (text.startsWith('### ')) there.h3++
+      else if (text.startsWith('<Demo ')) there.demos++
+      else if (text.startsWith('<Callout ')) there.callouts++
+    }
+
     await page.goto(`${url}${slug === 'index' ? '' : slug}`, { waitUntil: 'networkidle0' })
     await page.waitForSelector('[data-testid="prose"] h1')
     const here = await page.evaluate(() => {
@@ -1063,22 +1093,13 @@ if (existsSync(new URL('index.html', generated))) {
         callouts: prose('.astryx-banner'),
       }
     })
-    const there = {
-      h2: count(html, '<h2 id='),
-      h3: count(html, '<h3 id='),
-      tables: count(html, '<div class="table-wrap">'),
-      code: count(html, '<figure class="code">'),
-      demos: count(html, '<figure class="code demo">'),
-      callouts: count(html, '<aside class="callout'),
-    }
+
     for (const key of Object.keys(there)) {
       if (here[key] !== there[key]) drift.push(`${slug}: ${key} ${here[key]} vs ${there[key]}`)
     }
   }
 
-  check('the two renderers agree, page for page', drift.length === 0, drift.slice(0, 6).join('; '))
-} else {
-  console.log('  ..   website/site/ is not built — skipping the two-renderer comparison')
+  check('every block the source writes is a block the page shows', drift.length === 0, drift.slice(0, 6).join('; '))
 }
 
 // A path this site has never heard of is still this site.
@@ -1096,7 +1117,7 @@ check(
 // server, because `vite preview` has a fallback of its own and would pass either
 // way: it is the *files in the bundle* that decide what a host can answer.
 const dist = new URL('dist/', import.meta.url)
-const routes = JSON.parse(readFileSync(new URL('../website/nav.json', import.meta.url), 'utf8'))
+const routes = JSON.parse(readFileSync(new URL('./src/content/nav.json', import.meta.url), 'utf8'))
   .groups.flatMap((group) => group.pages.map((entry) => entry.slug))
   .filter((slug) => slug !== 'index')
   .concat('playground')

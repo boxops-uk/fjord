@@ -54,8 +54,8 @@
 //! separately — a negation runs after everything binding the variables it uses —
 //! is what this graph already says about it.
 //!
-//! [chapter 7]: ../../../website/content/query-language.md
-//! [derived binds]: ../../../website/content/query-language.md#derived-facts
+//! [chapter 7]: ../../../web/src/content/query-language.mdx
+//! [derived binds]: ../../../web/src/content/query-language.mdx#derived-facts
 
 use fjord_schema::schema::Symbol;
 
