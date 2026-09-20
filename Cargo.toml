@@ -56,5 +56,5 @@ thiserror = "2.0.18"
 # neither of these, so no consumer of ours inherits the patch — `[patch]` is ignored for
 # a published package, and this is only load-bearing for our own binaries.
 [patch.crates-io]
-fjall = { git = "https://github.com/boxops-uk/fjall", rev = "85f2ee50b3b609d3f18f5e66f80c0f86cc98fe46" }
+fjall = { git = "https://github.com/boxops-uk/fjall", rev = "953f45876bc9757aaa23215d0adaa1d7d7cf1930" }
 lsm-tree = { git = "https://github.com/boxops-uk/lsm-tree", rev = "4ba4cfdfd25df81ce52c92694161121db5bef7b8" }
