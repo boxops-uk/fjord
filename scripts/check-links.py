@@ -121,6 +121,12 @@ def cited(root: Path) -> list[str]:
 
 def main() -> int:
     fjord = binary()
+    if not (ROOT / "web/node_modules/@mdx-js/mdx").exists():
+        sys.exit(
+            "the book's dependencies are not installed: the facts come from the site's "
+            "own MDX parse, so this needs `npm ci` in web/"
+        )
+
     facts = subprocess.run(
         ["node", "docs-facts.mjs"],
         cwd=ROOT / "web",
