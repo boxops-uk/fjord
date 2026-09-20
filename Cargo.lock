@@ -529,7 +529,7 @@ checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 [[package]]
 name = "fjall"
 version = "3.1.8"
-source = "git+https://github.com/boxops-uk/fjall?rev=85f2ee50b3b609d3f18f5e66f80c0f86cc98fe46#85f2ee50b3b609d3f18f5e66f80c0f86cc98fe46"
+source = "git+https://github.com/boxops-uk/fjall?rev=953f45876bc9757aaa23215d0adaa1d7d7cf1930#953f45876bc9757aaa23215d0adaa1d7d7cf1930"
 dependencies = [
  "byteorder-lite",
  "byteview",
