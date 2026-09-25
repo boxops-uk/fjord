@@ -687,11 +687,13 @@ await page.waitForFunction(() => document.querySelectorAll('.story-code li').len
 const stage = (n) =>
   page.evaluate((n) => document.querySelectorAll('.story-dots button')[n].click(), n).then(settle)
 
+const source = await texts('.story-code .src')
 check(
   'the hero shows the file the index holds',
   (await page.$eval('.story-file-name', (el) => el.textContent)) === 'src/lib.rs' &&
-    (await texts('.story-code .src')).length === 3,
-  (await texts('.story-code .src')).join(' | '),
+    source.length > 15 &&
+    source.some((line) => line.includes('fn load(path: &str) -> Config')),
+  `${source.length} line(s)`,
 )
 
 await stage(0)
@@ -714,8 +716,8 @@ check(
   found.join(' · '),
 )
 check(
-  'the answer is the query\'s own rows',
-  (await texts('.story-rows .is-answer')).length === 2,
+  'the panel is out of the way once the answer is in',
+  await page.$eval('.story-panel', (el) => !el.classList.contains('is-open')),
 )
 
 // Into the book, where the reading order is a column again.

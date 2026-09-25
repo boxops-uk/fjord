@@ -47,11 +47,9 @@
 
 /* ------------------------------------------------------------ hero story --
 
-   Four stages of one question. The file pane holds still on the left because it
-   is the thing being used; the panel beside it is what changes.
-
-   The height is fixed rather than fitted, because a hero that grows and shrinks
-   four times while it plays is a page that moves under the reader. */
+   One question, on a loop. The file pane is the whole panel; the query and the
+   scan slide in over it and back out again, so the thing being used is never
+   shrunk to make room for the explanation of it. */
 
 .story {
   width: 100%;
@@ -63,21 +61,19 @@
   text-align: start;
 }
 
-.story-panes {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 19rem;
+.story-body {
+  position: relative;
+  overflow: hidden;
+  min-height: 30rem;
 }
-
-.story-panes > * + * { border-inline-start: var(--border-width) solid var(--color-border); }
 
 /* ------------------------------------------------------------- the file -- */
 
 .story-file {
-  position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  background: var(--color-background-muted);
+  height: 100%;
+  background: var(--color-syntax-background);
 }
 
 .story-file-name {
@@ -90,30 +86,22 @@
 
 .story-code {
   margin: 0;
-  padding: var(--spacing-3) 0;
+  padding: var(--spacing-2) 0;
   list-style: none;
   font-family: var(--font-family-code);
   font-size: var(--font-size-sm);
+  line-height: 1.6;
 }
 
 .story-code li {
   position: relative;
   display: grid;
-  grid-template-columns: 3rem minmax(0, 1fr);
+  grid-template-columns: 3.2rem minmax(0, 1fr);
   align-items: baseline;
-  padding-block: var(--spacing-1);
 }
 
-/* The lines between two declarations are not in the index, and the pane does
-   not invent them. */
-.story-code .gap {
-  position: absolute;
-  inset-block-start: calc(var(--spacing-3) * -1);
-  inset-inline-start: 3rem;
-  color: var(--color-text-disabled);
-}
-
-.story-code .gap::before { content: '⋯'; }
+/* Source keeps its own spaces: an indented line that lost them is not code. */
+.story-code .src { white-space: pre; }
 
 .story-code .n {
   padding-inline-end: var(--spacing-3);
@@ -122,13 +110,18 @@
   font-size: var(--font-size-xs);
 }
 
-.story-code .src { color: var(--color-text-primary); }
+/* **Painted by the rules the code browser falls back to.** A hero whose code is
+   one flat colour with a word picked out of it does not look like code, and the
+   claim it is making is precisely that this is code. */
+.story-tok-keyword { color: var(--color-syntax-keyword); font-weight: 600; }
+.story-tok-function { color: var(--color-syntax-function); }
+.story-tok-string { color: var(--color-syntax-string); }
+.story-tok-number { color: var(--color-syntax-number); }
+.story-tok-comment { color: var(--color-syntax-comment); }
+.story-tok-variable { color: var(--color-syntax-variable); }
+.story-tok-punctuation { color: var(--color-syntax-punctuation); }
 
-/* A line the answer names, marked where it is. */
-.story-code .is-hit { background: var(--color-success-muted); }
-.story-code .is-hit .n { color: var(--color-text-primary); }
-
-/* The name the whole story is about. */
+/* The name the whole story is about, under the cursor. */
 .story-code .subject {
   padding: 0 var(--spacing-0-5);
   border-radius: var(--radius-inner);
@@ -136,102 +129,95 @@
   box-shadow: inset 0 -1px 0 var(--color-accent);
 }
 
-/* **The cursor arrives.** A pointer already resting on the name is a
-   screenshot; the movement is what says somebody is using this. It travels in
-   from below and to the right, which is where a hand would bring it from, and
-   settles a beat before the card opens. */
-.story-pointer {
+/* A line the answer names, marked where it is. */
+.story-code .is-hit { background: var(--color-success-muted); }
+.story-code .is-hit .n { color: var(--color-text-primary); }
+
+/* ----------------------------------------------------------- the cursor -- */
+
+/* **Two axes, two curves, so the path bends.** A pointer that slides along a
+   straight line at one rate is a tween; a hand moves fast, arcs, and settles.
+   The outer element carries the horizontal, the inner the vertical, and the
+   difference between their easings is the arc. Arriving overshoots a little and
+   corrects, the way a hand does; leaving accelerates away and does not. */
+
+.story-cursor {
   position: absolute;
+  z-index: 3;
   inset-block-start: 1.15em;
-  inset-inline-start: 7.2rem;
+  inset-inline-start: 7.6rem;
   width: 18px;
   height: 18px;
+  transform: translateX(5.5rem);
+  transition: transform 560ms cubic-bezier(0.55, 0, 0.9, 0.45);
   filter: drop-shadow(0 1px 2px var(--color-shadow));
-  animation: story-cursor 1000ms cubic-bezier(0.33, 0, 0.2, 1) both;
 }
 
-.story-pointer svg { position: absolute; inset-block-start: 0; }
+.story-cursor-y {
+  display: block;
+  transform: translateY(3.25rem);
+  transition: transform 560ms cubic-bezier(0.5, 0, 0.75, 0.3);
+}
+
+.story-cursor.is-on {
+  transform: translateX(0);
+  transition: transform 760ms cubic-bezier(0.3, 1.18, 0.5, 1);
+}
+
+.story-cursor.is-on .story-cursor-y {
+  transform: translateY(0);
+  transition: transform 800ms cubic-bezier(0.62, 0.03, 0.3, 1);
+}
+
+.story-cursor svg { position: absolute; inset-block-start: 0; }
 
 /* The hand's fingertip sits where the arrow's tip did, so the shape changes
    without the cursor appearing to jump. */
-.story-pointer .is-hand {
+.story-cursor .is-hand {
   inset-inline-start: -5px;
   inset-block-start: -2px;
 }
 
 /* Arrow on the way, hand on arrival — the shape every editor shows over a name
-   you can do something with. */
-.story-pointer .is-arrow { animation: story-fade-out 160ms linear 940ms both; }
-.story-pointer .is-hand { animation: story-fade-in 160ms linear 940ms both; }
-
-@keyframes story-cursor {
-  from { transform: translate(9rem, 7rem); opacity: 0; }
-  20% { opacity: 1; }
-  to { transform: none; opacity: 1; }
-}
-
-@keyframes story-fade-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-
-@keyframes story-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+   you can do something with. Delayed on the way in so it turns as it lands, and
+   immediate on the way out. */
+.story-cursor .is-arrow { opacity: 1; transition: opacity 140ms linear; }
+.story-cursor .is-hand { opacity: 0; transition: opacity 140ms linear; }
+.story-cursor.is-on .is-arrow { opacity: 0; transition-delay: 520ms; }
+.story-cursor.is-on .is-hand { opacity: 1; transition-delay: 520ms; }
 
 /* ---------------------------------------------------------- the popover -- */
 
-/* **At the cursor, over the code.** A hover card covers the lines under it in
-   every editor there is, and a reader knows that shape on sight; a card
-   floating somewhere else in the pane is a panel, and says something weaker.
-   It is positioned on the hovered line, so it follows the name it is about. */
+/* At the cursor, over the code: a hover card covers the lines under it in every
+   editor there is, and a reader knows the shape on sight. */
 .story-popover {
   position: absolute;
-  z-index: 1;
+  z-index: 2;
   inset-block-start: 2.3em;
-  inset-inline-start: 2.6rem;
-  inset-inline-end: var(--spacing-3);
+  inset-inline-start: 3.2rem;
+  /* As wide as what it says. Spanning the pane it buried the two lines under
+     it, and a card that hides the file it is about is not the shape an editor
+     draws. */
+  width: max-content;
+  max-width: min(26rem, calc(100% - 4.5rem));
   display: grid;
   gap: var(--spacing-2);
   padding: var(--spacing-3);
   border: var(--border-width) solid var(--color-border-emphasized);
   border-radius: var(--radius-element);
   background: var(--color-background-popover);
-  box-shadow: var(--shadow-med, 0 6px 16px var(--color-shadow));
+  box-shadow: 0 6px 16px var(--color-shadow);
   font-family: var(--font-family-body);
   font-size: var(--font-size-sm);
+  /* The beat an editor waits before it decides you meant to hover. Without it
+     the card is already open as the pointer lands, which reads as the card
+     having been waiting rather than having been asked. */
+  animation: story-pop 190ms ease-out 240ms both;
 }
-
-/* Delayed to the beat after the cursor lands, and `both` so it is not on
-   screen before then. Only while the story is on its opening stage. */
-.story-popover.is-entering { animation: story-pop 220ms ease-out 1250ms both; }
 
 @keyframes story-pop {
   from { opacity: 0; transform: translateY(6px) scale(0.98); }
   to { opacity: 1; transform: none; }
-}
-
-/* While it is looking. The card is already the size it will be, so filling it
-   in does not move the page. */
-.story-looking {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-2);
-  margin: 0;
-  min-height: 3.4rem;
-  color: var(--color-text-secondary);
-}
-
-/* Nobody who asked not to be moved should have to watch a cursor travel. */
-@media (prefers-reduced-motion: reduce) {
-  .story-popover.is-entering,
-  .story-pointer,
-  .story-pointer .is-arrow,
-  .story-pointer .is-hand {
-    animation: none;
-  }
-  .story-pointer .is-arrow { opacity: 0; }
 }
 
 .story-popover ul {
@@ -256,43 +242,71 @@
 
 .story-popover span { color: var(--color-text-secondary); font-size: var(--font-size-xs); }
 
-/* -------------------------------------------------------------- the stage -- */
-
-.story-stage {
-  display: grid;
-  align-content: start;
+/* While it is looking. */
+.story-looking {
+  display: flex;
+  align-items: center;
   gap: var(--spacing-2);
-  padding: var(--spacing-4);
-  min-width: 0;
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+/* ------------------------------------------------------------- the panel -- */
+
+/* **It comes up from underneath, not in from the side.** The code window is
+   full size whenever the panel has nothing to say, and when it does the panel
+   rises into the room below the card rather than taking the width — which is
+   the one arrangement that is the same shape on a phone as on a desktop. */
+.story-panel {
+  position: absolute;
+  z-index: 4;
+  inset-inline: 0;
+  inset-block-end: 0;
+  height: 54%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4);
+  border-block-start: var(--border-width) solid var(--color-border-emphasized);
+  background: var(--color-background-card);
+  box-shadow: 0 -8px 24px -12px var(--color-shadow);
+  transform: translateY(102%);
+  transition: transform 460ms cubic-bezier(0.32, 0.72, 0.2, 1);
   overflow: hidden;
 }
 
-.story-note,
-.story-ask {
-  display: grid;
-  gap: var(--spacing-2);
-  align-content: center;
-  min-height: 12rem;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+.story-panel.is-open { transform: none; }
+
+.story-panel pre.astryx-codeblock { margin: 0; height: 100%; }
+
+/* The block scrolls its own body, and that body is sized to the text. Left
+   alone its scrollbar lands wherever the last line ends, floating in the middle
+   of the pane. Stretching it puts the bar on the floor, where a scrollbar goes. */
+.story-panel pre.astryx-codeblock > div:not(.astryx-codeblock-header) {
+  flex: 1;
+  min-height: 0;
 }
 
-.story-ask code {
-  padding: 0 var(--spacing-1);
-  border-radius: var(--radius-inner);
-  background: var(--color-background-muted);
-  font-family: var(--font-family-code);
-}
-
-/* The query is a code block, painted by the engine's own lexer. */
-.story-stage pre.astryx-codeblock { margin: 0; }
-
-.story-scan,
-.story-answer {
+.story-query,
+.story-scan {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: var(--spacing-2);
   min-height: 0;
+  height: 100%;
+}
+
+.story-note {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
 }
 
 .story-scan-head {
@@ -322,7 +336,7 @@
   display: grid;
   align-content: start;
   gap: var(--spacing-0-5);
-  max-height: 14rem;
+  min-height: 0;
   overflow-y: auto;
   font-family: var(--font-family-code);
   font-size: var(--font-size-xs);
@@ -353,15 +367,6 @@
 .story-rows .is-here .p { color: var(--color-text-secondary); }
 .story-rows .is-held { background: var(--color-background-muted); }
 .story-rows .is-dropped { opacity: 0.45; }
-
-.story-rows .is-answer {
-  grid-template-columns: minmax(0, 1fr);
-  background: var(--color-success-muted);
-  color: var(--color-text-primary);
-  padding: var(--spacing-1-5) var(--spacing-2);
-}
-
-.story-rows .is-answer .k { white-space: normal; }
 
 /* --------------------------------------------------------------- the foot -- */
 
@@ -396,7 +401,8 @@
 
 .story-dots button.is-at { background: var(--color-accent); }
 
-.story-dots .story-replay {
+/* Moving content that plays on its own needs a way to stop it. */
+.story-dots .story-play {
   width: auto;
   height: auto;
   padding: var(--spacing-1) var(--spacing-2);
@@ -408,18 +414,24 @@
   font-size: var(--font-size-xs);
 }
 
-.story-dots .story-replay:hover { color: var(--color-text-primary); }
+.story-dots .story-play:hover { color: var(--color-text-primary); }
+
+/* Nobody who asked not to be moved should watch a cursor travel. */
+@media (prefers-reduced-motion: reduce) {
+  .story-cursor,
+  .story-cursor-y,
+  .story-cursor .is-arrow,
+  .story-cursor .is-hand,
+  .story-panel {
+    transition: none;
+  }
+  .story-popover { animation: none; }
+}
 
 @container (max-width: 46rem) {
-  .story-panes { grid-template-columns: minmax(0, 1fr); }
-  /* Stacked, the file pane is only as tall as three lines, and the card that
-     opens over them needs somewhere to be. */
-  .story-code { padding-block-end: var(--spacing-12); }
-  .story-panes > * + * {
-    border-inline-start: 0;
-    border-block-start: var(--border-width) solid var(--color-border);
-  }
-  .story-rows { max-height: 11rem; }
+  .story-panel { height: 52%; }
+  .story-popover { max-width: calc(100% - 4rem); }
+  .story-code { font-size: var(--font-size-xs); }
 }
 
 /* ---------------------------------------------------------------- columns -- */

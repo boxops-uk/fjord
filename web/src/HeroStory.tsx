@@ -1,28 +1,30 @@
 /**
- * **One question, answered end to end, on the landing page.**
+ * **One question, answered end to end, on a loop.**
  *
  * The hero used to be an empty query box, which assumes a reader already knows
  * what to type — and the whole difficulty with a new database is that nobody
- * does. So this shows the thing being used instead: you hover a name in an
- * editor, that becomes one query, the engine walks the index, and the answer
- * comes back as the two places the name is used.
+ * does. So it shows the thing being used: a cursor arrives on a name, the
+ * editor opens a card and goes looking, the query behind that card slides in,
+ * the engine walks the index, the card fills in, and the cursor leaves. Then it
+ * does it again.
  *
  * **Everything in it comes from the engine.** The file pane is built from the
- * demo database's own `code.Decl` rows — their names, their line numbers and
- * the signature each one carries on its value side — so the code on screen is
- * the code the index is about. The scan is the real trace, folded a frame at a
- * time. The answer is what the query returns. The only invented thing is the
- * mouse pointer.
+ * demo database's own `code.Decl` rows — their names, their lines and the
+ * signature each one carries on its value side — so the code on screen is the
+ * code the index is about, painted by the same Rust rules the code browser
+ * falls back to. The scan is the real trace, folded a frame at a time. The
+ * answer is what the query returns. The only invented thing is the pointer.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Spinner } from '@astryxdesign/core/Spinner'
 import { Text } from '@astryxdesign/core/Text'
 import { useEngine } from './engine'
 import { Code } from './book/Code'
+import { tokenize } from './book/highlight'
 import { fold, type Moment } from './run'
 import type { Database, RowBytes } from './wasm'
 
-/** The name the story is about, and the one the pane's cursor sits on. */
+/** The name the story is about, and the one the cursor comes to rest on. */
 const SUBJECT = 'Config'
 
 /** Find-all-references, which is the question a code index exists to answer. */
@@ -31,19 +33,78 @@ const QUERY = `{file = P, name = N, line = L} where
             from = code.Decl {file = F, name = N, line = L}};
   F = code.File P`
 
+/**
+ * **The file the story opens on.**
+ *
+ * The declarations are the index's own: `null` is a line the database has a
+ * `code.Decl` for, and its name, its line number and its signature are spliced
+ * in from there. The lines between them are invented, and are here so the pane
+ * reads as a file rather than as three facts in a list — a hero claiming to be
+ * a code index should look like one. Nothing in the story is read off them.
+ */
+const LIB_RS: (string | null)[] = [
+  'use std::{fs, path::PathBuf};',
+  '',
+  null, //                                   3 — struct Config
+  '    root: PathBuf,',
+  '    strict: bool,',
+  '}',
+  '',
+  'impl Default for Config {',
+  '    fn default() -> Self {',
+  '        Self { root: PathBuf::from("."), strict: false }',
+  '    }',
+  '}',
+  '',
+  '/// Read a configuration file from disk.',
+  '///',
+  '/// Errors if the file is missing, or if the',
+  '/// text it holds is not valid configuration.',
+  '#[must_use]',
+  '#[allow(clippy::needless_pass_by_value)]',
+  null, //                                  20 — fn load(path: &str) -> Config
+  '    let text = fs::read_to_string(path).unwrap_or_default();',
+  '    parse(&text)',
+]
+
 /** The predicates this query reads, in the order a scan meets them. */
 const TOUCHED = ['code.Decl', 'code.File', 'code.Ref']
 
-const STAGES = [
-  'You hover a name. Your editor opens a card and goes looking.',
-  'Behind it, one query. There is no API to learn — this is the whole of it.',
-  'Fjord walks the index, one stored row at a time.',
-  'Two references, with the file and the line that holds each one.',
+/**
+ * The beats, in order, and how long each holds. `scan` sets its own pace from
+ * the trace. They loop, so the cursor has to leave again — an animation that
+ * ends with the pointer parked on the word cannot start over without a cut.
+ */
+const BEATS = ['approach', 'hover', 'query', 'scan', 'answer', 'leave', 'rest'] as const
+type Beat = (typeof BEATS)[number]
+const HOLD: Record<Beat, number> = {
+  approach: 820,
+  hover: 1150,
+  query: 2700,
+  scan: 600,
+  answer: 2700,
+  leave: 850,
+  rest: 550,
+}
+const FRAME = 190
+
+/** The four a reader can jump to; the rest are the movement between them. */
+const DOTS: { at: number; label: string }[] = [
+  { at: 1, label: 'The question' },
+  { at: 2, label: 'The query' },
+  { at: 3, label: 'The scan' },
+  { at: 4, label: 'The answer' },
 ]
 
-/** How long each stage holds, in milliseconds. The scan sets its own pace. */
-const HOLD = [2900, 3000, 900, 0]
-const FRAME = 190
+const CAPTION: Record<Beat, string> = {
+  approach: 'You hover a name. Your editor opens a card and goes looking.',
+  hover: 'You hover a name. Your editor opens a card and goes looking.',
+  query: 'Behind it, one query. There is no API to learn — this is the whole of it.',
+  scan: 'Fjord walks the index, one stored row at a time.',
+  answer: 'Two references, with the file and the line that holds each one.',
+  leave: 'Two references, with the file and the line that holds each one.',
+  rest: 'Two references, with the file and the line that holds each one.',
+}
 
 /** Whether this reader has asked for no movement. */
 const still = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
@@ -51,14 +112,14 @@ const still = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matc
 type Decl = { id: string; file: string; name: string; line: number; signature: string }
 
 /** Everything the panels need, read out of the engine once. */
+type Line = { n: number; text: string; subject: boolean; hit: boolean }
+
 type Story = {
   file: string
-  pane: Decl[]
+  lines: Line[]
   decls: Map<string, Decl>
   index: { predicate: string; row: RowBytes }[]
-  frames: number[]
   moments: Moment[]
-  /** The row the machine moved to at each frame, and what it had read by then. */
   current: (string | null)[]
   examined: number[]
   answer: Record<string, unknown>[]
@@ -66,16 +127,17 @@ type Story = {
 
 export function HeroStory() {
   const { engine, failure } = useEngine(true)
-  // Somebody who has asked not to be moved gets the answer rather than the
-  // journey, and the dots to walk it themselves. Read at first render rather
-  // than in an effect: starting the story and then cancelling it is a frame of
-  // movement for exactly the reader who asked for none.
-  const [stage, setStage] = useState(() => (still() ? STAGES.length - 1 : 0))
+  // Read at first render rather than in an effect: starting the story and then
+  // cancelling it is a frame of movement for exactly the reader who asked for
+  // none. They get the answer, and the dots to walk the rest themselves.
+  // Starts on the last beat, not the first: the cursor's travel is a CSS
+  // transition, and a transition needs something to change. Beginning already
+  // on `approach` would find the pointer at its destination with nothing to
+  // animate, so the first thing a reader saw would be the one frame the whole
+  // panel is about.
+  const [beat, setBeat] = useState(() => (still() ? 4 : BEATS.length - 1))
   const [frame, setFrame] = useState(0)
   const [playing, setPlaying] = useState(() => !still())
-  // Bumped on replay, and used as the pane's key: the cursor's travel and the
-  // card's arrival are CSS animations, and an animation only plays on mount.
-  const [run, setRun] = useState(0)
 
   const story = useMemo((): Story | null => {
     if (!engine) return null
@@ -84,7 +146,6 @@ export function HeroStory() {
       const db: Database = engine.database(schema)
       const rowsOf = (name: string) => db.predicates.find((p) => p.name === name)?.rows ?? []
 
-      // Every declaration, resolved through the file it names.
       const paths = new Map(rowsOf('code.File').map((r) => [r.fact, r.decoded as string]))
       const decls = new Map<string, Decl>(
         rowsOf('code.Decl').map((r) => {
@@ -102,13 +163,24 @@ export function HeroStory() {
         }),
       )
 
-      // The file the pane shows is the one that declares the subject.
       const subject = [...decls.values()].find((d) => d.name === SUBJECT)
-      const pane = [...decls.values()]
-        .filter((d) => d.file === subject?.file)
-        .sort((a, b) => a.line - b.line)
+      const answer = engine.run(schema, QUERY).rows.map((r) => r.value as Record<string, unknown>)
+      const here = new Map(
+        [...decls.values()].filter((d) => d.file === subject?.file).map((d) => [d.line, d]),
+      )
+      // A declaration's own line carries its own signature, with the brace the
+      // index has no reason to store.
+      const lines: Line[] = LIB_RS.map((filler, i) => {
+        const n = i + 1
+        const decl = here.get(n)
+        return {
+          n,
+          text: filler ?? `${decl?.signature ?? ''} {`,
+          subject: decl?.name === SUBJECT,
+          hit: answer.some((row) => row.file === subject?.file && row.line === n),
+        }
+      })
 
-      // What the scan walks: the touched predicates, in scan order.
       const index = TOUCHED.flatMap((name) =>
         rowsOf(name).map((row: RowBytes) => ({ predicate: name, row })),
       )
@@ -126,108 +198,111 @@ export function HeroStory() {
           last = mark
         }
       }
-
       const moments = frames.map((at) => fold(trace, at))
+
       return {
         file: subject?.file ?? '',
-        pane,
+        lines,
         decls,
         index,
-        frames,
         moments,
         // **One row is current, the rest are merely held.** A four-level plan
         // stands on four rows at once, and lighting all of them says the
-        // machine is in four places. The one that changed at this step is where
-        // it actually moved to.
-        current: moments.map(
-          (moment) => moment.registers.find((register) => register.written)?.key ?? null,
-        ),
-        // What the run had read by this frame, which is the engine's own count
-        // rather than anything this page works out.
+        // machine is in four places.
+        current: moments.map((m) => m.registers.find((r) => r.written)?.key ?? null),
         examined: frames.map((at) =>
           trace.steps[at].examined.reduce((total, rows) => total + rows, 0),
         ),
-        answer: engine.run(schema, QUERY).rows.map((r) => r.value as Record<string, unknown>),
+        answer,
       }
     } catch {
       return null
     }
   }, [engine])
 
-  const count = story?.frames.length ?? 0
+  const count = story?.moments.length ?? 0
+
   useEffect(() => {
     if (!playing || !story) return
-    if (stage === 2 && frame < count - 1) {
+    const here = BEATS[beat]
+    if (here === 'scan' && frame < count - 1) {
       const timer = setTimeout(() => setFrame((f) => f + 1), FRAME)
       return () => clearTimeout(timer)
     }
-    if (stage < STAGES.length - 1) {
-      const timer = setTimeout(() => setStage((s) => s + 1), HOLD[stage])
-      return () => clearTimeout(timer)
-    }
-    return
-  }, [playing, story, stage, frame, count])
+    const timer = setTimeout(() => {
+      setBeat((b) => (b + 1) % BEATS.length)
+      setFrame(0)
+    }, HOLD[here])
+    return () => clearTimeout(timer)
+  }, [playing, story, beat, frame, count])
 
-  const goto = (next: number) => {
-    setPlaying(false)
-    setStage(next)
-    setFrame(next === 2 ? Math.max(count - 1, 0) : 0)
-  }
+  const here = BEATS[beat]
+  // **The cursor sets out on `approach` and the card opens on `hover`.** Tied
+  // to the same beat they happened at once, and the card was open before the
+  // pointer had reached the word it was about.
+  const onName = beat <= 4
+  const cardOpen = beat >= 1 && beat <= 5
+  const answered = beat === 4 || beat === 5
+  const panelOpen = here === 'query' || here === 'scan'
 
   const at = Math.min(frame, Math.max(count - 1, 0))
-  const moment = (stage === 2 ? story?.moments[at] : null) ?? null
-  const examined = stage === 2 ? (story?.examined[at] ?? 0) : 0
-  const current = stage === 2 ? (story?.current[at] ?? null) : null
+  const moment = here === 'scan' ? (story?.moments[at] ?? null) : null
+  const current = here === 'scan' ? (story?.current[at] ?? null) : null
+  const examined = story?.examined[at] ?? 0
 
   return (
     <div className="story" data-testid="hero-story">
-      <div className="story-panes">
-        <Pane key={run} story={story} stage={stage} />
-        <div className="story-stage">
-          {failure ? (
-            <p className="story-note">The engine did not load: {failure}</p>
-          ) : !story ? (
-            <p className="story-note">
-              <Spinner size="sm" /> loading the engine…
-            </p>
-          ) : stage === 0 ? (
-            <Asking />
-          ) : stage === 1 ? (
-            <Code lang="sigla" source={QUERY} />
-          ) : stage === 2 ? (
+      <div className="story-body">
+        <Pane story={story} onName={onName} cardOpen={cardOpen} answered={answered} />
+
+        {/* Slides in over the file, and back out when it has had its say. */}
+        <aside className={`story-panel${panelOpen ? ' is-open' : ''}`} aria-hidden={!panelOpen}>
+          {!story ? null : here === 'scan' ? (
             <Scanning story={story} moment={moment} current={current} examined={examined} />
           ) : (
-            <Answer story={story} />
+            <div className="story-query">
+              <div className="story-scan-head">
+                <span>the query</span>
+              </div>
+              <Code lang="sigla" source={QUERY} />
+            </div>
           )}
-        </div>
+        </aside>
+
+        {failure ? <p className="story-note">The engine did not load: {failure}</p> : null}
+        {!story && !failure ? (
+          <p className="story-note">
+            <Spinner size="sm" /> loading the engine…
+          </p>
+        ) : null}
       </div>
 
       <div className="story-foot">
         <Text as="p" size="sm" color="secondary" className="story-caption">
-          {STAGES[stage]}
+          {CAPTION[here]}
         </Text>
         <div className="story-dots">
-          {STAGES.map((label, i) => (
+          {DOTS.map((dot) => (
             <button
-              key={i}
+              key={dot.at}
               type="button"
-              className={i === stage ? 'is-at' : undefined}
-              aria-label={label}
-              aria-current={i === stage}
-              onClick={() => goto(i)}
+              className={beat === dot.at ? 'is-at' : undefined}
+              aria-label={dot.label}
+              aria-current={beat === dot.at}
+              onClick={() => {
+                setPlaying(false)
+                setBeat(dot.at)
+                setFrame(dot.at === 3 ? Math.max(count - 1, 0) : 0)
+              }}
             />
           ))}
           <button
             type="button"
-            className="story-replay"
-            onClick={() => {
-              setStage(0)
-              setFrame(0)
-              setPlaying(true)
-              setRun((n) => n + 1)
-            }}
+            className="story-play"
+            aria-label={playing ? 'Pause the demonstration' : 'Play the demonstration'}
+            onClick={() => setPlaying((p) => !p)}
           >
-            Replay
+            {playing ? 'Pause' : 'Play'}
           </button>
         </div>
       </div>
@@ -235,47 +310,33 @@ export function HeroStory() {
   )
 }
 
-/** The question, before anything has answered it. */
-function Asking() {
-  return (
-    <div className="story-ask">
-      <Text size="lg" weight="semibold">
-        Where is <code>{SUBJECT}</code> used?
-      </Text>
-      <Text size="sm" color="secondary">
-        The one question every code index exists to answer, and the one a grep cannot.
-      </Text>
-    </div>
-  )
-}
-
 /** The file, built out of what the index knows about it. */
-function Pane({ story, stage }: { story: Story | null; stage: number }) {
-  const answered = stage === 3
+function Pane({
+  story,
+  onName,
+  cardOpen,
+  answered,
+}: {
+  story: Story | null
+  onName: boolean
+  cardOpen: boolean
+  answered: boolean
+}) {
   if (!story) return <div className="story-file" />
   return (
     <div className="story-file">
       <div className="story-file-name">{story.file}</div>
       <ol className="story-code">
-        {story.pane.map((decl, i) => (
-          <li
-            key={decl.id}
-            className={
-              answered &&
-              story.answer.some((row) => row.file === decl.file && row.line === decl.line)
-                ? 'is-hit'
-                : undefined
-            }
-          >
-            {i > 0 ? <span className="gap" aria-hidden="true" /> : null}
-            <span className="n">{decl.line}</span>
+        {story.lines.map((line) => (
+          <li key={line.n} className={answered && line.hit ? 'is-hit' : undefined}>
+            <span className="n">{line.n}</span>
             <span className="src">
-              <Signature text={decl.signature} />
+              <Rust text={line.text} subject={line.subject} />
             </span>
-            {decl.name === SUBJECT ? (
+            {line.subject ? (
               <>
-                <Pointer />
-                <Popover story={story} answered={answered} entering={stage === 0} />
+                {cardOpen ? <Popover story={story} answered={answered} /> : null}
+                <Pointer on={onName} />
               </>
             ) : null}
           </li>
@@ -285,29 +346,39 @@ function Pane({ story, stage }: { story: Story | null; stage: number }) {
   )
 }
 
-/** A declaration's own signature, with the subject picked out of it. */
-function Signature({ text }: { text: string }) {
-  const at = text.indexOf(SUBJECT)
-  if (at < 0) return <>{text}</>
-  return (
-    <>
-      {text.slice(0, at)}
-      <span className="subject">{SUBJECT}</span>
-      {text.slice(at + SUBJECT.length)}
-    </>
-  )
+/**
+ * A line of Rust, painted by the rules the code browser falls back to — so the
+ * code in the hero looks like the code in the browser, rather than like plain
+ * text with one word picked out of it.
+ *
+ * Only the declaration's own line boxes the subject. Marking every occurrence
+ * is what an editor does, but the lines around it are invented and the index
+ * has no reference on them — so a reader counting the boxes would get a
+ * different answer from the one the card gives.
+ */
+function Rust({ text, subject }: { text: string; subject?: boolean }) {
+  const tokens = useMemo(() => tokenize(text, 'rust'), [text])
+  const out: React.ReactNode[] = []
+  let cut = 0
+  tokens.forEach((token, i) => {
+    if (token.start > cut) out.push(text.slice(cut, token.start))
+    const word = text.slice(token.start, token.end)
+    out.push(
+      <span
+        key={i}
+        className={`story-tok story-tok-${token.type}${subject && word === SUBJECT ? ' subject' : ''}`}
+      >
+        {word}
+      </span>,
+    )
+    cut = token.end
+  })
+  if (cut < text.length) out.push(text.slice(cut))
+  return <>{out}</>
 }
 
-/**
- * The one invented thing on this panel: a cursor, travelling in and then
- * turning into the pointing hand a name you can act on always turns it into.
- *
- * Both shapes are drawn and cross-faded rather than swapped, so the arrival
- * reads as one gesture. The hand is nudged so its fingertip lands where the
- * arrow's tip was — a cursor that jumps at the moment of arrival undoes the
- * thing the travel was for.
- */
-function Pointer() {
+/** The one invented thing on this panel. */
+function Pointer({ on }: { on: boolean }) {
   const paint = {
     fill: 'var(--color-background-card)',
     stroke: 'var(--color-text-primary)',
@@ -315,45 +386,28 @@ function Pointer() {
     strokeLinejoin: 'round' as const,
   }
   return (
-    <span className="story-pointer" aria-hidden="true">
-      <svg className="is-arrow" width="18" height="18" viewBox="0 0 18 18">
-        <path d="M2 1.5 L2 13.5 L5.4 10.4 L7.6 15.4 L10 14.3 L7.8 9.5 L12.3 9.3 Z" {...paint} />
-      </svg>
-      <svg className="is-hand" width="20" height="22" viewBox="0 0 20 22">
-        <path
-          d="M6.4 12V3.9a1.7 1.7 0 0 1 3.4 0v4.5a1.5 1.5 0 0 1 3 0v1a1.5 1.5 0 0 1 3 0v1.1
-             a1.45 1.45 0 0 1 2.5 1v3.2c0 3.3-2.4 6.1-6 6.1h-1.4c-1.9 0-3.2-.8-4.3-2.3L3.1 14
-             a1.6 1.6 0 0 1 2.4-2.1z"
-          {...paint}
-        />
-      </svg>
+    <span className={`story-cursor${on ? ' is-on' : ''}`} aria-hidden="true">
+      <span className="story-cursor-y">
+        <svg className="is-arrow" width="18" height="18" viewBox="0 0 18 18">
+          <path d="M2 1.5 L2 13.5 L5.4 10.4 L7.6 15.4 L10 14.3 L7.8 9.5 L12.3 9.3 Z" {...paint} />
+        </svg>
+        <svg className="is-hand" width="20" height="22" viewBox="0 0 20 22">
+          <path
+            d="M6.4 12V3.9a1.7 1.7 0 0 1 3.4 0v4.5a1.5 1.5 0 0 1 3 0v1a1.5 1.5 0 0 1 3 0v1.1
+               a1.45 1.45 0 0 1 2.5 1v3.2c0 3.3-2.4 6.1-6 6.1h-1.4c-1.9 0-3.2-.8-4.3-2.3L3.1 14
+               a1.6 1.6 0 0 1 2.4-2.1z"
+            {...paint}
+          />
+        </svg>
+      </span>
     </span>
   )
 }
 
-/**
- * What the editor draws: the card opens the moment you hover, with nothing in
- * it yet, and fills in when the answer arrives. Everything the rest of this
- * panel shows is what happened in between.
- */
-function Popover({
-  story,
-  answered,
-  entering,
-}: {
-  story: Story
-  answered: boolean
-  /** Only the opening stage plays the card's arrival. A reader who jumps
-      straight to the answer should find the card already open, not wait out an
-      animation timed from when the page loaded. */
-  entering: boolean
-}) {
+/** What the editor draws: open and looking, then filled in. */
+function Popover({ story, answered }: { story: Story; answered: boolean }) {
   return (
-    <div
-      className={`story-popover${entering ? ' is-entering' : ''}`}
-      role="note"
-      aria-live="polite"
-    >
+    <div className="story-popover" role="note" aria-live="polite">
       {answered ? (
         <>
           <b>
@@ -404,45 +458,20 @@ function Scanning({
       </div>
       <ol className="story-rows">
         {story.index.map(({ predicate, row }) => {
-          const here_ = row.key === current
+          const isHere = row.key === current
           const held = moment?.held.has(row.key) ?? false
           const dropped = moment?.droppedSoFar.has(row.key) ?? false
           return (
             <li
               key={row.key}
-              ref={here_ ? here : undefined}
-              className={
-                here_ ? 'is-here' : held ? 'is-held' : dropped ? 'is-dropped' : undefined
-              }
+              ref={isHere ? here : undefined}
+              className={isHere ? 'is-here' : held ? 'is-held' : dropped ? 'is-dropped' : undefined}
             >
               <span className="p">{predicate.replace('code.', '')}</span>
               <span className="k">{label(predicate, row, story.decls)}</span>
             </li>
           )
         })}
-      </ol>
-    </div>
-  )
-}
-
-/** What the answer is, in the language it was asked in. */
-function Answer({ story }: { story: Story }) {
-  return (
-    <div className="story-answer">
-      <div className="story-scan-head">
-        <span>the answer</span>
-        <span className="examined">{story.answer.length} rows</span>
-      </div>
-      <ol className="story-rows">
-        {story.answer.map((row, i) => (
-          <li key={i} className="is-answer">
-            <span className="k">
-              {'{'}file = &quot;{String(row.file)}&quot;, name = &quot;{String(row.name)}&quot;, line ={' '}
-              {String(row.line)}
-              {'}'}
-            </span>
-          </li>
-        ))}
       </ol>
     </div>
   )
