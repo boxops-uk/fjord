@@ -655,12 +655,57 @@ check('a hover card is anchored on the name it describes', astray.length === 0, 
 // this index only *names* still gets the line that says so.
 check('every hovered name says something', silent.length === 0, silent.join(', '))
 
+// **The root is the pitch, and the pitch runs the database.** A landing page
+// whose demo is a picture of a demo is the thing this site exists not to be, so
+// the claim it makes about itself is checked the same way every other one is.
 await page.goto(url, { waitUntil: 'networkidle0' })
+await page.waitForSelector('[data-testid="landing"]')
+
+check(
+  'the site opens on the landing page',
+  (await page.$eval('[data-testid="landing"] h1', (el) => el.textContent ?? '')).includes(
+    'facts about your code',
+  ),
+)
+// The reading order is *in* the page — it is the drawer the burger opens — so
+// the claim is that none of it is drawn beside the hero, not that it is absent.
+check(
+  'the landing page keeps the reading order off the page',
+  await page.$$eval('.astryx-side-nav-item', (links) =>
+    links.every((link) => link.getBoundingClientRect().width === 0),
+  ),
+)
+
+await page.waitForFunction(() => document.querySelectorAll('.live-answer li').length > 0, {
+  timeout: 20_000,
+})
+check(
+  'the landing page answers a real query',
+  (await texts('.live-answer li')).length === 7,
+  `${(await texts('.live-answer li')).length} rows`,
+)
+await type('.live .editor .input', 'P where code.File P')
+const asked = await texts('.live-answer li')
+check(
+  'editing the landing query re-runs it',
+  asked.length === 4 && asked.every((row) => row.startsWith('"')),
+  asked.join(' '),
+)
+// A query that cannot compile says so rather than showing the last answer.
+await type('.live .editor .input', 'N where code.Nonesuch N')
+check(
+  'a broken landing query reports the diagnostic',
+  (await texts('.live-faults li')).some((fault) => fault.includes('unknown-predicate')),
+  (await texts('.live-faults li')).join(' '),
+)
+
+// Into the book, where the reading order is a column again.
+await page.goto(`${url}overview`, { waitUntil: 'networkidle0' })
 await page.waitForSelector('[data-testid="prose"] h1')
 
 check(
-  'the site opens on the book',
-  (await page.$eval('[data-testid="prose"] h1', (el) => el.textContent)) === 'Fjord DB',
+  'the book opens on its overview',
+  (await page.$eval('[data-testid="prose"] h1', (el) => el.textContent)) === 'Overview',
 )
 check(
   'the reading order is the one the generator publishes',

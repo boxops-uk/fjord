@@ -4,7 +4,8 @@ The design book with the engine itself running in it. React and Vite, with
 `fjord-engine` compiled to WebAssembly — so a page that shows what the lexer
 does is *asking the lexer*, not paraphrasing it.
 
-**The pages are `src/content/`**, one MDX file each, compiled in. **This is what
+**The root is a landing page** — `src/Landing.tsx`, not a page of the book —
+and **the pages are `src/content/`**, one MDX file each, compiled in. **This is what
 CI publishes** — to <https://boxops-uk.github.io/fjord/>, and as the docs bundle
 a release carries. The reading order is `src/content/nav.json`, which the sidebar
 and the route list both read. A page is prose where prose is enough and a
@@ -119,8 +120,11 @@ with a database behind it — `run` and `store` demos need rows, so they use it.
 
 | Path | Holds |
 |---|---|
-| `src/App.tsx` | the router: a path is a page, and `/playground` is the workbench |
-| `src/book/mdx.tsx` | the book's tags as components: a heading is a `Heading`, a table is a `Table`, a callout is a `Banner`, a fence is a `CodeBlock`, a demo is the engine |
+| `src/App.tsx` | the router: a path is a page, `/` is the landing page, and `/playground` is the workbench |
+| `src/Landing.tsx` | the landing page — what Fjord is, before the book explains it. A component rather than an MDX page, because it is not prose the reading order owns |
+| `src/LiveQuery.tsx` | its hero: the engine with everything between taken out, so a query goes in and rows come out |
+| `src/book/mdx.tsx` | the book's tags as components: a heading is a `Heading`, a table is a `Table`, a callout is a `Banner`, a fence is a `CodeBlock`, a demo is the engine. Also where a body cell is given the heading above it, for the phone |
+| `src/book/Diagram.tsx` | the eight diagrams a page can name — a byte layout, a sequence diagram, a tree — drawn as elements rather than in box characters |
 | `src/book/PageView.tsx` | one page: its title, the compiled MDX rendered through that map, and the pager |
 | `mdx/headings.mjs` | the anchor every heading earns, and the list a page exports — read by the search index and by the link gate, so nothing computes an anchor twice |
 | `src/book/content.ts` | the pages, globbed from `src/content/`; the search index is every page's headings, built when somebody first searches |
@@ -144,7 +148,9 @@ with a database behind it — `run` and `store` demos need rows, so they use it.
 | `src/Editor.tsx` | a textarea with the real tokens painted underneath it — used for the query and the schema, since the only difference is which lexer produced the tokens |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |
 | `src/span.ts` | what the cursor is on, and the rule every view highlights by: a node lights up **its subtree** and the bytes it covers, never the path above it — that is what the indentation already shows |
-| `src/book.css` | the only custom CSS on a page: the two class names the *book* uses in its own authored HTML, scoped so they cannot collide with a component's |
+| `src/book.css` | the book's own CSS: the class names it uses in authored HTML, the reading rhythm, and the rule that turns a wide table into a list of cards on a phone |
+| `src/book/diagram.css` | the diagrams' styling, in design tokens |
+| `src/landing.css` | the landing page's |
 | `src/app.css` | the workbench's panels — the parts the design system has no component for — in design tokens |
 | `smoke.mjs` | the end-to-end check — it drives the built bundle in Chrome, over both halves |
 

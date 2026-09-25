@@ -1,0 +1,194 @@
+/* **The landing page.**
+
+   The book's pages are prose in one measure; this one is a page with sections,
+   so it sets its own rhythm. Everything here is a design token, as everywhere
+   else on this site — the landing page is not where a brand colour gets
+   invented. */
+
+.landing {
+  --measure: clamp(20rem, 92vw, 64rem);
+  display: grid;
+  justify-items: center;
+  gap: var(--spacing-12);
+  padding: var(--spacing-10) var(--spacing-4) var(--spacing-12);
+}
+
+.landing section {
+  width: var(--measure);
+  display: grid;
+  gap: var(--spacing-4);
+}
+
+.landing .hero { gap: var(--spacing-5); justify-items: center; text-align: center; }
+
+/* The pitch reads at a shorter measure than the demo under it. */
+.landing .hero > p { max-width: 44rem; }
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--spacing-3);
+}
+
+.landing .hero-foot { max-width: 40rem; }
+
+.landing .band { padding-block-start: var(--spacing-6); }
+.landing .band.last { padding-block-end: var(--spacing-8); }
+
+.landing h3 {
+  margin: 0 0 var(--spacing-2);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+}
+
+.landing p { margin: 0; line-height: 1.65; text-wrap: pretty; }
+
+/* ------------------------------------------------------------- live query --
+
+   The one place on this page where the engine is doing something. It is a
+   panel rather than a card in prose: the editor is edge to edge in it, as it
+   is in a demo, so the box reads as an instrument. */
+
+.live {
+  width: 100%;
+  display: grid;
+  gap: 0;
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  overflow: hidden;
+  text-align: start;
+}
+
+.live-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4);
+  border-block-end: var(--border-width) solid var(--color-border);
+}
+
+/* The editor is the design system's neighbour here, not a child of the prose:
+   it draws its own frame, and inside a panel that frame is the panel's. */
+.live .editor {
+  border-inline: 0;
+  border-block-start: 0;
+  border-radius: 0;
+}
+
+.live-rows {
+  padding: var(--spacing-3) var(--spacing-4);
+  border-block-start: var(--border-width) solid var(--color-border);
+  background: var(--color-background-muted);
+  min-height: 7.5rem;
+}
+
+.live-note {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.live-answer,
+.live-faults {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--spacing-1);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-sm);
+}
+
+.live-answer li { color: var(--color-text-primary); }
+
+.live-faults li {
+  color: var(--color-error);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+}
+
+.live-faults code {
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+/* ---------------------------------------------------------------- columns -- */
+
+.landing .three,
+.landing .two,
+.landing .cards {
+  display: grid;
+  gap: var(--spacing-4);
+}
+
+.landing .three { grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.landing .two { grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+.landing .cards { grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+
+.landing .three article,
+.landing .two article {
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+}
+
+.landing .three article p,
+.landing .two article li {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+/* The reset takes the markers off every list; a column of claims reads as
+   prose without them. */
+.landing .two ul {
+  margin: 0;
+  padding-inline-start: var(--spacing-5);
+  list-style: disc;
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.landing .two li::marker { color: var(--color-text-disabled); }
+
+/* A tick and a rule, rather than two colours doing the work: the page's accent
+   is a red that means *a byte the lexer refused* everywhere else on this site,
+   and a column of it under "not for" would read as a list of faults. */
+.landing .two .good { border-color: var(--color-success-muted); }
+
+.landing .cards .card {
+  display: grid;
+  gap: var(--spacing-1);
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.landing .cards .card:hover { border-color: var(--color-accent); }
+.landing .cards .card b { font-weight: var(--font-weight-semibold); }
+
+.landing .cards .card span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.55;
+}
+
+@media (max-width: 40rem) {
+  .landing { gap: var(--spacing-8); padding-block-start: var(--spacing-6); }
+  .landing .band { padding-block-start: var(--spacing-2); }
+
+  /* A display heading is sized for a page that has room for one. Six words at
+     that size is four lines on a phone, which is a wall rather than a
+     headline. */
+  .landing .hero h1 { font-size: var(--font-size-3xl); line-height: 1.15; }
+  .landing .hero > p { font-size: var(--font-size-base); }
+}
