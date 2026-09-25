@@ -15,13 +15,10 @@ import { Heading } from '@astryxdesign/core/Heading'
 import { Link } from '@astryxdesign/core/Link'
 import { Text } from '@astryxdesign/core/Text'
 import { route } from './book/links'
-import { LiveQuery } from './LiveQuery'
+import { HeroStory } from './HeroStory'
 import './landing.css'
 
 const REPO = 'https://github.com/boxops-uk/fjord'
-
-/** What the hero's box opens with: a real question, over the demo index. */
-const OPENING = 'N where code.Decl {file = _, name = N, line = _}'
 
 export function Landing() {
   return (
@@ -40,10 +37,10 @@ export function Landing() {
           <Button variant="secondary" label="Read the docs" href={route('overview')} />
           <Button variant="ghost" label="GitHub" href={REPO} />
         </div>
-        <LiveQuery initial={OPENING} />
+        <HeroStory />
         <Text as="p" size="sm" color="secondary" className="hero-foot">
-          That is the real engine, compiled to WebAssembly and running in this page. Edit the
-          query and it recompiles.
+          That is the real engine, compiled to WebAssembly and running in this page — the same
+          compiler, the same executor, and the index it is reading is a real one.
         </Text>
       </section>
 

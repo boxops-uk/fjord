@@ -20,6 +20,7 @@
 }
 
 .landing .hero { gap: var(--spacing-5); justify-items: center; text-align: center; }
+.landing .hero .story { container-type: inline-size; }
 
 /* The pitch reads at a shorter measure than the demo under it. */
 .landing .hero > p { max-width: 44rem; }
@@ -44,16 +45,17 @@
 
 .landing p { margin: 0; line-height: 1.65; text-wrap: pretty; }
 
-/* ------------------------------------------------------------- live query --
+/* ------------------------------------------------------------ hero story --
 
-   The one place on this page where the engine is doing something. It is a
-   panel rather than a card in prose: the editor is edge to edge in it, as it
-   is in a demo, so the box reads as an instrument. */
+   Four stages of one question. The file pane holds still on the left because it
+   is the thing being used; the panel beside it is what changes.
 
-.live {
+   The height is fixed rather than fitted, because a hero that grows and shrinks
+   four times while it plays is a page that moves under the reader. */
+
+.story {
   width: 100%;
   display: grid;
-  gap: 0;
   border: var(--border-width) solid var(--color-border-emphasized);
   border-radius: var(--radius-container);
   background: var(--color-background-card);
@@ -61,61 +63,363 @@
   text-align: start;
 }
 
-.live-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--spacing-2);
-  padding: var(--spacing-3) var(--spacing-4);
-  border-block-end: var(--border-width) solid var(--color-border);
+.story-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 19rem;
 }
 
-/* The editor is the design system's neighbour here, not a child of the prose:
-   it draws its own frame, and inside a panel that frame is the panel's. */
-.live .editor {
-  border-inline: 0;
-  border-block-start: 0;
-  border-radius: 0;
-}
+.story-panes > * + * { border-inline-start: var(--border-width) solid var(--color-border); }
 
-.live-rows {
-  padding: var(--spacing-3) var(--spacing-4);
-  border-block-start: var(--border-width) solid var(--color-border);
+/* ------------------------------------------------------------- the file -- */
+
+.story-file {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   background: var(--color-background-muted);
-  min-height: 7.5rem;
 }
 
-.live-note {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-2);
+.story-file-name {
+  padding: var(--spacing-2) var(--spacing-4);
+  border-block-end: var(--border-width) solid var(--color-border);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
+}
+
+.story-code {
+  margin: 0;
+  padding: var(--spacing-3) 0;
+  list-style: none;
+  font-family: var(--font-family-code);
   font-size: var(--font-size-sm);
 }
 
-.live-answer,
-.live-faults {
+.story-code li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  align-items: baseline;
+  padding-block: var(--spacing-1);
+}
+
+/* The lines between two declarations are not in the index, and the pane does
+   not invent them. */
+.story-code .gap {
+  position: absolute;
+  inset-block-start: calc(var(--spacing-3) * -1);
+  inset-inline-start: 3rem;
+  color: var(--color-text-disabled);
+}
+
+.story-code .gap::before { content: '⋯'; }
+
+.story-code .n {
+  padding-inline-end: var(--spacing-3);
+  color: var(--color-text-disabled);
+  text-align: end;
+  font-size: var(--font-size-xs);
+}
+
+.story-code .src { color: var(--color-text-primary); }
+
+/* A line the answer names, marked where it is. */
+.story-code .is-hit { background: var(--color-success-muted); }
+.story-code .is-hit .n { color: var(--color-text-primary); }
+
+/* The name the whole story is about. */
+.story-code .subject {
+  padding: 0 var(--spacing-0-5);
+  border-radius: var(--radius-inner);
+  background: var(--color-accent-muted);
+  box-shadow: inset 0 -1px 0 var(--color-accent);
+}
+
+/* **The cursor arrives.** A pointer already resting on the name is a
+   screenshot; the movement is what says somebody is using this. It travels in
+   from below and to the right, which is where a hand would bring it from, and
+   settles a beat before the card opens. */
+.story-pointer {
+  position: absolute;
+  inset-block-start: 1.15em;
+  inset-inline-start: 7.2rem;
+  width: 18px;
+  height: 18px;
+  filter: drop-shadow(0 1px 2px var(--color-shadow));
+  animation: story-cursor 1000ms cubic-bezier(0.33, 0, 0.2, 1) both;
+}
+
+.story-pointer svg { position: absolute; inset-block-start: 0; }
+
+/* The hand's fingertip sits where the arrow's tip did, so the shape changes
+   without the cursor appearing to jump. */
+.story-pointer .is-hand {
+  inset-inline-start: -5px;
+  inset-block-start: -2px;
+}
+
+/* Arrow on the way, hand on arrival — the shape every editor shows over a name
+   you can do something with. */
+.story-pointer .is-arrow { animation: story-fade-out 160ms linear 940ms both; }
+.story-pointer .is-hand { animation: story-fade-in 160ms linear 940ms both; }
+
+@keyframes story-cursor {
+  from { transform: translate(9rem, 7rem); opacity: 0; }
+  20% { opacity: 1; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes story-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes story-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---------------------------------------------------------- the popover -- */
+
+/* **At the cursor, over the code.** A hover card covers the lines under it in
+   every editor there is, and a reader knows that shape on sight; a card
+   floating somewhere else in the pane is a panel, and says something weaker.
+   It is positioned on the hovered line, so it follows the name it is about. */
+.story-popover {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 2.3em;
+  inset-inline-start: 2.6rem;
+  inset-inline-end: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-popover);
+  box-shadow: var(--shadow-med, 0 6px 16px var(--color-shadow));
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+}
+
+/* Delayed to the beat after the cursor lands, and `both` so it is not on
+   screen before then. Only while the story is on its opening stage. */
+.story-popover.is-entering { animation: story-pop 220ms ease-out 1250ms both; }
+
+@keyframes story-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+/* While it is looking. The card is already the size it will be, so filling it
+   in does not move the page. */
+.story-looking {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin: 0;
+  min-height: 3.4rem;
+  color: var(--color-text-secondary);
+}
+
+/* Nobody who asked not to be moved should have to watch a cursor travel. */
+@media (prefers-reduced-motion: reduce) {
+  .story-popover.is-entering,
+  .story-pointer,
+  .story-pointer .is-arrow,
+  .story-pointer .is-hand {
+    animation: none;
+  }
+  .story-pointer .is-arrow { opacity: 0; }
+}
+
+.story-popover ul {
   margin: 0;
   padding: 0;
   list-style: none;
   display: grid;
   gap: var(--spacing-1);
-  font-family: var(--font-family-code);
-  font-size: var(--font-size-sm);
 }
 
-.live-answer li { color: var(--color-text-primary); }
-
-.live-faults li {
-  color: var(--color-error);
-  font-family: var(--font-family-body);
-  font-size: var(--font-size-sm);
+.story-popover li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacing-2);
 }
 
-.live-faults code {
+.story-popover code {
   font-family: var(--font-family-code);
   font-size: var(--font-size-xs);
+}
+
+.story-popover span { color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+
+/* -------------------------------------------------------------- the stage -- */
+
+.story-stage {
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-2);
+  padding: var(--spacing-4);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.story-note,
+.story-ask {
+  display: grid;
+  gap: var(--spacing-2);
+  align-content: center;
+  min-height: 12rem;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.story-ask code {
+  padding: 0 var(--spacing-1);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+  font-family: var(--font-family-code);
+}
+
+/* The query is a code block, painted by the engine's own lexer. */
+.story-stage pre.astryx-codeblock { margin: 0; }
+
+.story-scan,
+.story-answer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--spacing-2);
+  min-height: 0;
+}
+
+.story-scan-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.story-scan-head .examined {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: var(--font-weight-normal);
+}
+
+.story-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-0-5);
+  max-height: 14rem;
+  overflow-y: auto;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+.story-rows li {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr);
+  gap: var(--spacing-2);
+  align-items: baseline;
+  padding: var(--spacing-0-5) var(--spacing-1);
+  border-radius: var(--radius-inner);
+  color: var(--color-text-secondary);
+}
+
+.story-rows .p { color: var(--color-text-disabled); }
+.story-rows .k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* **Where the machine moved to, and where it still stands.** A nested loop
+   holds a row per level, so lighting every held row says it is in four places
+   at once. The one that changed is the one that reads as *now*. */
+.story-rows .is-here {
+  background: var(--color-accent-muted);
+  color: var(--color-text-primary);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.story-rows .is-here .p { color: var(--color-text-secondary); }
+.story-rows .is-held { background: var(--color-background-muted); }
+.story-rows .is-dropped { opacity: 0.45; }
+
+.story-rows .is-answer {
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--color-success-muted);
+  color: var(--color-text-primary);
+  padding: var(--spacing-1-5) var(--spacing-2);
+}
+
+.story-rows .is-answer .k { white-space: normal; }
+
+/* --------------------------------------------------------------- the foot -- */
+
+.story-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4);
+  border-block-start: var(--border-width) solid var(--color-border);
+  background: var(--color-background-muted);
+}
+
+.story-caption { margin: 0; flex: 1 1 18rem; }
+
+.story-dots {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.story-dots button {
+  width: var(--spacing-2);
+  height: var(--spacing-2);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-border-emphasized);
+  cursor: pointer;
+}
+
+.story-dots button.is-at { background: var(--color-accent); }
+
+.story-dots .story-replay {
+  width: auto;
+  height: auto;
+  padding: var(--spacing-1) var(--spacing-2);
+  margin-inline-start: var(--spacing-2);
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+}
+
+.story-dots .story-replay:hover { color: var(--color-text-primary); }
+
+@container (max-width: 46rem) {
+  .story-panes { grid-template-columns: minmax(0, 1fr); }
+  /* Stacked, the file pane is only as tall as three lines, and the card that
+     opens over them needs somewhere to be. */
+  .story-code { padding-block-end: var(--spacing-12); }
+  .story-panes > * + * {
+    border-inline-start: 0;
+    border-block-start: var(--border-width) solid var(--color-border);
+  }
+  .story-rows { max-height: 11rem; }
 }
 
 /* ---------------------------------------------------------------- columns -- */

@@ -676,27 +676,46 @@ check(
   ),
 )
 
-await page.waitForFunction(() => document.querySelectorAll('.live-answer li').length > 0, {
-  timeout: 20_000,
+// **The hero is one question answered end to end**, and every part of it is
+// the engine: the file pane is built from the index's own declarations, the
+// scan is the real trace, and the card fills in with what the query returns.
+// A landing page that showed a picture of any of that is the thing this site
+// exists not to be.
+await page.waitForFunction(() => document.querySelectorAll('.story-code li').length > 0, {
+  timeout: 25_000,
 })
+const stage = (n) =>
+  page.evaluate((n) => document.querySelectorAll('.story-dots button')[n].click(), n).then(settle)
+
 check(
-  'the landing page answers a real query',
-  (await texts('.live-answer li')).length === 7,
-  `${(await texts('.live-answer li')).length} rows`,
+  'the hero shows the file the index holds',
+  (await page.$eval('.story-file-name', (el) => el.textContent)) === 'src/lib.rs' &&
+    (await texts('.story-code .src')).length === 3,
+  (await texts('.story-code .src')).join(' | '),
 )
-await type('.live .editor .input', 'P where code.File P')
-const asked = await texts('.live-answer li')
+
+await stage(0)
 check(
-  'editing the landing query re-runs it',
-  asked.length === 4 && asked.every((row) => row.startsWith('"')),
-  asked.join(' '),
+  'the hover card opens before there is an answer',
+  (await page.$eval('.story-popover', (el) => el.textContent ?? '')).includes('finding references'),
 )
-// A query that cannot compile says so rather than showing the last answer.
-await type('.live .editor .input', 'N where code.Nonesuch N')
+
+await stage(2)
+const walked = await texts('.story-scan-head .examined')
+check('the scan reports what the engine examined', walked.join('').includes('rows examined'), walked.join(''))
+
+await stage(3)
+const found = await texts('.story-popover li')
 check(
-  'a broken landing query reports the diagnostic',
-  (await texts('.live-faults li')).some((fault) => fault.includes('unknown-predicate')),
-  (await texts('.live-faults li')).join(' '),
+  'the card fills in with the two references the query answers',
+  found.length === 2 &&
+    found.some((row) => row.includes('src/lib.rs:20') && row.includes('load')) &&
+    found.some((row) => row.includes('src/main.rs:12') && row.includes('run')),
+  found.join(' · '),
+)
+check(
+  'the answer is the query\'s own rows',
+  (await texts('.story-rows .is-answer')).length === 2,
 )
 
 // Into the book, where the reading order is a column again.
