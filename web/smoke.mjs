@@ -720,6 +720,77 @@ check(
   await page.$eval('.story-panel', (el) => !el.classList.contains('is-open')),
 )
 
+// **The second demo is a search box over the real corpus.** The band it
+// replaced was three paragraphs about predicates; the claim is now made by
+// letting somebody use it, so what matters is that the cards are real rows with
+// the kind and the summary the index recorded, and that clicking one is a way
+// into the browser.
+await page.evaluate(() =>
+  document.querySelector('[data-testid="search-demo"]').scrollIntoView({ block: 'center' }),
+)
+
+// It opens empty on purpose: a box with a word already in it is a screenshot.
+check(
+  'the search box opens empty, with words to try',
+  (await page.$eval('.finder-bar input', (el) => el.value)) === '' &&
+    (await page.$$('.finder-cards li')).length === 0 &&
+    (await texts('.finder-try button')).includes('block'),
+)
+
+await page.click('.finder-bar input')
+await page.type('.finder-bar input', 'block')
+await page.waitForFunction(() => document.querySelectorAll('.finder-cards li').length > 0, {
+  timeout: 60_000,
+})
+await settle()
+
+const cards = await page.$$eval('.finder-cards button', (rows) =>
+  rows.map((row) => ({
+    kind: row.querySelector('.hit-kind').textContent,
+    name: row.querySelector('.hit-name').textContent,
+    doc: row.querySelector('.hit-doc')?.textContent ?? '',
+    where: row.querySelector('.hit-where em').textContent,
+  })),
+)
+check(
+  'the search box answers out of the real index',
+  cards.some(
+    (card) => card.name === 'Block' && card.kind === 'class' && card.where.includes('line 43'),
+  ),
+  cards.map((card) => `${card.kind} ${card.name}`).join(' · '),
+)
+check(
+  'a card says what kind of thing it found',
+  new Set(cards.map((card) => card.kind)).size > 2,
+  [...new Set(cards.map((card) => card.kind))].join(' · '),
+)
+// The summary is the source's own doc comment, which the walker put in the
+// index — a card carrying one is a card that asked a second question.
+check(
+  'a card carries the summary the source wrote',
+  cards.some((card) => card.doc.startsWith('A block: a run of facts of one predicate')),
+  cards.find((card) => card.doc)?.doc ?? 'no card had a summary',
+)
+
+// The pattern is the one `codeview::search` builds, and it is printed because
+// the point of the band is that the box is a query and not a search API.
+check(
+  'the query under the box is the one the box ran',
+  (await page.$eval('.search-demo pre.astryx-codeblock', (el) => el.innerText)).includes(
+    'nameLowercase = "block"~<1',
+  ),
+)
+
+await page.$$eval('.finder-cards button', (rows) => rows[0].click())
+await page.waitForFunction(() => location.pathname.endsWith('/browse'), { timeout: 10_000 })
+await settle()
+const landed = await page.evaluate(() => location.search)
+check(
+  'clicking a card opens it in the code browser',
+  new URLSearchParams(landed).get('file')?.endsWith('Blocks.cs') === true,
+  landed,
+)
+
 // Into the book, where the reading order is a column again.
 await page.goto(`${url}overview`, { waitUntil: 'networkidle0' })
 await page.waitForSelector('[data-testid="prose"] h1')

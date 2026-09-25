@@ -16,6 +16,7 @@ import { Link } from '@astryxdesign/core/Link'
 import { Text } from '@astryxdesign/core/Text'
 import { route } from './book/links'
 import { HeroStory } from './HeroStory'
+import { SearchDemo } from './SearchDemo'
 import './landing.css'
 
 const REPO = 'https://github.com/boxops-uk/fjord'
@@ -43,6 +44,8 @@ export function Landing() {
           compiler, the same executor, and the index it is reading is a real one.
         </Text>
       </section>
+
+      <SearchDemo />
 
       <section className="band">
         <Heading level={2}>The idea, in three parts</Heading>

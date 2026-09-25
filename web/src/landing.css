@@ -330,6 +330,9 @@
 }
 
 .story-rows {
+  /* Positioned so a row's `offsetTop` is measured against this list and not
+     against whatever the page happens to have positioned above it. */
+  position: relative;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -507,4 +510,313 @@
      headline. */
   .landing .hero h1 { font-size: var(--font-size-3xl); line-height: 1.15; }
   .landing .hero > p { font-size: var(--font-size-base); }
+}
+
+/* ======================================================================== */
+/* The search demo                                                          */
+/* ======================================================================== */
+
+/* **A box that behaves like the thing it is imitating.** The point of the band
+   is that a reader recognises the affordance before they read a word about
+   predicates, so the bar is the size of the promise it is making and the cards
+   under it are the ones every code host has trained them on. */
+
+.finder {
+  display: grid;
+  gap: var(--spacing-4);
+  margin-block: var(--spacing-5) var(--spacing-6);
+}
+
+/* ------------------------------------------------------------------ the bar -- */
+
+/* The label *is* the box, so the whole bar is a click target for the field and
+   a stray click beside the icon lands in the input rather than nowhere. */
+.finder-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  padding: var(--spacing-4) var(--spacing-5);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  box-shadow: 0 1px 2px var(--color-shadow);
+  color: var(--color-text-secondary);
+  cursor: text;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.finder-bar:hover { border-color: var(--color-border-emphasized); }
+
+/* `:focus-within` rather than a ring on the input: the input has no border of
+   its own, so the box is what a reader sees take focus. */
+.finder-bar:has(input:focus-visible),
+.finder-bar:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+.finder-bar > .astryx-icon { flex: none; font-size: var(--font-size-xl); }
+
+.finder-bar input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xl);
+  line-height: 1.4;
+}
+
+.finder-bar input::placeholder { color: var(--color-text-disabled); }
+.finder-bar input::-webkit-search-cancel-button { display: none; }
+
+.finder-clear {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.finder-clear:hover { color: var(--color-text-primary); }
+
+/* --------------------------------------------------------------- the words -- */
+
+.finder-try {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.finder-try button {
+  padding: var(--spacing-1) var(--spacing-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-background-card);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.finder-try button:hover {
+  border-color: var(--color-border-emphasized);
+  color: var(--color-text-primary);
+}
+
+.finder-try button.is-on {
+  border-color: var(--color-accent);
+  background: var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+/* -------------------------------------------------------------- the results -- */
+
+.finder-note {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin: 0;
+  padding: var(--spacing-5) var(--spacing-1);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.finder-cards {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
+  gap: var(--spacing-3);
+}
+
+/* **A card is one answer, whole.** What it is, what it is called, how it is
+   declared, what it is called in full, and where it lives — five rows the index
+   already holds, so the card is a projection and not a design. */
+.finder-cards button {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-2);
+  width: 100%;
+  height: 100%;
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.finder-cards button:hover,
+.finder-cards button.is-active,
+.finder-cards button:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 4px 16px -8px var(--color-shadow);
+  transform: translateY(-1px);
+}
+
+.card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+}
+
+/* **One chip, four tints.** A kind is what the index said this thing is, so
+   colouring by it adds no claim of its own — and a reader scanning for the class
+   among thirty methods is doing the thing the colour is for. */
+.hit-kind {
+  padding: var(--spacing-0-5) var(--spacing-2);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.hit-kind[data-family='type'] {
+  background: var(--color-accent-muted);
+  color: var(--color-accent-text, var(--color-text-primary));
+}
+
+.hit-kind[data-family='value'] { color: var(--color-text-disabled); }
+
+.hit-uses {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hit-name {
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hit-name mark {
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--color-accent);
+  text-underline-offset: 3px;
+}
+
+/* **The summary the source wrote.** Two lines, because the first sentence of a
+   doc comment is the part that says what a thing is for and the rest is for the
+   page that has room for it. */
+.hit-doc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+/* The declaration as the file writes it — one line, because the point is what
+   sort of declaration it is and not to reproduce the source. */
+.hit-sig {
+  display: block;
+  padding: var(--spacing-2);
+  border-radius: var(--radius-inner);
+  background: var(--color-syntax-background);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  margin-block-start: auto;
+  padding-block-start: var(--spacing-1);
+  color: var(--color-text-disabled);
+}
+
+.finder-cards button:hover .card-foot,
+.finder-cards button.is-active .card-foot { color: var(--color-text-secondary); }
+
+.hit-where {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+}
+
+/* The full name, then where the declaration is. Both clipped rather than
+   wrapped: a namespace is long and a card that grows a line when one result
+   happens to be deeply nested is a grid that jumps as it is typed into. */
+.hit-where b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+
+.hit-where em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  font-family: var(--font-family-code);
+  color: var(--color-text-disabled);
+}
+
+.finder-said { margin-block-start: var(--spacing-5); }
+
+.search-demo pre.astryx-codeblock { margin-block: var(--spacing-3); }
+
+@media (max-width: 40rem) {
+  .finder-bar {
+    padding: var(--spacing-3) var(--spacing-4);
+    gap: var(--spacing-2);
+  }
+  .finder-bar input { font-size: var(--font-size-lg); }
+  .finder-bar > .astryx-icon { font-size: var(--font-size-lg); }
+  .finder-cards { grid-template-columns: minmax(0, 1fr); }
 }

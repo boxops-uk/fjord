@@ -445,9 +445,25 @@ function Scanning({
   current: string | null
   examined: number
 }) {
+  const list = useRef<HTMLOListElement>(null)
   const here = useRef<HTMLLIElement>(null)
+
+  /**
+   * **Keep the walked row in view, and touch nothing else.**
+   *
+   * `scrollIntoView` walks up every scrollable ancestor, so a playback running
+   * in a hero that is half off the screen drags the whole page back to it — and
+   * this one loops, so it does that every few seconds while somebody is trying
+   * to read further down. Setting `scrollTop` on the list moves the list.
+   */
   useEffect(() => {
-    here.current?.scrollIntoView({ block: 'nearest' })
+    const box = list.current
+    const row = here.current
+    if (!box || !row) return
+    const top = row.offsetTop
+    const bottom = top + row.offsetHeight
+    if (top < box.scrollTop) box.scrollTop = top
+    else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight
   }, [current])
 
   return (
@@ -456,7 +472,7 @@ function Scanning({
         <span>the index</span>
         <span className="examined">{examined} rows examined</span>
       </div>
-      <ol className="story-rows">
+      <ol className="story-rows" ref={list}>
         {story.index.map(({ predicate, row }) => {
           const isHere = row.key === current
           const held = moment?.held.has(row.key) ?? false
