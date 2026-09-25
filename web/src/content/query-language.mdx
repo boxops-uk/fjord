@@ -1,10 +1,9 @@
 export const meta = {
   "title": "sigla query language",
-  "description": "Every construct sigla has — patterns, statements, binds, constraints, denials, comparisons, arithmetic, negation, disjunction, subqueries and references — with the rows each one returns."
+  "description": "Every construct sigla has, with the rows each one returns."
 }
 
-sigla is a typed, Datalog-flavoured query language. A query is a **head pattern**, the word
-`where`, and a list of **statements**:
+A query is a **head pattern**, the word `where`, and a list of **statements**:
 
 ```sigla
 {file = F, span = S} where
@@ -12,12 +11,8 @@ sigla is a typed, Datalog-flavoured query language. A query is a **head pattern*
   codemarkup.SymbolXRef {target = T, file = F, span = S}
 ```
 
-The head says what a row looks like. The statements say which rows there are. There is no
-`select`, no `from`, no `join` keyword: a join is two statements sharing a variable, and the
-compiler decides the order.
-
-The lexer is the first thing that sees a query, and it is lossless: every byte of the source
-is in exactly one token, including the whitespace and the ones it rejects.
+The head says what a row looks like. The statements say which rows there are. A join is
+two statements sharing a variable. There is no `select`, `from` or `join`.
 
 <Demo kind="lex">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
@@ -45,22 +40,17 @@ primary    ::= '_'                             wildcard
              | "text"~<2 | "text"~<               a fuzzy prefix match
              | '{' field '=' pattern, … '}'     a record
              | 'never'                         the empty relation
-             | '(' pattern ')'                 a group
+             | '(' pattern ')'                  a group
              | '(' pattern 'where' stmt… ')'    a subquery
 ```
 
-**Names carry meaning.** A variable is `UpperCase`, a field is `lowerCase`, and a predicate
-is `namespace.UpperCase`. Nothing needs a sigil, and the lexer can tell all three apart.
-
-**Precedence, loosest to tightest:** `|` → `+`/`-` → application (`test.Foo X`) → `.`
-access. So `test.Foo A | test.Bar B` is a disjunction of two fact patterns, and
-`test.Name Y.name` is `test.Name (Y.name)`. A disjunction *inside* a key is parenthesised:
-`test.Foo (A | B)`.
+A variable is `UpperCase`, a field is `lowerCase`, a predicate is `namespace.UpperCase`.
+Precedence, loosest to tightest: `|`, then `+`/`-`, then application (`test.Foo X`), then
+`.` access. Parenthesise a disjunction inside a key: `test.Foo (A | B)`.
 
 ## The examples database
 
-Every "returns" below is what the query actually answers against the fixture database the
-test corpus uses — so each row is checked by a test rather than written down by hand.
+Every result below is what the query answers against the test fixture, checked by a test.
 
 ```schema
 predicate test.Foo    : { id : int, name : string } -> string
@@ -103,27 +93,26 @@ predicate test.Label  : { id : int, what : test.What }
 
 ### A generator
 
-A fact pattern on its own is a **generator**: a loop over the rows of one predicate.
+A fact pattern on its own loops over the rows of one predicate.
 
 ```sigla
 X where test.Foo {name = X}          → ann; bob; ann
 ```
 
-The key is **mandatory**, so a whole-predicate scan is written with a wildcard:
+The key is mandatory. Scan a whole predicate with a wildcard:
 
 ```sigla
 X where X = test.Foo _               → test.Foo#1; test.Foo#2; test.Foo#3
 ```
 
-A scalar key is one field, so a variable may stand for the whole of it:
+A scalar key is one field, so a variable can stand for the whole key:
 
 ```sigla
 Y where test.Count Y                 → -9223372036854775808; -42; 7; 1000
 Y where test.Foo Y                   → {id = 1, name = ann}; {id = 2, name = bob}; {id = 3, name = ann}
 ```
 
-Fields not mentioned are simply not constrained. Naming one binds it; giving it a constant
-narrows or filters.
+Fields you do not mention are unconstrained.
 
 ### A join is a shared variable
 
@@ -131,20 +120,12 @@ narrows or filters.
 X where test.Edge {from = X, to = Y}; test.Node {id = Y}     → 1; 1; 2
 ```
 
-Two levels, and the inner one's seek key is built from the outer row's bytes — that is what
-a join *is* here. Which statement runs first is `reorder`'s decision, not the order you
-typed:
+The compiler chooses the loop order, not you. These two are the same plan:
 
 ```sigla
 P where test.Ref {of = P}; P = test.Foo {id = 1}             → test.Foo#1
 P where P = test.Foo {id = 1}; test.Ref {of = P}             → test.Foo#1
 ```
-
-Both spellings are the **same plan**. `reorder` emits the *runnable frontier*: a statement
-that reads a variable the next statement binds is moved rather than refused.
-
-Both spellings, compiled: the plan below is the same whichever way round the two statements
-are typed, and swapping them in the box is the fastest way to see that.
 
 <Demo kind="plan" schema={`schema test {
   predicate Foo : { id : int, name : string } -> string
@@ -153,15 +134,14 @@ are typed, and swapping them in the box is the fastest way to see that.
 
 ### A bind means one of four things
 
-`=` is not assignment. flatten decides which of four things a bind is, and **only the first
-takes a register**:
+`=` is not assignment.
 
 | Written | It is | Cost |
 |---|---|---|
-| `X = test.Foo _` | a **row bind** — a loop level | one register, one level |
-| `X = 42`, `X = {inner = 1}` | a **constant fold** — substituted at every use | nothing |
-| `Y = X.name` | an **alias** — a name for a place already in a register | nothing |
-| `X = "a"..`, `X = "ab"~1`, `X = "ab"~<1`, `X = Y` (both bound) | a **constraint** — what the value has to look like | a seek, a guide, or a residual |
+| `X = test.Foo _` | a **row bind**: a loop level | one register, one level |
+| `X = 42`, `X = {inner = 1}` | a **constant fold**: substituted at every use | nothing |
+| `Y = X.name` | an **alias** for a place already in a register | nothing |
+| `X = "a"..`, `X = "ab"~1`, `X = Y` (both bound) | a **constraint** on what the value looks like | a seek, a guide, or a filter |
 
 ```sigla
 X where X = 42                               → 42
@@ -170,43 +150,29 @@ Z where test.Bar {id = Z}; Z = 1             → 1
 X where test.Foo {id = X}; test.Bar {id = Y}; X = Y   → 1; 2
 ```
 
-A folded constant reaches a key field as the literal written in place would, so
-`Z = 1; test.Bar {id = Z}` seeks the bytes `test.Bar {id = 1}` seeks. A query whose every
-bind folded has **no levels at all** and means exactly one row.
+A folded constant reaches a key field as if you had written the literal there. A query
+whose every bind folded has no loops and answers exactly one row.
 
 ### A constraint narrows the level that captures the variable
 
-A string prefix is a **range**, not a value, so there is nothing for a variable to *be* — it
-says what the value has to look like:
+A string prefix is a range, not a value. Where you write it does not matter:
 
 ```sigla
 X where test.Name X; X = "a"..               → abc; ann; anna
 X where X = "a"..; test.Name X               → abc; ann; anna
 ```
 
-Both are the *same range seek* `test.Name "a"..` is. Constraints are collected from the whole
-body before an order is chosen and applied by whichever level captures the variable — which
-is why writing one first changes nothing. Behind an already-open field there is no seek left
-to narrow, and the same constraint filters instead:
+Both seek `test.Name "a"..`. Behind a field that is already open, the same constraint
+filters instead:
 
 ```sigla
 X where test.Foo {name = X}; X = "a"..       → ann; ann
 ```
 
-<Callout tone="note" label={`This is not a residual you can move`}>
-
-Applying a constraint afterwards as a filter would answer the same rows and read the whole
-predicate to find them. The whole point of collecting it before ordering is that the level
-that captures the variable can seek with it.
-
-</Callout>
-
 ### A fuzzy match: `~`
 
-The sibling of `..`, and one character for the same reason: what follows a string literal
-decides what the literal *denotes*. `"ann"~1` is "within one edit of `ann`" as `"ann".."` is
-"starting with `ann`" — an insertion, a deletion or a substitution, counted in characters and
-not in bytes. The number may be left off, and means one.
+`"ann"~1` matches strings within one edit of `ann` (an insertion, deletion or
+substitution). Leave the number off and it means one.
 
 ```sigla
 N where test.Name N; N = "ann"~                → ann; anna
@@ -215,26 +181,14 @@ X where X = test.Name "ann"~1                  → test.Name#2; test.Name#3
 N where test.Name N; N = "an"..; N = "ann"~2   → ann; anna
 ```
 
-A prefix denotes one contiguous range of the key order and a fuzzy pattern denotes a *set* of
-them, so where a prefix narrows a seek, a fuzzy pattern **walks** one: a Levenshtein automaton
-decides which parts of the range can still contain an answer and seeks past the rest. The last
-line is the pair worth reading in a `:plan` — the prefix builds the range and the automaton
-walks inside it, in either written order.
-
-Like `..`, it is a pattern rather than a value, so no variable can be bound to one. Where the
-seek prefix has already closed, the same automaton runs as a filter instead; the query means
-the same thing either way. Which one you got, why, and what it costs are
-[Query efficiency](query-efficiency.html) and [Fuzzy search](fuzzy-search.html).
-
-Distance is `1` to `3` and a term is at most 63 characters; outside that the query is refused
-by name rather than quietly clamped.
+On a leading key field the automaton **guides** the scan, seeking past ranges that cannot
+match. Behind a closed prefix it filters. Either way the answer is the same. Distance is
+`1` to `3` and a term is at most 63 characters. See [Fuzzy search](fuzzy-search.html).
 
 ### A fuzzy prefix match: `~<`
 
-`~` measures the distance to the **whole** stored string, and that is usually not the question.
-A five-character term is never within three edits of a fifteen-character identifier, however
-well it prefixes it — every character of the tail is one more deletion. `~<` asks the anchored
-question instead: **is some prefix of the stored string within that many edits of the term?**
+`~` measures distance to the whole stored string, which is rarely what a search box wants.
+`~<` asks whether **some prefix** of the stored string is within the distance:
 
 ```sigla
 N where test.Name N; N = "ann"~1               → ann; anna
@@ -243,32 +197,20 @@ N where test.Name N; N = "ann"~<2              → abc; ann; anna; annotate
 N where test.Name N; N = "an"..; N = "ann"~<1  → ann; anna; annotate
 ```
 
-`annotate` is the pair worth reading. Its prefix `ann` is an exact match, so under `~<` the
-suffix costs nothing — where `~` pays one deletion for every character of it. That is the
-whole difference, and it is why `~<` is the operator a search box wants.
-
-**Anchored is not substring.** The term still has to reach the *start* of the stored string,
-which is what keeps the pattern a set of ranges rather than a scan: `"parsr"~<1` finds
-`parser_function` and does not find `my_parser_function`.
-
-Everything else is shared. The same automaton answers both, the same bounds refuse both, and
-either may guide a seek or run as a filter depending only on where the field sits in the key.
-Where a level carries both, `~` takes the guide — its automaton dies on a long key, so it is
-the one with dead bands to seek past — and `~<` holds as a residual.
+It is anchored, not substring: `"parsr"~<1` finds `parser_function` and not
+`my_parser_function`.
 
 <Callout tone="note" label={`A short term matches everything`}>
 
-A term no longer than the distance is within it of the **empty** prefix, and every stored
-string starts with that — so `"a"~<1` answers the whole predicate. That is what the definition
-says rather than an oversight, and it is left legal rather than refused: it is exactly what a
-search box does on the first keystroke. Anchor it with `..`, or type another character.
+A term no longer than its distance is within that distance of the empty prefix, so
+`"a"~<1` answers the whole predicate. That is what a search box asks on the first
+keystroke. Anchor with `..` or type another character.
 
 </Callout>
 
 ### A denial: `!=`
 
-The negative of a constraint, and never a seek — "does not start with `a`" is the two ranges
-either side of one, and a seek walks one range.
+Never a seek. It filters.
 
 ```sigla
 X where test.Name X; X != "a"..              → bob
@@ -277,20 +219,12 @@ X where test.Count X; X != 7                 → -9223372036854775808; -42; 1000
 X where test.Name X; X = "a"..; X != "an"..  → abc
 ```
 
-The last one is the pair worth reading in a `:plan`: the constraint narrows the level's seek
-to a range, and the denial filters the rows inside it.
-
-`!` and `!=` are different questions and stay different syntax. `!` says *no such row
-exists* and costs a test step; `!=` says *this row's field does not look like that* and costs
-a residual.
-
-Denying a **fuzzy** match — `N != "ann"~1` — is meaningful and deferred by name
-(`nyi/fuzzy-denial`) rather than silently unsupported.
+`!` says *no such row exists*. `!=` says *this field does not look like that*. Denying a
+fuzzy match is `nyi/fuzzy-denial`.
 
 ### Comparisons: `<` `<=` `>` `>=`
 
-They are **statements**, not expressions — a comparison binds nothing, and reading `X < 3` as
-an expression would need a boolean type the model does not have.
+Statements, not expressions. They bind nothing.
 
 ```sigla
 X where test.Count X; X < 7                  → -9223372036854775808; -42
@@ -300,22 +234,14 @@ N where test.Name N; N > "ann"               → anna; bob
 {a = X, b = Y} where test.Edge {from = X, to = Y}; X < Y   → {a = 1, b = 2}; {a = 1, b = 3}; {a = 2, b = 3}
 ```
 
-Strings compare for the same reason integers do: the encoding is order-preserving, so
-`"ann" < "anna"` falls out of the bytes. The constant may be on either side — the field
-carries the bound whichever way it was written, and the relation is flipped rather than a
-second code path added.
-
-A comparison against a constant on the field that **ends the seek prefix** is a *seek*: the
-same order-preservation makes `Ln >= 1000; Ln < 1200` one contiguous run of the key, so the
-scan opens on the window instead of reading up to it. Anywhere else — a field the prefix never
-reached, or a comparison against another row — it filters. Which one you get is where the field
-sits, never what the comparison says; [query efficiency](query-efficiency.html#an-order-comparison-seek-or-filter)
-is the walkthrough.
+Strings compare by the same order the index uses. A comparison against a constant on the
+field that ends the seek prefix becomes a range seek: `Ln >= 1000; Ln < 1200` opens the
+scan at line 1000 instead of reading up to it. Anywhere else it filters. See
+[Query efficiency](query-efficiency.html#an-order-comparison-seek-or-filter).
 
 ### Arithmetic: `+` `-`
 
-A derived bind: one value per row, computed from the row, in a register of its own. It is not
-a loop level — the cursor stores nothing for it, because it is recomputed on resume.
+One value per row, in a register of its own. Not a loop level.
 
 ```sigla
 Y where test.Count X; Y = X + 1              → -9223372036854775807; -41; 8; 1001
@@ -326,16 +252,11 @@ Z where test.Count X; Y = X + 1; Z = Y + 1   → -9223372036854775806; -40; 9; 1
 X where test.Count X; Y = X + 1; Y > 8       → 1000
 ```
 
-Flat and left to right — three operands and two operators are one step. Subtraction
-**wraps**: `i64::MIN - 1` is `i64::MAX`, because every `i64` is a legal value and the type
-model has no arithmetic error for a query to receive. A chain reads the previous register
-rather than re-deriving it. A computed value compared against a constant is a `Test` step,
-because neither side is a row and there is no level to hang a residual on.
+Left to right. Integers wrap: `i64::MIN - 1` is `i64::MAX`.
 
 ### Negation: `!`
 
-A statement prefix. It binds nothing, takes no cursor entry, and each source is drained only
-to its **first** row — the question is whether a witness exists, not how many.
+Binds nothing. Each source is probed for its first row only.
 
 ```sigla
 X where test.Foo {id = X}; !test.Bar {id = X}                        → 3
@@ -344,39 +265,27 @@ X where test.Foo {id = X}; !(test.Bar {id = X} | test.Edge {from = X, to = _})  
 X where test.Bar {id = X}; !never                                    → 1; 2
 ```
 
-The second line is the placement rule made visible: `X` is a *read* of the negation, so the
-frontier cannot run it before the statement that binds `X`. An unbound variable therefore
-never acts as a wildcard — and a variable occurring **only** inside a negation is refused
-(`reject/unbound-variable`), because `!(Q _)` already spells "no `Q` at all" and the two
-readings of `!(Q X)` are indistinguishable at a glance.
+A variable that appears only inside a negation is `reject/unbound-variable`. Write `_`.
 
 ### Disjunction: `|`
 
-One level with an alternative per branch, tried in order, and the rows are the branches'
-concatenated — not merged and not deduplicated.
+Branches are tried in order and their rows concatenated, not deduplicated.
 
 ```sigla
 X where test.Foo {id = X} | test.Bar {id = X}     → 1; 2; 3; 1; 2
 ```
 
-It is flat and n-ary, never a right-leaning tree, and it is **never DNF-expanded** across
-sibling conjuncts.
-
 ### `never`
 
-The empty relation: a level with no alternative to open, exhausted the moment it is entered.
+The empty relation.
 
 ```sigla
 X where X = never                            → (no rows)
 ```
 
-`never`, an ordinary scan and a disjunction are one node counted at 0, 1 and N — which is
-why `never` needed no special case in the machine.
-
 ### Subqueries
 
-A subquery in a generating position **inlines**: its statements become the enclosing query's,
-and its head is the value the bind names.
+A subquery in a generating position inlines into the enclosing query.
 
 ```sigla
 X where X = (Y where test.Foo {id = Y})              → 1; 2; 3
@@ -395,13 +304,9 @@ X where P = test.Wide _; {extra = _, inner = X} = P.outer   → 2
 X where {a = X} = {a = 1}                            → 1
 ```
 
-A record on the left of a bind **destructures a place**: each piece names a piece of the row,
-so it is the same plan as `X = P.outer.inner`. A wildcard piece binds nothing and cannot
-fail. A record of constants folds, to any depth.
-
-A query's record fields are sorted by name when it is lowered, so `{a = 1, b = 2}` and
-`{b = 2, a = 1}` are one type and one set of bytes. (A *schema's* fields are never sorted —
-that order is the key order.)
+A record on the left of a bind destructures. A query's record fields are sorted by name,
+so `{a = 1, b = 2}` and `{b = 2, a = 1}` are the same type. A schema's fields are never
+sorted.
 
 ### Field access, and `.value`
 
@@ -411,16 +316,13 @@ X.value where X = test.Foo _                 → one; two; three
 X.value where X = test.Boxed _               → {lo = 10, hi = 20}; {lo = 30, hi = 40}
 ```
 
-`.value` is the fact's value side. A record value projects whole — one point read, in the
-shape the schema declares. A value can be **projected** but not **matched**
-([I6](invariants.html#i6)), and a key field literally named `value` makes `.value` ambiguous
-and is refused by name.
+`.value` is the fact's value side. It can be projected but not matched
+([I6](invariants.html#i6)), and it is fetched whole.
 
 ### Unions
 
-A one-field record against a union-typed field is an **injection**: it names one
-alternative and matches its payload. `.alt?` is the **select** — it checks the tag and binds
-the payload, answering exactly what the injection does.
+A one-field record against a union field names one alternative. `.alt?` selects one and
+binds its payload.
 
 ```sigla
 X where test.Tagged {what = {num = X}, id = _}    → 1; 2
@@ -430,36 +332,15 @@ Y where test.Label X; Y = X.what.num?             → 1; 2
 X where test.Label {id = X, what = {num = 2}}     → 30
 ```
 
-Three things the examples pin:
-
-- **A tag is not a position.** `num` is discriminant 3 and `text` is 0; a reader taking a
-  tag for an index would answer the `text` rows for the `num` query.
-- **Where the union sits in the key decides what the match costs.** `test.Tagged` leads with
-  it, so naming an alternative is a *prefix* of the key order — a seek (the profile says 2
-  rows examined of 4). In `test.Label` the tag lands after the seek prefix has closed and
-  filters instead.
-- **A wildcard payload is still a seek** — the tag alone is the shortest prefix an
-  alternative has.
-
-**A union-typed variable can be shared by two generators.** The first mention binds it and the
-second compares a union against a union, so a join *through* a union is written once rather
-than once per alternative:
+A tag is not a position: `num` is 3 and `text` is 0. Where the union leads the key, naming
+an alternative is a seek. A union-typed variable can be shared by two generators:
 
 ```sigla
 X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}  → 20; 40; 10; 30
 ```
 
-Two unions are the same type iff their alternatives agree as a **set** of *(name, discriminant,
-payload)*. A permuted declaration order is one type — declaration order is what the schema
-stores, and permuting it moves no byte. A renamed alternative or a renumbered discriminant is
-not, because the canonical form the fingerprint hashes writes all three, so they are different
-types on disk too; the diagnostic names the alternative the two sides first differ on.
-
-A select against the wrong alternative is an **error**, never another type's bytes: the
-expected discriminant is checked before any read through the payload — at every layer, so a
-select on a union *inside* another union's payload is checked after the tag that says the outer
-payload is there at all, and never before it. And rows whose alternative the query never
-mentions pass untouched — an unmentioned union field is a wildcard.
+Selecting the wrong alternative is an error, never another type's bytes. A union field the
+query does not mention is a wildcard.
 
 ### Literals
 
@@ -471,18 +352,11 @@ X where X = test.Name "abc"..                → test.Name#1
 X where X = test.Name "ann"~1                → test.Name#2; test.Name#3
 ```
 
-`i64::MIN` is reachable only through the unary minus, because the literal itself does not fit
-`i64`. Underscores separate digits. Malformed literals are lexed permissively and rejected in
-lowering with a code — `lit/int-leading-zero`, `lit/int-underscore`, `lit/int-range`,
-`lit/string-escape` — rather than by a silent reinterpretation.
+Underscores separate digits. Malformed literals are rejected by name (`lit/…`).
 
 ## References
 
-A reference is where a fact database earns its keep, and there are **two different
-operations** on one:
-
-**Following** a reference is a compare against an id already in a register. It reads
-nothing:
+**Following** a reference compares against an id already bound. It reads nothing:
 
 ```sigla
 P where P = test.Foo {id = 1}; test.Ref {of = P}                 → test.Foo#1
@@ -490,11 +364,9 @@ X where X = test.Ref {of = test.Foo {id = 1}}                    → test.Ref#1
 X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}  → test.Deep#1
 ```
 
-A fact pattern inside another is a generator, hoisted into a loop level of its own and
-matched by id — recursively, innermost first. That is the idiomatic spelling of the join.
+A fact pattern nested inside another is the idiomatic join.
 
-**Reading through** a reference needs the target fact fetched, because its fields are in
-another fact's key:
+**Reading through** a reference fetches the target fact, one point read per row:
 
 ```sigla
 X.name where test.Ref {of = X}                       → ann; bob
@@ -504,27 +376,10 @@ N where test.Deep {via = R}; N = R.of.name           → ann; bob
 P.id where test.Ref {of = P}; test.Bar {id = P.id}   → 1; 2
 ```
 
-That compiles to a **fetch level** — one point read per row of the level above it — binding
-the fetched fact as an ordinary register from there on. Two reads of one reference are *one*
-fetch. A chain of references is a chain of fetches. And because the fetch is an outer level,
-its register can splice into the seek of a level below it.
-
-<Callout tone="note" label={`Why the two stay distinct in the plan`}>
-
-A register holds its own row's key bytes *and* the ids inside them. Splicing key bytes where
-an id belongs compares a key against an id and quietly matches nothing — the characteristic
-bug of this design. The IR keeps `Fetch` and an id compare as different things so that cannot
-be written by accident.
-
-</Callout>
-
-A row on the way out carries a reference as a `FactId` (`#4:1`). To see the fact it names, ask
-the client to expand it — `query --expand`, `:expand` — which is a protocol question, not a
-query one. See [A query, step by step](query-lifecycle.html#expanding-a-reference).
+Two reads of one reference are one fetch. A row on the way out carries a reference as an
+id (`code.Decl#1`). To see the fact it names, use `query --expand` or `:expand`.
 
 ## The head
-
-The head is a pattern, projected once per row:
 
 ```sigla
 X where …                    a variable — the whole row, or the whole value it names
@@ -533,30 +388,27 @@ X.name where …               a field of a bound row
 test.Bar {id = 1} where …    a fact pattern — hoisted into the last level, projected as the fact
 ```
 
-A wildcard head projects nothing (`reject/wildcard-in-head`), and a string prefix is a
-pattern rather than a value, so it cannot be a head (`reject/not-projectable`).
+A wildcard head and a prefix head are refused.
 
-## How a query becomes fast: seek, splice, guide, filter
+## Seek, splice, guide, filter
 
-Per key field, in declaration order, `flatten` decides one of four things — and the decision
-is **order-dependent**, which is why `reorder` runs first:
+For each key field in declaration order, the compiler decides one of four things:
 
 | Decision | When | Cost |
 |---|---|---|
-| **seek** | The field is a constant (or a constrained range) and every field before it is too | Narrows the scan to a prefix or a range |
-| **splice** | The field's value is in a register an *earlier* level bound | Narrows the inner scan to rows matching the outer row — this is the join |
-| **guide** | The field is a fuzzy pattern — `~` or `~<` — and every field before it narrowed | Walks the range by automaton, seeking past what its dead states prove cannot match |
-| **filter** (residual) | Anything after the seek prefix has closed: a capture, or a constant behind one | Read the row, then test it |
+| **seek** | The field is a constant or a range, and every field before it was too | Narrows the scan |
+| **splice** | The field's value is in a register an outer level bound | Narrows the scan. This is the join |
+| **guide** | The field is a fuzzy pattern, and every field before it narrowed | Skips ranges the automaton rules out |
+| **filter** | Anything after the seek prefix has closed | Reads the row, then tests it |
 
-The moment a key field is *captured* (bound to a variable), the seek prefix closes and
-everything after it filters:
+The moment a key field is captured by a variable, the prefix closes:
 
 ```sigla
 X where X = test.Foo {id = 1}                → test.Foo#1        (a seek)
 X where test.Foo {id = X, name = "ann"}      → 1; 3              (a scan, then a filter)
 ```
 
-`:plan` shows exactly which happened, and `--profile` shows what it cost:
+`:plan` shows which happened. `--profile` shows what it cost.
 
 ```plan
   r0 <- codemarkup.SearchEntry scan
@@ -572,27 +424,19 @@ codemarkup.SymbolXRef   5
 909 examined, 5 produced
 ```
 
-If a question you ask often reads far more rows than it produces, the answer is usually the
-**schema**, not the query: declare the same data keyed for that question. See
-[Schema language](schema-language.html#field-order-is-the-index-design).
-
-[Query efficiency](query-efficiency.html) is the whole of this in one place: what keeps a seek
-prefix open, what closes it, what never seeks, and how to read the difference back off a plan.
-
-Live, against the demo schema — the leading field is a reference, so a constant `file`
-seeks and a constant `name` behind it filters:
+If a query reads far more rows than it produces, the fix is usually a second predicate
+keyed for that question. [Query efficiency](query-efficiency.html) has the full rule.
 
 <Demo kind="plan">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
-## Errors and refusals
+## Errors
 
-Diagnostics carry a **code**, and the code is what tests assert on, so wording can improve
-without breaking anything. There are three families:
+Every diagnostic carries a code. Three families:
 
 | Prefix | Means |
 |---|---|
-| `reject/…` | Meaningless, and rejected for good |
-| `nyi/…` | Parses, has a meaning, not implemented yet |
+| `reject/…` | Meaningless, rejected for good |
+| `nyi/…` | Has a meaning, not implemented yet |
 | `lit/…` | A malformed literal |
 
 ```text
@@ -603,65 +447,52 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
   │         ^^^^^^^^^^
 ```
 
-### Rejections you might hit
+### Rejections
 
 | Code | Example | Why |
 |---|---|---|
-| `reject/unbound-variable` | `X where test.Foo _` | Range restriction: nothing captures `X`, so there are no values for it to range over |
-| `reject/unknown-field` | `X where test.Foo {nosuch = X}` | Not a field of the predicate's key |
+| `reject/unbound-variable` | `X where test.Foo _` | Nothing captures `X` |
+| `reject/unknown-field` | `X where test.Foo {nosuch = X}` | Not a key field |
 | `reject/unknown-predicate` | `X where X = nosuch.Pred _` | Not in the schema |
-| `reject/type-mismatch` | `N where test.Name N; N < 3` | The two sides of a comparison unify |
-| `reject/type-mismatch` | `X where X = test.Foo _; X < 3` | A whole **row** has no order — an id is an allocation sequence, and exposing it as an order would be a trap |
+| `reject/type-mismatch` | `N where test.Name N; N < 3` | Both sides of a comparison must have one type |
+| `reject/type-mismatch` | `X where X = test.Foo _; X < 3` | A whole row has no order |
 | `reject/no-value` | `X.value where X = test.Bar _` | The predicate is key-only |
-| `reject/value-shadowed` | `X.value where X = test.Shadow _` | The key has a field named `value`, so `.value` is ambiguous |
-| `reject/duplicate-field` | `X where test.Foo {name = X, name = Y}` | Record fields are a set; a duplicate is an error, not last-one-wins |
-| `reject/not-a-generator` | `X where X = test.Foo _; 42` | A statement that is neither generates nor constrains anything |
-| `reject/bind-lhs` | `X where 42 = test.Foo _` | A literal cannot be a bind target |
+| `reject/value-shadowed` | `X.value where X = test.Shadow _` | A key field is named `value` |
+| `reject/duplicate-field` | `X where test.Foo {name = X, name = Y}` | A field twice |
+| `reject/not-a-generator` | `X where X = test.Foo _; 42` | A statement that does nothing |
+| `reject/bind-lhs` | `X where 42 = test.Foo _` | A literal cannot be bound to |
 | `reject/wildcard-in-head` | `_ where test.Foo _` | A wildcard head projects nothing |
-| `reject/not-a-union` | `X.alt? where X = test.Foo _` | A select on something that is not a union at all |
-| `reject/unknown-alternative` | `X where test.Tagged {what = {nosuch = X}, id = _}` | A name the union does not declare — the same class of mistake as an unknown field |
-| `reject/union-arity` | `X where test.Tagged {what = {num = X, text = _}, id = _}` | Two alternatives at once is what a *record* of two fields means, and a union cannot |
-| `reject/fuzzy-distance` | `N where test.Name N; N = "ann"~9` | The automaton is built for `1` to `3` edits, and a plan that silently clamped would answer a question nobody asked. `~<` is refused identically — the bound belongs to the machine, not to the spelling |
-| `reject/fuzzy-term` | a fuzzy term of 64 characters or more | 63 is what the fixed-size DP row is built for. Checked at typecheck, so a term cannot refuse on a leading field and answer on a trailing one |
-
-Each of those is a code, and each is reachable from here. `code.Nonesuch`, a field the
-predicate does not declare, a comparison between a string and a number — the diagnostic
-comes back with its code and the span it is about:
+| `reject/not-a-union` | `X.alt? where X = test.Foo _` | A select on a non-union |
+| `reject/unknown-alternative` | `X where test.Tagged {what = {nosuch = X}, id = _}` | Not an alternative |
+| `reject/union-arity` | `X where test.Tagged {what = {num = X, text = _}, id = _}` | A union holds one alternative |
+| `reject/fuzzy-distance` | `N where test.Name N; N = "ann"~9` | Distance is `1` to `3` |
+| `reject/fuzzy-term` | a term of 64 characters or more | Terms are at most 63 |
 
 <Demo kind="types">{`N where code.Decl {file = _, name = N, line = L}; L > 15`}</Demo>
 
 ### Not implemented yet
 
-| Code | Example | What is missing |
+| Code | Example | Workaround |
 |---|---|---|
-| `nyi/fuzzy-denial` | `N where test.Name N; N != "ann"~1` | Denying a fuzzy match, `~` or `~<`: a residual op is what a resume fingerprint tags, so it arrives when something wants it rather than for symmetry |
-| `nyi/repeated-variable` | `X where test.Edge {from = X, to = X}` | An intra-row repeat needs a same-row residual operator; rejected for now rather than adding one nothing else uses |
-| `nyi/value-match` | `Y where test.Foo {id = X}; test.Bar {id = Y + 1}` | Matching a key field against a **computed** value — a seek compares bytes known at compile time |
-| `nyi/value-match` | `X where X = test.Foo _; X.value < "b"` | A value has no residual: its bytes are in the identity map, which I6 keeps out of the scan loop |
-| `nyi/value-bind` | `X where test.Nested {outer = {inner = Y}}; X = {inner = Y}` | A record mentioning a captured variable is in no register and would have to be **built** |
-| `nyi/value-field` | `X.value.lo where X = test.Boxed _` | A field *inside* a value: a value is fetched whole, so there is no register to walk a path in |
-| `nyi/bind-unification` | `X where X = test.Foo _; X.name != "a"..` | An access chain on the left is pattern-pushing. Write `Y = X.name; Y != "a"..` |
-| `nyi/negation` | `X where test.Foo {id = X}; !(Y where test.Bar {id = Y})` | A negated **subquery** — a level inside a test |
-| `nyi/negation` | `P where …; !test.Ref {of = test.Foo {id = 2}}` | A generator inside a negation's key: hoisting it out would change the answer when it matches nothing |
-| `nyi/fact-field` | reading through a reference held in a fact's **value** | A fetch follows a reference in a key |
-| `nyi/whole-key` | matching a whole key against a record field | A stored key is flat and a record field is wrapped, so the two are not the same bytes |
+| `nyi/fuzzy-denial` | `N where test.Name N; N != "ann"~1` | — |
+| `nyi/repeated-variable` | `X where test.Edge {from = X, to = X}` | Bind two variables and compare |
+| `nyi/value-match` | `Y where test.Foo {id = X}; test.Bar {id = Y + 1}` | A seek needs bytes known before the run |
+| `nyi/value-match` | `X where X = test.Foo _; X.value < "b"` | A value cannot be filtered on |
+| `nyi/value-bind` | `X where test.Nested {outer = {inner = Y}}; X = {inner = Y}` | — |
+| `nyi/value-field` | `X.value.lo where X = test.Boxed _` | Project the whole value |
+| `nyi/bind-unification` | `X where X = test.Foo _; X.name != "a"..` | `Y = X.name; Y != "a"..` |
+| `nyi/negation` | `X where test.Foo {id = X}; !(Y where test.Bar {id = Y})` | No subquery inside a negation |
+| `nyi/negation` | `P where …; !test.Ref {of = test.Foo {id = 2}}` | Bind the inner fact first |
+| `nyi/fact-field` | reading through a reference held in a value | Put the reference in the key |
+| `nyi/whole-key` | matching a whole key against a record field | — |
 
-Most of these have a one-line workaround, and the diagnostic says it. The pattern to
-remember: **name the intermediate value in a statement of its own.** An alias costs nothing —
-no register, no step — so `Y = X.name; Y != "a"..` compiles to exactly the plan the refused
-spelling would have wanted.
+The general workaround: name the intermediate value in a statement of its own. An alias
+costs nothing.
 
 ## What sigla does not have
 
-Not as a gap list — as a design boundary:
-
-- **No recursion.** Every negation is therefore evaluated against a relation that is already
-  total, which is what makes stratification a non-problem here.
-- **No aggregation.** No `count`, no `all`. `query --count` and `--format count` ask a
-  question *about* an answer without adding one to the language, and aggregation is the one
-  construct that cannot be made suspend-free — it materialises.
-- **No `LIMIT`.** Bounding a result is the client's job: `--limit` and `:more` cancel and
-  resume in band, and the query is unchanged.
-- **No way to name a fact by its id.** An id is physical; putting one in the language would
-  put a storage detail in a query. Expansion happens on the protocol instead.
-- **No if-then-else.** `(C; T) | (!C; E)` is the desugaring, and it needs no machinery.
+- **No recursion.**
+- **No aggregation.** `query --count` counts without adding it to the language.
+- **No `LIMIT`.** Bounding a result is the client's job (`--limit`, `:more`).
+- **No naming a fact by id.** Expansion happens on the protocol.
+- **No if-then-else.** `(C; T) | (!C; E)` is the desugaring.

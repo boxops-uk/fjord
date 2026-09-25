@@ -5,248 +5,177 @@ export const meta = {
 
 ## A–C
 
-**Access** — a level's target: a predicate id plus a seek key. [Executor](executor.html)
+**Access**: a level's target, a predicate id plus a seek key. [Executor](executor.html)
 
-**antichain** — a layer of statements with no ordering dependency between them. Used as the
-independent *witness* the reorderer's completeness is checked against — deliberately not on the
-reordering path, which is a greedy runnable frontier.
+**block**: a run of one predicate's facts behind a sync marker, with a header and a CRC.
+The same bytes on the wire and in a file. [Wire protocol](wire-protocol.html#blocks)
 
-**block** — a run of one predicate's facts behind a sync marker, with a header and a CRC. The same
-bytes on the wire and in a file. [Wire protocol](wire-protocol.html#blocks)
+**bookmark**: a `Rows` value. What a client holds instead of a borrow of the connection,
+so several results can be open at once. [Clients](clients.html)
 
-**bookmark** — what a client holds instead of a borrow of the connection: a `Rows` value, so several
-results can be open at once. [Clients](clients.html)
+**canonical form**: the order-independent, fully-qualified, comment-stripped form a schema
+fingerprint is computed over.
+[Schema language](schema-language.html#identity-canonical-form-and-fingerprints)
 
-**canonical form (schema)** — the order-independent, fully-qualified, comment-stripped form a
-fingerprint is computed over. [Schema language](schema-language.html#identity-canonical-form-and-fingerprints)
+**column family**: one of the two sorted maps, `keys` and `entities`.
+[Storage](storage.html#two-column-families)
 
-**column family** — one of the two sorted maps: `keys` (the index) and `entities` (identity →
-key + value). [Storage](storage.html#two-column-families)
+**Complete**: the sealed, immutable lifecycle state. Opposite: **Writable**.
 
-**Complete** — the sealed, immutable lifecycle state. Every open-for-write is then refused.
-Opposite: **Writable**.
-
-**constraint** — a bind whose right side is a pattern rather than a value (`X = "a"..`): collected
-from the whole body and applied by whichever level captures the variable, so it can *seek*.
+**constraint**: a bind whose right side is a pattern (`X = "a"..`). Applied by whichever
+level captures the variable, so it can seek.
 [sigla](query-language.html#a-constraint-narrows-the-level-that-captures-the-variable)
 
-**corpus** — the sigla language surface as *data*: each snippet classified `Supported(rows)`,
-`Diagnosed(code)` or `ParseError`, and the acceptance gate for permissive-early.
-[Testing](testing.html#the-corpus-the-language-surface-as-data)
+**corpus**: the sigla language surface as data, each snippet classified with the rows or
+diagnostic it produces. [Testing](testing.html#the-corpus-the-language-surface-as-data)
 
-**Cursor** — the resume token: **bytes only**, one detached row per open loop level, plus a layout
-version and a plan fingerprint. Pins no iterator and no snapshot.
+**Cursor**: the resume token. Bytes only: one detached row per open loop level, plus a
+version, a plan fingerprint and a world stamp.
 [Executor](executor.html#the-cursor-bytes-and-nothing-else)
 
 ## D–F
 
-**defunctionalised state machine** — writing the recursive nested loop as an explicit frame stack
-plus one driver, so it can suspend to bytes. [I7](invariants.html#i7)
+**denial**: `!=`. This field does not look like that. A filter, never a seek.
+[sigla](query-language.html#a-denial)
 
-**denial** — `!=`: this row's field does not look like that. A residual, never a seek — as against
-`!`, which says no such row exists. [sigla](query-language.html#a-denial)
+**derived bind**: a plan step computing a value into a register. Not a loop level.
+Recomputed on resume. [I14](invariants.html#i14)
 
-**derived bind** — a plan step computing a value from bound variables into a value slot. Not a loop
-level; recomputed on resume rather than saved. [I14](invariants.html#i14)
+**derived predicate**: a predicate whose facts a query could compute. *Stored* derivation
+(not built) would write them at build time. *Dynamic* derivation (built) computes a value
+while a query runs.
 
-**derived predicate** — a predicate whose facts a query could compute, stored keyed the way the
-query wants to read it. **Two features share the name**: *stored* derivation writes the facts at
-build time (not built), *dynamic* derivation computes a value while a query runs (built).
-
-**discriminant** — the explicit, append-only tag identifying a union alternative.
+**discriminant**: the explicit, append-only tag identifying a union alternative.
 [I10](invariants.html#i10)
 
-**entities** — the map `fact_id → key + value`. A point lookup by identity, read at projection and
-at a fetch.
+**entities**: the map from fact id to key plus value. Read at projection and at a fetch.
 
-**expansion** — replacing a reference in a row with the fact it names, recursively. A **client**
-concern, built on the protocol's fetch. [A query, step by step](query-lifecycle.html#expanding-a-reference)
+**expansion**: replacing a reference in a row with the fact it names. A client concern,
+built on the protocol's fetch.
+[A query, step by step](query-lifecycle.html#expanding-a-reference)
 
-**fact** — a typed record: the unit of data. Belongs to a predicate, has a `FactId`.
+**fact**: a typed record. Belongs to a predicate, has a `FactId`.
 
-**FactId** — a `u64` identifying a fact within a database: a **snowflake** — predicate id in the
-high 24 bits, per-predicate sequence in the low 40. Stable, unique, never reused. A *physical* id,
-not cross-database identity. [I11](invariants.html#i11)
+**FactId**: a 64-bit id: predicate in the high 24 bits, per-predicate sequence in the low
+40. Stable, unique, never reused, and not portable across databases.
+[I11](invariants.html#i11)
 
-**FactStore** — the storage seam: `scan` and `point`. Implemented by the real store and by an
-in-memory one for tests — and by the wrapper that answers the virtual catalogue predicate.
+**FactStore**: the storage seam, `scan` and `point`.
 
-**fetch** — two things, and they are related: a `Source::Fetch` level (reading *through* a
-reference inside a query) and the `F`/`f` protocol frames (asking what an id names).
+**fetch**: a `Source::Fetch` level reads through a reference inside a query. The `F`/`f`
+frames ask what an id names.
 
-**FieldPath** — how a plan names a key field: a top-level field plus one step per record it is
-nested inside.
+**field-offset cache**: the inline memo of where each field of a row ends. Never spills to
+the heap. [I9](invariants.html#i9)
 
-**field-offset cache** — the inline, fixed-capacity memo of where each field of a row ends. Never
-spills to the heap. [I9](invariants.html#i9)
+**fingerprint**: a hash over the canonical form, one per predicate and one for the schema.
 
-**fingerprint (schema)** — a hash over the canonical form; one per predicate and one for the whole
-schema. Identity and compatibility are compared by fingerprint.
+**fjall**: the LSM key–value store Fjord is built on.
 
-**fjall** — the LSM key–value store Fjord is built on.
+**Fjord DB**: the database.
 
-**Fjord DB** — the database. Immutable: built once, sealed, then read-only.
+**flatten**: the compiler phase that folds constants, collects constraints, hoists nested
+generators and decides what seeks and what filters.
+[A query, step by step](query-lifecycle.html#7-compilation)
 
-**flatten** — the compiler phase that lowers a typed query to the flat `[Step]` plus head: collect
-statements, fold constants, collect constraints, check range restriction, hoist nested generators,
-then decide sargeability. [A query, step by step](query-lifecycle.html#7-compilation)
+**folding**: substituting a constant-bound variable at every use, with no register.
 
-**folding** — substituting a variable bound to a constant at every use, rather than giving it a
-register and a step. A folded bind reaches a key field exactly as a literal in place would.
+**fuzzy match**: `"parse"~2`, within that many edits of the term. Distance `1` to `3`,
+term at most 63 characters. [Fuzzy search](fuzzy-search.html)
 
-**fuzzy match** — `"parse"~2`: within that many single-character edits of the term. A *pattern*,
-like a prefix, so no variable is bound to one. Distance `1` to `3`, term at most 63 characters.
-[Fuzzy search](fuzzy-search.html)
-
-**fuzzy prefix match** — `"parse"~<2`: within that many edits of *some prefix* of the stored
-string, rather than of the whole of it. Anchored at the start, so not a substring search — the
-question a search box asks, where `~` is the question "did they misspell the whole name".
+**fuzzy prefix match**: `"parse"~<2`, within that many edits of some prefix of the stored
+string. The question a search box asks.
 [Fuzzy search](fuzzy-search.html#5-ask-the-same-machine-a-different-question)
 
 ## G–P
 
-**generator** — a fact pattern as a statement: a loop over one predicate's rows.
+**generator**: a fact pattern as a statement. A loop over one predicate's rows.
 
-**guide** — the fuzzy counterpart of a seek key: a `Source::Guided` walks the range a seek key
-opened, asking a Levenshtein automaton per row where the next possible answer is and re-opening
-the scan there. Spent per row, where a seek key is spent once.
+**guide**: a fuzzy automaton driving a scan, seeking past ranges it rules out.
 [Fuzzy search](fuzzy-search.html#8-where-a-fuzzy-match-can-sit)
 
-**head** — the plan's output projection, applied to the bound registers to build each row.
+**head**: the plan's output projection.
 
-**iteratee** — the consumer side of the executor seam: the callback that receives each row and
-answers `Continue` or `Suspend`.
+**interning**: resolve-or-create at ingest. A nested fact's key is looked up and either
+takes the id there or is written with a new one. Bottom-up.
+[Storage](storage.html#interning-a-nested-fact)
 
-**interning** — resolve-or-create at ingest: a nested fact's key is looked up, and it either takes
-the id that is there or is written with a new one. Bottom-up, because a parent's key has no bytes
-until its children have ids. [Storage](storage.html#interning-a-nested-fact)
+**keys**: the map from predicate id plus key to fact id. The index, and the only map the
+scan loop touches.
 
-**keys** — the map `predicate_id ++ encoded_key → fact_id`. The index; prefix scans over it *are*
-predicate queries; the only map the scan hot loop touches.
+**level**: one loop of the nested loop. A cursor holds one row per level.
 
-**keyspace-per-predicate** — each predicate gets its own pair of physical trees. Physical
-isolation, parallel ingest, and an O(1) wholesale drop.
+**Levenshtein automaton**: the machine behind `~`. Fixed-size and copyable, so a walk can
+re-enter at any string. [Fuzzy search](fuzzy-search.html)
 
-**level** — one loop of the nested loop: a step with sources and binds. `Plan::levels()` counts
-these, and a cursor holds one row per level.
+**listing digest**: a hash of a virtual predicate's rows, carried with the results and
+back on a `FETCH`. [Wire protocol](wire-protocol.html#fetching-what-an-id-names)
 
-**Levenshtein automaton** — the machine behind `~`: a capped edit-distance row against the term,
-one row per consumed character. Fixed-size and `Copy`, so a transition allocates nothing and a
-walk re-enters at any string — which is why a guided scan needs no cursor state of its own.
-[Fuzzy search](fuzzy-search.html)
+**marker**: the leading byte of an encoded value. Determines sort position and skip shape.
+Frozen once data exists. [I3](invariants.html#i3)
 
-**listing digest** — a hash of a virtual predicate's materialised rows, carried with the results
-and back on a `FETCH`. What lets a server refuse a stale id by name instead of resolving it
-against a listing that has since moved. [Wire protocol](wire-protocol.html#fetching-what-an-id-names)
+**one write funnel**: every writer passes the same validate, intern, dedup, reject
+pipeline. One pipeline, not one thread (`ops-I5`).
 
-**marker** — the leading byte of an encoded value: determines sort position and skip shape. Frozen
-once data exists. [I3](invariants.html#i3)
+**order-preserving**: `memcmp(encode(a), encode(b)) == compare(a, b)`.
+[I1](invariants.html#i1)
 
-**merge frontier** — where a key's identity is decided: resolve, dedup, reject. **Striped** — one
-lock per `hash(predicate ++ key)` — so exclusion is exactly as wide as the thing being decided.
+**Plan**: the IR the executor consumes: `{ nvars, body: [Step], head }`.
 
-**one write funnel** — every writer passes the same validate → intern → dedup → reject pipeline.
-One *pipeline*, not one thread (`ops-I5`).
+**point**: the store operation that reads a fact by id. Never called during a key-only
+scan. [I6](invariants.html#i6)
 
-**order-preserving** — `memcmp(encode(a), encode(b)) == compare(a, b)`: the storage codec's
-defining property. [I1](invariants.html#i1)
+**predicate**: a relation, and the unit of storage. Its id is the key prefix.
 
-**Plan** — the IR the executor consumes: `{ nvars, body: [Step], head }`. The fixed contract
-between front end and back end.
-
-**point** — the store operation that reads a fact's identity row by id. Must not be called during a
-key-only scan. [I6](invariants.html#i6)
-
-**predicate** — a relation, and the unit of storage. Fixes a fact's type; its id is the key prefix.
-
-**PredicateTy** — a type: `Int`, `Str`, `Fact(p)`, `Record` of ordered fields, or `Union` of
-tagged alternatives.
-
-**Project** — a projection node: a literal, a field of a register, a reference, a value, a computed
-value, or a record built out of those.
+**Project**: a projection node in the head.
 
 ## Q–Z
 
-**range restriction** — the safety check flatten enforces: every used variable is captured by some
-generator's key pattern. Makes bind-before-use automatic in any order.
+**range restriction**: every used variable must be captured by some generator's key.
 
-**register** — a bound row: a fact id plus the row's bytes. The fact case of a **slot**.
+**register**: a bound row: a fact id plus the row's bytes.
 
-**reorder** — the compiler phase that chooses loop order: a greedy **runnable frontier**, complete
-because the constraint is monotone. Load-bearing for *acceptance*, not just speed.
+**reorder**: the compiler phase that chooses loop order. Greedy, and complete.
 
-**residual** — a filter applied to a scanned row during the scan, on key fields only: equals a
-constant, has this prefix, equals another register's field, does not equal, does not have this
-prefix, and the order comparisons.
+**residual**: a filter applied to a scanned row, on key fields only.
 
-**resume** — reconstructing executor state from a cursor to continue a suspended query exactly.
-[I4](invariants.html#i4)
+**resume**: reconstructing executor state from a cursor. [I4](invariants.html#i4)
 
-**Row** — the borrowed, one-step-lived view of a fully bound result handed to the consumer.
+**Row**: the borrowed view of a fully bound result handed to the consumer.
 
-**rows-examined ceiling** — the executor's one limit on *input*: rows pulled off a scan, charged
-per row. Deployment policy, not semantics — it refuses a run and never changes an answer.
-[Query efficiency](query-efficiency.html#the-ceiling-is-deployment-policy)
+**rows-examined ceiling**: the executor's one limit on input. Deployment policy, not
+semantics. [Query efficiency](query-efficiency.html#the-ceiling-is-deployment-policy)
 
-**sargeable** — a key field that can narrow the scan (a seek, a splice, a guide or a bounded
-range) rather than being filtered afterwards. Sargeability is **order-dependent**.
+**sargeable**: a key field that can narrow the scan rather than being filtered afterwards.
 [Query efficiency](query-efficiency.html)
 
-**seek / SeekKey** — the range a level's scan opens on, built from constant bytes and register
-splices, and optionally *ranged* at the field they stop at: by a folded order comparison
-(`SeekKey::Bounded`) or by a byte-prefix pattern (`SeekKey::PrefixRange`). Which variant it is
-decides where the range ends, because a whole field encoding and a byte prefix of one are almost
-the same bytes and want opposite ends. [Executor](executor.html)
+**seek / SeekKey**: the range a level's scan opens on, built from constant bytes and
+register splices, optionally ending in a range. [Executor](executor.html)
 
-**separator** — the byte string between one field value's keys and the next value's: the value's
-encoding then `0xFF`. Where a seek's range ends **at a value** — a bounded edge that excludes it,
-and the end of any seek whose parts are complete field encodings. Not the same thing as
-**strinc** — a terminated field's encoding is a byte prefix of a greater value's whenever that
-value extends it through a NUL. [Executor](executor.html)
+**sigla**: Fjord's query and schema language.
 
-**sigla** — Fjord's query and schema *language*.
+**slot**: what a register holds: a stored row, or a derived value.
 
-**slot** — what a register holds: a stored row, or a derived bind's computed value. Kept apart at the
-type level, because splicing one where the other belongs quietly matches nothing.
+**snapshot**: a query's consistent read view. Dropped at every suspend.
+[I8](invariants.html#i8)
 
-**snapshot** — a query's consistent read view. Trivial for an immutable database, but an iterator
-pins one, so it is dropped at every suspend. [I8](invariants.html#i8)
+**splice**: bytes copied from an outer register into a seek key. How a join works.
 
-**splice** — bytes copied from an earlier-bound register into a seek key, narrowing an inner scan to
-rows matching the outer row. This is how a join works.
+**Step**: one position in a plan's body: a level, a derive or a test. Exactly three kinds.
 
-**stratification** — the evaluation order a negation over a derived relation needs. Not a problem
-for queries here (sigla has no recursion and the base is total); it returns under its own name for
-stored derivation, as a topological sort of the derivation graph.
+**suspend**: a resumable yield producing a cursor.
 
-**strinc** — the prefix successor: the smallest byte string greater than every string with a given
-prefix. The exclusive upper bound of a prefix scan, which is what a byte-prefix **pattern** wants
-and what an equality does not — see **separator**.
+**sync marker**: ten `0xFF` bytes marking a block boundary. A candidate, confirmed by the
+magic and the CRC.
 
-**Step** — one position in a plan's body: a level, a derive or a test. Exactly three kinds, and a
-test asserting that is the cheapest guard in the project.
+**transport codec**: the wire format. Compact, schema-driven, not order-preserving.
 
-**suspend** — a voluntary, resumable yield producing a cursor. Distinct from a cancel and from a
-terminal unwind.
+**tuple codec**: the storage codec. Order-preserving, self-delimiting, frozen on disk.
 
-**sync marker** — ten `0xFF` bytes marking a block boundary. A hit is **only a candidate**: a
-`bytes` payload carries arbitrary content, so a marker can occur inside one, and a splitter
-confirms the magic and the header CRC before believing it.
+**virtual predicate**: a predicate answered by the server rather than stored, such as
+`fjord.db.List`.
 
-**transport codec** — the wire format: compact, schema-driven, not order-preserving. A sibling of the
-storage codec, sharing no bytes with it.
-
-**tuple codec** — the storage codec: order-preserving, self-delimiting, frozen on disk. Encodes both
-keys and values.
-
-**virtual predicate** — a predicate answered by whoever is running the query rather than read from a
-keyspace — `fjord.db.List`. Absent from the handshake fingerprint, from a database's embedded
-schema and from every artifact's keyspaces, which is why a client that has never heard of it
-connects exactly as before.
-
-**world stamp** — opaque bytes on a cursor naming the base it was read in: a content fingerprint
-for a Complete database, an instance/incarnation/visible-sequence triple for a Writable one, plus
-the digest of any virtual listing the query read. The engine only compares them.
+**world stamp**: opaque bytes on a cursor naming the base it was read in.
 [I4](invariants.html#i4)
 
-**Writable** — the mutable lifecycle state before `finish`. Ingestion happens here.
+**Writable**: the mutable lifecycle state before `finish`.

@@ -96,6 +96,91 @@
   margin-inline: auto;
 }
 
+/* ------------------------------------------------- tables, on a phone ------
+
+   **Below the width where three columns fit, a table is a list of cards.**
+
+   A wide table in a narrow column has two bad answers and this is the third.
+   Squeezing it gives columns a few characters wide and a row of broken words;
+   scrolling it sideways hides the very columns that make a row mean anything,
+   and the reader has to hold the first column in their head while they drag to
+   the fourth. Stacking each row into a card keeps every cell of it on screen
+   at once, which is what the table was arranged to do in the first place.
+
+   **Two columns stay a table.** A pair is already a label and a value, reads
+   fine at any width, and turning it into cards would double its height to say
+   the same thing. `:has()` asks the table how many columns it has, so no page
+   has to declare it and no component has to thread a prop down to say so.
+
+   The cells' own labels come from `mdx.tsx`: the header row goes away here, so
+   each cell carries the heading that was above it. `display: none` rather than
+   a visual-hiding class is deliberate — it takes the label out of the
+   accessibility tree on a wide screen, where the table's own header
+   association already says it, and puts it back in on a narrow one, where
+   changing `display` on a table has taken that association away. */
+
+.book-column > .astryx-table-scroll-wrapper { container-type: inline-size; }
+
+/* The heading a cell carries: shown only once the table has become cards. */
+.cell-label { display: none; }
+
+@container (max-width: 34rem) {
+  .astryx-table:has(tr > th:nth-child(3)) { display: block; }
+
+  /* The header row has handed its words to the cells. */
+  .astryx-table:has(tr > th:nth-child(3)) tr:has(> th) { display: none; }
+
+  .astryx-table:has(tr > th:nth-child(3)) tr {
+    display: block;
+    padding: var(--spacing-3) var(--spacing-4);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-element);
+    background: var(--color-background-card);
+  }
+
+  .astryx-table:has(tr > th:nth-child(3)) tr + tr { margin-block-start: var(--spacing-3); }
+
+  /* **The width and the clip have to be undone, not just the display.** A cell
+     carries `width: 0` and `overflow: hidden` so that a column can shrink and
+     truncate; a table's layout treats that as a hint and ignores it, and a
+     block treats it as the answer. Left alone, every card came out an empty
+     box of the right height. */
+  .astryx-table:has(tr > th:nth-child(3)) td {
+    display: block;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    overflow: visible;
+    padding: var(--spacing-1) 0;
+    border: 0;
+  }
+
+  .astryx-table:has(tr > th:nth-child(3)) .cell-label {
+    display: block;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  /* **The first cell is the card's subject, not one of its fields.** Every
+     table in this book leads with what the row *is* — a byte, a code, an
+     invariant's number — so it reads as a title with the rest hanging under
+     it, and its own heading would only repeat what the value already says. */
+  .astryx-table:has(tr > th:nth-child(3)) td:first-child {
+    padding-block-end: var(--spacing-2);
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .astryx-table:has(tr > th:nth-child(3)) td:first-child .cell-label { display: none; }
+
+  /* A cell the row does not fill carries no label either, so it is empty and
+     the card leaves it out. The operational invariants leave most of a Guard
+     column blank, which is the case this is for. */
+  .astryx-table:has(tr > th:nth-child(3)) td:empty { display: none; }
+}
+
 /* Two things put a table outside the column, and both are right for a table that
    owns the page and wrong for one inside a measure. It bleeds 24px into the
    section's padding, to sit edge to edge; and it stretched to the flex line
@@ -121,14 +206,18 @@
 
 /* Prose is read at a line length, not at a component's line-height.
 
-   Justified, with hyphenation on: the two go together. Justification alone
-   stretches the word spaces to fill the line and opens rivers down the column;
-   hyphenation gives it somewhere to break instead. `text-wrap: pretty` is what
-   keeps a paragraph from ending on a single word. */
+   **Ragged right.** This was justified with hyphenation, on the theory that the
+   two together give the spaces somewhere to go. They do at a comfortable
+   measure; they do not on a phone, where a column holds six or seven words and
+   justification has almost no word spaces to distribute the slack across — so it
+   loads all of it into two or three, and every paragraph grows the rivers the
+   hyphenation was there to prevent. A ragged edge costs nothing at any width.
+
+   `text-wrap: pretty` stays: it is what keeps a paragraph from ending on a
+   single word, which is a narrow-column problem too. */
 [data-testid='prose'] p,
 [data-testid='prose'] li {
   line-height: 1.65;
-  text-align: justify;
   hyphens: auto;
   text-wrap: pretty;
 }
@@ -185,3 +274,121 @@
 .astryx-command-palette-item,
 .astryx-command-palette-item > *,
 .astryx-command-palette-group { min-width: 0; }
+
+/* ------------------------------------------------- the reading order ---
+
+   **On a phone the reading order is the screen, not a panel beside it.**
+
+   `MobileNav` takes its width as a number of pixels and defaults to 320, so a
+   390px phone opened the nav over 320 of them and left a 70px stripe of the
+   page down one side. That stripe is not content: it is too narrow to read a
+   word of and it is behind a scrim, so its whole contribution is to make the
+   drawer look like it landed short. The same 320 that is a panel on a tablet is
+   very nearly the whole screen on a phone.
+
+   So below the width at which the shell already gave up on putting the nav
+   beside the page, the drawer takes all of it. The bound is the resolved size
+   rather than the `--x-maxWidth` the component sets inline — a custom property
+   set in a `style` attribute cannot be outbid by a rule, and the sizes that read
+   it can. `inset-inline` follows because the panel is positioned from the end
+   edge, and a 100% width against a 0 end inset would otherwise start off-screen.
+
+   Above that width the panel keeps its 320: on the workbench the drawer opens at
+   every size, and a full-screen nav on a desktop is a modal nobody asked for. */
+
+@media (max-width: 768px) {
+  dialog.astryx-mobile-nav > div:not(#\#):not(#\#):not(#\#) {
+    inline-size: 100%;
+    max-inline-size: none;
+    inset-inline: 0;
+    border-inline-start: 0;
+    border-radius: 0;
+  }
+}
+
+/* **Where you are, in the accent.**
+
+   The shipped selected state is `--color-neutral` behind text the same colour
+   and weight as every other row: a grey pill in a list of twenty-three names,
+   which is a state you find by looking for it rather than one you see. This is
+   the one row in the shell that has to answer "where am I" at a glance, so it
+   takes the page's own red.
+
+   `aria-current="page"` rather than the `.selected` class beside it: the
+   component sets both, and the one that is also the accessible answer is the one
+   that will still be there after a refactor. `--color-on-accent` is derived from
+   the accent seed and flips with the theme — white on the light red, near-black
+   on the lighter dark-mode red — so the pair stays legible in both without a
+   second rule. */
+
+.astryx-side-nav-item[aria-current='page']:not(#\#):not(#\#):not(#\#) {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* The hover ground is a neutral wash that would sit *over* the accent and mute
+   the one row that is meant to be loudest. The current page is where a click
+   would leave you anyway, so it holds still. */
+.astryx-side-nav-item[aria-current='page']:not(#\#):not(#\#):not(#\#):hover {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+/* **A section heading sits outside the pages under it.**
+
+   Shipped, the two are the wrong way round by four pixels: a `Collapsible`
+   trigger pads 12 and a `SideNavItem` pads 8, so every group label stood one
+   notch *further* in than the links it introduces and the list read as a column
+   of headings with an outdent under each. The step is small enough to look like
+   a mistake rather than a level, which is what it was.
+
+   So the heading goes flush with the rail's own padding and the pages step in
+   from it. The indent is on the label rather than the row: a selected page is a
+   full-width pill, and pushing the row in would leave a ragged red edge floating
+   away from the heading it belongs to.
+
+   Scoped to `.reading-order` because `.astryx-collapsible-trigger` is also every
+   demo's own section header, halfway down a page, where none of this applies. */
+
+.reading-order .astryx-collapsible-trigger:not(#\#):not(#\#):not(#\#) {
+  padding-inline-start: var(--spacing-2);
+}
+
+.reading-order .astryx-side-nav-item:not(#\#):not(#\#):not(#\#) {
+  padding-inline-start: var(--spacing-5);
+}
+
+/* ------------------------------------------------------- the outline ---
+
+   **The page and its outline are one scrolling column, not two panes.**
+
+   As a `LayoutPanel` the outline was its own region with its own scroll, which
+   put the *content* region's scrollbar between the prose and the list of that
+   prose's headings — a scrollbar in the one position where it cannot mean
+   anything, because neither side of it is what it scrolls. A pane earns its
+   divider when what is in it is unrelated to what is beside it and about as
+   long; this is a dozen links about the very page it sits next to.
+
+   So the outline sits in the page's own scroll region and holds its place. The
+   offset clears the bar, which overlays the top of that region — the same
+   distance the `offset` prop shifts the activation line by, plus the room a
+   heading is given to breathe under it. */
+
+.page-frame { min-width: 0; }
+
+.page-outline {
+  position: sticky;
+  top: 0;
+  flex: 0 0 18.75rem;
+  align-self: start;
+  max-height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Below the width where the outline is rendered at all, nothing here applies —
+   the page is the whole column. */
+@media (max-width: 1199px) {
+  .page-outline { display: none; }
+}

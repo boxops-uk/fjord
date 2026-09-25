@@ -1,38 +1,32 @@
 export const meta = {
   "title": "Wire protocol",
-  "description": "Frames, streams, the handshake, the four query kinds, the write stream, block format and the value encoding — everything a second implementation needs."
+  "description": "Frames, streams, the handshake, the four query kinds, the write stream, blocks and the value encoding: what a client needs."
 }
 
-One socket, framed and multiplexed. Everything talks it: the CLI, the shell, the viewer, and a
-C# client that shares no code with the server. Protocol version is **4**.
+One socket, framed and multiplexed. The CLI, the shell, and a C# client that shares no
+code with the server all speak it. Protocol version is **4**.
 
-The transport is a Unix socket by default. TCP is an explicit opt-in — `serve --listen-tcp
-host:port`, with no config-file entry and no environment variable, so a port can only appear
-because somebody typed one.
+The transport is a Unix socket by default. TCP is `serve --listen-tcp host:port`, with no
+config-file entry and no environment variable.
 
 ## The frame layer
 
-```text
-  ┌────────┬────────────┬────────────┬───────────────────────────┐
-  │ kind:1 │ stream:4   │ length:4   │ payload (length bytes)     │
-  └────────┴────────────┴────────────┴───────────────────────────┘
-    9-byte header; the two counts are little-endian
-```
+<Bytes
+  caption="A 9-byte header, then the payload. The two counts are little-endian."
+  fields={[
+    { name: 'kind', size: 1, span: '1 byte' },
+    { name: 'stream', size: 4, span: '4 bytes' },
+    { name: 'length', size: 4, span: '4 bytes' },
+    { name: 'payload', size: 7, span: 'length bytes', variable: true },
+  ]}
+/>
 
-PostgreSQL-inspired and deliberately **not** PostgreSQL-compatible. PG's header is a type byte
-and a length, and every message belongs to the one conversation the connection *is* — strictly
-serial, so a long query blocks a short one. The `stream` field is the departure and the reason
-for departing: a query is a stream, a write is a stream, several run at once, and every frame
-says which.
+Every frame names its stream. A query is a stream, a write is a stream, and several run at
+once on one connection.
 
-Two rules the frame layer holds and nothing above it needs to restate:
-
-- **`kind` is a byte with named constants, not a closed enum.** A framing layer delimits
-  messages; deciding what a message *means* is the layer above. An unrecognised kind is handed
-  up intact, which is also what lets a peer at a newer version be told "I do not know that
-  message" rather than "your bytes are malformed".
-- **`length` is bounded before it is trusted**, because it sizes a read from a number the peer
-  chose. The cap is 64 MiB (`MAX_PAYLOAD`).
+- `kind` is a byte with named constants, not a closed enum. An unrecognised kind is
+  handed up intact.
+- `length` is capped at 64 MiB before it is trusted.
 
 ## Frame kinds
 
@@ -59,82 +53,58 @@ Two rules the frame layer holds and nothing above it needs to restate:
 | `c` | `COPY_DONE` | → | The write stream's blocks are finished |
 | `L` | `CONTROL` | → | A lifecycle request: create, finish, remove |
 | `M` | `CONTROL_REPLY` | ← | What it came to |
-| `H` | `SCHEMA` | → | "What can I ask you?" — no payload |
+| `H` | `SCHEMA` | → | "What can I ask you?" No payload |
 | `h` | `SCHEMA_REPLY` | ← | The schema this session is served with, as source |
-| `Y` | `TYPES` | → | "What shape is everything you serve?" — no payload |
+| `Y` | `TYPES` | → | "What shape is everything you serve?" No payload |
 | `y` | `TYPES_REPLY` | ← | Every predicate this session can name, as a type tree |
 | `I` | `OPEN_WRITE_IDS` | → | Open a write stream, and say what the facts were called |
 | `i` | `IDS` | ← | The id of each fact written, once, just before `C` |
 | `F` | `FETCH` | → | A batch of fact ids |
 | `f` | `FETCHED` | ← | One key each, positionally, or an absence |
 
-`G` appears twice, and that is not a typo: it is `QUERY_PAGE` from the client and
-`COPY_IN_RESPONSE` from the server. A kind is only ever read in one direction, so the byte is
-free to mean one thing outbound and another inbound — the same economy PostgreSQL's protocol
-makes.
+`G` appears twice. A kind is only ever read in one direction, so the byte means one thing
+outbound and another inbound.
 
 ## The handshake
 
-```text
-  →  S   { version, database, mode, schema_fingerprint, [(predicate, fingerprint)…] }
-  ←  R   { version, schema_fingerprint, predicates }
-```
+<Sequence>{`
+→ S  { version, database, mode, schema_fingerprint, [(predicate, fingerprint)…] }
+← R  { version, schema_fingerprint, predicates }
+`}</Sequence>
 
-The database may be **empty**, which is a control session — the only kind of session a
-`create` could be sent on.
+The database may be empty, which makes a control session for `create` and `list`.
 
-`mode` is `read-only` or `read-write`, and it is resolved **once** against the database's
-status: a Complete database is read-only, full stop, and a write session against one is refused
-at establishment rather than per fact.
+`mode` is `read-only` or `read-write`, resolved once against the database's status. A
+write session against a Complete database is refused here, not per fact.
 
-The schema claim has two halves, and both are checks the client chooses:
-
-- **`schema_fingerprint`** is an equality claim, or `0` for "do not check". Zero is a real
-  answer rather than a hole: a reader has nothing to assert.
-- **`predicates`** is a per-predicate claim, checked by **subset containment** — which is what
-  the freeze invariant actually says, and what lets a producer writing six of a database's
-  twenty-seven predicates connect without restating the other twenty-one.
+The schema claim has two halves. `schema_fingerprint` is an equality check, or `0` for
+"do not check", which is right for a reader. `predicates` lists what the client claims,
+each with its fingerprint, checked by subset containment: a producer that writes six of a
+database's twenty-seven predicates need not name the other twenty-one.
 
 <Callout tone="note" label={`There is no credential field`}>
 
-Access control is entirely the transport's job — socket permissions, or a gateway in front of
-opted-in TCP. That is only safe because binding is default-closed, and it is stated as an
-invariant (`ops-I10`) rather than left as an omission.
+Access control is the transport's job: socket permissions, or a gateway in front of
+opted-in TCP (`ops-I10`).
 
 </Callout>
 
 ## Asking what you may ask
 
-```text
-  →  H   (no payload)
-  ←  h   the schema, as source
-```
+<Sequence>{`
+→ H  no payload
+← h  the schema, as source
+`}</Sequence>
 
-A database carries the schema it was created against, so a client's built-in copy is its own
-opinion. `h` is the answer, and it is what lets a client describe the right predicates, compile
-a query before sending it, and show a plan. **Virtual predicates are included**, because the
-question is what may be asked rather than what the database holds.
+A database carries the schema it was created against, and `h` returns it. Virtual
+predicates are included. A session bound to no database answers with the catalogue alone.
 
-**A session bound to no database answers too**, with the catalogue alone — which is exactly
-what a tool doing `create` or `list` may ask about, and all it may ask about. `h` and `y` take
-that same fallback, so the two cannot disagree about what is being served.
+For a client with no sigla parser:
 
-### The same question, for a client with no parser
-
-```text
-  →  Y   (no payload)
-  ←  y   every predicate, as a descriptor
-```
-
-`h` answers **source**, which is what a person diffing two schemas wants and what a client
-holding a sigla parser can lower. Neither is true of a client in another language, and it needs
-the answer more than anyone: the transport codec sends no field names, no type markers and no
-record arities, so a fact's values go on the wire **positionally against the predicate's declared
-type**. A producer therefore needs that type before it can encode a byte.
-
-Without `y` it writes the type out by hand and the handshake fingerprint is what catches a
-transcription that has gone stale — after somebody made it, and as two numbers that differ
-rather than a predicate that was typed wrong.
+<Sequence>{`
+→ Y  no payload
+← y  every predicate, as a descriptor
+`}</Sequence>
 
 The payload is a count and then, per predicate:
 
@@ -147,347 +117,187 @@ The payload is a count and then, per predicate:
   desc    value             only when has_value
 ```
 
-**The descriptors are the same encoding `T` carries for a query's rows**, which is what keeps
-this from being a second codec: a client that can read a row shape can already read these.
-`is_virtual` is carried because a writer has to know which predicates it can never write to —
-a hand-written schema describes only what its author writes to and has no row for
-`fjord.db.List` at all.
+The descriptors use the same encoding `T` carries for a row's shape. A predicate with no
+value takes no descriptor; one whose value is `{}` takes an empty record. Predicates
+arrive in id order.
 
-**A missing value side is not an empty record.** A predicate with no value takes no descriptor;
-one whose value is `{}` takes a record of zero fields. Folding them would have a writer send
-bytes for a side that does not exist.
+Predicate ids are assigned at `create` by sorted fully-qualified name, with `fjord.*`
+last, and never move for the life of the database. Adding a predicate to a *schema* can
+insert an id, so databases created after the change number differently.
 
-Predicates arrive in **id order**, so a client that keeps them in the order they arrive has
-positions matching the server's ids — which is what makes a `Fact` reference inside a key
-resolve to the predicate the server meant. See the next section for why that only holds for a
-schema learned this way.
+<Callout tone="warn" label={`A \`FactId\`'s tag is the database's numbering`}>
 
-### Where a predicate id comes from, and the one place it can bite a consumer
-
-Ids are assigned at `create`, by **sorted fully-qualified name with the reserved `fjord.*`
-namespace last**, and then embedded — not by declaration order and not by file position. The
-map is append-only for the life of the database ([I13](invariants.html#i13)), so an existing
-database's numbering never moves.
-
-Adding a predicate to a *schema* is another matter: because the rule is a sort, a name that
-sorts early **inserts** an id rather than appending one, and every predicate above it is
-numbered one higher in databases created after the change.
-
-That never leaves the database on this wire. A block header carries the predicate's **name**,
-and a row carries no predicate at all — so a client keeps no table that could fall out of step,
-and this is one of the reasons the header spends the bytes on a name.
-
-<Callout tone="warn" label={`A \`FactId\`'s tag is the *database's* numbering`}>
-
-The one place the numbering is visible to a consumer. A `FactId` packs its owning predicate's
-id in its high bits ([I11](invariants.html#i11)), so a consumer that decodes a returned
-reference's tag against a **hardcoded** table reads the wrong predicate the day the numbering
-moves. Ask the schema — `h` above — or treat an id as opaque and hand it back to `F`.
+A `FactId` packs its predicate id in its high bits. Decode it against the schema the
+server gave you, never against a hardcoded table.
 
 </Callout>
 
 ## A query stream
 
-```text
-  →  Q   "{f = F, at = S} where codemarkup.SymbolXRef {…}"
-  ←  T   {at: {start: int, length: int}, f: src.File}
-  ←  D   one row
-  ←  D   one row
-  …
-  ←  C   complete
-```
-
-Four query kinds rather than one kind with flags, and the reason is the same each time: `Q`'s
-payload is the query text and nothing else, so a leading flag byte would be a silent change of
-meaning for every client already sending UTF-8. A client that has never heard of profiling
-neither sends `P` nor receives a `p`, and the protocol version does not move.
+<Sequence>{`
+→ Q  "{f = F, at = S} where codemarkup.SymbolXRef {…}"
+← T  {at: {start: int, length: int}, f: src.File}
+← D  one row
+← D  one row
+…
+← C  complete
+`}</Sequence>
 
 | Kind | Adds | Answers with |
 |---|---|---|
 | `Q` | — | `T`, `D`*, `C` |
 | `P` | Report what it examined | …plus `p`, once, just before `C` |
-| `G` | Stop after N rows | …plus `r`, **only** if the result was cut short and there is more |
-| `N` | Count instead of encoding | `n` — no `T`, no `D` |
+| `G` | Stop after N rows | …plus `r`, only if the result was cut short |
+| `N` | Count instead of encoding | `n`. No `T`, no `D` |
 
-`G` is what makes paging **stateless**. Without it a result lives in the server's session, keyed
-by stream id, and a caller has to hold the connection to see page two — which a web tier cannot
-do and cannot work around, because "everything after key K" is not expressible in the language.
-A page that reached the end sends **no** token, which is how a caller knows it has seen
-everything without asking again to be told nothing.
+`G` is what makes paging stateless: page two is a fresh request carrying the token. A page
+that reached the end sends no token. `N` runs the same plan and counts instead of
+encoding.
 
-`N` is the cheapest kind to justify: the plan is the same and the executor is the same, and what
-differs is the accumulator — the driver is a fold, so counting is a fold that keeps a number.
-It is **not** aggregation in the language.
-
-### Rows
-
-Rows go out **256 at a time**, off the executor's suspend, and the next chunk resumes from the
-bytes-only cursor. So a result of any size never buffers in the server and never monopolises the
-socket — and between chunks is exactly where a cancel gets its chance to land.
+Rows go out 256 at a time off the executor's suspend, so a result of any size never
+buffers in the server. Between chunks is where a cancel lands.
 
 ### Rows off a virtual predicate
 
-A query reading a [virtual predicate](concepts.html) gets one extra frame per such predicate,
-right after `T`:
+A query reading `fjord.db.List` gets one extra frame after `T`:
 
-```text
-  ←  T   {name: string, state: string}
-  ←  l   fjord.db.List, digest 9f3c…
-  ←  D   one row
-```
+<Sequence>{`
+← T  {name: string, state: string}
+← l  fjord.db.List, digest 9f3c…
+← D  one row
+`}</Sequence>
 
-`fjord.db.List`'s rows are a **materialised view, not a keyspace**, so its ids are positions in
-a listing rather than durable identities: a `create` or a `db rm` between two requests can
-renumber it, and an id then lands on a *different* row rather than on none — which a reply
-cannot be inspected to notice, because it looks exactly like a correct one. The digest travels
-with the rows and comes back on a `FETCH`, which is what lets the server refuse that case by
-name instead of answering it. It is also folded into a page's resume token, so the same move
-between two pages is refused there too.
+Those rows are a view, not a keyspace, so their ids are positions in a listing. The
+digest comes back on a `FETCH` and in a page's resume token, so a listing that moved is
+refused rather than answered with the wrong row.
 
 ### Cancellation
 
-```text
-  →  X   (on the stream it cancels)
-```
+<Sequence>{`
+→ X  on the stream it cancels
+`}</Sequence>
 
-**In band, on the stream it cancels** — not a connection teardown and not a side channel. That
-is the whole reason frames carry a stream id: cancelling a long query has to be possible without
-disturbing the other streams sharing the socket, and a second connection could not do it because
-the first one's state is not there.
+In band, on the stream. Other streams on the socket are untouched.
 
 ### Errors
 
-```text
-  ←  E   { code, message }
-```
+<Sequence>{`
+← E  { code, message }
+`}</Sequence>
 
-A stream's failure leaves the connection usable. The code exists so a client can branch without
-parsing English; the message exists because a person reads it.
+A stream's failure leaves the connection usable.
 
 | Code | Means |
 |---|---|
 | 1 `Protocol` | Malformed or out-of-sequence frames |
-| 2 `UnknownDatabase` | No such database under this root, no such instance of one, no database named on this session at all — or one that is there and this server cannot open, and in that last case the message says which instance and why |
-| 3 `SchemaMismatch` | The claim disagrees with what this database holds |
+| 2 `UnknownDatabase` | No such database or instance, or one this server cannot open |
+| 3 `SchemaMismatch` | The claim disagrees with the database |
 | 4 `ModeRefused` | A write session against a Complete database |
-| 5 `BadFacts` | A block that does not validate against the embedded schema |
+| 5 `BadFacts` | A block that does not validate |
 | 6 `Conflict` | Same key, different value |
 | 7 `BadQuery` | The query did not compile |
 | 8 `Internal` | Look at the server's logs |
-| 9 `InUse` | The database is there and not usable **yet** — the root or the instance's store directory is held by something else, a session still has it, or a copy into the store root has not finished delivering it. The one code worth **retrying** |
-| 10 `Refused` | A well-formed request the server will not carry out — the answer is in the message |
-| 11 `Busy` | The server is at its connection cap and never read the request — **come back**, the other code worth retrying |
+| 9 `InUse` | The database is there and not usable yet. Retry |
+| 10 `Refused` | A well-formed request the server will not carry out. The message says why |
+| 11 `Busy` | The server is at its connection cap. Arrives before the handshake. Retry |
 
-`Busy` arrives where no other error can: **before the handshake**, in answer to the connection
-itself rather than to anything on it. A client that has sent `STARTUP` and reads an error instead
-of `READY` has been turned away at the door, and the connection closes behind it.
-
-Two refusals are worth naming because a client can act on them. **A stale listing**: a `FETCH`
-carrying a digest the current listing no longer matches is refused whole, before any id is
-resolved — re-run the query and fetch against the new rows. **A volatile resume**: paging across
-requests over `fjord.db.Interning` is refused, because its counters are read by locking every
-interning stripe in turn and thrash on every write, so there is no stable value to digest. Ask
-for the whole answer in one request instead.
+Two refusals to handle: a `FETCH` whose listing digest is stale is refused whole, so re-run
+the query. A resume across requests over `fjord.db.Interning` is refused by name, so ask
+for the whole answer in one request.
 
 ## Fetching what an id names
 
-```text
-  →  F   a batch of ids, batched per predicate, with the listing digest for a virtual one
-  ←  f   one key each, in the order asked
-```
+<Sequence>{`
+→ F  a batch of ids, batched per predicate, with the listing digest for a virtual one
+← f  one key each, in the order asked
+`}</Sequence>
 
-The read-path twin of a nested reference on the way in. Stored, a reference is a `FactId`, so a
-row carries a number — and sigla cannot ask what it names, because a query names a fact by its
-key. Five properties, each deliberate:
-
-- **The key, not the value side.** A reference names an *identity*, and the identity is the key.
-  It is also exactly the logical form the content hash is computed over and a producer nests, so
-  one shape covers writing a fact, hashing it and expanding it.
-- **Positional against the request**, so the reply does not send the question back with the
-  answer. It carries a count, so the one fault positional pairing is exposed to is caught rather
-  than mis-paired. Batch size is capped at 4096 in the decoder, so it is a protocol rule rather
-  than a handler's caution.
-- **Absence, not a failed stream**, for an id naming no fact: the server cannot tell an id
-  lifted out of a row from one somebody typed, and the client can. A bad *predicate* id is a
-  refusal, because that is a disagreement about a schema both ends hold.
-- **Two kinds of absence**, because they mean opposite things: *missing* for a predicate that
-  stores its facts, where a dangling id is impossible and corruption is the only explanation;
-  and *unstored* for a predicate that is **answered rather than stored**, whose rows are a view
-  materialised per query and may simply have moved on. Collapsing them would mean either crying
-  corruption at an ordinary `db rm` or staying quiet about a damaged store.
-- **Read-only is enough.** It reads facts, which every session may do. One point read each, on
-  the blocking pool. It reads the store as it is *now* rather than under the query's snapshot,
-  and nothing follows from that: a fact is immutable and an id is never reused, so an id that
-  was in a row names the same fact under every later view.
-- **Except for a virtual predicate**, where the previous point does not hold and the digest is
-  what replaces it: those ids are positions in a listing that can be rematerialised, so a
-  `FETCH` naming a digest that has moved is refused whole rather than resolved against rows
-  that are no longer the ones the caller saw.
+- The answer is the key, not the value. A reference names an identity.
+- Positional against the request, with a count. Batches are capped at 4096.
+- An id naming no fact is an absence, not a failed stream. A bad predicate id is a
+  refusal.
+- Two kinds of absence: *missing* for a stored predicate, where it means corruption, and
+  *unstored* for a virtual one, where the row may simply have moved.
+- Read-only is enough. Facts are immutable and ids are never reused.
 
 ## The write stream
 
-```text
-  →  W   open a write stream
-  ←  G   ready
-  →  d   one block
-  →  d   one block
-  →  c   done
-  ←  C   facts written, facts deduped, the id range per predicate
-```
+<Sequence>{`
+→ W  open a write stream
+← G  ready
+→ d  one block
+→ d  one block
+→ c  done
+← C  facts written, facts deduped, the id range per predicate
+`}</Sequence>
 
-Per block, on that stream's own task and concurrently with every other stream's:
+Per block, concurrently with every other stream: decode (CRC first), validate against the
+embedded schema, intern nested references bottom-up, encode, write both maps atomically.
+Exclusion is per key, so blocks from different streams proceed together.
 
-1. **decode** the block (CRC first),
-2. **validate** against the embedded schema,
-3. **intern** nested references bottom-up,
-4. **storage-encode**, and
-5. **write both column families atomically**.
-
-The exclusion is per **key**, inside the store, so blocks from different streams proceed
-together. What a block holds at the database level is only the shared half of the seal barrier:
-writers hold it shared, `finish` takes it exclusive.
-
-**Failure is per stream, not per fact.** A rejected block fails the write stream; the connection
-and its other streams survive. A conflict names the offending key.
-
-<Callout tone="note" label={`A fact that interned cleanly and then conflicted stays written`}>
-
-Its target was legitimately named and legitimately defined, facts are immutable, and interning
-is idempotent — so retrying the whole message after fixing the conflict dedups against it. What
-a transaction would prevent here is a wasted row, not a wrong answer.
-
-</Callout>
+Failure is per stream, not per fact. A conflict names the offending key. A fact that
+interned cleanly before a later conflict stays written; retrying the message dedups
+against it.
 
 ### Blocks
 
-The same bytes on the wire and on disk — a `COPY_DATA` payload **is** a block, and that is a
-test rather than an intention.
+The same bytes on the wire and on disk.
 
-```text
-  [sync: FF × 10][magic "FJBK"][name_len u32][count u32][length u32][crc32 u32][name][payload]
-   └──────────────────── 30 bytes of framing ────────────────────┘
-```
+<Bytes
+  fields={[
+    { name: 'sync', size: 10, span: 'FF × 10', group: '30 bytes of framing' },
+    { name: 'magic', size: 4, span: '"FJBK"', group: '30 bytes of framing' },
+    { name: 'name_len', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'count', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'length', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'crc32', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'name', size: 6, span: 'name_len bytes', variable: true },
+    { name: 'payload', size: 10, span: 'length bytes', variable: true },
+  ]}
+/>
 
-- **The predicate is named, not numbered.** A number would make a fact file meaningful only
-  against the database whose numbering wrote it, and make every client keep a table of ids in
-  step with a server's. A name costs about six bytes *once per block*.
-- **The name sits after the fixed-width fields**, so a splitter still reaches `length` at a fixed
-  offset.
-- **Header fields are fixed-width and little-endian**, where the payload is varints: a splitter
-  must read `length` before it can trust anything else, and nothing here is ordered — the
-  big-endian storage codec is answering a different requirement.
-- **The CRC covers the header's own fields as well as the payload**, so a corrupted `length` is
-  caught rather than used to skip to the wrong place.
+- The predicate is named, not numbered, so a block is meaningful against any database.
+- Header fields are fixed-width little-endian; the payload is varints.
+- The CRC covers the header as well as the payload.
 - Caps: 16.7 M facts, 64 MiB payload, 64 KiB name.
 
-### A sync marker is a candidate, not an impossibility
-
-Ten `0xFF` bytes are *rare* in a payload by the encoding, but they are not unreachable — because
-`bytes` carries an arbitrary payload, written raw and unescaped, and not validating it is
-precisely what the family is for. **No fixed marker can be structurally impossible in a family
-that carries arbitrary bytes.** Escaping the payload would buy the impossibility back and cost
-the property this format exists for — the same bytes on the wire and on disk — so a marker is
-*only a candidate*.
-
-What the encoding does buy is that a *false* candidate is rare rather than routine:
-
-- a string is length-prefixed UTF-8, and UTF-8 never uses `0xF8`–`0xFF` at all;
-- a varint's continuation bytes are `0x80`–`0xFF` but its final byte is below `0x80`, so a run
-  ends where the varint does — and the longest possible is nine bytes;
-- runs cannot join across values, for the same reason;
-- the header cannot contribute one either: `name_len`, `count` and `length` are capped to keep a
-  zero top byte, so only the checksum is free to be all-ones, and four is not ten.
-
-So a marker inside a block came from a `bytes` field or from nothing. A splitter therefore calls
-`find_block`, not `find_sync`: it confirms the magic and then the header CRC, and on failure
-**resumes scanning past that candidate** rather than giving up. Magic plus CRC32 puts an
-accidental false boundary at roughly 2⁻³². It does not defeat a crafted one — a producer can
-write a correct CRC inside a blob, and a checksum is not a signature.
-
-That is what makes **one file splittable**: seek anywhere, scan to the next validated boundary,
-hand blocks to workers. No reliance on per-predicate contiguity in the input, and no requirement
-that the producer chose the chunking.
-
-**Resuming past a failure costs a real block, and the scan reports it rather than hiding it.** A
-damaged block and a false candidate are indistinguishable to a scan — each is a marker whose
-header does not validate — so scanning past the one means scanning past the other. Flip a bit in
-the second of three blocks and a scan returns the *third*: a corruption that decoding would have
-reported as a checksum failure becomes a file that quietly holds fewer facts. `find_block`
-therefore returns both halves — the boundary it found and the candidate it skipped, with the
-failure — and a caller that reads only the boundary has chosen the silent answer. Guarded by
-`a_damaged_block_is_skipped_but_reported`.
-
-**A reader that can start at offset 0 should not scan at all.** The header is fixed-width and
-decoding a block returns the bytes it occupied, so walking that chain from the start gives exact
-boundaries with no scanning and no guessing — no payload byte is ever weighed as a boundary. That
-is what a parallel ingest should do to build its split points; the marker scan is for recovery,
-where the file is damaged or a worker was handed a range that begins mid-block.
+The sync marker is a candidate, not a guarantee, because `bytes` fields carry arbitrary
+content. A splitter confirms the magic and the CRC before believing one, and on failure
+scans past it, reporting the skip. A reader that can start at offset 0 should walk the
+headers instead and never scan.
 
 ### Asking what the facts were called
 
-```text
-  →  I   open the stream                (instead of W)
-  →  d   [block]
-  →  c   done
-  ←  i   count, then each id            only on a stream opened with I
-  ←  C   created, deduped
-```
+<Sequence>{`
+→ I  open the stream, instead of W
+→ d  [block]
+→ c  done
+← i  count, then each id (only on a stream opened with I)
+← C  created, deduped
+`}</Sequence>
 
-A reference on the way in may be **the whole target fact**, which is what lets a producer
-keep no book of what it has already sent — the server interns it and deduplicates. That is
-right until one target is referenced ten thousand times, at which point the producer is
-re-sending the same bytes to be looked up and thrown away each time.
-
-`I` opens a stream that reports the ids it minted, so a producer can send that target once
-and reference it by id thereafter — **a client choosing to intern a little of it itself**.
-The ids are the **top-level** facts in the order they were sent; a nested target is
-referenced rather than ingested in its own right and does not appear. A deduplicated fact
-still has one: the id it already had, which is the answer a caller caching it wants.
-
-It is opt-in because an indexer writing millions of facts wants none of it — the ids come
-back at eight bytes a fact and it has nothing to do with them. A client that opens with `W`
-neither sends `I` nor receives `i`, which is what keeps this additive.
+`I` reports the id of each top-level fact, so a producer can send a heavily-referenced
+target once and reference it by id after. A deduplicated fact reports the id it already
+had. Opt-in, because an indexer writing millions of facts has no use for the ids.
 
 ## The value encoding
 
-Both directions use the transport codec, and it differs from the storage codec in every choice:
-
 | | Storage | Transport |
 |---|---|---|
-| int | Marker carrying the width, big-endian minimal magnitude, negatives ones'-complemented | LEB128 varint over zigzag |
+| int | Marker carrying the width, big-endian magnitude | LEB128 varint over zigzag |
 | string | Marker, escaped contents, terminator | Varint length, then the bytes |
-| record | Marker, fields, terminator | The fields, concatenated. Nothing else |
-| union | Marker, discriminant, payload, terminator | Varint discriminant, then the payload against that alternative's declared type |
-| reference | Marker plus fixed 8 bytes | A varint branch: an id, **or the target fact** |
-| names, types, arities | — | **Not sent at all** |
+| record | Marker, fields, terminator | The fields, concatenated |
+| union | Marker, discriminant, payload, terminator | Varint discriminant, then the payload |
+| reference | Marker plus fixed 8 bytes | A varint branch: an id, or the target fact |
+| names, types, arities | — | Not sent |
 
-The last row is the design. Both peers have the schema — the handshake compares fingerprints
-before data flows, and a database's schema is frozen at create — so names, order, arity and type
-are things the reader already has. A union's discriminant is the one exception, because which
-alternative a value took is a property of the *value*, not the schema; it is sent as a varint and
-resolved against the declaration exactly as a record's field order is, and a discriminant no
-alternative declares is an error on either side. That is **Avro's** model, and Avro states the consequence
-plainly: binary Avro carries no type information or field names, and a record is just the
-concatenation of its fields' encodings.
+Both peers hold the schema, so names, order, arity and type are never on the wire. This is
+Avro's model. A union's discriminant is the one exception, because it is a property of the
+value.
 
-What is *not* borrowed is as deliberate:
-
-- **Protobuf and Thrift** spend one to two bytes per field per message on a tag, and what it buys
-  is a reader skipping fields it does not know — schema evolution between peers that never
-  agreed. These peers agreed, by fingerprint, before the first byte.
-- **Cap'n Proto** spends wire size on fixed-width fields to buy O(1) access with no parse. Every
-  inbound fact is parsed regardless — to intern its references and re-encode it as a storage
-  tuple — so there is no parse to avoid and the size is worse.
-
-Two properties are load-bearing rather than incidental:
-
-- **Minimal varints are enforced**, so one value has exactly one encoding. A block carries a
-  CRC32 and the same encoding is used on the wire and in a file, so "the same facts" has to mean
-  "the same bytes" for a checksum to be worth computing.
-- **A reference is type-checked against the predicate it names**, both directions, free: a
-  `Fact(p)` field can only hold a reference to `p`, and a fact id carries its predicate in its
-  top bits. That catches the one corruption a bare id is prone to — an id from the right database
-  and the wrong tree — which no length check or checksum would.
+Two rules for an implementer: emit minimal varints, so one value has one encoding and the
+CRC means something; and a reference is type-checked against the predicate its field
+names, in both directions.
 
 ## What a client sends: the whole fact
 
@@ -504,49 +314,32 @@ Two properties are load-bearing rather than incidental:
     }
 ```
 
-A reference field holds the **target fact written inline** — key and value both, to any depth —
-or a `FactId` for a producer that already holds one. Ingest interns each nested fact and
-substitutes the id.
-
-**The producer keeps no book.** That is the whole reason for the shape: an indexer walking a
-syntax tree knows the file when it reaches the declaration, and every id-based alternative asks
-it to carry a map from every entity to an assigned identity plus an emission order that respects
-one. The cost of the trade, stated: a repeated target is sent repeatedly. Block-local
-back-references would compact it and are deliberately not in P0.
-
-The **only** asymmetry between the two directions is this one: a row on its way out was read from
-storage, so its references are already ids.
+A reference field holds the target fact inline, to any depth, or a `FactId` if the
+producer already has one. The server interns each nested fact and substitutes the id. A
+repeated target is sent repeatedly; `I` is the answer when that costs too much.
 
 ## Control frames
 
-`create`, `finish` and `remove` are frames on an **ordinary stream** rather than on stream 0 —
-which keeps a `create` (tens of keyspaces, tens of milliseconds each) off the reader loop, and
-gives lifecycle requests the same per-stream error handling everything else has.
-
-`list` and `describe` are deliberately **not** control frames: they read sidecars and never open
-the storage engine, so they already work while a server holds every database under the root. The
-remote form of `list` is a query over the virtual predicate `fjord.db.List`.
+`create`, `finish` and `remove` are frames on an ordinary stream, so a slow `create` does
+not block the reader loop. `list` and `describe` are not control frames: they read
+sidecars, and the remote form of `list` is a query over `fjord.db.List`.
 
 ## Server obligations
 
-- **A stream is a task.** The reader loop reads a frame, routes it, and goes back to reading.
-- **One fair writer** takes a frame from each stream's queue in turn. Fairness is structural
-  rather than a scheduling hope: a single shared output channel is unfair in exactly the way that
-  matters, since a million-row query fills it and a second stream's four-frame answer waits
-  behind all of them.
-- **A chunk boundary is a real resume**, and the snapshot is released at each one.
-- **Backpressure** is bounded per-stream queues plus per-connection backpressure. Per-stream
-  flow-control windows are deferred.
+- A stream is a task. The reader loop reads a frame, routes it, and goes back to reading.
+- One fair writer takes a frame from each stream's queue in turn, so a million-row result
+  cannot starve a four-frame answer.
+- A chunk boundary is a real resume, and the snapshot is released at each one.
+- Backpressure is bounded per-stream queues plus per-connection backpressure.
 
-## What is built, and what is not
+## What is built
 
 | | |
 |---|---|
-| **Built** | The frame layer; the handshake including the schema check and the mode refusal; write streams, and `I`/`i` for one that reports its ids; query streams in all four kinds; `H`/`h`; `Y`/`y`; `F`/`f`; `l` and the stale-listing refusal it makes possible; in-band per-stream cancellation; a reader task per connection and one fair writer over bounded queues; control frames for create/finish/remove; stream-level failure that leaves the connection usable |
+| **Built** | Frames, handshake, all four query kinds, paging, profiling, counting, write streams with and without ids, `H`/`h`, `Y`/`y`, `F`/`f`, listing digests, in-band cancellation, control frames, a fair writer |
 | **Deferred** | Per-stream flow-control windows |
-| **Opt-in** | TCP — default-closed, and `--listen-tcp` is the only way to open one |
-| **Not built** | Ingesting a fact **file** (the format is defined and the block encoding is shared; the splitter and the pipeline are not wired to a command) |
+| **Opt-in** | TCP |
+| **Not built** | Ingesting a fact file from disk. The format exists; the command does not |
 
-A second implementation exists and is part of the test surface: `clients/dotnet` speaks this
-protocol in C#, shares no constants with the server, and its encoder is held byte-for-byte
-against the Rust one over a checked-in golden. See [Clients & the viewer](clients.html).
+A second implementation, in C#, shares no constants with the server and is held
+byte-for-byte against the Rust encoder. See [Clients](clients.html).

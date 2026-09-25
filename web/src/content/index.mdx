@@ -1,64 +1,54 @@
 export const meta = {
   "title": "Fjord DB",
-  "description": "A database of facts about code. Index once, seal the result, then ask it questions in a small typed query language — from a file you can copy anywhere."
+  "description": "A database of facts about code. Index once, seal it, query it with a small typed language."
 }
 
-Fjord DB stores **facts**: small typed records, like *`Crc32` is declared in `Crc32.cs`, at
-line 7*. You describe the shape of your facts once, write them in, and then seal the
-database — after which it never changes again. What you are left with is a directory you
-can archive, copy, and serve to as many readers as you like.
+Fjord DB stores **facts**: small typed records like *`Crc32` is declared in `Crc32.cs` at
+line 7*. You describe the shape of your facts once, write them in, and seal the database.
+After that it never changes, and the result is a directory you can copy anywhere and serve
+from as many processes as you like.
 
-You ask it questions in **sigla**, a small typed language of its own. The job it was built
-for is a **code index** — files, declarations, references, the build graph: everything
-behind *go to definition* and *find all references*. That is what the sample schema
-describes, and what every number in this book was measured against.
+You query it in **sigla**, a small typed language. Fjord was built to be a **code index**:
+files, declarations, references, the build graph. That is the data behind *go to
+definition* and *find all references*.
 
 <div className="authored">
 <div className="cards">
   <a className="card" href="getting-started.html"><b>Getting started →</b>
-    <span>Build the binaries, create a database, serve it, ask it something.</span></a>
+    <span>Install, create a database, write facts, ask a question. Five minutes.</span></a>
   <a className="card" href="walkthrough.html"><b>A guided tour →</b>
-    <span>A real session, end to end, with the output it actually printed.</span></a>
+    <span>A real code index, end to end, with the output it printed.</span></a>
   <a className="card" href="concepts.html"><b>Concepts →</b>
-    <span>Facts, predicates, keys and values — the model, in one page.</span></a>
+    <span>Facts, predicates, keys and values, on one page.</span></a>
   <a className="card" href="query-language.html"><b>sigla reference →</b>
-    <span>Every construct the language has, with the rows each one returns.</span></a>
+    <span>Every construct, with the rows it returns.</span></a>
 </div>
 </div>
 
-## The idea, in three parts
+## How it works
 
-**Facts, grouped by predicate.** A *predicate* is Fjord's word for a table: `File`, `Decl`,
-`Ref`. It fixes what its facts look like. Part of each fact is the **key** — the part that
-is indexed, and the part queries look things up by — and a fact may carry extra data
-alongside it that is only read when a query asks. Everything you can search on lives in
-the key, which is why designing a schema is mostly deciding what the keys are.
+**Facts live in predicates.** A predicate is Fjord's word for a table. Part of each fact is
+the **key**, which is indexed and is what queries match on. A fact may also carry a
+**value**: extra data read only when a query asks for it.
 
-**Built once, then frozen.** You create a database against a schema, write facts into it,
-and then `finish` it. From that moment it is read-only: no updates, no deletes, no schema
-change. The workflow is "a fresh database per build", the way you would rebuild an artifact
-rather than patch it.
+**A database is built once, then frozen.** Create it against a schema, write facts, run
+`finish`. From then on it is read-only. Every build produces a fresh database, the way you
+rebuild an artifact rather than patching it.
 
-**Queries that can pause.** A query is compiled to a small plan and run one row at a time,
-and it can stop in the middle, hand you a few bytes, and carry on from exactly there
-later. That is what makes paging cheap: nothing is held open between pages, so the bytes
-can go in a URL and the next page can be answered by a different process.
+**Queries can pause.** A query runs one row at a time and can stop part-way, hand back a few
+bytes, and resume from exactly there later. Paging holds nothing open, and a different
+process can serve the next page.
 
-## Why read-only is the point
+## Why read-only
 
-Freezing the data is not a limitation that got bolted on. It is the decision everything
-else leans on.
-
-- **Every query sees a stable world.** No locking, no versions to reconcile — there is only
-  one version.
-- **A paused query costs a handful of bytes**, not a held-open connection.
-- **Writing goes as wide as you like.** Facts cannot conflict, so there is no rule to
-  arbitrate between writers.
-- **The database is just a directory.** `tar` it, copy it, serve it from ten processes.
+- Every query sees one stable version of the data, with no locking.
+- A paused query costs a few bytes, not an open connection.
+- Writers never conflict, so ingestion runs in parallel.
+- The database is a directory. `tar` it, copy it, serve it anywhere.
 
 ## A schema, a query, and the rows
 
-A schema is a file. It names your predicates and says what each one holds:
+A schema names your predicates and says what each holds:
 
 ```schema
 schema demo {
@@ -68,45 +58,39 @@ schema demo {
 }
 ```
 
-A query is the shape you want back, the word `where`, and what to match:
+A query is the shape you want back, `where`, and what to match:
 
 ```sigla
 {a = X, b = Y} where demo.Knows {from = X, to = Y}
 ```
 
-Rows come back as JSON, one per line, in the shape the query asked for:
+Rows come back in the same language:
 
-```json
-{"a": "#0:1", "b": "#0:2"}
+```sigla
+{a = demo.Person#1, b = demo.Person#2}
 ```
 
-`#0:1` is an id, because `Knows` points *at* two `Person` facts rather than containing
-them. Ask for those references to be expanded and you get the people themselves:
+`demo.Person#1` is an **id**, because `Knows` points at two `Person` facts rather than
+containing them. Ask for references to be expanded and you get the people:
 
-```json
-{"a": "ada", "b": "grace"}
+```sigla
+{a = "ada", b = "grace"}
 ```
 
-## Try it, on this page
+## Try it here
 
-The engine that answers a query like that is compiled to WebAssembly and running here, over
-a small code index: four files, seven declarations, and the references between them.
+The engine is compiled to WebAssembly and running on this page, over a small code index.
+Every demo in this book is the real engine.
 
 <Demo kind="run" guided>{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
-
-Every demo in this book is that engine — not a recording, and not a JavaScript imitation.
-This walkthrough keeps its query fixed so each transition can explain itself; open it in the
-playground to edit the query and explore everything the engine exposes.
 
 ## What is built
 
 <Callout tone="note" label={`Status`}>
 
-The engine, the storage layer, the language, the wire protocol, the server, the client,
-the CLI and the shell are **built and guarded**. Ingestion from **files** and **stored
-derivation** are not, and the code-search viewer is retired — what replaces it is a browser
-application ([clients](clients.html#the-viewer)). [Status & roadmap](status.html) has the
-honest list.
+The engine, storage, language, wire protocol, server, client, CLI and shell are built and
+tested. Bulk ingestion from files and stored derivation are not. See
+[Status & roadmap](status.html).
 
 </Callout>
 
@@ -130,28 +114,20 @@ honest list.
 </p>
 </div>
 
-## Where to go next
+## Where next
 
-- **New here?** [Getting started](getting-started.html), then the
-  [guided tour](walkthrough.html).
-- **Writing queries?** [sigla query language](query-language.html), then
-  [Query efficiency](query-efficiency.html) for why two spellings of one question can differ
-  by orders of magnitude, and the [Shell reference](shell.html).
-- **Designing a schema?** [Schema language](schema-language.html) — read the part about
-  field order twice.
-- **Wondering how it works?** [A query, step by step](query-lifecycle.html), then
-  [Storage](storage.html) and [Executor & resume](executor.html).
-- **Building a client?** [Wire protocol](wire-protocol.html) and
-  [Clients & the viewer](clients.html).
-- **Operating it?** [CLI reference](cli.html) and [Operations](operations.html).
-- **Just want the binaries?** [The latest release](https://github.com/boxops-uk/fjord/releases/latest)
-  carries `fjord` with SLSA provenance — dynamically linked for glibc 2.34 and newer,
-  statically linked beside it for anything older — and this site as a bundle.
+- **New here:** [Getting started](getting-started.html), then the [guided tour](walkthrough.html).
+- **Writing queries:** [sigla](query-language.html) and [Query efficiency](query-efficiency.html).
+- **Designing a schema:** [Schema language](schema-language.html). Field order matters most.
+- **How it works inside:** [A query, step by step](query-lifecycle.html), [Storage](storage.html), [Executor](executor.html).
+- **Building a client:** [Wire protocol](wire-protocol.html) and [Clients](clients.html).
+- **Running it:** [CLI](cli.html) and [Operations](operations.html).
+- **Binaries:** the [latest release](https://github.com/boxops-uk/fjord/releases/latest), with SLSA provenance.
 
 <Callout tone="note" label={`About these docs`}>
 
-This site **is** the Fjord design book — the design of record, including the invariant
-registry. Where it says something is built, the repository has a test that says so; where
-something is not built, it is listed as not built rather than described as if it were.
+This site is also Fjord's design book. The [Invariants](invariants.html) page is the
+registry of rules the code is tested against. Where a page says something is built, a test
+says so too.
 
 </Callout>

@@ -1,20 +1,14 @@
 export const meta = {
   "title": "A guided tour",
-  "description": "One session from an empty directory to a sealed database — writing facts, asking questions, reading a plan, paging, and watching a finished database refuse a writer."
+  "description": "A real code index from an empty directory to a sealed database: writing facts, reading a plan, paging, and a finished database refusing a writer."
 }
 
-One session, start to finish: an empty directory in, a sealed database out, with a look at
-the interesting things along the way. It takes about ten minutes to follow, and it assumes
-you have read [Getting started](getting-started.html) — this is the same path with more of
-the corners in it.
+This tour indexes the repository's own .NET solution with its Roslyn-based indexer, then
+asks it questions. It takes about ten minutes and assumes you have read
+[Getting started](getting-started.html). Every output block is what the command printed.
 
-The data is a **real code index of real code**: the repository's own .NET solution — the
-client library, the demo producer, and the indexer — indexed by that same indexer, with
-Roslyn answering what every name means. Every command below was run, and every block of
-output is what it printed.
-
-Set up once (`FJ` is a Fjord checkout with `cargo build --release` done and the .NET SDK
-on the path):
+Set up once. `FJ` is a Fjord checkout with `cargo build --release` done and the .NET SDK on
+the path:
 
 ```bash
 cd /tmp && mkdir fj-tour && cd fj-tour
@@ -23,9 +17,6 @@ AP=$FJ/target/release/fjord
 ```
 
 ## 1. A schema you can read
-
-The sample schema is a file, `schemas/demo.sigla`, and it parses like any other. Ask it
-what it thinks it is:
 
 ```bash
 $AP schema check $FJ/schemas/demo.sigla
@@ -37,13 +28,9 @@ $AP schema check $FJ/schemas/demo.sigla
 fingerprint 0x03678fcd1e7924e3
 ```
 
-Eleven predicates, and **one for each construct the language has** — that is what the file
-is for. It is small enough to read in a sitting and complete enough that no shape goes
-untested, which is why the instruments and the interactive site both measure over it.
-
-The fingerprint is computed over the **canonical form** — fully-qualified names, no
-comments, no whitespace, no declaration order. Two files that mean the same thing have the
-same number. Per-predicate fingerprints come out too:
+The sample schema has one predicate per construct the language supports. The fingerprint
+is computed over a canonical form, so two files that mean the same thing get the same
+number.
 
 ```bash
 $AP schema fingerprint $FJ/schemas/demo.sigla
@@ -61,17 +48,12 @@ ID  PREDICATE      TYPE                                                       FI
 …
 ```
 
-Two of those predicates are the same data twice: `code.Kind` leads with the declaration
-and `code.KindOf` leads with the tag. That is not redundancy, it is the index design — and
-[step 6](#6-read-the-plan) is where it becomes visible. The ids are **sorted by name**, not
-by declaration order, which is where a position comes from.
+`code.Kind` and `code.KindOf` hold the same data with the fields in opposite order. That is
+the index design, and [step 6](#6-read-the-plan) shows why.
 
 ## 2. Create, and serve
 
-The database is created against `dotnet.sigla`, not the file above: `demo.sigla` is the
-*language* fixture — one predicate per construct — and what the indexer writes is the
-sixty-five-predicate set a real producer needs. `--schema-path` because that set is
-composed by import from five files.
+The indexer writes `dotnet.sigla`, a sixty-five-predicate schema composed from five files.
 
 ```bash
 $AP --data-dir ./db --schema-path $FJ/schemas create code --schema $FJ/schemas/dotnet.sigla
@@ -90,17 +72,13 @@ fjord serve
     code                 writable
 ```
 
-**No schema is printed, because a server has none of its own.** Each database is served with
-its own embedded copy, so one store root can hold artifacts built from different declarations
-— and one that embedded no copy is listed rather than served, since the only alternative is to
-guess how its rows decode.
+A server has no schema of its own. Each database is served from the copy embedded at
+create.
 
-## 3. Write facts, holding no ids
+## 3. Write facts
 
-The producer is `Boxops.Fjord.Indexer`, pointed at the .NET code it is itself part of.
-`--framework` pins one target: the client library multi-targets, and without it the run
-would fan out into one database per framework — which is the right default and one database
-too many for a tour.
+`--framework` pins one target. Without it, a multi-targeted solution produces one database
+per framework.
 
 ```bash
 dotnet run --project $FJ/clients/dotnet/Boxops.Fjord.Indexer --configuration Release -- \
@@ -154,29 +132,9 @@ indexed 61 file(s) in 12.2s
 references: 21,361 resolved, 6,883 to declarations outside the index, 2 unresolved
 ```
 
-**Sixty-five predicates in the schema, and the run filled fifty-eight of them.** The
-handshake above says sixty-seven, which is those sixty-five plus the two virtual
-`fjord.db.*` the server appends; the seven a run leaves empty are all in the schema.
-
-**One of those seven is not empty in the database**, and the difference is worth knowing:
-the tally counts what the producer wrote *top-level*, and `csharp.FullName` is only ever
-written nested inside the entities that key on it — so the producer reports zero for it
-while `X where X = csharp.FullName _` over this very index answers 402 rows. A predicate counted zero here means
-nobody wrote it *as a fact of its own*, not that nothing in the database has one. The set is five schemas
-composed: `src` for files and lines, `config` for what the index was built against,
-`msbuild` for the project graph, `csharp` for the semantic layer, and `codemarkup` for the
-surface a UI reads. A producer writes what it has, and a predicate nobody fills is a name in
-a file rather than a hole in the database.
-
-`contended` is what the walk paid for sharing: several threads producing facts into
-sixty-five per-predicate batches, and a couple of hundred of the 179,214 found one already
-held. That number is the one figure on this page that does not reproduce — it is how the
-threads happened to interleave, and a second run of the same command gives a different one,
-where the fact count beside it does not.
-
-Read the two server counts together: **one and three-quarter million facts touched, a
-hundred and fifty-eight thousand rows exist** — because every reference the walk wrote was
-the target fact **nested inline** rather than an id:
+Read the two server counts together: **1.7 million facts touched, 158 thousand rows
+created.** Every reference the indexer wrote carried its target as a whole nested fact
+rather than an id:
 
 ```text
 codemarkup.SymbolXRef {
@@ -188,15 +146,14 @@ codemarkup.SymbolXRef {
 }
 ```
 
-The server interns each nested fact bottom-up — a parent's key has no bytes until its
-children have ids — and substitutes the id. A file named a few thousand times is written
-once and deduplicated the rest, which is where 1,728,840 of those facts went. That is why
-an indexer needs no map from entities to identities and no emission order: it emits what it
-holds where the syntax walk stands. (The `6,883 to declarations outside the index` are
-references to the BCL and to packages — real code points at code nobody walked, and the
-indexer says so rather than inventing targets.)
+The server writes each nested fact the first time and deduplicates it every time after.
+That is why an indexer needs no map from entities to ids and no emission order: it emits
+what it holds, where it stands in the syntax tree.
 
-## 4. Ask the first questions
+The 6,883 references "outside the index" point at the BCL and packages. Real code points
+at code nobody walked, and the indexer says so rather than inventing targets.
+
+## 4. First questions
 
 ```bash
 $AP --data-dir ./db query code 'F where src.File F' --limit 3
@@ -211,15 +168,9 @@ Boxops.Fjord.Client/Boxops.Fjord.Client.csproj
 fjord: stopped at 3 rows; raise or drop --limit to see the rest
 ```
 
-`--limit` is **not** `LIMIT`: the query is unchanged, the server does the work up to the
-point the in-band cancel lands, and what it bounds is what crosses the socket.
+`--limit` cancels the stream after N rows. The query itself is unchanged.
 
-The `.csproj` in there is not a mistake. A project file is a `src.File` too — that is what
-the build layer keys its facts on — so "every file this index holds" means every file,
-including the ones nobody compiles.
-
-A record head names the output fields, and a prefix is a range on the field the key leads
-with:
+A prefix on the leading key field is a range:
 
 ```bash
 $AP --data-dir ./db query code \
@@ -238,10 +189,8 @@ LINE  NAME
 fjord: stopped at 5 rows; raise or drop --limit to see the rest
 ```
 
-The columns came back alphabetically because a *query's* record fields are sorted by name
-when it is lowered — so `{a = 1, b = 2}` and `{b = 2, a = 1}` are one type and one set of
-bytes. A *schema's* fields are never sorted; that order is the key order, and it is why
-`nameLowercase` leading the key is what makes the prefix above a seek.
+The columns are alphabetical because a query's record fields are sorted by name. A
+schema's fields are never sorted: their order is the key order.
 
 ## 5. A reference is an id, until you ask
 
@@ -254,9 +203,8 @@ $AP --data-dir ./db query code 'R where R = codemarkup.SymbolXRef _' --format js
 "#9:227"
 ```
 
-`#9:225` is a `FactId`: predicate 9, sequence 225. sigla cannot ask what it names — a query
-names a fact by its key, never by its number, and putting an id in the language would put a
-storage detail in a query. So the question goes to the **protocol**, and the client asks it:
+`#9:225` is predicate 9, sequence 225. A query cannot name a fact by its id, only by its
+key, so expansion is the client's job:
 
 ```bash
 $AP --data-dir ./db query code 'R where R = codemarkup.SymbolXRef _' \
@@ -268,26 +216,16 @@ $AP --data-dir ./db query code 'R where R = codemarkup.SymbolXRef _' \
 {"target": "scip-csharp-2 nuget Boxops.Fjord.Client 0.4.0.0 Boxops/Fjord/Client/Crc32#", "file": "Boxops.Fjord.Client/Blocks.cs", "span": {"start": 4834, "length": 5}}
 ```
 
-That is the **logical form**: the same shape a producer sends, and the same shape the
-content hash is computed over. The recursion, the depth bound and the cache are the
-client's, because how deep to expand is a display decision. The server does one point read
-per distinct id.
-
-The target is a **string**, and deliberately: `src.Symbol` is a SCIP symbol, so a reference
-can name a declaration in another database — which is what makes a fan-out across
-repositories a join rather than a merge. A fact id would mean nothing outside the database
-that issued it.
+The target is a string, a SCIP symbol, so a reference can name a declaration in another
+database. An id would mean nothing outside the database that issued it.
 
 ## 6. Read the plan
 
-The shell holds the schema the server serves, so it compiles locally and can show a plan
-without running anything.
+The shell compiles locally, so `:plan` answers without running anything.
 
 ```bash
 $AP --data-dir ./db shell code
 ```
-
-Find-references, which is the question this schema is shaped for:
 
 ```text
 sigla> :plan {f = F, at = S} where
@@ -300,13 +238,11 @@ sigla> :plan {f = F, at = S} where
   head {at = r1.span, f = r1.file}
 ```
 
-Two levels, and the plan says exactly what each costs. `SearchEntry`'s key leads with
-`nameLowercase`, so a constraint on `name` — the *second* field — cannot narrow the scan:
-the leading field is open, and the name can only **filter** rows the scan already produced.
-Then `SymbolXRef`'s key leads with `target`, so the symbol **seeks**: `r0.symbol` is spliced
-into the seek key, and only the references to that symbol are read.
+`SearchEntry`'s key leads with `nameLowercase`, so a constraint on `name` cannot narrow the
+scan. It only **filters**. `SymbolXRef`'s key leads with `target`, so the symbol **seeks**
+straight to its references.
 
-Ask for the outcome as well as the intent:
+`--profile` shows what that cost:
 
 ```bash
 $AP --data-dir ./db query code \
@@ -330,8 +266,7 @@ codemarkup.SymbolXRef   5
 1098 examined, 5 produced
 ```
 
-A thousand and ninety-three search entries examined to find one, then exactly five rows for
-its references. The fix is not a query change; it is asking the key the way it is keyed:
+1,093 rows examined to find one. The fix is to ask by the leading field:
 
 ```text
 sigla> :plan E where E = codemarkup.SearchEntry {nameLowercase = "crc"..}
@@ -340,15 +275,10 @@ sigla> :plan E where E = codemarkup.SearchEntry {nameLowercase = "crc"..}
   head r0#
 ```
 
-The same rows, entered by the field the key leads with, so a name prefix is a **range**
-rather than a filter — and case-folded, because "find anything spelled like crc" and "find
-exactly `Crc32`" are different questions and the schema keeps a row for each.
+Now the prefix is a range, not a filter. [Query efficiency](query-efficiency.html) is the
+full rule.
 
-Every other shape the language compiles to — reading through a reference, arithmetic, a
-negation, a denial, a disjunction — is laid out side by side in
-[Executor & resume](executor.html#every-construct-as-a-plan).
-
-## 7. Paging that holds a real cursor
+## 7. Paging holds a real cursor
 
 ```text
 sigla> :limit 3
@@ -366,10 +296,9 @@ sigla> :more
   :more for the next 3 — 6 so far
 ```
 
-`:more` is not a re-run with an offset. The server suspended the query, encoded one
-detached row per open loop level into a **bytes-only token**, and handed it over; the next
-page resumes from those bytes. Nothing is held server-side between pages, which is what
-makes paging stateless — a web tier can page without holding a connection.
+`:more` is not a re-run with an offset. The server suspended the query into a small token
+and handed it over. Nothing is held between pages, so a web tier can page without holding
+a connection.
 
 ## 8. A mistake is a caret, not a round trip
 
@@ -385,13 +314,7 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
   │         ^^^^^^^^^^
 ```
 
-The client compiled it against the schema the server serves, so the diagnostic arrived
-without asking the server anything. Where the two compilers could disagree, the **server**
-decides what runs.
-
 ## 9. Your own schema
-
-A schema is a file, and creating a database against one freezes it there:
 
 ```schema
 # people.sigla
@@ -420,8 +343,7 @@ ID  PREDICATE    TYPE                                    FINGERPRINT
 2   demo.Person  string                                  34b7f70464c8
 ```
 
-Adding a predicate is compatible. Changing one — including **reordering its fields** — is
-not, because field order is encoding order:
+Adding a predicate is compatible. Changing one is not, including reordering its fields:
 
 ```bash
 $AP schema diff people.sigla people2.sigla    # a fourth predicate added
@@ -436,7 +358,7 @@ Breaking (1 predicate(s))
   ~ demo.Knows  (modified: 080f8e02ff957601 → c1779584fe40b587)
 ```
 
-Create a database against it, through the running server:
+Create a database through the running server:
 
 ```bash
 $AP create './db/fjord.sock//people' --schema people.sigla
@@ -446,10 +368,9 @@ $AP create './db/fjord.sock//people' --schema people.sigla
 created people (01M0BN8AG2APYZB3B5YXGY58VW) against people.sigla
 ```
 
-The address is `[where//]name[@instance]`, and it is the same grammar every client takes —
-the CLI, the viewer, and the .NET indexer. See [CLI reference](cli.html#addressing).
+The address form is `[where//]name[@instance]`. See [Addressing](cli.html#addressing).
 
-## 10. Seal it, and watch it refuse
+## 10. Seal it
 
 ```bash
 $AP --data-dir ./db finish code
@@ -460,17 +381,12 @@ sealing code — merging trees, then computing identity
 sealed code: 158242 facts, 45963455 bytes, identity 0xc5a6a64833095a1a
 ```
 
-`finish` makes the data durable, **merges every tree**, computes
-`hash(canonical schema, base facts)`, records it, and flips the status as the last durable
-act. Now the database is an artifact:
-
 ```text
 NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS   BYTES     CREATED
 code  01M1QAWV1J9QZ7YJ9MTRZWHYKV  complete  4e90774b9a08  c5a6a6483309  158242  45963455  2026-09-04 23:08:43Z
 ```
 
-and every writer is refused at the handshake, structurally rather than per fact — pointing
-the indexer at it again says so and stops, rather than discovering it a fact at a time:
+Every writer is now refused at the handshake:
 
 ```text
 connecting to ./db/fjord.sock//code, 1 writer(s)
@@ -481,10 +397,9 @@ could not write to ./db/fjord.sock//code: ModeRefused: `code` is complete: it ta
 
 | You saw | The rule behind it |
 |---|---|
-| 1,728,840 facts deduped against 158,242 created | Interning **is** the dedup; a nested reference resolves to one row |
-| A name that filtered and a symbol that seeked | Field order is key order, and key order is the index design |
-| `#9:225` in a row, expanded on request | Stored, a reference is a `FactId`; expansion is a protocol question, not a query one |
-| A scan, then a seek spliced with its id | A plan is a nested loop, and the order of its steps *is* the nesting |
+| 1.7 M facts deduped against 158 K created | Nested references are deduplicated on write |
+| A name that filtered and a symbol that seeked | Field order is the index design |
+| `#9:225` in a row, expanded on request | A stored reference is an id; expansion is the client's job |
 | `:more` returning the next three | A resume token is bytes, so paging holds nothing open |
 | A caret with no round trip | The client compiles; the server decides what runs |
-| `complete`, and a refused writer | `Writable → Complete` is one way, and enforced at session establishment |
+| `complete`, and a refused writer | Sealing is one way, and enforced at connection time |

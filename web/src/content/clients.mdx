@@ -1,33 +1,26 @@
 export const meta = {
   "title": "Clients & the viewer",
-  "description": "The .NET client and real indexer, the code-search viewer, and what it takes to write a client of your own."
+  "description": "The .NET client and indexer, the retired viewer, and how to write a client of your own."
 }
 
-Everything that talks to Fjord is a client of one protocol. There is no privileged path: the
-CLI, the shell, the viewer and a C# program written outside the repository all use the same
-frames.
+Everything that talks to Fjord is a client of one protocol. The CLI, the shell, and a C#
+program written outside the repository all use the same frames.
 
 ## The .NET client
 
-`clients/dotnet` is a C# implementation of the wire protocol, plus two programs that use it.
-
 | Project | What it is |
 |---|---|
-| `Boxops.Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. Published as `Boxops.Fjord.Client` for `net8.0` and `net10.0`, with no dependencies |
+| `Boxops.Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. Published for `net8.0` and `net10.0`, no dependencies |
 | `Boxops.Fjord.Demo` | A console program that writes a small code index and queries it back |
-| `Boxops.Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout, at whatever size the checkout is |
+| `Boxops.Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout |
 
 ```bash
 dotnet add package Boxops.Fjord.Client
 ```
 
-It exists to answer a question the Rust tests cannot: **is the protocol implementable from
-outside?** A client written in the same repository, against the same types, can agree with the
-server by accident — sharing a constant, sharing an enum, sharing an assumption nobody wrote
-down. This one shares nothing but the specification.
-
-It has already earned that twice: it found a block header length stated in one place and
-miscounted in another, and a fingerprint that would have depended on the client's byte order.
+It exists to prove the protocol is implementable from outside. It shares no constants with
+the server, only the specification, and its encoder is held byte-for-byte against the
+Rust one over a checked-in golden.
 
 ```bash
 ./clients/dotnet/run-demo.sh
@@ -42,167 +35,91 @@ a reference with a nested-record key: created 1, deduped 4
 the same declarations again: created 0, deduped 18
 ```
 
-Read the last line: sending the same declarations again writes **nothing**. Interning is
-idempotent, which is what makes retrying after a dropped connection safe.
+Sending the same declarations again writes nothing. That is what makes retrying after a
+dropped connection safe.
 
 ### What a client has to know
 
-**It has to have the schema.** The value codec sends no field names, no type markers and no
-record arities — the server has them and so does the client. So a client states the schema it
-uses, and asserts it at the handshake with a fingerprint, which turns "we disagree about the
-schema" from a corrupted database into a refused connection.
+**It has to have the schema.** The wire carries no field names or types, so a client
+encodes positionally against the schema and asserts its fingerprint at the handshake. A
+mismatch is a refused connection rather than a corrupt database.
 
-That has caught things too. When the server moved from a cut-down three-predicate schema to the
-real code index, the demo was refused at the handshake with both fingerprints named, before a
-byte of data flowed.
+**It does not have to know how facts are stored.** The storage codec is never on the wire.
 
-**It does not have to know how facts are stored.** The storage codec is order-preserving,
-self-delimiting and frozen on disk; none of that is on the wire, and a client never sees it.
-
-### The byte-for-byte golden
-
-```bash
-./clients/dotnet/emit-golden.sh
-```
-
-That writes the blocks the C# client encodes for a fixed corpus, and `fjord-client`'s
-`byte_identical_with_the_dotnet_client` asserts the Rust encoder produces the same bytes. The
-corpus and the schema are stated **independently on each side on purpose** — a shared statement
-would make the two agree by construction, which is the agreement being tested. The Rust test
-needs no `dotnet`; regenerating the golden does.
-
-There are three goldens: the sample corpus, `unions.txt` over a schema of its own, and
-`bytes.txt` over another. The separate ones exist to push what the shared fixture keeps tidy —
-a tag space of 3, 0, 40000 and 7, and a payload no `string` could hold — so pinning either
-costs the fixture no fingerprint move and no flag day.
-
-## The real indexer
+### The real indexer
 
 ```bash
 ./clients/dotnet/index-repo.sh ~/src/OrchardCore
 ```
 
-The demo's argument made at scale: the same library, the same nested references and the same
-handshake, driven by a design-time build per project and a compiler that answers what every name
-means. It writes `schemas/dotnet.sigla` — sixty-five predicates across five composed schemas —
-and most of them cannot be answered by a syntax walk at all: the project graph is MSBuild's, the
-entity model is Roslyn's, and the surface a UI reads is both of those re-keyed.
-
-**A checkout that compiles for two frameworks is two indexes.** A project built for `net8.0` and
-one built for `net10.0` are different programs — different preprocessor symbols, different
-references, often different members — so the run fans out, writing `code#net8.0` and
-`code#net10.0`, and each database says which framework it holds through
-`config.Setting {dimension = "framework"}`.
-
-The run reports what interning cost:
+A design-time build per project, then Roslyn answers what every name means. It writes
+`schemas/dotnet.sigla`: sixty-five predicates across five schemas. A checkout that builds
+for two frameworks produces two databases, `code#net8.0` and `code#net10.0`, each
+recording its framework in `config.Setting`.
 
 ```text
   server                     105,126 created, 910,367 deduped
 ```
 
-Sixteen thousand references naming nine hundred declarations **is** that dedup count: a factor of
-eight between facts sent and facts touched, because every reference carries its target nested
-inside it. A producer holding no fact ids is an elegance argument at six declarations; at a
-million it is the only tractable option, because the alternative is a second pass over an index
-that no longer fits in memory, ordered so that every target is written before every reference to
-it.
+Every reference carries its target nested inside it, so facts touched outnumber facts
+created by a factor of eight. A producer holding no ids is the only tractable design at
+scale.
 
-### What it writes with, and what else uses that
+The batching, the bounded queue and the writer threads belong to the client library, not
+the indexer, so `scip2fjord`, which converts a [SCIP](https://sourcegraph.com/docs/code-search/code-navigation/writing_an_indexer)
+index, reuses all of it and writes the same `codemarkup` surface.
 
-The batching, the bounded queue, the writer threads and the latched-failure rule are
-`Boxops.Fjord.Client`'s, not the indexer's: `FactSink` takes a schema and a list of targets and
-says nothing about Roslyn. That is what makes a second producer possible without a second
-implementation of any of it.
+### Limits
 
-`scip2fjord` is the second producer. It reads a [SCIP](https://sourcegraph.com/docs/code-search/code-navigation/writing_an_indexer)
-index — the format TypeScript, Java, Scala, Rust, Python, Go and Ruby indexers already emit — and
-writes the same `codemarkup` surface the C# indexer does, through that same seam, referencing no
-part of the indexer. What it does *not* write is a declaration layer or a type graph: a SCIP index
-contains neither, and inventing them per occurrence would put facts in a database that nothing
-could stand behind.
-
-### What the .NET client does not do
-
-It mirrors the server, so it stops where the server does. Streams are issued sequentially — the
-ids are real and the server tags every reply — but it sends a stream's frames and reads its
-replies before starting the next, so one result is open at a time and a second is refused rather
-than left to decode the first's rows. There is no per-stream flow control on that side.
-
-Cancellation it does have, and it is what makes a lazy read safe: `Rows` pulls a page at a time
-and yields, so `Take(n)` costs one page, and disposing the enumerator sends `CANCEL` on the open
-stream and reads to its `Complete` before handing the connection back. Without that, stopping
-early would leave a page's remaining rows on a socket every stream shares, and the *next* query
-would read them as its own — a wrong answer rather than an error. `Query` still collects the whole
-result and still cannot be stopped: the right thing for a result whose size the caller knows, and
-the wrong thing for one it does not.
-
-The test project is `Boxops.Fjord.Tests`, and what it does *not* contain is a unit test of this
-codec against constants copied from the Rust — that would only prove the constants were copied.
-What it does contain is the shapes written and read back through a real server, which is the only
-thing that proves a transcription.
+Streams are issued sequentially: one result open at a time. Disposing a `Rows` enumerator
+early sends `CANCEL` and drains the stream, so `Take(n)` costs one page. `Query` collects
+the whole result and cannot be stopped.
 
 ## The viewer
 
-**`fjord-viewer` is retired.** It was a code-search site over a database — server-rendered HTML,
-no assets, no framework — and it proved the thing it was built to prove: a viewer is an ordinary
-consumer of the protocol, needing no privileged access to a database. Building it is also what
-found the two predicates that had to be added, a file's cross-references keyed by file and a
-case-folded search index, because the questions a UI asks turned out not to be the questions the
-schema answered.
+**`fjord-viewer` is retired.** It was a server-rendered code-search site, and it proved a
+viewer is an ordinary consumer of the protocol. What replaces it is a browser application,
+because rendering a source view (syntax runs merged with cross-reference anchors, over a
+virtualised scroll) is a browser's job.
 
-What replaces it is a browser application rather than a Rust binary, and the reason is the
-rendering rather than the taste. A source view is a **merge of two independent sets of ranges**
-over one line — syntax runs and cross-reference anchors — split at the union of both boundaries
-and emitted as one correct nesting. Server-rendered HTML can do that, and then a virtualised
-scroll over a 50,000-line file cannot reuse any of it.
+Three things it needs from this side:
 
-The three things it will need from this side are already here or named:
-
-- **The unit its columns count in.** `config.Setting {dimension = "position-encoding"}` declares
-  `utf8` or `utf16` once per database, and a database that does not state it is read as `utf16`.
-  The retired viewer got this wrong — it indexed by `str::chars()`, one unit per codepoint, where
-  the producer counted two for anything above the BMP.
-- **A transport a browser can open.** A browser cannot open a Unix socket or raw TCP, which is
-  the whole of the client crate's `Transport` today. The answer is a **WebSocket listener
-  carrying the same frames**, so there is one protocol, one codec and one set of goldens — not a
-  second, JSON-shaped surface. It is default-closed like TCP is (`ops-I10`).
-- **A language-independent route layer**, so an index the viewer can serve does not have to be
-  a C# one. That is `codemarkup`.
+- **The unit columns count in.** `config.Setting {dimension = "position-encoding"}` is
+  `utf8` or `utf16`, default `utf16`.
+- **A transport a browser can open.** A WebSocket listener carrying the same frames.
+  Default-closed, like TCP.
+- **A language-independent layer.** That is `codemarkup`.
 
 ## Writing a client
 
 <Callout tone="note" label={`There is no JavaScript client`}>
 
-`@boxops-uk` is reserved on npm for when there is one, and a reserved scope is not a
-deliverable. Two implementations exist — this one and the Rust client — and the protocol is
-what a third would be written against, not either of them.
+Two implementations exist, Rust and C#. The [wire protocol](wire-protocol.html) is what
+a third would be written against.
 
 </Callout>
 
-The protocol is [documented frame by frame](wire-protocol.html). A minimal read-only client is:
+A minimal read-only client:
 
 1. Connect to the socket (or TCP).
-2. Send `S` with the protocol version, the database name, `read-only`, and `0` for the schema
-   fingerprint — meaning "do not check", which is right for a reader.
+2. Send `S` with the protocol version, the database name, `read-only`, and `0` for the
+   schema fingerprint.
 3. Read `R`.
-4. Send `H`, read `h`, and you have the schema as source. (A Rust client can parse it; a
-   hand-written one may skip this and carry the shapes it needs.)
+4. Send `H`, read `h`, and you have the schema as source.
 5. Send `Q` with query text on a fresh stream id.
 6. Read `T` once, then `D` frames, then `C`.
 
-A producer differs in three places: `read-write` in the handshake, a **non-zero** schema claim,
-and `W` → `d`* → `c` instead of `Q`.
+A producer differs in three places: `read-write`, a non-zero schema claim, and
+`W` → `d`* → `c` instead of `Q`.
 
 ### Writing facts from Rust
-
-The client crate is the shortest path:
 
 ```bash
 cargo add fjord-db
 ```
 
-A fact is a predicate, a key and an optional value, and a reference is either an id or **the
-whole target fact**:
+A fact is a predicate, a key and an optional value. A reference is an id or the whole
+target fact:
 
 ```rust
 use std::sync::Arc;
@@ -242,14 +159,10 @@ let written = connection.write(DECL, &[decl])?;
 println!("created {}, deduped {}", written.created, written.deduped);
 ```
 
-Two rules to hold on to:
+Record fields are in schema order, and the names are not sent. A nested reference is the
+whole target, and the server deduplicates it.
 
-- **A record's fields are in schema order, and the names are not sent.** The bytes are positional
-  against the schema both ends hold.
-- **A nested reference is the whole target**, and the server interns it bottom-up. Send the same
-  target under a thousand parents and one row exists.
-
-Reading is the mirror image:
+Reading:
 
 ```rust
 let mut rows = connection.query("F where src.File F")?;
@@ -258,47 +171,33 @@ while let Some(row) = connection.next_row(&mut rows)? {
 }
 ```
 
-`Rows` is a **bookmark**, not a borrow of the connection — so several results can be open at once,
-and `take` is the page `:more` is built on.
+`Rows` is a bookmark, not a borrow of the connection, so several results can be open at
+once.
 
 ### Hold the connection
 
-**A connection is a session, and a session is the unit a consumer should pool — not open per
-request.** This is the single largest capacity lever available to anything built on Fjord, and it
-is entirely on the client's side of the socket.
+**Pool connections. Do not open one per request.** This is the largest capacity lever
+available to anything built on Fjord. A request that starts by connecting pays for a
+socket, a handshake and a schema transfer before any query runs. A bridge shelling out to
+`fjord query` per request measured about 580 req/s on a box whose server could serve far
+more.
 
-A request that starts by connecting pays, before any query runs, for a socket, a handshake, a
-schema the server has to hand over, and — if it shells out to `fjord query` — a process and a
-dynamic link as well. That cost is serial per request, so it bounds the whole consumer regardless
-of how many cores the server has: a bridge shelling out per request measured **~580 req/s and
-never more than nine scans in flight** on a box whose server could saturate fourteen (`bench/FINDINGS.md`
-§18). Nothing about the server was the limit, and no server-side change would have moved it.
-
-So:
-
-- **Pool `Connection`s and keep them.** One per worker thread, reused for the life of the process.
-  `examples/loadgen.rs` and `examples/soak.rs` are both written this way, which is why they can
-  measure the server rather than the connect path.
-- **`fjord query` is a person's tool.** It is a whole process per query, and a service that calls
-  it has put a fork and a handshake in front of a 0.15 ms lookup.
-- **Read the result out even when you do not want the rows.** `Connection::discard` runs a result
-  to its end without decoding one — the server does all its work, and the client stops short of
-  the only cost that is the client's own.
-- **One connection is not a parallelism limit.** Streams multiplex, so several results can be in
-  flight on one; what a pool buys is that no request waits behind another's frames on the same
-  socket.
+- One connection per worker thread, kept for the life of the process.
+- `fjord query` is a person's tool, not a service's.
+- Streams multiplex, so one connection can have several results in flight.
+- `Connection::discard` drains a result you do not want to decode.
 
 ### Things a client should get right
 
 | | Why |
 |---|---|
 | Bound `length` before allocating | It sizes a read from a number the peer chose |
-| Treat an unknown frame kind as unknown, not malformed | That is what lets a newer peer be answered rather than rejected |
-| Emit **minimal** varints | One value must have exactly one encoding, or the block CRC means nothing |
-| Cover the header in the block CRC | A corrupted `length` must be caught, not used to skip to the wrong place |
-| Nest references rather than inventing ids | An id you did not receive from the server names some other fact |
-| Expect ids in rows | A reference comes back as `#p:n`; expand with `F`/`f` if you need the key |
-| Carry the listing digest back on a `FETCH` | Ids from a [virtual predicate](wire-protocol.html#rows-off-a-virtual-predicate) are positions in a view, not identities. Send the `l` frame's digest with the ids it came with, and treat the refusal as "re-run the query", not as an error to retry |
-| Release a stream on **its own** terminal frame | A session-level error arrives on stream 0 wherever it lands. Recycling a stream id because a fault happened while that stream was waiting hands the id to a query that is still running |
-| Give a bookmark a terminal errored state | An error frame mid-result ends the stream exactly as `COMPLETE` does. A bookmark that stays "streaming" after one will wait forever on a server-side task that has already returned |
-| Hold connections open and pool them | A connection per request caps a consumer far below what the server can serve, and no server-side change lifts it |
+| Treat an unknown frame kind as unknown, not malformed | A newer peer can then be answered rather than rejected |
+| Emit **minimal** varints | One value must have one encoding, or the block CRC means nothing |
+| Cover the header in the block CRC | A corrupted `length` must be caught |
+| Nest references rather than inventing ids | An id you did not receive names some other fact |
+| Expect ids in rows | A reference comes back as `#p:n`. Expand with `F`/`f` if you need the key |
+| Carry the listing digest back on a `FETCH` | Ids from a [virtual predicate](wire-protocol.html#rows-off-a-virtual-predicate) are positions, not identities |
+| Release a stream on **its own** terminal frame | A session-level error on stream 0 does not end other streams |
+| Give a bookmark a terminal errored state | An error frame mid-result ends the stream as `COMPLETE` does |
+| Hold connections open and pool them | A connection per request caps a consumer far below what the server can serve |

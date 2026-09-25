@@ -1,321 +1,281 @@
 export const meta = {
   "title": "Getting started",
-  "description": "Get the binaries, create a database, start a server, write some facts, and ask it a question — in about five minutes."
+  "description": "Install the binary, write nine facts about a tiny codebase, and ask where a function is used. About five minutes."
 }
 
-By the end of this page you will have a database on disk — files, declarations and the
-references between them — a server in front of it, and answers to a few questions about it.
-Then, if you want a real corpus rather than a worked example, a second database built by
-pointing the .NET indexer at real source.
+Fjord is one binary, and a database is a directory. There is no daemon to configure and no
+connection string. Every command below was run as written, and every output block is what
+it printed.
 
-Everything below was run against the repository as it stands, and every block of output is
-what it actually printed.
+## Install
 
-## Prerequisites
-
-| You need | Why | Optional? |
-|---|---|---|
-| A Rust toolchain (edition 2024, stable) | Builds `fjord`, which is the CLI and the server | no |
-| .NET SDK 10 | Runs the producers that fill a database with facts | only for steps 4 and 9 |
-| `python3` | Serves these docs locally | yes |
-
-There is nothing else — no database to install, no daemon to configure. The storage engine
-([fjall](https://github.com/fjall-rs/fjall)) is a Rust dependency, and a database is a
-directory.
-
-## 1. Get the binaries
-
-<Callout tone="note" label={`Prebuilt binaries`}>
-
-Every [GitHub release](https://github.com/boxops-uk/fjord/releases/latest) carries `fjord` for
-Linux x86_64, which skips this whole step:
+Each [release](https://github.com/boxops-uk/fjord/releases/latest) carries a Linux x86_64
+binary, a checksum, and a build attestation.
 
 ```bash
-curl -LO https://github.com/boxops-uk/fjord/releases/latest/download/fjord
-chmod +x fjord
-gh attestation verify ./fjord --repo boxops-uk/fjord   # what built it, and from what
-```
-
-That one needs glibc 2.34 or newer — Ubuntu 22.04, Debian 12, RHEL 9 and later. The
-`-x86_64-linux-musl` builds beside it are the same code linked statically, for an older
-distro, Alpine or a `scratch` container. Both carry the same allocator, but every number the
-project publishes is measured on the first, so they are the second choice rather than the
-first.
-
-</Callout>
-
-```bash
-cargo build --release --bin fjord
-```
-
-That gives you `target/release/fjord`, the one command-line tool. Use `--release`. A debug build of the executor is several times slower, and is not the
-thing you want a first impression of. [Building from source](building.html) has the rest
-of the workspace, if you want it.
-
-## 2. Create a database
-
-A database is created **against a schema**, which is then frozen and embedded in it for
-life. There is no default, and that is deliberate: the schema is what says what every row
-in the database means.
-
-`schemas/demo.sigla` in the repository is the worked example — eleven predicates in a
-namespace called `code`, describing files, declarations, the references between them, and a
-kind per declaration. It is the **language** fixture: one predicate for every shape the type
-model can hold, small enough to read in a sitting, and what the interactive site, the
-benchmarks and the corpus all measure over. Start here, and see
-[step 9](#9-index-real-source) for the schema a real indexer writes.
-
-```bash
-fjord --data-dir ./db create code --schema schemas/demo.sigla
+base=https://github.com/boxops-uk/fjord/releases/latest/download
+curl -LO $base/fjord
+curl -LO $base/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
 ```
 
 ```text
-created code (01M1N3FDD16ZXDJRMM164TD1G4) against schemas/demo.sigla
+fjord: OK
 ```
 
-The name is `code`; the ULID is the **instance**. `--data-dir` is the **store root** — the
-directory databases live under, and the thing a server owns.
+The checksum proves the download is intact. The attestation proves who built it: GitHub
+Actions, from this repository, at a named commit.
 
 ```bash
-fjord --data-dir ./db list
+gh attestation verify ./fjord --repo boxops-uk/fjord
+```
+
+It prints nothing and exits `0` when the provenance holds.
+
+```bash
+chmod +x fjord && ./fjord --version
 ```
 
 ```text
-NAME  INSTANCE                    STATUS    SCHEMA        CONTENT  FACTS  BYTES  CREATED
-code  01M1N3FDD16ZXDJRMM164TD1G4  writable  03678fcd1e79  -        -      -      2026-09-04 02:20:31Z
+fjord 0.5.1
 ```
 
-`list` reads sidecar files and never opens the storage engine, so it works while a server
-holds every database under the root. The `SCHEMA` column is the leading half of
-`demo.sigla`'s fingerprint, `0x03678fcd1e7924e3` — the number a client has to match to
-connect at all.
-
-## 3. Start a server
-
-Readers do not open the directory themselves; they talk to a server. Locally that means a
-Unix socket, and starting one is a single command.
+On other platforms, build from source with a Rust toolchain:
 
 ```bash
-fjord --data-dir ./db serve --ready-file ./ready &
+cargo install --git https://github.com/boxops-uk/fjord fjord-cli
+```
+
+The `fjord-x86_64-linux-musl` build in the same release is statically linked, for Alpine,
+`scratch` containers, or glibc older than 2.34.
+
+## Write a schema
+
+A database is created against a **schema**, which is frozen into it for life. Here is one
+with three predicates: files, what they declare, and which declarations refer to which.
+
+```sigla
+schema code {
+  # A path. Stored once, however many facts mention it.
+  predicate File : string
+
+  # What a file declares. The value side — after the arrow — is read
+  # only when a query asks for it.
+  predicate Decl : { file : File, name : string, line : int } -> string
+
+  # One declaration referring to another.
+  predicate Ref : { from : Decl, to : Decl }
+}
+```
+
+Save it as `example.sigla`. Everything before the `->` is the **key**: indexed, and what
+queries match on.
+
+```bash
+fjord schema check example.sigla
+```
+
+```text
+3 predicate(s) in 1 file(s)
+  example.sigla
+fingerprint 0x28816085c1ab2e8d
+```
+
+## Create a database
+
+```bash
+fjord create code --schema example.sigla
+```
+
+```text
+created code (01M3086YEDNMF7XMY6Z437QZN0) against example.sigla
+```
+
+`code` is the name. The ULID is the **instance**. Databases live under
+`~/.local/share/fjord` unless you set `--data-dir` or `FJORD_DATA_DIR`.
+
+## Start a server
+
+Readers talk to a server over a Unix socket. They never open the directory directly.
+
+```bash
+fjord serve --ready-file ./ready &
 while [ ! -e ./ready ]; do sleep 0.1; done
 ```
 
 ```text
 fjord serve
-  data dir   ./db
-  socket     ./db/fjord.sock
+  data dir   /home/ubuntu/.local/share/fjord
+  socket     /run/user/1000/fjord.sock
   protocol   4
   connections 524288 at once  (half the descriptor limit; --max-connections sets it)
   databases  1
     code                 writable
 ```
 
-`--ready-file` appears **after** the listener is accepting, so waiting on it is a signal
-rather than a race. The socket path is derived from the store root, which is how a client
-finds a server without being told where the data is.
+The socket path derives from the data directory, so clients find it without configuration.
+`--ready-file` appears once the server is accepting connections.
 
-<Callout tone="warn" label={`Socket paths are short for a reason`}>
+## Write facts
 
-A Unix socket path has a hard length limit of about 100 bytes. If your store root is deep,
-pass `--socket /tmp/fjord.sock` explicitly and name it in the address —
-`/tmp/fjord.sock//code`.
+One JSON object per line. `id` names a fact within this file so later lines can refer to
+it.
 
-</Callout>
+```json
+{"id": "keys", "predicate": "code.File", "fact": "store/keys.py"}
+{"id": "codec", "predicate": "code.File", "fact": "store/codec.py"}
+{"id": "plan", "predicate": "code.File", "fact": "query/plan.py"}
 
-## 4. Put some facts in it
+{"id": "key_of", "predicate": "code.Decl", "fact": {"file": "keys", "name": "key_of", "line": 12}, "value": "def key_of(row)"}
+{"id": "key_prefix", "predicate": "code.Decl", "fact": {"file": "keys", "name": "key_prefix", "line": 48}, "value": "def key_prefix(pred)"}
+{"id": "encode_key", "predicate": "code.Decl", "fact": {"file": "codec", "name": "encode_key", "line": 7}, "value": "def encode_key(key)"}
+{"id": "Plan", "predicate": "code.Decl", "fact": {"file": "plan", "name": "Plan", "line": 5}, "value": "class Plan"}
 
-Facts arrive over the wire, from a producer — there is no `fjord write` command yet
-([file ingestion](status.html) is unbuilt). The producer for this schema is
-`Boxops.Fjord.Demo`, a C# program that writes a handful of facts about a made-up Python
-project and then asks a few questions back.
+{"predicate": "code.Ref", "fact": {"from": "Plan", "to": "key_of"}}
+{"predicate": "code.Ref", "fact": {"from": "encode_key", "to": "key_of"}}
+```
 
 ```bash
-dotnet run --project clients/dotnet/Boxops.Fjord.Demo --configuration Release -- \
-  --at ./db/fjord.sock//code
+fjord write code facts.jsonl
 ```
 
 ```text
-connecting to ./db/fjord.sock//code
-  our schema fingerprint 03678fcd1e7924e3
-  connected: protocol 4, 13 predicates, schema 03678fcd1e7924e3
-
-writing 6 declarations, every reference nested
-  created 9, deduped 3 (of 12 facts touched)
-  6 declarations + 3 files = 9 distinct facts
+read 9 line(s): 9 fact(s) written, 12 already there
 ```
 
-`13 predicates` is eleven declared plus the two the server reserves — `fjord.db.List` and
-`fjord.db.Interning`, the catalogue answered as facts.
+Twelve "already there" from nine lines: each `Ref` carries its two declarations, and each
+declaration carries its file. The server writes a fact once and recognises it every time
+after.
 
-`deduped 3` is the number worth noticing, small as it is. The producer keeps track of **no
-ids at all**. It sends each declaration with its file nested inside it; the server writes
-each nested fact once and recognises it every time after, so twelve facts touched leaves
-nine rows. The [guided tour](walkthrough.html#3-write-facts-holding-no-ids) shows what that
-looks like on a corpus where the ratio is ten to one.
+`fjord write` is the simple way in. For millions of facts, use a client library, which
+sends hundreds of facts per block. See [Clients](clients.html#writing-facts-from-rust).
 
-To write facts from your own program, see
-[the client section](clients.html#writing-facts-from-rust).
-
-## 5. Ask it something
+## Query
 
 ```bash
-fjord --data-dir ./db query code 'F where code.File F' --limit 3
+fjord query code 'F where code.File F'
 ```
 
-```text
-VALUE
-query/plan.py
-store/codec.py
-store/keys.py
-3 row(s)
-fjord: stopped at 3 rows; raise or drop --limit to see the rest
+```sigla
+"query/plan.py"
+"store/codec.py"
+"store/keys.py"
 ```
 
-A query is the shape you want back, the word `where`, and what to match. Name the fields
-you care about, and the shape at the front decides the columns:
+Name fields to get records back:
 
 ```bash
-fjord --data-dir ./db query code \
-  '{name = N, line = L} where code.Decl {file = F, name = N, line = L}' --limit 5
+fjord query code \
+  '{name = N, line = L} where code.Decl {file = F, name = N, line = L}'
 ```
 
-```text
-LINE  NAME
-12    key_of
-48    key_prefix
-77    key_successor
-31    CodecError
-7     encode_key
-5 row(s)
-fjord: stopped at 5 rows; raise or drop --limit to see the rest
+```sigla
+{line = 12, name = "key_of"}
+{line = 48, name = "key_prefix"}
+{line = 7, name = "encode_key"}
+{line = 5, name = "Plan"}
 ```
 
-Find-references — the question a code index exists to answer — is a join through a
-reference. `code.Ref` holds two declarations, so "everything that refers to `key_of`" is one
-statement matching the target and another naming the referrer:
+Now the question a code index exists for. What refers to `key_of`?
 
 ```bash
-fjord --data-dir ./db query code \
-  '{f = F, l = L} where code.Ref {to = code.Decl {name = "key_of"},
-                                  from = code.Decl {file = F, line = L}}'
+fjord query code \
+  '{file = F, line = L} where code.Ref {to = code.Decl {name = "key_of"},
+                                        from = code.Decl {file = F, line = L}}' --expand
 ```
 
-```text
-F     L
-#4:3  5
-1 row(s)
+```sigla
+{file = "store/codec.py", line = 7}
+{file = "query/plan.py", line = 5}
 ```
 
-`F` printed as `#4:3` — a fact id, predicate 4 sequence 3, because that is what a reference
-is once stored. Expansion is the client asking the server *what fact does this id name*, and
-it is off unless you ask for it: it costs one point read per distinct reference.
+`--expand` turns a file reference into its path. References are stored as ids, and
+resolving one costs a lookup, so it is off by default.
+
+The value side is fetched only when you name it:
 
 ```bash
-fjord --data-dir ./db query code \
-  '{f = F, l = L} where code.Ref {to = code.Decl {name = "key_of"},
-                                  from = code.Decl {file = F, line = L}}' \
-  --expand
+fjord query code \
+  '{name = N, source = D.value} where D = code.Decl {file = _, name = N, line = _}'
 ```
 
-```text
-F              L
-query/plan.py  5
-1 row(s)
+```sigla
+{name = "key_of", source = "def key_of(row)"}
+{name = "key_prefix", source = "def key_prefix(pred)"}
+{name = "encode_key", source = "def encode_key(key)"}
+{name = "Plan", source = "class Plan"}
 ```
 
-## 6. Use the shell
+For a pipe, ask for JSON:
 
 ```bash
-fjord --data-dir ./db shell code
+fjord query code 'F where code.File F' --format jsonl | jq -r .
+```
+
+## Use the shell
+
+```bash
+fjord shell code
 ```
 
 ```text
-fjord shell — `code` on ./db/fjord.sock
-  13 predicate(s) · rows print as jsonl · :help for commands
-```
-
-The shell compiles what you type **locally**, against the schema the server said it
-serves — so a mistake is a caret under the word rather than a round trip, and `:plan` can
-show you the plan without running anything.
-
-```text
-sigla> :limit 3
-  3 row(s) per page
+fjord shell — `code` on /run/user/1000/fjord.sock
+  5 predicate(s) · rows print as sigla · :help for commands
+sigla> :limit 2
+  2 row(s) per page
 sigla> D.name where D = code.Decl _
   : str
 "key_of"
 "key_prefix"
-"key_successor"
-  :more for the next 3 — 3 so far
+  :more for the next 2 — 2 so far
 sigla> :more
-"CodecError"
 "encode_key"
 "Plan"
-  :more for the next 3 — 6 so far
+  :more for the next 2 — 4 so far
 ```
 
-`:more` holds a real resume token across a real round trip. Full command list:
+The shell compiles queries locally, so a typo is a caret under the word with no round
+trip. `:more` resumes from a token; the server keeps nothing open between pages. See the
 [Shell reference](shell.html).
 
-## 7. Seal it
-
-A database is an **artifact**. Sealing flushes and merges every tree, hashes the content,
-records the identity, and flips the status — after which every write is refused, forever.
+## Seal it
 
 ```bash
-fjord --data-dir ./db finish code
+fjord finish code
 ```
 
 ```text
 sealing code — merging trees, then computing identity
-sealed code: 11 facts, 68522 bytes, identity 0x0c60c170d491fc41
+sealed code: 9 facts, 34254 bytes, identity 0xf7b64f0fbd9255ad
 ```
 
-The identity is `hash(canonical schema, base facts)` — a content hash, so the same inputs
-build a byte-identical answer whatever order they were written in. `list` now shows the
-database as `complete`, with that number under `CONTENT`:
+The identity hashes the schema and the facts, so two machines that indexed the same commit
+get the same number. Writers are now refused at connection time:
 
 ```text
-NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS  BYTES  CREATED
-code  01M1N3FDD16ZXDJRMM164TD1G4  complete  03678fcd1e79  0c60c170d491  11     68522  2026-09-04 02:20:31Z
+fjord: `code` is complete: it takes no more writes
 ```
 
-and any writer is refused at the handshake, before it sends a byte of data:
-
-```text
-Boxops.Fjord.Client.FjordServerException: ModeRefused: `code` is complete: it takes no more writes
-```
-
-Merging at `finish` is not cosmetic: an unmerged tree was measured seeking at up to 180×
-a merged one, and the artifact roughly halves on disk. See
-[Performance](performance.html).
-
-## 8. From your own program
-
-Everything above is a client of the same protocol, and so is your program. One dependency,
-either language:
+## From your own program
 
 ```bash
-cargo add fjord-db                              # Rust
-dotnet add package Boxops.Fjord.Client          # .NET — net8.0 or net10.0, no dependencies
+cargo add fjord-db                        # Rust
+dotnet add package Boxops.Fjord.Client    # .NET — net8.0 or net10.0
 ```
-
-`fjord-db` is a façade over the three crates that do the work — `fjord-client`, `fjord-schema`
-and `fjord-wire` — so reading the database this tour just built is:
 
 ```rust
 use std::{path::Path, sync::Arc};
 use fjord_db::{Connection, Mode, Schema};
 
 let mut connection = Connection::connect(
-    Path::new("./db/fjord.sock"),
+    Path::new("/run/user/1000/fjord.sock"),   // the socket `serve` printed
     "code",
     Arc::new(Schema::empty()),   // a reader has no claim to make
     Mode::ReadOnly,
     false,
 )?;
 
-let schema = Arc::new(connection.served_schema()?);   // the only way to be right about it
+let schema = Arc::new(connection.served_schema()?);   // ask the database for its own
 
 let mut rows = connection.query("F where code.File F")?;
 for row in connection.take(&mut rows, 20)? {
@@ -323,126 +283,12 @@ for row in connection.take(&mut rows, 20)? {
 }
 ```
 
-`take` reads *n* rows and leaves the stream open, because the server suspends holding a
-bytes-only cursor and has already released its snapshot: a pause of an hour costs it what a
-pause of a millisecond does.
+`take` reads *n* rows and leaves the stream open. Pausing costs the server nothing.
 
-The client must supply the schema — the value codec sends no field names and no type markers,
-since both ends already have them — which is why a reader asks the database for its own.
+## Next
 
-## 9. Index real source
-
-`demo.sigla` is the language fixture, and eleven predicates is not what indexing a real
-repository needs. The set for that is `schemas/dotnet.sigla` — sixty-five predicates
-composed by import from five files: `src` for files and lines, `config` for what the index
-was built against, `msbuild` for the project graph, `csharp` for the semantic layer, and
-`codemarkup` for the language-independent surface a UI reads.
-
-**It is a different schema, so it is a different database.** A schema is frozen into a
-database at `create`, and the two sets share no predicate, so nothing here writes into the
-one above.
-
-```bash
-fjord --data-dir ./db2 --schema-path schemas create dotnet --schema schemas/dotnet.sigla
-fjord --data-dir ./db2 serve --ready-file ./ready2 &
-while [ ! -e ./ready2 ]; do sleep 0.1; done
-```
-
-```text
-created dotnet (01M1PCCPWV76QCE9XCS7WG2WNF) against schemas/dotnet.sigla
-fjord serve
-  data dir   ./db2
-  socket     ./db2/fjord.sock
-  protocol   4
-  connections 524288 at once  (half the descriptor limit; --max-connections sets it)
-  databases  1
-    dotnet               writable
-```
-
-`--schema-path` because `dotnet.sigla` is composed by import; an entry file's own directory
-is always searched first, so a directory of schemas that import each other needs no more
-than this.
-
-The producer is the repository's own .NET indexer, pointed at the .NET code it is itself
-part of: it builds each project, asks Roslyn what every name in the result means, and writes
-the answers down the socket. `--framework` pins one target, because the client library
-multi-targets and without it the run would fan out into one database per framework.
-
-```bash
-dotnet run --project clients/dotnet/Boxops.Fjord.Indexer --configuration Release -- \
-  --sln clients/dotnet/Boxops.Fjord.slnx --root clients/dotnet \
-  --framework net10.0 --at ./db2/fjord.sock//dotnet
-```
-
-```text
-indexing /path/to/fjord/clients/dotnet
-  paths relative to /path/to/fjord/clients/dotnet
-  schema fingerprint 4e90774b9a0814cc
-  entry point /path/to/fjord/clients/dotnet/Boxops.Fjord.slnx
-  5 C# project(s) in the solution
-  built Boxops.Fjord.Demo.csproj (net10.0, 4 files, 3.1s)
-  built Boxops.Fjord.Indexer.csproj (net10.0, 15 files, 3.1s)
-  built Boxops.Fjord.Scip.csproj (net10.0, 11 files, 3.1s)
-  built Boxops.Fjord.Client.csproj (net10.0, net8.0, 15 files, 5.3s)
-  built Boxops.Fjord.Tests.csproj (net10.0, 32 files, 2.6s)
-  build layer: 57 project(s), 5 from a design-time build, 61 file(s) attributed exactly
-  solution Boxops.Fjord.slnx: 5 of 5 listed project(s) have a project fact to be an edge to
-  1 target framework(s) — net10.0, loaded in 6.6s
-
-connecting to ./db2/fjord.sock//dotnet, 1 writer(s)
-  connected: protocol 4, 67 predicates, schema 4e90774b9a0814cc
-
-       13 files        23,738 facts      9,144 facts/s  Boxops.Fjord.Demo
-       25 files        84,036 facts     10,846 facts/s  Boxops.Fjord.Indexer
-       53 files       163,014 facts     16,434 facts/s  Boxops.Fjord.Tests
-
-indexed 61 file(s) in 12.2s
-  …
-  total                      179,214 facts in 92 blocks
-  server                     158,242 created, 1,728,840 deduped
-  writing                        4.9s  (summed over 1 writer(s), overlapped — not wall clock)
-  queueing                       2.3s  (walk blocked on a full queue)
-  contended                      2.0s  (241 of 179,214 facts waited for a batch)
-  throughput                  14,639 facts/s
-
-references: 21,361 resolved, 6,883 to declarations outside the index, 2 unresolved
-```
-
-**`1,728,840 deduped`** is the same trick as step 4 at scale: one and three-quarter million
-facts touched, a hundred and fifty-eight thousand rows written, because every reference the
-walk sends is the target fact nested inline and a file named a few thousand times is stored
-once.
-
-Find-references over that corpus is two seeks. `codemarkup.SearchEntry` finds the symbol by
-name, and `codemarkup.SymbolXRef` leads with the target, so its uses are a range rather than
-a scan:
-
-```bash
-fjord --data-dir ./db2 query dotnet \
-  '{f = F, at = S} where
-     codemarkup.SearchEntry
-       {nameLowercase = _, name = "Crc32", kind = _, symbol = T, file = _, line = _};
-     codemarkup.SymbolXRef {target = T, file = F, span = S}' --expand
-```
-
-```text
-AT         F
-{4808, 5}  Boxops.Fjord.Client/Blocks.cs
-{4834, 5}  Boxops.Fjord.Client/Blocks.cs
-{4847, 5}  Boxops.Fjord.Client/Blocks.cs
-{4860, 5}  Boxops.Fjord.Client/Blocks.cs
-{4873, 5}  Boxops.Fjord.Client/Blocks.cs
-5 row(s)
-```
-
-[A guided tour](walkthrough.html) follows this database rather than the demo one, and reads
-the plan behind that query.
-
-## What to read next
-
-- [A guided tour](walkthrough.html) — the same path over the indexed corpus, with more of the
-  interesting corners.
-- [Concepts](concepts.html) — facts, predicates, keys, values, lifecycle.
-- [sigla query language](query-language.html) — the whole language, construct by construct.
-- [CLI reference](cli.html) — every command, flag, address form and config key.
-- [Clients](clients.html) — the .NET half, and what it takes to write a third client.
+- [A guided tour](walkthrough.html): a real repository, indexed with Roslyn.
+- [Concepts](concepts.html): facts, predicates, keys, values, lifecycle.
+- [sigla query language](query-language.html): every construct.
+- [Schema language](schema-language.html): how to design keys.
+- [CLI reference](cli.html): every command and flag.

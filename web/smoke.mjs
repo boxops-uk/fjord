@@ -1040,6 +1040,14 @@ check(
 // comparison the two renderers used to give each other, with the page's own text
 // as the oracle instead of a second parser of it.
 {
+  // **The diagram tags, which are counted like a demo or a callout.** A diagram
+  // renders no `pre`, so the code-block count cannot see one go missing, and a
+  // component the map forgot renders as nothing at all. The list is the one
+  // `src/book/mdx.tsx` registers; adding a diagram means adding it here too,
+  // which is the point — an uncounted block is exactly what this check exists
+  // to refuse.
+  const DIAGRAM = /^<(Bytes|Flow|Journey|Ladder|Lifecycle|Mapping|Sequence|Tree)(\s|\/|>|$)/
+
   const content = new URL('./src/content/', import.meta.url)
   const order = JSON.parse(readFileSync(new URL('nav.json', content), 'utf8'))
     .groups.flatMap((group) => group.pages.map((entry) => entry.slug))
@@ -1047,9 +1055,10 @@ check(
 
   for (const slug of order) {
     const source = readFileSync(new URL(`${slug}.mdx`, content), 'utf8').split('\n')
-    const there = { h2: 0, h3: 0, tables: 0, code: 0, demos: 0, callouts: 0 }
+    const there = { h2: 0, h3: 0, tables: 0, code: 0, demos: 0, callouts: 0, diagrams: 0 }
     let fenced = false
     let inTable = false
+    let inLiteral = false
 
     for (const line of source) {
       const text = line.trim()
@@ -1063,6 +1072,15 @@ check(
       }
       if (fenced) continue
 
+      // **A diagram's content is a template literal, and what is in one is
+      // content rather than markup.** A journey's `| one socket, many streams`
+      // is a hop between two lanes; counted as source it is the first row of a
+      // table that the page never renders. An inline code span opens and closes
+      // on its own line, so only an odd count crosses one.
+      const wasLiteral = inLiteral
+      if (((text.match(/`/g) ?? []).length & 1) === 1) inLiteral = !inLiteral
+      if (wasLiteral) continue
+
       // A table is one block of pipe rows, however many rows it has.
       if (text.startsWith('|')) {
         if (!inTable) there.tables++
@@ -1073,6 +1091,7 @@ check(
       else if (text.startsWith('### ')) there.h3++
       else if (text.startsWith('<Demo ')) there.demos++
       else if (text.startsWith('<Callout ')) there.callouts++
+      else if (DIAGRAM.test(text)) there.diagrams++
     }
 
     await page.goto(`${url}${slug === 'index' ? '' : slug}`, { waitUntil: 'networkidle0' })
@@ -1091,6 +1110,7 @@ check(
         code: prose('pre.astryx-codeblock'),
         demos: document.querySelectorAll('[data-testid="prose"] .demo').length,
         callouts: prose('.astryx-banner'),
+        diagrams: prose('[data-diagram]'),
       }
     })
 
