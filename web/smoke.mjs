@@ -1149,6 +1149,37 @@ check(
   (await page.$eval('[data-testid="pager-next"]', (el) => el.textContent)).includes('Executor'),
 )
 
+// **The whole panel is the target, and it is still a route.** The pager was a
+// link inside a card, so the border around the title did nothing while every
+// other bordered panel on the site takes a click anywhere. `ClickableCard`
+// makes the surface interactive, which is worth pinning twice over: the corner
+// has to navigate, and it has to do it without fetching the document again —
+// a reload would take the engine with it.
+await page.$eval('[data-testid="pager-next"]', (el) => el.scrollIntoView({ block: 'center' }))
+await settle()
+await page.evaluate(() => {
+  window.__sameDocument = true
+})
+const corner = await page.$eval('[data-testid="pager-next"]', (el) => {
+  const box = el.getBoundingClientRect()
+  return { x: box.left + 10, y: box.top + 8 }
+})
+await page.mouse.click(corner.x, corner.y)
+await settle()
+const paged = await page.evaluate(() => ({
+  path: location.pathname,
+  same: window.__sameDocument === true,
+}))
+check(
+  'a click in the corner of the pager navigates',
+  paged.path.endsWith('/executor'),
+  paged.path,
+)
+check('and it is a route rather than a fresh document', paged.same)
+
+await page.goBack({ waitUntil: 'networkidle0' })
+await page.waitForSelector('[data-testid="pager-next"]')
+
 // The demo on this page is the database, and it is the real one: 36 facts,
 // written through the same encoder a client writes with.
 await page.waitForSelector('.demo .data table', { timeout: 20_000 })
