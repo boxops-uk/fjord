@@ -1,10 +1,11 @@
 import { Theme } from '@astryxdesign/core/theme'
 import { Layout } from './book/Layout'
 import { PageView } from './book/PageView'
-import { rendered } from './book/content'
+import { toc } from './book/content'
 import { useMode } from './book/mode'
 import { slugOf, useLocation } from './book/router'
 import { Browse } from './Browse'
+import { Landing } from './Landing'
 import { Playground } from './Playground'
 import { fjordTheme } from './theme'
 import './book.css'
@@ -16,6 +17,9 @@ import './book.css'
  * Markdown the generated site publishes, so there is one book; the demos in
  * them are the same engine the playground runs, so there is one engine. What a
  * paragraph claims, the panel under it does.
+ *
+ * Three shapes share the shell: the landing page at the root, the book, and the
+ * two applications. Only the book gets a reading order beside it.
  */
 export default function App() {
   const location = useLocation()
@@ -25,12 +29,19 @@ export default function App() {
 
   return (
     <Theme theme={fjordTheme} mode={mode}>
-      {slug === 'playground' || slug === 'browse' ? (
+      {/* **The root is the pitch, not the first page of the book.** It takes
+          the shell in its `fills` shape — the bar, the search and the reading
+          order on a burger, and no column of links beside a hero. */}
+      {slug === 'index' ? (
+        <Layout slug={slug} toc={[]} onToggleMode={toggle} fills>
+          <Landing />
+        </Layout>
+      ) : slug === 'playground' || slug === 'browse' ? (
         <Layout slug={slug} toc={[]} onToggleMode={toggle} fills>
           {slug === 'browse' ? <Browse /> : <Playground />}
         </Layout>
       ) : (
-        <Layout slug={slug} toc={rendered(slug)?.toc ?? []} onToggleMode={toggle}>
+        <Layout slug={slug} toc={toc(slug)} onToggleMode={toggle}>
           <PageView slug={slug} hash={hash} />
         </Layout>
       )}

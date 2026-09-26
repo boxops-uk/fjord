@@ -2,7 +2,7 @@
 
 What is not built, what building each piece requires, and the record of decisions already
 taken so they are not re-litigated. The design of record is the
-[design book](website/README.md) — **published** as the interactive site
+[design book](web/src/content/) — **published** as the interactive site
 ([`web/`](web/README.md), the pages with the engine running in them) at
 <https://boxops-uk.github.io/fjord/> on every push to main, and shipped with each release as
 an attested `fjord-docs-site.tar.gz` beside the binaries; the working contract is
@@ -454,7 +454,7 @@ what it has read to get there. A reader who has watched a nested loop backtrack
 understands the executor in a way no amount of prose achieves.
 
 **It needed no new machine, which was the bet.** `iter.rs` is a
-**defunctionalised state machine** ([I7](website/content/invariants.md#i7)):
+**defunctionalised state machine** ([I7](web/src/content/invariants.mdx#i7)):
 `depth`, a stack of frames, and one loop whose every iteration is exactly one
 transition. Stepping is therefore *exposing one iteration at a time* — not a
 second interpreter in the view crate, which would be the very thing this whole
@@ -467,8 +467,8 @@ exercise exists to avoid. The nine transitions are already there to be named:
 loop — `frame.next` filters them inside the scan — and they are exactly what
 makes a scan cost more than a seek, so the debugger shows each one and *which
 residual rejected it* (`check_residuals` knows). The scan loop is where
-[I6](website/content/invariants.md#i6) and
-[I9](website/content/invariants.md#i9) live, so this is paid for the way this
+[I6](web/src/content/invariants.mdx#i6) and
+[I9](web/src/content/invariants.mdx#i9) live, so this is paid for the way this
 repository already pays for instrumentation: `FieldOffsets::witness_row` has a
 real implementation under `cfg(debug_assertions)` and an empty `#[inline]` one
 otherwise.
@@ -483,7 +483,7 @@ threaded into the row loop — and which will want a better name once it carries
 two things.
 
 **Plus a runtime `Option`, even in the traced build.** That is what keeps
-[I9](website/content/invariants.md#i9) honest: the allocation guard runs with
+[I9](web/src/content/invariants.mdx#i9) honest: the allocation guard runs with
 the sink switched off and must still count zero per row. Compile-time gating
 alone would leave the guard measuring code that no longer resembles what ships.
 
@@ -520,7 +520,7 @@ screen and chosen so every shape the language has appears exactly once:
 with `kind` declared as `{ type : string = 5 | func : int = 2 }` — two
 alternatives, tags **neither contiguous, nor starting at zero, nor in
 declaration order**, so nothing that read a discriminant as a position can pass
-([I10](website/content/invariants.md#i10)).
+([I10](web/src/content/invariants.mdx#i10)).
 
 A real file rather than a string in a crate, so the same database can be built
 outside the browser — `fjord create demo --schema schemas/demo.sigla` — and the
@@ -679,9 +679,12 @@ Three things fell out of doing it this way:
 **The publish is switched over.** CI's `site` job builds the module, drives the
 bundle in a real Chrome, and then builds it twice — base `/` for the tarball a
 release carries, and the repository's own name for the copy Pages serves, since
-`SITE_BASE` is compiled into every asset URL and every route. `website/` still
-builds strictly: it is the copy that reads with no toolchain, and the renderer
-this one is held to.
+`SITE_BASE` is compiled into every asset URL and every route.
+
+*Superseded.* The Markdown source of truth and its second renderer are gone: the
+pages are MDX under `web/src/content/`, compiled into the site, and what the two
+renderers checked about each other the smoke check now asks of one — every block
+a page's source writes against the blocks the built page shows.
 
 ### Movement 6 — a design system under it ✅
 
@@ -735,12 +738,10 @@ Three things this turned up:
   -Oz` takes 34 KB off it and `web/`'s dev-dependencies now carry binaryen so
   the build script finds one. If it matters more later, the lever is splitting
   the module per segment rather than shrinking this one.
-- **Retire the hand-written highlighter** in `website/assets/app.js`. `web/`
-  paints `sigla` and `schema` blocks with the real lexer once a demo has brought
-  the module in, and carries the fallback rules for the languages the engine has
-  no opinion about. The generated site keeps its own copy for as long as it is
-  the copy that reads with no toolchain — which is what publishing the bundle
-  changed about this item, rather than closing it.
+- **Retire the hand-written highlighter.** ✅ Closed by deleting the generated
+  site: `web/` paints `sigla` and `schema` blocks with the real lexer once a demo
+  has brought the module in, and `src/book/highlight.ts` is now the only fallback
+  copy, for the languages the engine has no opinion about.
 - **A virtual import resolver**, so browser schemas are not single-file:
   `syntax::resolve` reads files, and everything else in `fjord-schema` is clean.
 - **`ts-rs` behind a feature**, so `web/src/wasm.ts`'s types are generated from
@@ -782,13 +783,13 @@ Each is a *specified* absence with the seam that keeps it cheap — none is an o
 | An open map that only ever grows — **nothing closes an instance** | A bind opens what the map does not hold, and the map never loses an entry: every instance this server has served keeps its fjall handle, its memtables and its journals until the process ends. The shape that makes it matter is the one `schemas/index.sigla` recommends — one composed database per repository, republished per commit, with a fan-out across repositories — where a long-lived server accumulates one open instance per commit it has been asked for, of which exactly one is current. Two decisions, not one: a cap on concurrently-open databases, and *when* a served instance may be closed. The seam kept is `Registry::gates`, which is already the exclusion an evictor needs against a bind |
 | Negative caching of a failed open | Nothing caches a refusal, so a corrupt instance is re-opened and re-reported on every bind that resolves to it. A **held** store is the expensive one: fjall retries the directory lock twice at 100 ms before giving up — measured at 202 ms of a blocking-pool thread — plus one uncached log line, per bind. `InUse` is the honest code for it and invites exactly the retry loop that makes it an I/O and log amplifier. Not built because a cache is a decision about *how long*, and the two answers differ: a corrupt directory stays corrupt until somebody fixes it, a held one until the holder lets go |
 | A sidecar this build cannot read is answered as an **absent name** | `Catalog::resolve` builds its candidate list from sidecars that parsed, so a corrupt or future-version `FJORD_META` takes its instance out of the list and a bind is refused with "no database named `x` in this store root" — while `fjord.db.List` reports that same directory as a *problem* under that name, because `list` keeps what `resolve` drops. Pre-existing, and the same "sends somebody looking in the wrong place" shape the half-delivered refusal was: `CatalogError::NoStore`'s neighbour is the variant that could say it properly, and saying it means `resolve` carrying its rejects rather than discarding them |
-| The last of the mid-copy window — a bind **damages** the artifact, and only the publish contract keeps it out | An instance whose fjall `version` marker has arrived and one of whose per-keyspace `current` manifests has not is past the store-presence guard. fjall's create-or-recover recurs per keyspace, and a recovery `remove_dir_all`s a keyspace holding no manifest of its own (`fjall-3.1.8/src/recovery.rs`, "Deleting uninitialized keyspace") — so the open **deletes files the copy had already delivered**, and the copy then finishes owing nothing more while the published artifact is permanently unopenable: a fresh reader of it fails with `Io(NotFound)`. A bind is what discovers this, unattended, on any client's handshake. What the fact-count check buys is that no client is *served* a wrong answer any more — the store's count is compared against the sealed sidecar's and the bind refused by name — and it buys nothing else: the delete happened inside the open, before there was anything to compare. One shape it cannot see, measured: a deleted `entities` tree leaves the count intact — the recovered store holds every fact the sidecar records — and the first row read then fails loudly with `DanglingFactId` rather than answering. Every shape where the recovered store holds *fewer* facts is refused by name, a lost `keyspaces/0` manifest included: that one deletes every keyspace, so the count is zero against a sidecar recording three. **fjall 3.1.8 has no open that neither creates nor recovers** — no read-only or `create_if_missing` option exists, `Database::recover` *is* the deleting path, and the keyspace name-to-id map that an existence check would have to recur through lives inside `keyspaces/0`, an LSM tree readable only by opening the database. So the contract carries this: [operations](website/content/operations.md#publish-by-rename-required-for-a-live-root) now **requires** publishing by rename for a live root, which is what `Catalog::create` already does on the same disk. A `db verify` (the row above) is what would let an operator check a delivered artifact instead of discovering it on a bind |
+| The last of the mid-copy window — a bind **damages** the artifact, and only the publish contract keeps it out | An instance whose fjall `version` marker has arrived and one of whose per-keyspace `current` manifests has not is past the store-presence guard. fjall's create-or-recover recurs per keyspace, and a recovery `remove_dir_all`s a keyspace holding no manifest of its own (`fjall-3.1.8/src/recovery.rs`, "Deleting uninitialized keyspace") — so the open **deletes files the copy had already delivered**, and the copy then finishes owing nothing more while the published artifact is permanently unopenable: a fresh reader of it fails with `Io(NotFound)`. A bind is what discovers this, unattended, on any client's handshake. What the fact-count check buys is that no client is *served* a wrong answer any more — the store's count is compared against the sealed sidecar's and the bind refused by name — and it buys nothing else: the delete happened inside the open, before there was anything to compare. One shape it cannot see, measured: a deleted `entities` tree leaves the count intact — the recovered store holds every fact the sidecar records — and the first row read then fails loudly with `DanglingFactId` rather than answering. Every shape where the recovered store holds *fewer* facts is refused by name, a lost `keyspaces/0` manifest included: that one deletes every keyspace, so the count is zero against a sidecar recording three. **fjall 3.1.8 has no open that neither creates nor recovers** — no read-only or `create_if_missing` option exists, `Database::recover` *is* the deleting path, and the keyspace name-to-id map that an existence check would have to recur through lives inside `keyspaces/0`, an LSM tree readable only by opening the database. So the contract carries this: [operations](web/src/content/operations.mdx#publish-by-rename-required-for-a-live-root) now **requires** publishing by rename for a live root, which is what `Catalog::create` already does on the same disk. A `db verify` (the row above) is what would let an operator check a delivered artifact instead of discovering it on a bind |
 | Verifying the content **fingerprint** at a first open, not just the count | The count a first open of a `Complete` instance now checks is the cheap fifth of `db verify`: measured in a release build over a sealed database of 100,000 facts, 96 ms against 445 ms for the full identity walk, on an open of the same database that costs 784 ms by itself — so the count is 12% on top of an open a bind already pays and the walk is 57%. fjall's `O(1)` `approximate_len` is not the cheaper option it looks like: a sealed database's journal is never truncated, every open replays it into a memtable whose facts the tables also hold, and the count sums both — measured at exactly double at 5, 2000, 20000 and 100000 facts. What the fingerprint would add over the count is every divergence that keeps the row *count* right, an `entities` tree deleted included; what would make it affordable is a per-predicate digest recorded at seal, so a first open could check one tree at a time and check the rest lazily, or `db verify` run once at publish time by whoever publishes |
 
 ### A defect, not a gap — a cursor does not name the world it was made in
 
 Everything above is a *specified* absence. What follows is not: two live
-[I4](website/content/invariants.md#i4) violations in shipped code, recorded here because they
+[I4](web/src/content/invariants.mdx#i4) violations in shipped code, recorded here because they
 were found while reviewing recursion and must not be fixed only inside that feature. They are one
 defect wearing two faces — **a resume token identifies a plan and nothing else about the world it
 read.**
@@ -868,7 +869,7 @@ refused by name, mid-stream, instead of returning a hybrid of two states. Refusi
 unpleasant; it is strictly better than the current behaviour, which is to return the hybrid and
 call it an answer. Holding a single snapshot across the whole request is the obvious alternative
 and it is rejected deliberately: releasing at every chunk *is*
-[I8](website/content/invariants.md#i8), and pinning a snapshot for the lifetime of a slow client's
+[I8](web/src/content/invariants.mdx#i8), and pinning a snapshot for the lifetime of a slow client's
 stream is the thing that rule exists to prevent.
 
 Its guards: a resume against a *different* same-schema database with overlapping fact ids and
@@ -1322,7 +1323,7 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
    and nothing may cache one across requests.** `Catalogue::of` assigns the sequence from
    `rows.into_iter().enumerate()` — the id *is* the row's position — so this states what the id has
    always meant rather than restricting it. Three consequences follow, all owed here rather than by
-   recursion: [I11](website/content/invariants.md#i11) gains an explicit carve-out, because "an id
+   recursion: [I11](web/src/content/invariants.mdx#i11) gains an explicit carve-out, because "an id
    is never reused" is a promise about stored facts that virtual rows do not keep and `Expander`'s
    comment currently cites in its general form; `Expander` drops its cached entries for virtual
    predicates at every request boundary, which needs no new index because a `FactId` carries its
@@ -1987,7 +1988,7 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
     same plan. Both ways out of that are wrong on their own: keep the answer-plan fingerprint and
     two programs with byte-identical answer plans but different rules — or different
     magic-versus-fallback selections — accept each other's cursors, which is an
-    [I4](website/content/invariants.md#i4) violation with a wrong answer at the end of it;
+    [I4](web/src/content/invariants.mdx#i4) violation with a wrong answer at the end of it;
     substitute the program fingerprint and the unchanged executor rejects every cursor it is
     handed.
 
@@ -2076,7 +2077,7 @@ ceiling, without which every limit in item 6 is output-side and blind — **is b
 14. **One base snapshot, owned by the driver, for every rule and every round.** A fixpoint runs
     many ordinary plans, and `FactStore` offers neither `Clone` nor a reader factory while
     `Executor<S>` **owns** its store and `enumerate` takes `self` by value. That signature is not
-    incidental: it is [I8](website/content/invariants.md#i8)'s *structural* proof, and its own
+    incidental: it is [I8](web/src/content/invariants.mdx#i8)'s *structural* proof, and its own
     doc says so — every exit path drops the frame stack and the store handle, so no caller can
     park a live iterator across a suspend.
 
@@ -2934,7 +2935,7 @@ rather than by a second proof.
       snapshot, following `fjord_store::fixtures`' existing `DropProbe`. Both at zero after an
       answer-page suspend, a cancellation mid-fixpoint, a materialisation or limit error, and
       normal completion — with positive controls showing **both** live during execution. The
-      registry now says this under [I8](website/content/invariants.md#i8).
+      registry now says this under [I8](web/src/content/invariants.mdx#i8).
 - [ ] A suspend mid-fixpoint is not representable, and the refusal is written in terms of the
       mechanism that exists: the cancellation token polled on the examined-rows stride. **There
       is no wall-clock deadline in this executor** — it is still an entry in
@@ -3152,7 +3153,7 @@ than unions, bigger than the browser build. Revised upward after review.
 |---|---|
 | **Movement 0** | Fifteen settled decisions before any implementation: five gating representation, three gating Movement 3, one gating Movement 2, two gating Movement 4 — one of them filed as a defect besides. The first draft of this section assumed all of them, and the sixth round turned them into a proof boundary. It lands in **four parts** (0a–0d), because as one diff it is not reviewable in a sitting |
 | **A prerequisite outside the feature** | A **rows-examined ceiling**, because every limit this feature adds is output-side and a recursive rule that scans a huge base and produces nothing evades all of them. **Built** — `Executor::with_examined_ceiling`, counted in the existing per-row tick. It was the only item here that was missing code rather than a missing decision; its scope is one executor, so the driver still owes the aggregation (item 14) |
-| **Two defects it inherits** | A cursor names a plan and nothing else about the world it read — not the database, not the listing. Both are live [I4](website/content/invariants.md#i4) holes today, both are recorded in [operational gaps](#operational-gaps), and recursion cannot be correct until they are fixed *there* rather than inside an envelope |
+| **Two defects it inherits** | A cursor names a plan and nothing else about the world it read — not the database, not the listing. Both are live [I4](web/src/content/invariants.mdx#i4) holes today, both are recorded in [operational gaps](#operational-gaps), and recursion cannot be correct until they are fixed *there* rather than inside an envelope |
 | **A published type that cannot say what a local field is called** | `PredicateTy` carries raw `Spur`s and the codec resolves them as schema symbols unconditionally (item 15). Either that type gains `Symbol` — a workspace-wide change to a published crate — or local signatures are restricted. Not a movement's parenthetical; it decides what a signature may contain |
 | **A seam that has to move** | `Executor` owns its store and `enumerate` consumes it, which *is* I8's structural proof. A fixpoint runs many plans, so ownership moves to the driver and I8 stops being free. Through a **sealed engine-private wrapper**, not a blanket `impl FactStore for &S`: a public one lets anything build an `Executor<&S>` from the moment it lands, two movements before the drop probes that replace the guarantee — see item 14 |
 | **A predicate catalogue** | Threaded through `lower`, `ty`, `flatten`, diagnostics and inspection — everywhere `Schema::get` and `Schema::find_position` are reached today. Not a module, a seam |
@@ -3207,7 +3208,7 @@ bytes on disk gets acceptance criteria, not a bullet.
   stays a residual, as a denial always does. Guards:
   `iter::a_bounded_seek_answers_what_the_same_bound_filtered_answers` (metamorphic, against the
   filter form) and `iter::a_bounded_seek_reads_the_window_and_not_the_offset` (the cost claim,
-  counted). [Query efficiency](website/content/query-efficiency.md).
+  counted). [Query efficiency](web/src/content/query-efficiency.mdx).
 - **if-then-else.** `(C; T) | (!C; E)` is the desugaring and needs no machinery.
 - **`maybe` / `enum`.** Sugar over a union (built); each waits on a *naming* decision, since
   what they desugar to enters the fingerprint.

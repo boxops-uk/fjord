@@ -57,7 +57,7 @@
 //! [`FjallDb`](crate::store::FjallDb) is checked against what its allocator
 //! hands out.
 //!
-//! [I11]: ../../../website/content/invariants.md#i11
+//! [I11]: ../../../web/src/content/invariants.mdx#i11
 
 use std::sync::Arc;
 
@@ -120,7 +120,7 @@ const Q: u32 = 4;
 /// declares ([chapter 6]). The built-in code index declares two of its keys otherwise, on
 /// purpose.
 ///
-/// [chapter 6]: ../../../website/content/schema-language.md
+/// [chapter 6]: ../../../web/src/content/schema-language.mdx
 #[must_use]
 pub fn schema() -> Schema {
     let mut names = Rodeo::new();
@@ -545,7 +545,7 @@ fn blob(payload: &[u8]) -> Vec<u8> {
 
 /// A **record-typed field**, which keeps its wrapper: inside a key it is one value
 /// among others and has to be skippable as one. A key itself is flat
-/// ([chapter 3](../../../website/content/storage.md#a-stored-key-is-flat)).
+/// ([chapter 3](../../../web/src/content/storage.mdx#a-stored-key-is-flat)).
 fn record(fields: &[Vec<u8>]) -> Vec<u8> {
     let mut out = vec![MARK_RECORD];
     for field in fields {

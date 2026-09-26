@@ -73,7 +73,7 @@ none of the five.
 `fjord.db.List` (`crates/fjord-server/schemas/catalogue.sigla`) is a virtual predicate over the
 store root, keyed `{name, instance, status, facts, bytes, created}`. A store root is
 `<name>/<instance>/` where the instance is a ULID
-([operations](../website/content/operations.md)), so **repo → name, build → instance** with no
+([operations](../web/src/content/operations.mdx)), so **repo → name, build → instance** with no
 modelling work at all. Every field is a key field on purpose, because a listing exists to be
 filtered — by name, by status, by how big something got.
 
@@ -105,7 +105,7 @@ before anything reading it, and no reordering rescues that: it is not an orderin
 declaration predicate scanned its 888,177 rows and the seek became a residual on each one.
 **Every feature on this list that reads through a reference is one spelling away from that
 cliff.** The corpus that produced those two figures no longer exists — read them as the lesson
-they are, not as current numbers ([performance](../website/content/performance.md)).
+they are, not as current numbers ([performance](../web/src/content/performance.mdx)).
 
 ### 10 · `route_map` · 11 · `tool_map`
 
@@ -158,7 +158,7 @@ The roadmap records this as *our* decision rather
 than a shared one (Glean has an opt-in semi-naive fixpoint behind `--experimental-recursion`) and
 prices it as the one item that is a genuine machine reshape: the loop is driven by facts being
 *written* mid-query, `enumerate` has neither an arm that re-runs the body nor a write path, and
-holding state across iterations conflicts with [I8](../website/content/invariants.md#i8).
+holding state across iterations conflicts with [I8](../web/src/content/invariants.mdx#i8).
 
 What this costs in practice is less than a ❌ would suggest, which is why these are ◐:
 
@@ -189,7 +189,7 @@ against *the commit that was indexed*, not against a continuously updated graph.
 
 Mapping a changed offset to the declaration containing it is a range containment —
 `span.start <= X` and `X < span.start + span.length` against `codemarkup.FileDefinition`.
-Comparisons are byte compares, sound because [I1](../website/content/invariants.md#i1) makes
+Comparisons are byte compares, sound because [I1](../web/src/content/invariants.mdx#i1) makes
 encoded order value order, but both **filter**: that key is `{file, span, symbol}` and `span` is a
 nested record, so a comparison against one of its components is a residual — `:plan` renders it as
 `where span.start >= …` under a full scan — and there is no spelling that puts a range constraint
@@ -220,7 +220,7 @@ rejected by name *until something else wants the operator*. This is that somethi
 The graph half is the flagship. `codemarkup.SymbolXRef` leads with `target`, which is what makes
 find-references a seek and what `bench/FINDINGS.md` §11 records as making it answerable at all.
 "Every reference to this symbol" is one seek, and it is the query
-[Getting started](../website/content/getting-started.md) ends on.
+[Getting started](../web/src/content/getting-started.mdx) ends on.
 
 The text half is where it stops. Prefix search is a range under I1 — the one place the two codecs
 genuinely agree with Glean's — but **substring and regex are absent**: no `contains`, no suffix
@@ -311,10 +311,10 @@ already built and the other half is the most expensive thing on the list.
 ### (a) Ordering by a stored attribute — solved, and stronger than it looks
 
 The output stream is lexicographically ordered by the concatenation of the levels' key orders in
-nesting order: [I1](../website/content/invariants.md#i1) makes encoded order value order, and
+nesting order: [I1](../web/src/content/invariants.mdx#i1) makes encoded order value order, and
 `enumerate` advances every level monotonically over a sorted scan. That order is total,
 deterministic and **resume-stable** — resuming from a cursor produces exactly the rows, in exactly
-the order, an uninterrupted run would ([executor](../website/content/executor.md)).
+the order, an uninterrupted run would ([executor](../web/src/content/executor.mdx)).
 
 Glean makes the weaker promise here — `seek`
 returns each key *"in no specified order"* — and notes that ours is the stricter one, which
@@ -331,7 +331,7 @@ render order are all free.
 
 Top-k by score must see rows it will not emit, so it materialises. That is the property
 is already the reason aggregation is absent, and it
-is the same wall. It also breaks the claim [chapter 5](../website/content/executor.md) is built on:
+is the same wall. It also breaks the claim [chapter 5](../web/src/content/executor.mdx) is built on:
 a suspended query holds one detached row per open level, bytes only, so a page held for an hour
 costs what one held for a millisecond does. A partial ranking buffer is state proportional to the
 *result*, not to the plan.
@@ -357,8 +357,8 @@ discovering later.
   pure function of the query term, so it re-derives at restore with nothing kept in the cursor; and
   a Levenshtein DFA can be re-entered at an arbitrary key, because it is a function of the
   candidate string rather than of the walk history. So the cursor stays one detached row per level,
-  bytes only — [I4](../website/content/invariants.md#i4) and
-  [I8](../website/content/invariants.md#i8) untouched. This is the kind of claim this repository
+  bytes only — [I4](../web/src/content/invariants.mdx#i4) and
+  [I8](../web/src/content/invariants.mdx#i8) untouched. This is the kind of claim this repository
   would want a property test for before believing it.
 - **It only helps on a leading key field.** `codemarkup.SearchEntry` leads with `nameLowercase`,
   so the schema pattern fuzzy needs already exists and already carries the comment explaining

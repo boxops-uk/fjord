@@ -1,6 +1,6 @@
 //! The schema DSL's front end: lex → parse → lower.
 //!
-//! [Operations §10](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md) puts "parse → AST → canonical
+//! [Operations §10](https://github.com/boxops-uk/fjord/blob/main/web/src/content/operations.mdx) puts "parse → AST → canonical
 //! model; imports/resolution; fingerprints" in this crate, which is why the bottom of
 //! the stack has a grammar in it. The dependency *direction* is unchanged: nothing
 //! above needs to know a schema was ever text.

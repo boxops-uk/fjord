@@ -23,6 +23,9 @@ import init, {
   type Project,
   type Reference,
   children,
+  compile,
+  corpus_trace,
+  corpus_window,
   definitions,
   files,
   load_corpus_jsonl,
@@ -37,6 +40,24 @@ import init, {
   xrefs,
 } from './wasm/fjord_wasm.js'
 import wasmUrl from './wasm/fjord_wasm_bg.wasm?url'
+
+import type { Lowered, PlanView, RowBytes, Trace } from './wasm'
+
+/**
+ * **A window onto one predicate's stored keys**, around a range a scan opened.
+ *
+ * `above` and `below` are the rows it is standing in for. A seek over an index
+ * of this size is only legible as a band if the rows either side of it are shown
+ * unread and in the same order, and those cannot all be drawn.
+ */
+export type Window = {
+  predicate: string
+  /** Every row of the predicate, which is what this is a window onto. */
+  total: number
+  above: number
+  below: number
+  rows: RowBytes[]
+}
 
 export type { Blob, Definition, Entry, FileRefs, Hit, Info, PackageRef, Project, Reference }
 
@@ -68,6 +89,13 @@ export type Corpus = {
   definitions: (symbol: string) => Definition[]
   references: (symbol: string) => Reference[]
   search: (prefix: string) => Hit[]
+  /** One query, stepped — the trace the workbench scrubs, over this index. */
+  trace: (query: string) => Trace
+  /** The stored keys around a range a scan opened, with what they stand in for. */
+  window: (lo: string, hi: string | null, before: number, inside: number, after: number) => Window
+  /** What a query compiles to against this index's schema, or nothing if it was
+   *  refused. The same plan `fjord query --plan` prints. */
+  plan: (query: string) => PlanView | null
   /** What a hover card needs, or `undefined` where this index only names the symbol. */
   info: (symbol: string) => Info | undefined
 }
@@ -128,6 +156,13 @@ export function loadCorpus(): Promise<Corpus> {
       references,
       search,
       info: symbol_info,
+      trace: (query: string) => JSON.parse(corpus_trace(query)) as Trace,
+      window: (lo, hi, before, inside, after) =>
+        JSON.parse(corpus_window(lo, hi ?? '', before, inside, after)) as Window,
+      // The schema source is kept for this one call. A `corpus_compile` would
+      // save re-reading it, and the saving is microseconds against a schema this
+      // size — not worth a second way to ask the same question.
+      plan: (query: string) => (JSON.parse(compile(schema, query)) as Lowered).plan,
     }
   })()
 

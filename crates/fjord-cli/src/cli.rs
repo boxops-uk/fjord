@@ -1,4 +1,4 @@
-//! The command tree — [operations §4](../../../website/content/operations.md).
+//! The command tree — [operations §4](../../../web/src/content/operations.mdx).
 //!
 //! Common lifecycle verbs stay top-level because they are the daily drivers; admin
 //! tooling nests one level. Every database-taking command is meant to accept any
@@ -318,7 +318,7 @@ pub enum Command {
 }
 
 /// The three questions a schema can be asked away from a database
-/// ([operations §5](../../../website/content/operations.md)).
+/// ([operations §5](../../../web/src/content/operations.mdx)).
 ///
 /// All three take **files**, and `diff` takes a database name just as happily: what is
 /// being compared is a schema, and where it was read from is the caller's business.

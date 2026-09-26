@@ -2,7 +2,7 @@
 //! interner builder, and a plan runner.
 //!
 //! Test machinery, not a product backend. Lives in a support module so tests
-//! import these rather than redefining helpers inline (see `website/content/testing.md`).
+//! import these rather than redefining helpers inline (see `web/src/content/testing.mdx`).
 
 // The store-shaped half of this toolbox — the probes, the model stores and the
 // value helpers — lives in `fjord-store`, because a probe has to be the same
@@ -28,7 +28,7 @@ use fjord_store::fact_store::FactStore;
 /// This is the "run to completion, collect rows" reference model the resume
 /// battery checks suspend/resume against ([I4]).
 ///
-/// [I4]: ../../../website/content/invariants.md
+/// [I4]: ../../../web/src/content/invariants.mdx
 pub fn collect_rows<S: FactStore>(
     store: S,
     plan: Plan,
@@ -97,7 +97,7 @@ const FIXTURE_WORLD: &[u8] = b"fjord-engine::fixtures::run_with_suspends";
 /// This is the system-under-test half of the [I4] battery; [`collect_rows`] is
 /// the model.
 ///
-/// [I4]: ../../../website/content/invariants.md
+/// [I4]: ../../../web/src/content/invariants.mdx
 pub fn run_with_suspends<S: FactStore>(
     mut mk: impl FnMut() -> (S, Plan),
     interner: &LocalInterner,

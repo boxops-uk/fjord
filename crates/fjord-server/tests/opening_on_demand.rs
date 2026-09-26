@@ -191,7 +191,7 @@ fn a_corrupt_instance_is_refused_by_name_and_leaves_its_siblings_serving() {
 /// schema copy the sync never delivered stays broken until somebody fixes it. "No such
 /// database" is the one answer a client will never retry, so the two that end by
 /// themselves answer `InUse`, which is what a held *root* already answers and what
-/// [wire-protocol](../../../website/content/wire-protocol.md) calls the one code worth
+/// [wire-protocol](../../../web/src/content/wire-protocol.mdx) calls the one code worth
 /// retrying. The binding after the release is the half that makes it honest.
 ///
 /// Finding out costs fjall's own retry — twice at 100 ms before it gives up — so a
@@ -372,7 +372,7 @@ fn facts(bound: &Database) -> u64 {
 /// instance, so the rest of the copy landing changed nothing.
 ///
 /// Both shapes are mid-copy states of the deployment
-/// [operations](../../../website/content/operations.md) describes, and the second is the
+/// [operations](../../../web/src/content/operations.mdx) describes, and the second is the
 /// one a file-level sync actually produces: the directory tree first, the files into it
 /// after.
 ///

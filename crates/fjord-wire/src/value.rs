@@ -6,8 +6,8 @@
 //! that is the central design decision rather than a shortcut. Both peers have the
 //! schema — the handshake compares the client's expected schema fingerprint against
 //! the DB's before a byte of data flows
-//! ([operations §6](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md#6-wire-protocol--the-write-stream)),
-//! and [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13) freezes a DB's schema at create — so
+//! ([the handshake](https://github.com/boxops-uk/fjord/blob/main/web/src/content/wire-protocol.mdx#the-handshake)),
+//! and [I13](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i13) freezes a DB's schema at create — so
 //! the field names, their order and their types are known to the reader in advance.
 //! Sending them again is sending what the reader already has.
 //!
@@ -32,7 +32,7 @@
 //! O(1) access with no parse step, paid for with fixed-width fields that are larger
 //! on the wire than varints. Neither half fits: every inbound fact is decoded
 //! anyway — to intern its references and to re-encode it as a storage tuple
-//! ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/website/content/storage.md#interning-a-nested-fact)) — so
+//! ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/web/src/content/storage.mdx#interning-a-nested-fact)) — so
 //! there is no parse to avoid, and the size is worse.
 //!
 //! # A reference is a union, and it is the only tag on the wire
@@ -53,7 +53,7 @@
 //!
 //! | not sent | because |
 //! |---|---|
-//! | field names | the schema has them ([I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)) |
+//! | field names | the schema has them ([I13](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i13)) |
 //! | field types | likewise — this is why there are no markers |
 //! | record arity | the schema's field list has the count |
 //! | a record terminator | a record ends when its fields do, which the schema says |
@@ -450,7 +450,7 @@ fn decode_ref(
             // `from_raw` deliberately does not validate — it is for ids that have
             // already been checked — so a wire decode has to. Sequence 0 is
             // reserved, which is what makes a zeroed eight bytes detectably not a
-            // fact ([I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11)).
+            // fact ([I11](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i11)).
             if id.sequence() == 0 {
                 return Err(WireError::BadFactId(raw));
             }
@@ -559,7 +559,7 @@ pub fn from_bytes(
 /// which is not a simplification but the real constraint written down. A reference
 /// in a key cannot be part of a cycle, because the target has to be fully identified
 /// before the referring key has any bytes at all
-/// ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/website/content/storage.md#interning-a-nested-fact)). A
+/// ([chapter 3](https://github.com/boxops-uk/fjord/blob/main/web/src/content/storage.mdx#interning-a-nested-fact)). A
 /// generator that drew cycles would draw facts no producer could send.
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
@@ -693,7 +693,7 @@ pub mod proptest {
 
         /// Materialise the schema. Field names are `f0`, `f1`, … — ascending, so
         /// sorted-by-name is also declaration order, which is what a record's
-        /// encoding order means ([chapter 6](https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md)).
+        /// encoding order means ([chapter 6](https://github.com/boxops-uk/fjord/blob/main/web/src/content/schema-language.mdx)).
         #[must_use]
         pub fn schema(&self) -> Schema {
             let mut rodeo = Rodeo::new();
@@ -1171,7 +1171,7 @@ mod tests {
     }
 
     /// Sequence 0 is reserved, so a zeroed id is detectably not a fact — the
-    /// property [I11](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i11) keeps, checked where bytes
+    /// property [I11](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i11) keeps, checked where bytes
     /// arrive from outside.
     #[test]
     fn a_zeroed_reference_is_not_a_fact() {

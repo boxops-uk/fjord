@@ -179,7 +179,7 @@ sequentially — the ids are real and the server tags every reply with one, but 
 client sends a stream's frames and reads its replies before starting the next, so one
 result is open at a time and `FjordConnection.Rows` refuses a second while one is. There
 is no per-stream flow control, which is
-[deferred](../../website/content/operations.md) on the server too.
+[deferred](../../web/src/content/operations.mdx) on the server too.
 
 **Paging, counting and cancellation are implemented, and they travel together.**
 `FjordConnection.Rows` pulls a page at a time and yields rows, so `Take(n)` costs one

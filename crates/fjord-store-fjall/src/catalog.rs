@@ -11,7 +11,7 @@
 //!
 //! # There is no manifest
 //!
-//! [`ops-I7`](../../../website/content/operations.md): enumeration is a walk of the root
+//! [`ops-I7`](../../../web/src/content/operations.mdx): enumeration is a walk of the root
 //! and a read of each sidecar, and **never opens fjall**. That is what lets `list`
 //! work while a server holds every database under the root — the sidecars are
 //! ordinary files, and the server's exclusive hold is on the fjall directories.
@@ -553,7 +553,7 @@ impl Catalog {
     /// Materialises **every** predicate's trees up front rather than on first write:
     /// a keyspace costs about 30 ms, and a database created from a schema knows all
     /// of them, so the bill is paid once here instead of at an unpredictable point
-    /// inside an ingest ([chapter 3](../../../website/content/storage.md)).
+    /// inside an ingest ([chapter 3](../../../web/src/content/storage.mdx)).
     ///
     /// # Errors
     ///

@@ -1,0 +1,246 @@
+export const meta = {
+  "title": "Storage model",
+  "description": "Two column families, one keyspace per predicate, an order-preserving codec, snowflake ids, the atomic write, and how a nested reference becomes an id."
+}
+
+Fjord stores every fact twice, in two sorted key–value maps. That split is why queries are
+fast at what they are fast at.
+
+## Two column families
+
+<Mapping>{`
+keys     | predicate_id ++ encoded_key → fact_id
+entities | fact_id → encoded_key + value
+`}</Mapping>
+
+| | `keys` | `entities` |
+|---|---|---|
+| Answers | *Which facts match?* | *What is this fact?* |
+| Read by | The scan loop, exclusively | A point lookup: a projection, or a fetch through a reference |
+| Access | Prefix and range scans over sorted bytes | One key, one row |
+| Contains | No values, ever | The key again, plus the value |
+
+A query over a predicate is a prefix scan of `keys`, because the predicate id is the prefix
+of every one of its keys. Narrowing on leading key fields extends that prefix. Values stay
+out of the scan loop entirely ([I6](invariants.html#i6)), which is why the two maps are
+separate. The price is that a fact is written in two places, so the write is atomic
+([I12](invariants.html#i12)).
+
+### A stored key is flat
+
+The key's top-level fields are stored back to back with no record wrapper, even when the
+key type is a record. A record *inside* a field keeps its wrapper. This is what lets a seek
+extend a prefix by whole fields, and it is why a plan addresses key fields by path and
+never binds a variable to a whole record key (`nyi/whole-key`).
+
+## One keyspace per predicate
+
+Each predicate gets its own pair of physical trees, `keys.<id>` and `entities.<id>`.
+
+- Facts of different predicates cannot affect each other's storage, so ingest is parallel
+  across predicates.
+- A predicate can be dropped wholesale by deleting its two trees.
+- Creating a keyspace costs about 30 ms, so `create` materialises every predicate's trees
+  up front rather than on first write.
+
+## The tuple codec
+
+The storage codec has three properties, each an invariant.
+
+### 1. Order-preserving ([I1](invariants.html#i1))
+
+```text
+memcmp(encode(a), encode(b)) == compare(a, b)
+```
+
+This is what turns a range into a seek instead of a filter, and returns rows in order
+with no sort. Integers use a variable width carried in the marker byte, with negatives as
+the ones'-complement of the magnitude, so `-42 < 7` holds on bytes. The decoder rejects
+any non-minimal encoding, so one value has exactly one byte string.
+
+A string prefix becomes a range by encoding the prefix and dropping its terminator. That
+is what makes `"al"..` a byte range.
+
+Here is every stored key of the demo database in scan order, as bytes and decoded. Read
+down the hex column and it ascends. Read down the decoded column and the values ascend the
+same way.
+
+<Demo kind="store">{`P where code.File P; P = "src/"..`}</Demo>
+
+### 2. Self-delimiting ([I2](invariants.html#i2))
+
+The marker byte alone says how to advance past a value, so a scan can skip to the *n*th
+field of a key without knowing its type. Record nesting is bounded, so malformed bytes are
+an error rather than a stack overflow.
+
+A record's terminator is `0x00`, so a null element inside a group is escaped as
+`0x00 0xFF`. That escape only sorts correctly because every value marker is below `0xFF`,
+which is why the marker table's reserved bands stop at `0xFE`.
+
+### 3. Frozen on disk ([I3](invariants.html#i3))
+
+Marker values and their relative order are part of a value's sort key. Once data exists
+they cannot change. New types take a reserved band chosen so they sort where they should.
+
+### The marker table
+
+| Byte(s) | Marker | Meaning | Skip family |
+|---|---|---|---|
+| `0x00` | `MARK_NULL` / `MARK_TERM` | null · record terminator | (see below) |
+| `0x01–0x20` | *reserved* | future types sorting below `String` | |
+| `0x21` | `MARK_STRING` | UTF-8 string | terminator walk |
+| `0x22` | `MARK_RECORD` | record start, paired with `MARK_TERM` | nested |
+| `0x23–0x3F` | *reserved* | | |
+| `0x40–0x47` | `MARK_INT_NEG` | negative integers, width 8 … 1 | width in marker |
+| `0x48` | `MARK_INT_ZERO` | zero | fixed, 0 bytes |
+| `0x49–0x50` | `MARK_INT_POS` | positive integers, width 1 … 8 | width in marker |
+| `0x51` | `MARK_FACT_REF` | a reference to a fact | fixed, 8 bytes |
+| `0x52` | `MARK_UNION` | a tagged alternative: discriminant, one payload, terminator | nested |
+| `0x53` | `MARK_BYTES` | uninterpreted bytes | terminator walk |
+| `0x54–0xFE` | *reserved* | | |
+| `0xFF` | `MARK_ESCAPE` | escapes a null element | — |
+
+The type ordering `null < string < record < integers < fact-ref < union < bytes` falls out
+of the table. A union sorts by discriminant then payload, so a key's alternatives cluster
+and matching one is a prefix seek. A stored tag no alternative declares is refused at
+decode.
+
+`bytes` is a string without the UTF-8 check. It was appended at `0x53`, so it sorts after
+a union rather than beside a string. That is unobservable, because no query can compare a
+`bytes` and a `string`, and moving it would be a codec bump that made every existing
+database unopenable. In a query it is written `0x…`. In JSON it is a bare lowercase hex
+string.
+
+<Callout tone="warn" label={`Every value marker stays below \`MARK_ESCAPE\``}>
+
+A new type numbered `0xFF` would silently invert string ordering across a record boundary.
+The ceiling is part of what I3 freezes.
+
+</Callout>
+
+## Fact ids are snowflakes ([I11](invariants.html#i11))
+
+<Bytes
+  fields={[
+    { name: 'predicate id', size: 24, span: '24 bits', from: '63', to: '40', foot: '≤ 16.7 M predicates' },
+    { name: 'sequence within that predicate', size: 40, span: '40 bits', from: '39', to: '0', foot: '≤ 1.1 T facts per predicate' },
+  ]}
+/>
+
+The tag is the top three bytes, so routing a lookup to a predicate's tree is a slice.
+Each predicate counts its own facts, so there is no global allocator and workers on
+different predicates share no counter. Sequences are 1-based, which is why an id prints as
+`code.File#1`.
+
+Ids are never reused within a database, and they are not cross-database identity. They
+are claimed durably in chunks before use, so a crash cannot reissue an id that a surviving
+reference resolves through.
+
+## Interning a nested fact
+
+A producer does not send ids. It sends the target fact, written inline, to any depth:
+
+```text
+    code.Ref {
+      from = code.Decl {                       ← a whole fact, not an id
+        file = code.File "query/plan.py",      ← nested again
+        name = "Plan", line = 5
+      },
+      to = code.Decl {
+        file = code.File "store/keys.py",
+        name = "key_of", line = 12
+      }
+    }
+```
+
+Interning is **resolve-or-create, bottom-up**. At each nested fact: encode its key, look it
+up in the predicate's `keys` tree, take the id if it is there, allocate and write if not,
+then substitute the id into the parent. Bottom-up is forced: a parent's key has no bytes
+until its children have ids.
+
+- **Already there** is dedup. A target nested under a thousand parents is one row.
+- **There with a different value** is a conflict, rejected deterministically. Neither
+  first nor last writer wins.
+- One message can contradict itself, by naming a target twice with two values. That is a
+  conflict too.
+
+This is why a producer keeps no book: an indexer knows the file when it reaches the
+declaration, and emits what it holds.
+
+## The atomic two-map write ([I12](invariants.html#i12))
+
+`keys` and `entities` are written in one batch. A key with no entity would make a
+projection fail. An entity with no key would be invisible to every query.
+
+### The other half: one key names exactly one fact
+
+Writing the same key twice would overwrite the `keys` row and strand the first entity.
+Two parallel workers interning the same target could both find the key absent and both
+write.
+
+The mechanism is per-key exclusion, striped 64 ways by a hash of the key. The stripe is
+held across the lookup *and* the commit, because a write batch is atomic on recovery but
+not isolated from a concurrent reader. Bottom-up interning means critical sections are
+never nested, so no lock ordering is needed. Single-threaded, the striping costs 1–4%.
+
+## Scan order
+
+A scan yields rows in lexicographic key order, and resume depends on it. Rows therefore
+come back in a useful order for free: a file's references arrive in position order,
+because position leads that key.
+
+## Snapshots
+
+A query reads a snapshot. An iterator pins one, so the snapshot is released at every
+suspend ([I8](invariants.html#i8)) and re-taken on resume. That is sound because the data
+cannot have changed.
+
+## The seam
+
+What the engine sees of storage is two methods:
+
+```rust
+pub trait FactStore {
+    type Scan: Iterator<Item = Result<(ByteView, FactId), StoreError>>;
+
+    fn scan(&self, lo: &[u8], hi: Option<&[u8]>) -> Result<Self::Scan, StoreError>;
+    fn point(&self, id: FactId) -> Result<Option<Entity>, StoreError>;
+}
+```
+
+A range of `keys`, and one row of `entities`. Two implementations exist: a fjall-backed
+database on disk, and an in-memory model that is the oracle the tests are written against
+and the store the browser build runs on.
+
+## The format stamp ([I15](invariants.html#i15))
+
+Every database records which codec and storage format wrote it. An unreadable stamp, or a
+database with facts and no stamp, is refused rather than guessed at.
+
+## On disk
+
+<Tree>{`
+<data_dir>/
+- fjord.sock  the server's socket. Its presence is how a client detects one
+- <name>/<instance>/  one database. The instance is a ULID
+-- FJORD_META  the sidecar, written temp, fsync, rename: name, instance, status (Writable, Complete or Broken), format version, schema fingerprint, content fingerprint at finish, counts, size, created_at
+-- schema/  the embedded canonical schema, the durable copy
+-- <storage files>  keys.<id> and entities.<id>, per predicate
+`}</Tree>
+
+`list` and `describe` read the sidecar and never open the storage engine, so they work
+while a server holds the root.
+
+## Storage codec versus transport codec
+
+They are siblings and share no bytes.
+
+| | Storage | Transport |
+|---|---|---|
+| int | Marker carrying the width, then big-endian minimal magnitude | LEB128 varint over zigzag |
+| string | Marker, escaped contents, terminator | Varint length, then the bytes |
+| record | Marker, fields, terminator | The fields, concatenated |
+| reference | Marker plus a fixed 8 bytes | A varint branch: an id, or the target fact |
+| field names, types, arities | Never present | Not sent. Both peers hold the schema |
+
+On a code index the transport encoding is about 40% smaller than the storage one.

@@ -39,11 +39,11 @@ pub type PredicateTy = PredicateTyNamed<Spur>;
 /// discriminant**, and the type of its payload.
 ///
 /// The discriminant is written down rather than derived from the position, which is
-/// the whole of [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10):
+/// the whole of [I10](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i10):
 /// a tag derived from a sorted or declared order renumbers the moment an alternative
 /// is inserted, and every stored value tagged with the old number then decodes as the
 /// wrong alternative. Angle numbers by position and buys stability back with a
-/// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)
+/// query-time transform; [I13](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i13)
 /// leaves no schema to transform between, so the tag is explicit here instead.
 ///
 /// A struct rather than a tuple, unlike a record's
@@ -84,7 +84,7 @@ pub enum PredicateTyNamed<N> {
     /// canonical form therefore sorts by discriminant, and a *renumber* is the change
     /// that moves the fingerprint ([chapter 6]).
     ///
-    /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/website/content/schema-language.md
+    /// [chapter 6]: https://github.com/boxops-uk/fjord/blob/main/web/src/content/schema-language.mdx
     Union(Arc<[AlternativeNamed<N>]>),
 }
 
@@ -320,7 +320,7 @@ impl Schema {
     /// nothing marked — `with_virtual` is opt-in and the printed form carries no marker.
     /// A client deciding virtuality separately, or not at all, holds catalogue rows it
     /// believes are stored facts, which is the identity-scope hole
-    /// [I11](../../../website/content/invariants.md#i11)'s carve-out is about.
+    /// [I11](../../../web/src/content/invariants.mdx#i11)'s carve-out is about.
     #[must_use]
     pub fn with_reserved_virtual(self) -> Schema {
         let reserved: Vec<PredicateId> = (0..self.len())
@@ -464,10 +464,10 @@ mod tests {
 
 /// Phase-8 invariant guards that are **live**.
 ///
-/// One so far: [I13](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13)'s order-independence half, which
+/// One so far: [I13](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i13)'s order-independence half, which
 /// went green when the canonical form and fingerprints landed at 8.3
 /// ([`fingerprint`](crate::fingerprint)). It sits here rather than beside that module
-/// because the [registry](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md) names it `schema::…`, and a guard
+/// because the [registry](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx) names it `schema::…`, and a guard
 /// that moves is a guard the registry stops pointing at.
 #[cfg(test)]
 mod guards {
@@ -565,7 +565,7 @@ mod guards {
     }
 }
 
-/// [I10](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i10) — **union
+/// [I10](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i10) — **union
 /// discriminants are stable and append-only**, built at 8.6.
 ///
 /// **What the invariant asked for, and what is actually implementable.** Its guard was
@@ -595,7 +595,7 @@ mod guards {
 /// thing: appending an alternative is a rebuild, where renumbering one would be a
 /// reindex, and anything that ever exports or migrates these bytes stands on that.
 ///
-/// [I13]: https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13
+/// [I13]: https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i13
 #[cfg(test)]
 mod i10_discriminants {
     use crate::{

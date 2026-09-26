@@ -2,7 +2,7 @@
 //!
 //! The constructor is private to this module and its descendants. Keeping the
 //! driver beneath that boundary prevents any sibling engine path from weakening
-//! [I8](../../../website/content/invariants.md#i8) by constructing a non-owning
+//! [I8](../../../web/src/content/invariants.mdx#i8) by constructing a non-owning
 //! executor whose snapshot owner can survive suspension.
 
 use fjord_schema::id::FactId;

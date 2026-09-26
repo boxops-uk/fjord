@@ -3,8 +3,8 @@ import { CommandPalette } from '@astryxdesign/core/CommandPalette'
 import { Text } from '@astryxdesign/core/Text'
 import { VStack } from '@astryxdesign/core/Stack'
 import type { SearchSource, SearchableItem } from '@astryxdesign/core/Typeahead'
-import { searchIndex } from './content'
-import { route, type Entry } from './markdown'
+import { searchIndex, type Entry } from './content'
+import { route } from './links'
 import { navigate } from './router'
 
 /**

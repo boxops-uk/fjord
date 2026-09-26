@@ -1,9 +1,9 @@
 //! The **format stamp** — what a DB says about the encoding that wrote it.
 //!
-//! [I3](../../../website/content/invariants.md#i3) freezes the marker table, and the reason it
+//! [I3](../../../web/src/content/invariants.mdx#i3) freezes the marker table, and the reason it
 //! had to hold *forever* rather than *until a migration* was that nothing a reader
 //! is handed says which encoding wrote it: a migration presupposes detection.
-//! This module is that detection ([I15](../../../website/content/invariants.md#i15)) — a fixed
+//! This module is that detection ([I15](../../../web/src/content/invariants.mdx#i15)) — a fixed
 //! block written once at create, in the DB's own metadata keyspace, checked at
 //! every open.
 //!
@@ -11,11 +11,11 @@
 //! change for different reasons:
 //!
 //! - [`FormatVersion::codec`] covers the **tuple codec** — the marker table and
-//!   the encoding of each type ([chapter 2](../../../website/content/storage.md)). A new
+//!   the encoding of each type ([chapter 2](../../../web/src/content/storage.mdx)). A new
 //!   type's marker moves this.
 //! - [`FormatVersion::storage`] covers the **physical layout** — how a row is
 //!   framed in each column family, how a keyspace is named, and the `FactId`
-//!   split ([chapter 3](../../../website/content/storage.md)). Rows changing shape
+//!   split ([chapter 3](../../../web/src/content/storage.mdx)). Rows changing shape
 //!   moves this.
 //!
 //! A codec addition does not reshape a row and a layout change does not touch the
@@ -35,7 +35,7 @@ use std::fmt;
 use crate::error::FormatError;
 
 /// The keyspace holding database-level metadata — the stamp today, the embedded
-/// schema when [I13](../../../website/content/invariants.md#i13) lands.
+/// schema when [I13](../../../web/src/content/invariants.mdx#i13) lands.
 ///
 /// Not a predicate keyspace: the fjall backend's `FjallDb::open`
 /// recovers predicates by the `keys.`/`entities.` prefixes, which this name does
@@ -163,7 +163,7 @@ mod tests {
     /// That is the whole reason the marker table is append-only and why `MARK_BYTES`
     /// took the next free number rather than a tidier one.
     ///
-    /// [I15]: ../../website/content/invariants.md#i15
+    /// [I15]: ../../web/src/content/invariants.mdx#i15
     #[test]
     fn a_database_written_before_a_new_scalar_family_still_opens() {
         // What a 0.1.0 instance holds in its stamp block: the magic, then codec 1 and

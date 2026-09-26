@@ -1,22 +1,16 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect } from 'react'
 import { Heading } from '@astryxdesign/core/Heading'
 import { Text } from '@astryxdesign/core/Text'
 import { Link } from '@astryxdesign/core/Link'
 import { Code as InlineCode } from '@astryxdesign/core/Code'
-import { List, ListItem } from '@astryxdesign/core/List'
-import { Table, TableCell, TableHeaderCell, TableRow } from '@astryxdesign/core/Table'
-import { Banner } from '@astryxdesign/core/Banner'
-import { Blockquote } from '@astryxdesign/core/Blockquote'
 import { Divider } from '@astryxdesign/core/Divider'
 import { Card } from '@astryxdesign/core/Card'
 import { Grid } from '@astryxdesign/core/Grid'
 import { Section } from '@astryxdesign/core/Section'
 import { VStack } from '@astryxdesign/core/Stack'
-import { Code } from './Code'
-import { Demo } from '../demo/Demo'
-import { inlines, type Block, type Inline } from './markdown'
-import { navTitle, neighbours, page as findPage, rendered } from './content'
-import { route } from './markdown'
+import { components } from './mdx'
+import { navTitle, neighbours, page as findPage } from './content'
+import { route } from './links'
 import { scrollTo } from './router'
 import { useScrollRoot } from './scrollRoot'
 
@@ -42,15 +36,14 @@ const PAGE_SIZE = { width: '100%', maxWidth: PAGE_WIDTH } as const
 /**
  * One page of the book: the prose as it was written, with the demos running.
  *
- * Every block is a component — a table is a `Table`, a callout is a `Banner`, a
- * fence is a `CodeBlock` — so the page inherits the design system's type scale,
- * spacing and dark mode rather than a stylesheet's opinion of them. The one
- * exception is a raw HTML block, which the dialect allows and the home page
- * uses; it arrives as the string it was written as.
+ * The page is a component, compiled from MDX, and `components` is the whole of
+ * how it is styled — a heading is a `Heading`, a table is a `Table`, a fence is
+ * a `Code` the engine paints. A page that needs more than prose names the
+ * component it needs and MDX resolves it here, so a diagram is a diagram rather
+ * than a picture of one drawn in dashes.
  */
 export function PageView({ slug, hash }: { slug: string; hash: string }) {
   const page = findPage(slug)
-  const content = rendered(slug)
 
   useEffect(() => {
     document.title = page ? (page.slug === 'index' ? SITE : `${page.title} · ${SITE}`) : SITE
@@ -70,7 +63,7 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
     else root?.current?.scrollTo({ top: 0 })
   }, [slug, hash, root])
 
-  if (!page || !content) {
+  if (!page) {
     return (
       <Section padding={6} paddingBlock={8} {...PAGE_SIZE}>
         <VStack gap={3}>
@@ -85,6 +78,7 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
   }
 
   const { previous, next } = neighbours(slug)
+  const { Body } = page
 
   return (
     <Section padding={6} paddingBlock={8} {...PAGE_SIZE} data-testid="prose">
@@ -99,17 +93,15 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
         </Heading>
         {page.description && (
           <Text as="p" size="lg" color="secondary">
-            {marks(inlines(page.description))}
+            {page.description}
           </Text>
         )}
 
-        {/* Keyed by the page as well as the position: a demo holds its query in
-            state, so two pages whose demos land at the same block index would
-            have React reuse the instance and keep the *previous* page's query —
-            a wrong demo that renders perfectly and says nothing about it. */}
-        {content.blocks.map((block, index) => (
-          <BlockView key={`${slug}:${index}`} block={block} />
-        ))}
+        {/* Keyed by the page: a demo holds its query in state, so two pages whose
+            demos land in the same position would have React reuse the instance
+            and keep the *previous* page's query — a wrong demo that renders
+            perfectly and says nothing about it. */}
+        <Body key={slug} components={components} />
 
         <Divider />
 
@@ -140,146 +132,4 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
       </VStack>
     </Section>
   )
-}
-
-/** The tone a callout carries, as the design system's four statuses. */
-const STATUS: Record<string, 'info' | 'warning' | 'error' | 'success'> = {
-  note: 'info',
-  warn: 'warning',
-  invariant: 'success',
-  gap: 'warning',
-}
-
-function BlockView({ block }: { block: Block }): ReactNode {
-  switch (block.kind) {
-    case 'heading':
-      return (
-        <Heading level={block.level as 2 | 3 | 4} id={block.anchor}>
-          {marks(block.children)}
-        </Heading>
-      )
-
-    case 'para':
-      return <Text as="p">{marks(block.children)}</Text>
-
-    case 'list':
-      return (
-        <List listStyle={block.ordered ? 'decimal' : 'disc'} density="compact">
-          {block.items.map((item, index) => (
-            <ListItem
-              key={index}
-              label={
-                <VStack gap={1}>
-                  <Text>{marks(item.children)}</Text>
-                  {item.nested.length > 0 && (
-                    <List listStyle="circle" density="compact">
-                      {item.nested.map((nested, at) => (
-                        <ListItem key={at} label={<Text>{marks(nested)}</Text>} />
-                      ))}
-                    </List>
-                  )}
-                </VStack>
-              }
-            />
-          ))}
-        </List>
-      )
-
-    case 'table':
-      return (
-        <Table density="compact" verticalAlign="top">
-          <TableRow isHeaderRow>
-            {block.head.map((cell, index) => (
-              <TableHeaderCell key={index}>{marks(cell)}</TableHeaderCell>
-            ))}
-          </TableRow>
-          {block.rows.map((row, index) => (
-            <TableRow key={index}>
-              {row.map((cell, at) => (
-                <TableCell key={at}>{marks(cell)}</TableCell>
-              ))}
-            </TableRow>
-          ))}
-        </Table>
-      )
-
-    case 'quote':
-      return (
-        <Blockquote>
-          <VStack gap={2}>
-            {block.blocks.map((inner, index) => (
-              <BlockView key={index} block={inner} />
-            ))}
-          </VStack>
-        </Blockquote>
-      )
-
-    case 'callout':
-      return (
-        <Banner status={STATUS[block.tone] ?? 'info'} title={marks(block.label)} defaultIsExpanded>
-          <VStack gap={2}>
-            {block.blocks.map((inner, index) => (
-              <BlockView key={index} block={inner} />
-            ))}
-          </VStack>
-        </Banner>
-      )
-
-    case 'rule':
-      return <Divider />
-
-    case 'code':
-      return <Code lang={block.lang} source={block.source} />
-
-    case 'demo':
-      return <Demo demo={block.demo} />
-
-    case 'html':
-      // Authored HTML, which the dialect allows and the home page's card grid
-      // is written as. It is content, not layout this file decides.
-      return <Authored html={block.html} />
-  }
-}
-
-/**
- * A block of HTML the author wrote, which the dialect allows and the home page's
- * card grid is written as. It is content rather than layout this file decides,
- * so it is rendered as written and styled by the two class names it uses.
- */
-function Authored({ html }: { html: string }) {
-  return <div className="authored" dangerouslySetInnerHTML={{ __html: html }} />
-}
-
-/** Inline marks, as components rather than as tags. */
-function marks(nodes: Inline[]): ReactNode {
-  return nodes.map((node, index) => {
-    switch (node.kind) {
-      case 'text':
-        return node.text
-      case 'code':
-        return <InlineCode key={index}>{node.text}</InlineCode>
-      case 'strong':
-        return (
-          <Text key={index} weight="semibold">
-            {marks(node.children)}
-          </Text>
-        )
-      case 'em':
-        return (
-          <em key={index}>{marks(node.children)}</em>
-        )
-      case 'del':
-        return (
-          <Text key={index} hasStrikethrough>
-            {marks(node.children)}
-          </Text>
-        )
-      case 'link':
-        return (
-          <Link key={index} href={node.href} isExternalLink={/^https?:/.test(node.href)}>
-            {marks(node.children)}
-          </Link>
-        )
-    }
-  })
 }

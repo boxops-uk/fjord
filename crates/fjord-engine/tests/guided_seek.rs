@@ -364,7 +364,7 @@ fn doubling_the_predicate_does_not_double_the_rows_examined() {
 }
 
 /// A guide reads the key it is already holding and fetches nothing
-/// ([I6](../../website/content/invariants.md#i6)).
+/// ([I6](../../web/src/content/invariants.mdx#i6)).
 #[test]
 fn a_guided_seek_fetches_no_values() {
     use fjord_store::fixtures::PointSpy;

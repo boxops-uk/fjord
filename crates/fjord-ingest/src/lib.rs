@@ -7,7 +7,7 @@
 //! Interning is resolve-or-create, **bottom-up** — a parent's key holds its child's id,
 //! so it has no bytes to look up until the child has one; the same fact makes the walk
 //! terminate. Design: [the storage
-//! model](../../../website/content/storage.md#interning-a-nested-fact).
+//! model](../../../web/src/content/storage.mdx#interning-a-nested-fact).
 //!
 //! **There are two walks, and only one of them runs in a server.** [`fused`] reads the
 //! wire and writes storage bytes in a single pass, and is what a write stream calls;

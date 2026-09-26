@@ -1,11 +1,10 @@
 /**
- * **The fallback tokenizer** — the same rules the generated site paints with.
+ * **The fallback tokenizer**, for the languages nothing else here knows.
  *
  * `CodeBlock` knows shells, JSON and the JavaScript family; it has never heard
- * of sigla, and it has no Rust. These rules cover the difference, and they are
- * the ones in `website/assets/app.js` so a block looks the same in both copies
- * of the book. A `sigla` or `schema` block only falls back to them until the
- * engine has loaded — after that the real lexer paints it.
+ * of sigla, and it has no Rust. These rules cover the difference. A `sigla` or
+ * `schema` block only falls back to them until the engine has loaded — after
+ * that the real lexer paints it.
  *
  * Lossless by construction: it emits spans, never text, so a block always shows
  * exactly what was written.

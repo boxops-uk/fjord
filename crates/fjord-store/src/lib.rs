@@ -12,7 +12,7 @@
 //! [`fact`] is how a fact is written *by hand*, resolved against the schema by
 //! name; [`keys`] reads the one part of a stored key every implementation must
 //! agree about; and [`mod@format`] is the twelve-byte stamp that says which build
-//! wrote a database ([I15](../../../website/content/invariants.md#i15)) — a
+//! wrote a database ([I15](../../../web/src/content/invariants.mdx#i15)) — a
 //! *format*, so it belongs with the definition rather than with the backend that
 //! stamps it.
 //!
@@ -22,9 +22,9 @@
 //!
 //! The executor consumes a `(handle, snapshot)` and assumes nothing about a
 //! connection — the cut that lets the same engine run embedded and served
-//! ([operations §10](../../../website/content/operations.md)).
+//! ([operations §10](../../../web/src/content/operations.mdx)).
 //!
-//! Design of record: [chapter 3](../../../website/content/storage.md).
+//! Design of record: [chapter 3](../../../web/src/content/storage.mdx).
 
 pub mod error;
 pub mod fact;
@@ -34,7 +34,7 @@ pub mod keys;
 
 // Test-support surface: the shared fixture database, and the probes that hold a
 // store to the seam's contract. Gated so `--features proptest` exposes them to
-// consumers outside `cfg(test)` (see `website/content/testing.md`) — which is
+// consumers outside `cfg(test)` (see `web/src/content/testing.mdx`) — which is
 // every battery in the engine crate, and both implementations.
 #[cfg(any(test, feature = "proptest"))]
 pub mod fixture;

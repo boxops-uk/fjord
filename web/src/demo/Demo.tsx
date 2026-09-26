@@ -12,8 +12,7 @@ import { Grid } from '@astryxdesign/core/Grid'
 import { useEngine } from '../engine'
 import { fold } from '../run'
 import { usePlayback } from '../playback'
-import { route } from '../book/markdown'
-import type { Demo as Spec } from '../book/markdown'
+import { route } from '../book/links'
 import type { Highlight } from '../span'
 import { Editor } from '../Editor'
 import { Diagnostics } from '../Diagnostics'
@@ -52,7 +51,29 @@ const WHAT: Record<string, string> = {
   schema: 'the schema, as the engine reads it',
 }
 
-export function Demo({ demo }: { demo: Spec }) {
+/** A live demo: a query, the schema it is written against, and how it is presented. */
+export type Spec = { kind: string; schema: string; query: string; guided: boolean }
+
+/**
+ * A running engine, in the middle of a page.
+ *
+ * The query is the element's content rather than an attribute, because that is
+ * what it is: several lines of sigla, written as they are read. The page names
+ * the kind — what the demo should show of the pipeline — and, for the two that
+ * need one, the schema the query is written against.
+ */
+export function Demo({
+  kind,
+  schema = '',
+  guided = false,
+  children,
+}: {
+  kind: string
+  schema?: string
+  guided?: boolean
+  children?: string
+}) {
+  const demo: Spec = { kind, schema, query: String(children ?? '').trim(), guided }
   return demo.kind === 'dfa' ? <DfaDemo source={demo.query} /> : <QueryDemo demo={demo} />
 }
 

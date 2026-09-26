@@ -38,8 +38,8 @@ pub const MARK_FACT_REF: u8 = 0x51;
 /// value still owed, and `nested_field_span` walks a payload with the machinery it
 /// walks a record field with. See [phase 8.6 D-a].
 ///
-/// [I3]: ../../../website/content/invariants.md#i3
-/// [phase 8.6 D-a]: ../../../website/content/storage.md
+/// [I3]: ../../../web/src/content/invariants.mdx#i3
+/// [phase 8.6 D-a]: ../../../web/src/content/storage.mdx
 pub const MARK_UNION: u8 = 0x52;
 
 /// **Uninterpreted bytes** — the marker, then the same escaped run a string uses.
@@ -59,8 +59,8 @@ pub const MARK_UNION: u8 = 0x52;
 /// encoded runs agrees with `memcmp` of the payloads. A length prefix would sort by
 /// length first, which is not the order anybody means.
 ///
-/// [I3]: ../../../website/content/invariants.md#i3
-/// [I15]: ../../../website/content/invariants.md#i15
+/// [I3]: ../../../web/src/content/invariants.mdx#i3
+/// [I15]: ../../../web/src/content/invariants.mdx#i15
 pub const MARK_BYTES: u8 = 0x53;
 
 /// The encoded width of a fact-typed field: the marker, then a fixed-width id.
@@ -69,7 +69,7 @@ pub const MARK_BYTES: u8 = 0x53;
 /// as a band of its own after every integer ([I1]) and can be compared without a
 /// decode.
 ///
-/// [I1]: ../../../website/content/invariants.md#i1
+/// [I1]: ../../../web/src/content/invariants.mdx#i1
 pub const FACT_REF_FIELD_LEN: usize = 1 + size_of::<u64>();
 
 pub const MARK_TERM: u8 = 0x00;
@@ -90,7 +90,7 @@ pub fn int_width(mag: u64) -> usize {
 ///
 /// The single definition of the encoding — [`TupleEncoder::put_fact_id`] writes these
 /// bytes, and the executor's residual compares against them without allocating, which
-/// is what keeps the hot loop allocation-free ([I9](../../../website/content/invariants.md#i9)).
+/// is what keeps the hot loop allocation-free ([I9](../../../web/src/content/invariants.mdx#i9)).
 #[must_use]
 pub fn fact_ref_bytes(id: FactId) -> [u8; FACT_REF_FIELD_LEN] {
     let mut out = [0u8; FACT_REF_FIELD_LEN];
@@ -241,7 +241,7 @@ pub const UNION_TAG_MAX_LEN: usize = 1 + 1 + size_of::<u32>();
 /// reason a select is a *prefix* rather than a filter: a seek splices these bytes to
 /// narrow a scan to one alternative, and the executor's residual compares against
 /// them without allocating, which is what keeps the hot loop allocation-free
-/// ([I9](../../../website/content/invariants.md#i9)). Same shape, and the same job, as
+/// ([I9](../../../web/src/content/invariants.mdx#i9)). Same shape, and the same job, as
 /// [`fact_ref_bytes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnionTag {
@@ -396,7 +396,7 @@ pub mod string_probe {
 /// Inspects only the bytes it yields, which is what makes that bound real, and
 /// allocates nothing: an escaped NUL is yielded as a character rather than
 /// unescaped into a buffer, which is the other half of what `get_str` cannot do
-/// ([I9](../../../website/content/invariants.md#i9)).
+/// ([I9](../../../web/src/content/invariants.mdx#i9)).
 ///
 /// Ends at the terminator; running out of bytes before one is
 /// [`UnexpectedEof`](StoreCodecError::UnexpectedEof), never a silent stop.
@@ -760,7 +760,7 @@ pub fn above_field(key_through_field: &[u8]) -> Vec<u8> {
 /// `fjord_store::fact::encode`, which resolves names against the
 /// schema and hands back a value already in this order.
 ///
-/// [chapter 3]: ../../../website/content/storage.md#a-stored-key-is-flat
+/// [chapter 3]: ../../../web/src/content/storage.mdx#a-stored-key-is-flat
 pub fn encode_typed(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodecError> {
     let mut out = Vec::new();
     encode_typed_at(&mut TupleEncoder::new(&mut out), ty, value)?;
@@ -778,7 +778,7 @@ pub fn encode_typed(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCod
 /// A **scalar** key is one field and needs none of this — the same asymmetry a query
 /// meets as `nyi/whole-key`.
 ///
-/// [chapter 3]: ../../../website/content/storage.md#a-stored-key-is-flat
+/// [chapter 3]: ../../../web/src/content/storage.mdx#a-stored-key-is-flat
 pub fn encode_key(ty: &PredicateTy, value: &Value) -> Result<Vec<u8>, StoreCodecError> {
     let (PredicateTy::Record(field_tys), Value::Record(fields)) = (ty, value) else {
         return within_limit(encode_typed(ty, value)?);
@@ -1231,7 +1231,7 @@ impl<'a> TupleDecoder<'a> {
         let id = FactId::from_raw(u64::from_be_bytes(buf));
 
         // Sequence 0 is reserved so that zeroed or truncated bytes are
-        // *detectably* not a fact ([I11](../../../website/content/invariants.md#i11)), and a
+        // *detectably* not a fact ([I11](../../../web/src/content/invariants.mdx#i11)), and a
         // property nothing checks is only an intention. The stored-`keys`-row
         // decoder (`store::decode_fact_id`) already enforces it; this is the same
         // rule at the decoder that reads a reference embedded **in a key**, which
@@ -1448,7 +1448,7 @@ where
 ///
 /// Every typed field decode bumps a thread-local counter; the guard asserts that
 /// binding variables triggers zero decodes — decoding happens only at read
-/// sites (projection), never at bind time. See `website/content/testing.md`.
+/// sites (projection), never at bind time. See `web/src/content/testing.mdx`.
 #[cfg(any(test, feature = "proptest"))]
 pub mod decode_probe {
     use std::cell::Cell;
@@ -1500,13 +1500,13 @@ pub fn decode_typed(
 /// That asymmetry is the layout, not an accident: a key is stored flat so a seek
 /// can extend a prefix by whole fields and the executor can reach field *k* by
 /// skipping the *k* before it, which is what the field-offset cache holds
-/// ([I2](../../../website/content/invariants.md#i2)). A *nested* record inside a field keeps its
+/// ([I2](../../../web/src/content/invariants.mdx#i2)). A *nested* record inside a field keeps its
 /// wrapper, because there it is one value among others and has to be skippable as
 /// one. So [`decode_typed`] reads a field or a value, and this reads a whole key;
 /// handing a record-keyed predicate's key to `decode_typed` looks for a
 /// `MARK_RECORD` that was never written.
 ///
-/// [chapter 3]: ../../website/content/storage.md
+/// [chapter 3]: ../../web/src/content/storage.mdx
 pub fn decode_key<N: Copy + Into<Symbol>>(
     interner: &LocalInterner,
     bytes: &[u8],
@@ -1742,7 +1742,7 @@ impl Ord for Value {
 /// generators (e.g. the schema-first `(plan, store)` generator) can build on
 /// them, and the independent oracles (`cmp_typed`, `encode_typed_for_test`) are
 /// shared test machinery rather than per-test boilerplate. See
-/// [`website/content/testing.md`](../../../website/content/testing.md).
+/// [`web/src/content/testing.mdx`](../../../web/src/content/testing.mdx).
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
@@ -2980,7 +2980,7 @@ pub(crate) mod tests {
     /// `keys` row; this is the same rule at the other decoder, the one that reads
     /// a reference embedded **in a key**.
     ///
-    /// [I11]: ../../../website/content/invariants.md#i11
+    /// [I11]: ../../../web/src/content/invariants.mdx#i11
     #[test]
     fn a_fact_ref_of_the_reserved_sequence_is_rejected() {
         use fjord_schema::schema::{PredicateId, SchemaInterner};
@@ -3502,7 +3502,7 @@ pub(crate) mod tests {
         /// [`the_generator_draws_every_predicate_ty_family`] is what says the
         /// population is every family.
         ///
-        /// [I3]: ../../../website/content/invariants.md#i3
+        /// [I3]: ../../../web/src/content/invariants.mdx#i3
         #[test]
         fn no_field_encoding_begins_at_the_separator_byte(spec in arb_typed_value()) {
             let fixture = materialize_value_fixture(spec);
@@ -3713,7 +3713,7 @@ pub(crate) mod tests {
     }
 
     /// A union of **one** alternative — the degenerate case
-    /// [`website/content/testing.md`](../../../website/content/testing.md) names, which no random draw
+    /// [`web/src/content/testing.mdx`](../../../web/src/content/testing.mdx) names, which no random draw
     /// reliably produces and which is the shape `maybe`'s sugar will lean on.
     #[test]
     fn a_single_alternative_union_round_trips() {

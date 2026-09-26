@@ -1,6 +1,6 @@
 //! One connection's outbound side: **a fair writer over per-stream queues**.
 //!
-//! [Operations §5](../../../website/content/operations.md) asks for "a per-connection
+//! [Operations §5](../../../web/src/content/operations.mdx) asks for "a per-connection
 //! single writer task that fairly interleaves ready streams (round-robin over
 //! per-stream output queues)" and gives the reason: *without this, one chatty stream
 //! starves the socket even when the executor has capacity*.

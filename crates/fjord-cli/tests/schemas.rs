@@ -252,7 +252,7 @@ fn every_shipped_schema_has_a_recorded_fingerprint() {
 /// needs the upstream, and citing it in a comment is what the schema does; this is the
 /// half a machine can hold.
 ///
-/// [I10]: ../../../website/content/invariants.md#i10
+/// [I10]: ../../../web/src/content/invariants.mdx#i10
 #[test]
 fn every_vocabulary_is_contiguous_and_unique() {
     use fjord_schema::schema::{PredicateId, PredicateTy};

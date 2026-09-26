@@ -519,7 +519,7 @@ fn the_schema_fingerprint_reaches_the_identity() {
 /// merge passes without measuring anything. The precondition is asserted, so it cannot
 /// quietly stop being true.
 ///
-/// [operations §5]: ../../../website/content/operations.md
+/// [operations §5]: ../../../web/src/content/operations.mdx
 #[test]
 fn sealing_merges_every_tree_into_one_table() {
     let (_dir, catalog) = catalog();

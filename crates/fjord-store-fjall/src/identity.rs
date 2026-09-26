@@ -1,6 +1,6 @@
 //! **Content identity** — `hash(canonical schema, base facts)`, computed at `finish`.
 //!
-//! [`ops-I4`](../../../website/content/operations.md) has asserted since before it was
+//! [`ops-I4`](../../../web/src/content/operations.mdx) has asserted since before it was
 //! computable that *"a DB built twice from identical inputs is identical"*, and that
 //! identity is **always** the content hash. This is that hash.
 //!
