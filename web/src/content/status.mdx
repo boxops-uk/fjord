@@ -1,0 +1,127 @@
+export const meta = {
+  "title": "Status & roadmap",
+  "description": "What is built, what is not, what is settled, and the one decision still open."
+}
+
+Where something is built, a test says so. Where it is not, it is listed here.
+
+## Built and guarded
+
+| Area | State |
+|---|---|
+| **Storage codec** | Order-preserving, self-delimiting, golden-pinned marker table |
+| **Storage layer** | A pair of trees per predicate, atomic two-map writes, snowflake ids, format stamp, snapshots released at suspend |
+| **Executor** | Three step kinds, one driver, lazy field decode, allocation-free scan, in-band cancellation |
+| **Suspend & resume** | A bytes-only cursor with a version, a plan fingerprint and a world stamp, proven against an interruption-schedule generator on both stores and against a real server |
+| **sigla front end** | lex → parse → typecheck → flatten → reorder → `Plan`, round-trippable, span-checked, corpus-gated |
+| **The language** | Generators, joins, records, field access, `.value`, constants, aliases, constraints, fuzzy matching (`~`) and fuzzy prefix matching (`~<`), denials, comparisons, integer arithmetic, negation, disjunction, `never`, subqueries, references both ways |
+| **Fuzzy search** | A Levenshtein automaton in the engine. On a leading field it guides the scan; behind a closed prefix it filters. Doubling the predicate does not double the rows examined |
+| **Schema DSL** | Files, namespaces, imports, canonical form, fingerprints, subset-containment compatibility, `schema check` / `fingerprint` / `diff` |
+| **Embedded schema** | A database embeds its schema at create and is served from that copy |
+| **Wire protocol** | Frames, streams, handshake with a per-predicate claim, four query kinds, paging, profiling, counting, fetch, control frames, cancellation |
+| **Ingestion over the wire** | Write streams, blocks, interning of nested references, dedup, deterministic conflict rejection |
+| **Parallel ingestion** | Per-key exclusion striped 64 ways |
+| **Server** | Unix socket by default, TCP opt-in, a task per stream, blocking pool, virtual `fjord.db.List`, a rows-examined ceiling |
+| **Client** | Rust client crate: connect, query, page, count, profile, fetch, expand, write, lifecycle |
+| **CLI** | `serve`, `create`, `finish`, `list`, `describe`, `query`, `shell`, `schema …`, `db rm` |
+| **Shell** | Compiles locally, real cursor paging, expansion, profiling |
+| **Second implementation** | A C# client, a demo producer, a Roslyn/MSBuild indexer, and a byte-for-byte golden against the Rust encoder |
+| **Measurement** | Six instruments across seven rungs, and a findings register |
+| **Documentation** | This site, deployed on every push to main and attested with each release |
+| **The engine in a browser** | `fjord-engine` compiles to WebAssembly, and every demo in this book is the real engine, stepped one transition at a time |
+
+## Not built
+
+| Missing | What it means for you | Gating |
+|---|---|---|
+| **Bulk ingestion from files** | `fjord write` reads JSONL over the socket and is the simple way in. A producer at volume uses a client library | The shape a fast path would take |
+| **Stored derivation** | A derived predicate cannot be declared. Derived data is written by the producer | The re-derivation decision below |
+| **Arrays and sets** | A one-to-many is one fact per element | An open design question |
+| **A code-search UI** | `fjord-viewer` is retired. A browser application replaces it. [Clients](clients.html#the-viewer) lists what it needs | A WebSocket listener carrying the same frames |
+| **`fjord write` from files, `db backup/restore/verify`, `completions`** | Absent from the binary. `tar` is the backup | — |
+| **Per-predicate statistics** | The reorderer has no selectivity heuristic. [Query efficiency](query-efficiency.html) is what to do meanwhile | `finish` is the natural place to record them |
+| **Recursion** | A query cannot name a relation and derive it. The first movement has landed: the pure pieces a driver will call, none wired to a pipeline yet | The relation store, a naive driver, semi-naive, resume re-proved, stratification, magic sets, then the surface |
+| **Per-stream flow control** | Bounded queues and per-connection backpressure in the meantime | — |
+| **Publishing the interactive site** | The interactive copy of this book is built and checked, and not yet what the domain serves | A deployment decision |
+| **A resumable deadline** | A timeout unwinds instead of handing back a cursor | The token cannot represent a mid-descent position |
+| **Authentication** | None, by design. The transport is the trust boundary | — |
+
+## The one open decision
+
+**Re-derivation, and what happens to the high-water mark.** It gates stored derivation.
+
+Two true statements are together inconsistent: a predicate can be dropped and replaced
+wholesale by deleting its two trees, and a fact id is never reused
+([I11](invariants.html#i11)). The allocator's high-water mark is recovered from the last
+key in a predicate's identity tree. Delete the tree and the next write is sequence 1
+again, and old ids come back naming different rows.
+
+Two coherent answers:
+
+- **Re-derivation produces a new database.** No new machinery. A one-predicate fix
+  rebuilds everything.
+- **In place, but bounded.** Only on a Writable database, only for a predicate nothing
+  already written references, and the high-water mark must survive the drop.
+
+Re-deriving under live readers would need generation metadata and generation-aware
+cursors, and "an O(1) tree delete" should not be read as promising that.
+
+## Settled decisions
+
+| Decision | Where it landed |
+|---|---|
+| **Parallel writes to a Writable database** | Yes, behind per-key exclusion. Reproducibility never required one writer: the identity hash is a multiset |
+| **Per-block commits** | A server flag, off by default. A crash during ingest may cost the index, never its correctness |
+| **What a reference is on the way in** | The target fact, written inline. Stored, it is an id |
+| **Multiplicity** | One fact per element. An array cannot be prefix-matched |
+| **Primitives** | Comparisons and arithmetic are in the language |
+| **Intra-row repeated variables** | Rejected by name |
+| **`pattern = pattern` unification** | Most of what was filed as unification is ordering, a residual, or a constraint |
+| **Cancellation counts rows examined** | Settled, in the executor |
+| **Storage codec vs transport codec** | Two codecs, siblings, sharing no bytes |
+| **Schema compatibility** | Subset containment: the only compatible change is adding a predicate |
+| **An on-disk format version** | Built, checked at open |
+| **A client never computes a fingerprint** | It carries the number and is refused by name if stale |
+| **Predicate ids** | They belong to the database, not the schema text, so a block names its predicate |
+| **The `FactRef` marker** | Its own marker, not shared with integers |
+
+## Relation to Glean
+
+Fjord is inspired by [Glean](https://glean.software/), not a clone.
+
+**Taken.** The two-map storage layout and the nested-loop execution shape, down to the
+names of the column families.
+
+**Changed.** Glean compiles a query to bytecode for a VM. Fjord walks an ordered `[Step]`
+with one driver, because a small continuation is what makes stateless paging possible.
+
+Four rules that look inherited are not. Glean does the opposite, or nothing:
+
+| Rule | Where it is stated |
+|---|---|
+| Key encoding is order-preserving | [I1](invariants.html#i1) |
+| The encoding is self-delimiting | [I2](invariants.html#i2) |
+| Values never enter the scan hot loop | [I6](invariants.html#i6) |
+| Union discriminants are stable and append-only | [I10](invariants.html#i10) |
+
+## Two rules about what may change
+
+**A new construct may add a source, a test, a residual operator or a computed-value arm.
+It may not add a `Step`.** A step is a case in the driver, a case in the cursor, and a
+fresh proof that resume is exact.
+
+**Additive is not the same as small.** Disjunction extends the resume token. Union types
+freeze their discriminants on disk. Both got acceptance criteria rather than a bullet.
+
+## The roadmap
+
+[`PLAN.md`](https://github.com/boxops-uk/fjord/blob/main/PLAN.md) carries each unbuilt
+piece with its acceptance criteria, and the record of settled decisions.
+
+| Remaining | State |
+|---|---|
+| File ingestion (`fjord write`) | designed; the format is built |
+| Stored derivation | designed; gated on the re-derivation decision |
+| The read-path benchmark | the instruments exist; the corpus and question set are owed |
+| Authentication | design of record written; nothing built |
+| Operational gaps and the language backlog | each listed with the seam that keeps it cheap |

@@ -1,7 +1,7 @@
 //! `fjord shell <db>` — the REPL, always over the wire.
 //!
 //! **Remote-first, and that is the point rather than a limitation**
-//! ([operations §5](../../../../website/content/operations.md)). The shell is the permanent
+//! ([operations §5](../../../../web/src/content/operations.mdx)). The shell is the permanent
 //! exerciser of the wire format: every query a person types here is a real handshake, a
 //! real stream and a real page of `DATA_ROW` frames, so a format change that the tests
 //! happen not to cover still cannot survive somebody using the tool.
@@ -13,7 +13,7 @@
 //! before anything crosses the socket, and `:plan` and `:type` are answerable at all.
 //!
 //! Fetching the schema is what makes that honest rather than hopeful. A database
-//! carries the schema it was created against ([I13](../../../../website/content/invariants.md#i13)), so
+//! carries the schema it was created against ([I13](../../../../web/src/content/invariants.mdx#i13)), so
 //! compiling against this tool's *built-in* one would be checking a query against a
 //! schema nobody is using. The one assumption left is that the server's compiler is
 //! this compiler: against a server of a different build the local answer can differ,
@@ -26,10 +26,10 @@
 //! stops; nothing is held at either end, because the place is kept by the *stream*
 //! staying open — server-side, parked on a full outbound queue with a bytes-only cursor
 //! whose snapshot was released at the chunk boundary
-//! ([I8](../../../../website/content/invariants.md#i8)). A pause of a millisecond and a pause of an hour
+//! ([I8](../../../../web/src/content/invariants.mdx#i8)). A pause of a millisecond and a pause of an hour
 //! cost the server the same thing.
 //!
-//! [I4](../../../../website/content/invariants.md#i4) — resume equals an uninterrupted
+//! [I4](../../../../web/src/content/invariants.mdx#i4) — resume equals an uninterrupted
 //! run, the most heavily tested machinery in this project — has exactly one interactive
 //! exerciser: `:more` is a person holding a cursor across a round trip, and
 //! [`pages_concatenate_to_an_uninterrupted_run`](tests) is that claim as a test.
@@ -444,7 +444,7 @@ impl Repl {
             // written out rather than hidden behind a control message precisely so that
             // it can be edited: the text is a starting point a person can paste, narrow
             // with a `status =`, or page with `:more`, which is what
-            // [operations §5](../../../../website/content/operations.md) means by putting
+            // [operations §5](../../../../web/src/content/operations.mdx) means by putting
             // enumeration through the normal machinery.
             ":list" => self.run_or_report(LISTING, out)?,
             ":interning" => self.run_or_report(INTERNING, out)?,
@@ -666,8 +666,8 @@ impl Repl {
         }
 
         // **Never silent.** A reference that names no fact cannot happen — both column
-        // families are written together ([I12](../../../../website/content/invariants.md#i12)) and ids are
-        // never reused ([I11](../../../../website/content/invariants.md#i11)) — so one that did is
+        // families are written together ([I12](../../../../web/src/content/invariants.mdx#i12)) and ids are
+        // never reused ([I11](../../../../web/src/content/invariants.mdx#i11)) — so one that did is
         // corruption, and a row rendering the id instead would look like an ordinary
         // unexpanded field.
         if dangling > 0 {
@@ -1281,7 +1281,7 @@ mod tests {
     /// **The acceptance criterion of this whole shell.**
     ///
     /// `:more` holds a bytes-only cursor across a round trip and resumes it, which is
-    /// [I4](../../../../website/content/invariants.md#i4) — resume equals an uninterrupted run —
+    /// [I4](../../../../web/src/content/invariants.mdx#i4) — resume equals an uninterrupted run —
     /// exercised interactively. The battery proves this over generated plans; what it
     /// never has is a person's hand on it.
     ///

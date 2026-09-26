@@ -1,0 +1,645 @@
+/* **The book's diagrams.**
+
+   These are the parts of a page the design system has no component for, in the
+   same sense `app.css` holds the workbench's panels: `astryx search "diagram"`
+   returns nothing, and a byte layout, a protocol exchange and a directory tree
+   are this repository's subjects rather than an application's furniture.
+
+   They were drawn in dashes and box characters until now, which cost three
+   things a browser gives for free — a field whose width is its size, a
+   direction shown by position rather than by a glyph, and text that reflows
+   under a phone. Every value here is a token, so both themes follow the page.
+
+   One rule for all of them: the words stay in the DOM as text. A diagram a
+   reader can select, search and have read aloud is worth more than a prettier
+   one drawn as an image. */
+
+.diagram {
+  margin: 0;
+  display: grid;
+  gap: var(--spacing-3);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+
+  /* Every `@container` query below resolves against the diagram's own width
+     rather than the viewport's: the same diagram sits in a page column, in a
+     callout and in a phone's screen, and what it has to fit is the box it is
+     in. */
+  container-type: inline-size;
+}
+
+/* An embedded object, spaced like a code block or a demo rather than like the
+   next paragraph of the argument. Matches `book.css`'s rule for its siblings. */
+.book-column > .diagram { margin-block: var(--spacing-5); }
+
+.diagram figcaption {
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  text-wrap: pretty;
+}
+
+/* A diagram is data, not decoration, so the fallback when it will not fit is a
+   scroll rather than a squeeze. The gutter keeps a focus ring from clipping. */
+.diagram-scroll {
+  overflow-x: auto;
+  padding-block-end: var(--spacing-1);
+}
+
+.diagram-note {
+  font-family: var(--font-family-body);
+  color: var(--color-text-secondary);
+  text-wrap: pretty;
+}
+
+/* Said only to a reader who is not looking at the picture. */
+.diagram-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.diagram-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--spacing-6);
+  padding: 0 var(--spacing-1-5);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-card);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ byte layout --
+
+   A field's width *is* its size in bytes or bits, which is the whole reason to
+   draw one rather than list the fields: `stream:4` beside `kind:1` says four
+   times as much when it is four times as wide. A variable-length field cannot
+   be to scale, so it says so by hatching instead of by being drawn a width
+   nobody should measure. */
+
+.bytes-row {
+  display: flex;
+  align-items: stretch;
+  min-width: max-content;
+}
+
+.bytes-field {
+  display: grid;
+  gap: var(--spacing-0-5);
+  padding: var(--spacing-2);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-inline-start-width: 0;
+  background: var(--color-background-card);
+  text-align: center;
+}
+
+.bytes-field:first-child {
+  border-inline-start-width: var(--border-width);
+  border-start-start-radius: var(--radius-inner);
+  border-end-start-radius: var(--radius-inner);
+}
+
+.bytes-field:last-child {
+  border-start-end-radius: var(--radius-inner);
+  border-end-end-radius: var(--radius-inner);
+}
+
+.bytes-field .name { font-weight: var(--font-weight-semibold); }
+
+.bytes-field .size,
+.bytes-field .value {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.bytes-field .value { color: var(--color-text-accent); }
+
+/* Not to scale, and saying so. */
+.bytes-field.is-variable {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--color-background-muted),
+    var(--color-background-muted) var(--spacing-1),
+    transparent var(--spacing-1),
+    transparent var(--spacing-2)
+  );
+}
+
+/* The numbers at a field's edges: bit 63 down to bit 40, and so on. They sit
+   over the boundary they name rather than over the field, which is what makes
+   a reader able to count the widths off them. */
+.bytes-scale {
+  display: flex;
+  min-width: max-content;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.bytes-scale span {
+  display: flex;
+  justify-content: space-between;
+  padding-inline: var(--spacing-2);
+}
+
+/* A brace under a run of fields — "30 bytes of framing" — drawn as a rule with
+   two ticks rather than as a row of box characters. */
+.bytes-groups {
+  display: flex;
+  min-width: max-content;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.bytes-group {
+  position: relative;
+  padding-block-start: var(--spacing-3);
+  text-align: center;
+}
+
+.bytes-group.is-braced::before {
+  content: '';
+  position: absolute;
+  inset-block-start: var(--spacing-1);
+  inset-inline: var(--spacing-1);
+  height: var(--spacing-1);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-block-end: 0;
+}
+
+/* --------------------------------------------------------------- sequence --
+
+   **A real sequence diagram: two lifelines, and time going down.**
+
+   Every protocol exchange in this book is the same shape — one party speaks,
+   the other answers — so it is drawn the way that shape is always drawn. The
+   actors sit at the top, a dashed lifeline falls from each, and a message is
+   an arrow between them with its label above it.
+
+   The geometry rests on one number. Both actors are `--actor` wide, so each
+   one's centre is half that in from its edge, and the lifelines go exactly
+   there. The message area is the space between them, which is whatever the
+   column leaves — so the diagram narrows with the page instead of scrolling
+   under it, and on a phone it is still a sequence diagram rather than a list
+   that used to be one. */
+
+.sequence {
+  --actor: 5.5rem;
+  display: grid;
+  gap: var(--spacing-1);
+}
+
+.sequence-actors {
+  display: flex;
+  justify-content: space-between;
+}
+
+.sequence-actors .actor {
+  width: var(--actor);
+  padding: var(--spacing-1) var(--spacing-1-5);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-card);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* **Two classes, because the book indents every list.** `[data-testid='prose']
+   ol` sets a `padding-inline-start` that outranks a single class, so the left
+   padding came back as the prose indent while the right stayed the lifeline's —
+   and every label and every arrow started short of the line it belongs to. */
+.sequence .sequence-body {
+  position: relative;
+  display: grid;
+  gap: var(--spacing-3);
+  margin: 0;
+  /* The content starts at the lifelines, so an arrow spans exactly between. */
+  padding: var(--spacing-3) calc(var(--actor) / 2);
+  list-style: none;
+}
+
+/* The two lifelines, under each actor's centre. */
+.sequence-body::before,
+.sequence-body::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  border-inline-start: var(--border-width) dashed var(--color-border-emphasized);
+}
+
+.sequence-body::before { inset-inline-start: calc(var(--actor) / 2); }
+.sequence-body::after { inset-inline-end: calc(var(--actor) / 2); }
+
+.message {
+  display: grid;
+  gap: var(--spacing-1);
+}
+
+/* Inset from the lifelines, so the words do not sit on them. The arrow below
+   is not inset: reaching the lifeline is the whole of what it says. */
+.message .label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacing-1) var(--spacing-2);
+  padding-inline: var(--spacing-2);
+}
+
+.message .what {
+  color: var(--color-text-secondary);
+  text-wrap: pretty;
+}
+
+.message .wire {
+  display: flex;
+  align-items: center;
+  color: var(--color-border-emphasized);
+}
+
+.message .rule {
+  flex: 1;
+  border-block-start: var(--border-width) solid currentColor;
+}
+
+/* A run that repeats, in the place a sequence diagram puts one. */
+.message.is-more {
+  justify-items: center;
+  color: var(--color-text-disabled);
+}
+
+@container (max-width: 30rem) {
+  .sequence { --actor: 3.5rem; }
+  .sequence-actors .actor {
+    padding-inline: 0;
+    letter-spacing: 0;
+  }
+  .message .label { padding-inline: var(--spacing-1); }
+}
+
+/* ------------------------------------------------------------------- tree --
+
+   `├──` and `└──` are a picture of a rule a browser can draw: the indent guide
+   is a border, so it stays put when the names beside it change length. The
+   note is a column of its own rather than space-padded into alignment. */
+
+/* **One grid for the tree, not one per row.** A row that is its own grid sizes
+   its columns from its own content, so every note started at a different place
+   and the column that makes this readable was not a column at all. */
+.tree {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: var(--spacing-1) var(--spacing-4);
+  align-items: baseline;
+}
+
+.tree-row { display: contents; }
+
+.tree-row .name { display: flex; align-items: baseline; white-space: nowrap; }
+
+.tree-row .rail {
+  flex: none;
+  align-self: stretch;
+  width: var(--spacing-4);
+  margin-inline-end: var(--spacing-2);
+  border-inline-start: var(--border-width) solid var(--color-border-emphasized);
+}
+
+.tree-row .rail.is-blank { border-inline-start-color: transparent; }
+
+/* The elbow into the row's own name. A border on the bottom half of the rail
+   is the `├──`, without the character. */
+.tree-row .rail.is-elbow {
+  position: relative;
+}
+
+.tree-row .rail.is-elbow::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 0.55em;
+  inset-inline-start: 0;
+  width: 100%;
+  border-block-start: var(--border-width) solid var(--color-border-emphasized);
+}
+
+/* The last child closes its rail at the elbow rather than running past it. */
+.tree-row .rail.is-last { border-inline-start: 0; }
+
+.tree-row .rail.is-last::before {
+  content: '';
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  height: 0.55em;
+  border-inline-start: var(--border-width) solid var(--color-border-emphasized);
+}
+
+/* **A directory is not coloured**, and that is the theme's rule rather than
+   taste: the accent on this site is a red the lexer also paints a refused byte
+   with, so a tree of red names reads as a tree of errors. The trailing slash
+   already says which entries are directories. */
+.tree-row .label { font-weight: var(--font-weight-medium); }
+
+.tree-row .note {
+  font-family: var(--font-family-body);
+  color: var(--color-text-secondary);
+  text-wrap: pretty;
+}
+
+@container (max-width: 34rem) {
+  .tree { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .tree-row .note {
+    /* One rail's width per level, so the note starts under its own name. */
+    padding-inline-start: calc(var(--spacing-6) * var(--depth, 0));
+    padding-block-end: var(--spacing-2);
+  }
+}
+
+/* ------------------------------------------------------------------- flow --
+
+   A pipeline, top to bottom, with what happens at each stage on the stage
+   rather than beside it. The seam is the one box drawn in the accent, because
+   the point of the picture is that the two halves meet at one thing. */
+
+.flow { display: grid; justify-items: center; gap: 0; }
+
+.flow-node {
+  display: grid;
+  gap: var(--spacing-1);
+  justify-items: center;
+  width: 100%;
+  max-width: 34rem;
+  padding: var(--spacing-3) var(--spacing-4);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-card);
+  text-align: center;
+}
+
+.flow-node .title { font-weight: var(--font-weight-semibold); }
+
+.flow-node .note {
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  text-wrap: pretty;
+}
+
+.flow-node.is-io {
+  border-style: dashed;
+  background: transparent;
+}
+
+.flow-node.is-seam {
+  border-color: var(--color-accent);
+  background: var(--color-accent-muted);
+}
+
+/* A stage that is itself a sequence: the compiler's phases, as chips. */
+.flow-phases {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--spacing-1);
+}
+
+.flow-phases .sep { color: var(--color-text-disabled); }
+
+.flow-band {
+  width: 100%;
+  max-width: 34rem;
+  display: grid;
+  gap: var(--spacing-1);
+  justify-items: center;
+  padding: var(--spacing-3);
+  border: var(--border-width) dashed var(--color-border-emphasized);
+  border-radius: var(--radius-container);
+  background: var(--color-background-muted);
+}
+
+/* Inside a band the node has already been measured by the band. */
+.flow-band .flow-node { max-width: none; }
+
+.flow-band > .caption {
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.flow-link { color: var(--color-border-emphasized); }
+
+/* ---------------------------------------------------------------- journey --
+
+   The lifecycle of one query across three hops. Each lane is a party, each row
+   inside it a numbered step, and the note between lanes is what the hop costs. */
+
+.journey { display: grid; gap: 0; }
+
+.journey-lane {
+  display: grid;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+}
+
+.journey-lane > .who {
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.journey-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--spacing-3);
+  align-items: baseline;
+}
+
+.journey-step .n {
+  min-width: var(--spacing-6);
+  padding: 0 var(--spacing-1);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+.journey-step .what { text-wrap: pretty; }
+
+/* A note on the steps above it: no number, and quieter than the steps. */
+.journey-step.is-note .n { background: transparent; }
+.journey-step.is-note .what { color: var(--color-text-secondary); }
+
+.journey-hop {
+  display: grid;
+  justify-items: center;
+  gap: var(--spacing-1);
+  padding-block: var(--spacing-2);
+  color: var(--color-text-secondary);
+}
+
+.journey-hop .via {
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  text-wrap: pretty;
+  text-align: center;
+}
+
+/* ----------------------------------------------------------------- ladder --
+
+   The measurement rungs, narrowest surface at the bottom. Grouped, because
+   what the groups say is which rungs can be compared with each other. */
+
+/* The groups say which rungs can be compared with each other, so the columns
+   have to line up *across* them as well as inside one — which is a subgrid,
+   since each group still draws its own ground. */
+.ladder {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: var(--spacing-2);
+}
+
+.ladder-group {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  gap: var(--spacing-1);
+  padding: var(--spacing-2) var(--spacing-3);
+  border-inline-start: var(--spacing-0-5) solid var(--color-border-emphasized);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+}
+
+.ladder-rung {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+}
+
+.ladder-rung > * + * { padding-inline-start: var(--spacing-3); }
+
+.ladder-rung .what { font-weight: var(--font-weight-semibold); white-space: nowrap; }
+
+.ladder-rung .note {
+  font-family: var(--font-family-body);
+  color: var(--color-text-secondary);
+  text-wrap: pretty;
+}
+
+@container (max-width: 32rem) {
+  .ladder { grid-template-columns: auto minmax(0, 1fr); }
+  .ladder-rung .note { grid-column: 2; padding-inline-start: 0; }
+}
+
+/* -------------------------------------------------------------- lifecycle --
+
+   Three states and the two verbs that move between them. What a state permits
+   hangs under it, because that is the question the diagram is asked. */
+
+.lifecycle { display: grid; gap: var(--spacing-3); }
+
+.lifecycle-track {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--spacing-2);
+}
+
+.lifecycle-state {
+  display: grid;
+  gap: var(--spacing-1);
+  justify-items: center;
+  flex: 1 1 auto;
+  min-width: max-content;
+  padding: var(--spacing-3) var(--spacing-4);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-card);
+  text-align: center;
+}
+
+.lifecycle-state .name { font-weight: var(--font-weight-semibold); }
+
+.lifecycle-state .can {
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.lifecycle-state.is-final {
+  border-color: var(--color-success);
+  background: var(--color-success-muted);
+}
+
+.lifecycle-edge {
+  display: grid;
+  justify-items: center;
+  gap: var(--spacing-0-5);
+  align-self: center;
+  color: var(--color-text-secondary);
+}
+
+.lifecycle-edge .verb { font-size: var(--font-size-xs); }
+
+.lifecycle-aside {
+  font-family: var(--font-family-body);
+  color: var(--color-text-secondary);
+  text-wrap: pretty;
+}
+
+/* ---------------------------------------------------------------- mapping --
+
+   A named map, its key shape and its value shape. Two rows of a text block
+   held in alignment by spaces; three columns here, so they stay aligned. */
+
+/* Subgrid for the same reason the ladder needs one: the two rows draw their
+   own boxes, and the arrows only say anything if they are under each other. */
+.mapping {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  gap: var(--spacing-1);
+}
+
+.mapping-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  gap: var(--spacing-2) var(--spacing-3);
+  align-items: center;
+  padding: var(--spacing-2) var(--spacing-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-card);
+}
+
+.mapping-row .arrow { color: var(--color-text-disabled); }
+
+@container (max-width: 34rem) {
+  .mapping { grid-template-columns: minmax(0, 1fr); }
+  .mapping-row .arrow { display: none; }
+  .mapping-row .to::before { content: '↳ '; color: var(--color-text-disabled); }
+}

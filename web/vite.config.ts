@@ -1,11 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import mdx from '@mdx-js/rollup'
+import remarkGfm from 'remark-gfm'
+import remarkHeadings from './mdx/headings.mjs'
 import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /** The reading order, which is also the list of paths a host has to answer. */
 function pages(): string[] {
-  const nav = JSON.parse(readFileSync(resolve(__dirname, '../website/nav.json'), 'utf8')) as {
+  const nav = JSON.parse(readFileSync(resolve(__dirname, 'src/content/nav.json'), 'utf8')) as {
     groups: { pages: { slug: string }[] }[]
   }
   const slugs = nav.groups.flatMap((group) => group.pages.map((page) => page.slug))
@@ -14,13 +17,16 @@ function pages(): string[] {
   return [...slugs.filter((slug) => slug !== 'index'), 'playground', 'browse']
 }
 
-// The book lives in `website/content/`, one directory up and outside this
-// package: the generated site and this one read the same files, so the dev
-// server has to be allowed to serve from there.
+// The book lives in `src/content/`: one MDX page per page, compiled into this
+// application like any other module. There is no second renderer and no
+// generated copy, so a page cannot be published in two states.
 export default defineConfig({
   base: process.env.SITE_BASE ?? '/',
   plugins: [
-    react(),
+    // **Before `react()`**, which is a `transform` over JSX: MDX has to have
+    // turned the page into JSX by the time it runs, or the plugin sees prose.
+    { enforce: 'pre', ...mdx({ remarkPlugins: [remarkGfm, remarkHeadings] }) },
+    react({ include: /\.(mdx|jsx|tsx)$/ }),
     {
       // **A page is a path, and a path has to be a file.** A host that has never
       // heard of `/storage` will still answer with the application if it is given
@@ -48,5 +54,4 @@ export default defineConfig({
       },
     },
   ],
-  server: { fs: { allow: ['..'] } },
 })

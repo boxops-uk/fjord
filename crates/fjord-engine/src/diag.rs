@@ -15,7 +15,7 @@
 //! point — a `Vec` handed back is a `Vec` a caller can drop on the floor, and
 //! "every diagnostic reaches the user" then rests on each call site remembering.
 //! The same move as [`Executor::enumerate`](crate::iter::Executor) taking
-//! `self` to make [I8](../../../website/content/invariants.md#i8) structural.
+//! `self` to make [I8](../../../web/src/content/invariants.mdx#i8) structural.
 
 use std::ops::Range;
 
@@ -323,7 +323,7 @@ impl ReportSpan for &NodeSpan {
 ///
 /// Keep-going by construction: reporting a fault does not stop a phase, so one
 /// run lists everything wrong with a query rather than its first fault
-/// ([chapter 7](../../../website/content/query-language.md)).
+/// ([chapter 7](../../../web/src/content/query-language.mdx)).
 #[derive(Debug, Default)]
 pub struct Diagnostics {
     inner: Vec<Diagnostic>,

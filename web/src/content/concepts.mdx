@@ -1,0 +1,126 @@
+export const meta = {
+  "title": "Concepts",
+  "description": "Facts, predicates, keys and values, and the lifecycle that makes a database an artifact."
+}
+
+Two names to keep straight:
+
+- **Fjord DB** is the database.
+- **sigla** is its query and schema language.
+
+## Facts and predicates
+
+A **fact** is a typed record. Every fact belongs to a **predicate**, Fjord's word for a
+table, which fixes what its facts look like. Every fact has an id.
+
+```schema
+predicate File : string
+predicate Module : { file : File, name : string }
+predicate Decl : { module : Module, name : string, line : int } -> string
+```
+
+A `File` fact is a string. A `Module` fact is a record whose first field is a
+**reference** to a `File` fact. A `Decl` fact is a record of three fields plus a value,
+the `-> string` on the end.
+
+## Keys and values
+
+Everything before the `->` is the **key**: it identifies the fact and is indexed.
+Everything after is the **value**: extra data, read only when a query asks for it.
+
+<Callout tone="note" label={`If a query needs to match on it, it belongs in the key`}>
+
+Queries seek and filter on keys and never touch values
+([I6](invariants.html#i6)). A field on the value side can be read but not searched.
+
+</Callout>
+
+### Types
+
+Six building blocks, and that is all of them:
+
+| Type | Written | What it is |
+|---|---|---|
+| `Int` | `int` | A signed 64-bit integer |
+| `Str` | `string` | UTF-8 text |
+| `Bytes` | `bytes` | Uninterpreted bytes, ordered by `memcmp` |
+| `Fact(p)` | the predicate's name | A reference to a fact of predicate `p` |
+| `Record` | `{ a : t, b : u }` | An **ordered** list of named fields. Records may nest |
+| `Union` | `{ a : t = 0 \| b : u = 1 }` | One of several alternatives, each tagged with a number |
+
+No arrays, sets, booleans or optionals. A one-to-many is one fact per element.
+[Schema language](schema-language.html) has the details.
+
+### Ids
+
+Ids print as `code.Decl#60`: the predicate, and the fact's sequence within it. They are
+stable, unique and never reused within a database ([I11](invariants.html#i11)). They are
+physical, not portable: two databases built from the same input agree on content, not on
+numbering. If the schema cannot name the predicate, an id prints as `#23:60`.
+
+## Lifecycle
+
+<Lifecycle />
+
+Once a database is **Complete**, a client that asks to write is refused when it connects.
+Because a Complete database never changes:
+
+- every query sees a stable snapshot for free;
+- a paused query resumes from a few saved bytes;
+- writers never conflict, so ingestion runs in parallel;
+- the database is a directory you can copy and serve from anywhere.
+
+The workflow is a fresh sealed database per build, not an index updated in place.
+
+## The two halves
+
+A **front end** turns sigla text into a plan. A **back end** runs plans. They meet at one
+data structure.
+
+<Flow
+  stages={[
+    { label: 'sigla text', tone: 'io' },
+    { band: 'front end', phases: ['lex', 'parse', 'typecheck', 'flatten', 'reorder'] },
+    { label: 'Plan IR', tone: 'seam', note: 'the fixed contract between the halves' },
+    { band: 'back end', label: 'executor', note: 'scans storage, one row at a time' },
+    { label: 'projected rows', tone: 'io', note: 'to the shell, the wire, a viewer' },
+  ]}
+/>
+
+A **plan** is an ordered list of steps, and the order is the loop nesting: the first step
+is the outer loop. The **executor** walks that nested loop one row at a time, as an
+explicit state machine, which is what lets a query stop and resume exactly.
+
+[A query, step by step](query-lifecycle.html) follows one query through both halves.
+
+## Storage in one picture
+
+Every fact is stored twice, in two sorted key–value maps:
+
+| Map | Shape | Job |
+|---|---|---|
+| `keys` | `predicate ++ key → fact id` | The index. A query is a scan over a stretch of this map |
+| `entities` | `fact id → key + value` | One lookup, for a value or for the target of a reference |
+
+The two are always written together ([I12](invariants.html#i12)). Here are both halves of
+every fact in the demo database: the key as bytes, decoded, and the value beside it.
+
+<Demo kind="store">{`N where code.Decl {file = _, name = N, line = _}`}</Demo>
+
+Step the run, and the shaded band is the stretch of the map the scan is walking. It is a
+band because the encoding sorts bytes in the same order as values.
+
+## References
+
+- **Writing**, a reference can be an id or the whole target fact written inline, nested as
+  deep as you like. Fjord writes each nested fact if it is new and substitutes its id.
+- **Stored**, a reference is an id.
+- **Reading**, a row carries the id. Ask the client to expand it (`--expand` or `:expand`)
+  to see the fact it names. A query cannot name a fact by id, only by key.
+
+## Next
+
+- [Schema language](schema-language.html): designing predicates, and why field order matters.
+- [sigla query language](query-language.html): every construct, with the rows it returns.
+- [Query efficiency](query-efficiency.html): what a query costs and how to tell.
+- [Invariants](invariants.html): the rules the design is tested against.

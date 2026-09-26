@@ -29,6 +29,7 @@
 use std::cell::RefCell;
 
 use fjord_schema::{fingerprint, schema::Schema};
+use fjord_store::fact_store::FactStore;
 use fjord_store_mem::MemStore;
 use serde::Serialize;
 
@@ -186,6 +187,189 @@ pub fn values(query: &str, cap: usize) -> Result<Vec<fjord_encoding::tuple::Valu
     })
 }
 
+/// **Step `query` over the loaded corpus**, one transition at a time.
+///
+/// [`rows`] answers what a query found; this answers how it got there — the same
+/// trace the workbench scrubs, over the real index rather than the demo
+/// database. The landing page's hero runs on it, because a walk over seventeen
+/// toy rows and a seek into twenty-four thousand real ones look the same on
+/// screen and are not the same claim.
+#[must_use]
+pub fn trace(query: &str) -> crate::trace::Trace {
+    LOADED.with_borrow(|slot| match slot {
+        Some(corpus) => crate::trace::run_over(&corpus.schema, query, corpus.store.clone()),
+        // Said, not silently empty, for the reason [`rows`] gives.
+        None => crate::trace::Trace {
+            steps: Vec::new(),
+            rows: 0,
+            examined_total: 0,
+            truncated: false,
+            diagnostics: vec![DiagnosticView {
+                code: None,
+                message: "no corpus is loaded — fetch the image and load it first".to_owned(),
+                labels: Vec::new(),
+            }],
+        },
+    })
+}
+
+/// **A window onto one predicate's stored keys**, around the range a scan opened.
+///
+/// The band is the argument. A seek is a byte prefix over a sorted map, so what
+/// makes it legible is seeing the rows on either side of the range *in the same
+/// order*, unread — and a page cannot show twenty-four thousand of those. It can
+/// show the handful adjacent to the range and say how many it is standing in for,
+/// which is the same picture the workbench draws over the demo database and the
+/// only one that survives an index this size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Window {
+    /// The predicate the range names, as a reader writes it.
+    pub predicate: String,
+    /// Its rows, all of them — what the window is a window onto.
+    pub total: usize,
+    /// How many of them sort before the first row here.
+    pub above: usize,
+    /// How many sort after the last.
+    pub below: usize,
+    /// The rows shown, in key order, the range's own among them.
+    pub rows: Vec<crate::database::RowBytes>,
+}
+
+/// Read that window out of the loaded corpus.
+///
+/// `lo` and `hi` are a trace's own bounds, in the hex it prints them in; `hi` is
+/// absent for a range that runs to the end of the predicate. `before` and `after`
+/// are how many unread rows to keep on each side, and `inside` caps the range
+/// itself so a query that opened half a predicate does not answer with it.
+#[must_use]
+pub fn window(lo: &str, hi: Option<&str>, before: usize, inside: usize, after: usize) -> Window {
+    let empty = |predicate: &str| Window {
+        predicate: predicate.to_owned(),
+        total: 0,
+        above: 0,
+        below: 0,
+        rows: Vec::new(),
+    };
+
+    let (Some(low), high) = (bytes(lo), hi.and_then(bytes)) else {
+        return empty("");
+    };
+
+    LOADED.with_borrow(|slot| {
+        let Some(corpus) = slot else {
+            return empty("");
+        };
+        let Some(id) = low.get(..4) else {
+            return empty("");
+        };
+
+        // The predicate's whole keyspace, which is the bound a query with no
+        // narrowing would get — so the counts either side are counts of rows this
+        // query could have read and did not.
+        let Ok(scan) = corpus.store.scan(id, None) else {
+            return empty("");
+        };
+
+        let within = |key: &[u8]| {
+            key >= low.as_slice() && high.as_ref().is_none_or(|end| key < end.as_slice())
+        };
+
+        let mut earlier: std::collections::VecDeque<(Vec<u8>, fjord_schema::id::FactId)> =
+            std::collections::VecDeque::new();
+        let mut kept: Vec<(Vec<u8>, fjord_schema::id::FactId)> = Vec::new();
+        let mut trailing = 0usize;
+        let mut total = 0usize;
+        let mut above = 0usize;
+        let mut below = 0usize;
+        let mut ranged = 0usize;
+
+        for (key, fact) in scan.into_iter().flatten() {
+            total += 1;
+            let key = key.as_ref().to_vec();
+
+            if key < low {
+                // A ring of the last few, because a store scans forward only and
+                // the rows a reader needs are the ones nearest the range.
+                if earlier.len() == before {
+                    earlier.pop_front();
+                    above += 1;
+                }
+                earlier.push_back((key, fact));
+            } else if within(&key) {
+                if ranged < inside {
+                    kept.push((key, fact));
+                }
+                ranged += 1;
+            } else if trailing < after {
+                kept.push((key, fact));
+                trailing += 1;
+            } else {
+                below += 1;
+            }
+        }
+
+        // Anything the cap dropped out of the range is below the window too.
+        below += ranged.saturating_sub(inside);
+
+        let rows = earlier
+            .into_iter()
+            .chain(kept)
+            .filter_map(|(key, fact)| {
+                crate::database::row(&corpus.schema, &corpus.store, &key, fact)
+            })
+            .collect();
+
+        Window {
+            predicate: predicate_named(&corpus.schema, id),
+            total,
+            above,
+            below,
+            rows,
+        }
+    })
+}
+
+/// The same answer, already JSON.
+#[must_use]
+pub fn window_json(
+    lo: &str,
+    hi: Option<&str>,
+    before: usize,
+    inside: usize,
+    after: usize,
+) -> String {
+    serde_json::to_string(&window(lo, hi, before, inside, after)).expect("a window serialises")
+}
+
+/// A hex string as bytes, or nothing if it is not one.
+fn bytes(hex: &str) -> Option<Vec<u8>> {
+    if hex.is_empty() || hex.len() % 2 != 0 {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).ok())
+        .collect()
+}
+
+/// What a predicate's id prefix is called.
+fn predicate_named(schema: &Schema, id: &[u8]) -> String {
+    let Ok(four) = <[u8; 4]>::try_from(id) else {
+        return String::new();
+    };
+    schema
+        .get(fjord_schema::schema::PredicateId(u32::from_be_bytes(four)))
+        .and_then(|declared| declared.name())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The same answer, already JSON.
+#[must_use]
+pub fn trace_json(query: &str) -> String {
+    serde_json::to_string(&trace(query)).expect("a trace serialises")
+}
+
 /// The same answer, already JSON.
 #[must_use]
 pub fn rows_json(query: &str) -> String {
@@ -266,6 +450,48 @@ mod tests {
             "the refusal should name the line and the predicate: {problem}"
         );
         assert!(!super::loaded().ok, "a refused load left a corpus loaded");
+    }
+
+    /// **A window says how many rows it is standing in for.**
+    ///
+    /// The whole point of showing fifteen rows out of twenty-four thousand is that
+    /// the counts either side are true, so those are what this checks: a range
+    /// covering everything has nothing outside it, and a capped one accounts for
+    /// what the cap dropped rather than leaving it out silently.
+    #[test]
+    fn a_window_stands_in_for_the_rows_it_does_not_show() {
+        let loaded = load_jsonl(DUMP, crate::demo::SCHEMA);
+        assert!(loaded.ok, "{:?}", loaded.problem);
+
+        let files = predicate_named_in_demo("code.File");
+        let whole = window(&files, None, 4, 64, 4);
+
+        assert_eq!(whole.predicate, "code.File");
+        assert_eq!(whole.total, 2, "the fixture writes two files");
+        assert_eq!(whole.rows.len(), whole.total);
+        assert_eq!((whole.above, whole.below), (0, 0));
+
+        // Capped: the row the cap dropped is counted below, not forgotten.
+        let capped = window(&files, None, 4, 1, 4);
+        assert_eq!(capped.rows.len(), 1);
+        assert_eq!((capped.above, capped.below), (0, 1));
+
+        // A bound that is not hex names no predicate, and answers nothing rather
+        // than reading the first four bytes of a lie.
+        assert_eq!(window("nothex", None, 1, 1, 1).rows.len(), 0);
+    }
+
+    /// The hex prefix every key of a demo predicate begins with.
+    fn predicate_named_in_demo(want: &str) -> String {
+        let (schema, _) = compile_schema(crate::demo::SCHEMA);
+        let schema = schema.expect("the demo schema compiles");
+        for index in 0..schema.len() {
+            let id = fjord_schema::schema::PredicateId(index as u32);
+            if schema.get(id).and_then(|declared| declared.name()) == Some(want) {
+                return crate::database::hex(&id.0.to_be_bytes());
+            }
+        }
+        panic!("the demo schema declares {want}")
     }
 
     /// A page whose asset has not arrived asks anyway. "No rows" and "no corpus"

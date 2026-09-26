@@ -511,7 +511,7 @@ check('the drawer closes on escape', (await page.$$('dialog[open]')).length === 
 
 // ---------------------------------------------------------------- the book --
 //
-// The pages are `website/content/`, parsed here rather than copied, and the
+// The pages are `src/content/`, compiled into this application, and the
 // demos in them are this same engine. Both halves are checked: that every page
 // in the reading order renders, and that a demo on one of them runs.
 
@@ -655,12 +655,294 @@ check('a hover card is anchored on the name it describes', astray.length === 0, 
 // this index only *names* still gets the line that says so.
 check('every hovered name says something', silent.length === 0, silent.join(', '))
 
+// **The root is the pitch, and the pitch runs the database.** A landing page
+// whose demo is a picture of a demo is the thing this site exists not to be, so
+// the claim it makes about itself is checked the same way every other one is.
 await page.goto(url, { waitUntil: 'networkidle0' })
+await page.waitForSelector('[data-testid="landing"]')
+
+check(
+  'the site opens on the landing page',
+  (await page.$eval('[data-testid="landing"] h1', (el) => el.textContent ?? '')).includes(
+    'facts about your code',
+  ),
+)
+// The reading order is *in* the page — it is the drawer the burger opens — so
+// the claim is that none of it is drawn beside the hero, not that it is absent.
+check(
+  'the landing page keeps the reading order off the page',
+  await page.$$eval('.astryx-side-nav-item', (links) =>
+    links.every((link) => link.getBoundingClientRect().width === 0),
+  ),
+)
+
+// **The box is the hero and the walkthrough is a band under it.** A loop of
+// somebody else using it is a thing to watch; a box is a thing to do, and a
+// reader who arrived from a link has agreed to the second and not the first.
+check(
+  'the box comes before the walkthrough that explains it',
+  await page.evaluate(() => {
+    const box = document.querySelector('[data-testid="search-demo"]')
+    const story = document.querySelector('[data-testid="one-query"]')
+    return Boolean(
+      box && story && box.compareDocumentPosition(story) & Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+  }),
+)
+
+// **One question answered end to end**, and every part of it is the engine: the
+// file pane is the real file painted with the index's own runs, the band is the
+// real trace, and the card fills in with what the query returns. A landing page
+// that showed a picture of any of that is the thing this site exists not to be.
+await page.waitForFunction(() => document.querySelectorAll('.story-code li').length > 0, {
+  timeout: 25_000,
+})
+const stage = (n) =>
+  page.evaluate((n) => document.querySelectorAll('.story-dots button')[n].click(), n).then(settle)
+
+const source = await texts('.story-code .src')
+check(
+  'the walkthrough shows the file the index holds',
+  (await page.$eval('.story-file-name', (el) => el.textContent)) === 'Buffers.cs' &&
+    source.length > 15 &&
+    source.some((line) => line.includes('public sealed class ByteBuffer : IBufferSink')),
+  `${source.length} line(s)`,
+)
+
+await stage(0)
+check(
+  'the hover card opens before there is an answer',
+  (await page.$eval('.story-popover', (el) => el.textContent ?? '')).includes('finding references'),
+)
+
+// **The band is a seek, not a walk**, which is the whole reason the hero runs
+// over the real index instead of the demo database. A run that read most of
+// what it was given would be arguing the opposite of the page it sits on.
+await stage(2)
+const read = await page.$eval('.story-keys .examined', (el) => el.textContent ?? '')
+const [examined, facts] = [...read.matchAll(/[\d,]+/g)].map((found) =>
+  Number(found[0].replace(/,/g, '')),
+)
+check(
+  'the scan reads a sliver of the index rather than walking it',
+  facts > 20_000 && examined > 0 && examined < facts / 500,
+  read,
+)
+
+// The second level's range opens with the row the first level bound — the
+// splice this engine has instead of a join operator.
+const key = await page.$eval('.story-seek code', (el) => el.textContent ?? '')
+check(
+  'the range the executor opened is the one the page prints',
+  /^0x[0-9a-f]+$/.test(key) && key.startsWith('0x00000009510000'),
+  key,
+)
+
+// **The band is the picture, and it only works if the rows either side are
+// there.** A panel showing the range alone would be claiming the predicate is
+// eight rows long; a panel showing every row would be a scan. Both, with the
+// gutters saying what is off each end, is the one that is true.
+const keys = await page.$$eval('.story-rows li', (rows) =>
+  rows.map((row) => ({
+    within: row.classList.contains('is-within'),
+    pinned: row.querySelector('b')?.textContent ?? '',
+    hex: row.textContent ?? '',
+  })),
+)
+const inside = keys.filter((row) => row.within)
+check(
+  'the range is a band with unread rows on either side of it',
+  inside.length > 1 &&
+    inside.length < keys.length &&
+    !keys[0].within &&
+    !keys[keys.length - 1].within,
+  `${inside.length} of ${keys.length} rows within`,
+)
+// Every row in the range shares the bytes the seek pinned, and the rows outside
+// it do not — which is the whole of why a seek is a seek.
+check(
+  'every row in the range carries the bytes the seek pinned',
+  inside.every((row) => row.pinned.length > 8 && key.endsWith(row.pinned)) &&
+    keys.filter((row) => !row.within).every((row) => row.pinned === ''),
+  inside[0]?.pinned ?? 'nothing pinned',
+)
+
+// **The plan beside the band**, which is the cause beside the effect. It is the
+// engine's own `--plan` text, so a reader can match `target = r0.symbol` in the
+// plan against the bytes the seek line prints.
+const planned = await page.$$eval('.story-steps li', (rows) =>
+  rows.map((row) => ({
+    at: row.classList.contains('is-at'),
+    access: [...row.querySelectorAll('.a')].map((chip) => chip.textContent),
+    read: row.querySelector('.n')?.textContent ?? '',
+    text: row.querySelector('.story-step-text')?.textContent ?? '',
+  })),
+)
+check(
+  'the plan is shown beside the band, as the engine prints it',
+  planned.length === 3 &&
+    planned[0].text.startsWith('r0 <- codemarkup.SearchEntry seek[nameLowercase = "bytebuffer"') &&
+    planned[1].text.includes('seek[target = r0.symbol') &&
+    planned[2].text.includes('fetch[r1.file]'),
+  planned.map((row) => row.text.slice(0, 40)).join(' | '),
+)
+check(
+  "the hero's plan lights the step the band is showing",
+  planned.filter((row) => row.at).length === 1 && planned[1].at,
+  planned.map((row) => (row.at ? '*' : '-')).join(''),
+)
+// Two seeks and a fetch, and the counts are the profile's own per-step numbers.
+check(
+  'each plan step carries what it read',
+  planned.map((row) => row.access.join('')).join(',') === 'seek,seek,fetch' &&
+    planned.map((row) => row.read).join('/') === '1/8/8',
+  `${planned.map((row) => row.access.join('')).join(',')} — ${planned.map((row) => row.read).join('/')}`,
+)
+
+const gutters = await texts('.story-gutter')
+check(
+  'the gutters say how many rows the band stands in for',
+  gutters.length === 2 && gutters.some((line) => /[\d,]+ later rows, of [\d,]+/.test(line)),
+  gutters.join(' / '),
+)
+
+await stage(3)
+const found = await texts('.story-popover li')
+check(
+  'the card fills in with the references the query answers',
+  (await page.$eval('.story-popover b', (el) => el.textContent ?? '')).includes(
+    '8 references to ByteBuffer',
+  ) &&
+    found.length === 2 &&
+    found.some((row) => row.includes('Blocks.cs')) &&
+    found.some((row) => row.includes('FjordConnection.cs')),
+  found.join(' · '),
+)
+check(
+  'the panel is out of the way once the answer is in',
+  await page.$eval('.story-panel', (el) => !el.classList.contains('is-open')),
+)
+
+// **The hero is a search box over the real corpus.** The claim is made by
+// letting somebody use it, so what matters is that the results are real rows
+// with the kind, the summary and the source the index recorded, and that
+// clicking one is a way into the browser.
+await page.evaluate(() =>
+  document.querySelector('[data-testid="search-demo"]').scrollIntoView({ block: 'center' }),
+)
+
+// It opens empty on purpose: a box with a word already in it is a screenshot.
+check(
+  'the search box opens empty, with words to try',
+  (await page.$eval('.finder-bar input', (el) => el.value)) === '' &&
+    (await page.$$('.finder-cards li')).length === 0 &&
+    (await texts('.finder-try button')).includes('block'),
+)
+
+await page.click('.finder-bar input')
+await page.type('.finder-bar input', 'block')
+await page.waitForFunction(() => document.querySelectorAll('.finder-cards li').length > 0, {
+  timeout: 60_000,
+})
+await settle()
+
+const cards = await page.$$eval('.finder-cards button', (rows) =>
+  rows.map((row) => ({
+    kind: row.querySelector('.hit-kind').textContent,
+    name: row.querySelector('.hit-name').textContent,
+    doc: row.querySelector('.hit-doc')?.textContent ?? '',
+    where: row.querySelector('.hit-where em').textContent,
+  })),
+)
+check(
+  'the search box answers out of the real index',
+  cards.some(
+    (card) => card.name === 'Block' && card.kind === 'class' && card.where.includes('line 43'),
+  ),
+  cards.map((card) => `${card.kind} ${card.name}`).join(' · '),
+)
+check(
+  'a card says what kind of thing it found',
+  new Set(cards.map((card) => card.kind)).size > 2,
+  [...new Set(cards.map((card) => card.kind))].join(' · '),
+)
+// The summary is the source's own doc comment, which the walker put in the
+// index — a card carrying one is a card that asked a second question.
+check(
+  'a result carries the summary the source wrote',
+  cards.some((card) => card.doc.startsWith('A block: a run of facts of one predicate')),
+  cards.find((card) => card.doc)?.doc ?? 'no result had a summary',
+)
+
+// **The snippet is the feature.** A name and a path is a row in a table; the
+// declaration with the lines either side of it is what a reader came for, and
+// the colour runs on it are the walker's own rather than a guess at C#.
+const snippets = await page.$$eval('.finder-cards > li', (rows) =>
+  rows.map((row) => ({
+    lines: row.querySelectorAll('.hit-lines li').length,
+    at: row.querySelector('.hit-lines li.is-at')?.textContent ?? '',
+    painted: row.querySelectorAll('.hit-lines .code-tok').length,
+  })),
+)
+check(
+  'each result shows the declaration with the lines around it',
+  snippets.length > 0 &&
+    snippets.every((row) => row.lines >= 3 && row.lines <= 5) &&
+    snippets.some((row) => row.at.includes('public static class Block')),
+  snippets.map((row) => `${row.lines} lines`).join(' · '),
+)
+check(
+  'the snippet is painted by the index, not by a guess at the language',
+  snippets.every((row) => row.painted > 3),
+  snippets.map((row) => row.painted).join(' · '),
+)
+
+// The pattern is the one `codeview::search` builds. It is folded away because
+// the box has to work before it has to be explained — so opening the fold is
+// half of what this checks, and the other half is that what it opens is the
+// query the box just ran.
+// **Five words, one line, on a phone.** They are 17px too wide at the desktop
+// size, which wraps exactly one onto a row of its own — a whole line spent on
+// one word, and the worst-looking way to run out of room.
+await page.setViewport({ width: 360, height: 900 })
+await settle()
+check(
+  'the words to try stay on one line on a phone',
+  await page.$$eval('.finder-try button', (chips) => {
+    const tops = chips.map((chip) => Math.round(chip.getBoundingClientRect().top))
+    return chips.length === 5 && new Set(tops).size === 1
+  }),
+)
+await page.setViewport({ width: 1440, height: 900 })
+await settle()
+
+check('the explanation is folded away until it is asked for', !(await page.$('.finder-said[open]')))
+await page.$eval('.finder-said summary', (el) => el.click())
+await settle()
+check(
+  'the query under the box is the one the box ran',
+  (await page.$eval('.finder-said pre.astryx-codeblock', (el) => el.innerText)).includes(
+    'nameLowercase = "block"~<1',
+  ),
+)
+
+await page.$$eval('.finder-cards button', (rows) => rows[0].click())
+await page.waitForFunction(() => location.pathname.endsWith('/browse'), { timeout: 10_000 })
+await settle()
+const landed = await page.evaluate(() => location.search)
+check(
+  'clicking a card opens it in the code browser',
+  new URLSearchParams(landed).get('file')?.endsWith('Blocks.cs') === true,
+  landed,
+)
+
+// Into the book, where the reading order is a column again.
+await page.goto(`${url}overview`, { waitUntil: 'networkidle0' })
 await page.waitForSelector('[data-testid="prose"] h1')
 
 check(
-  'the site opens on the book',
-  (await page.$eval('[data-testid="prose"] h1', (el) => el.textContent)) === 'Fjord DB',
+  'the book opens on its overview',
+  (await page.$eval('[data-testid="prose"] h1', (el) => el.textContent)) === 'Overview',
 )
 check(
   'the reading order is the one the generator publishes',
@@ -1031,20 +1313,69 @@ check(
     (await paper()) !== before,
 )
 
-// **One book, two renderers.** The generated site parses these pages in Python
-// and this one parses them in TypeScript, and a dialect that drifts between them
-// is a page that reads differently depending on which copy you found. Compared
-// per page, and only when `website/site/` has been built — the comparison is
-// worth having and is not worth failing the check for being absent.
-const generated = new URL('../website/site/', import.meta.url)
-if (existsSync(new URL('index.html', generated))) {
-  const order = JSON.parse(readFileSync(new URL('../website/nav.json', import.meta.url), 'utf8'))
+// **Every block a page writes is a block the page shows.**
+//
+// A page is MDX and the components it renders through are a lookup table, so the
+// way this breaks is silent: a mapping that goes missing renders the children and
+// drops the wrapper, and a table becomes six paragraphs that still read fine. So
+// the source is counted and the DOM is counted, and they have to agree — the same
+// comparison the two renderers used to give each other, with the page's own text
+// as the oracle instead of a second parser of it.
+{
+  // **The diagram tags, which are counted like a demo or a callout.** A diagram
+  // renders no `pre`, so the code-block count cannot see one go missing, and a
+  // component the map forgot renders as nothing at all. The list is the one
+  // `src/book/mdx.tsx` registers; adding a diagram means adding it here too,
+  // which is the point — an uncounted block is exactly what this check exists
+  // to refuse.
+  const DIAGRAM = /^<(Bytes|Flow|Journey|Ladder|Lifecycle|Mapping|Sequence|Tree)(\s|\/|>|$)/
+
+  const content = new URL('./src/content/', import.meta.url)
+  const order = JSON.parse(readFileSync(new URL('nav.json', content), 'utf8'))
     .groups.flatMap((group) => group.pages.map((entry) => entry.slug))
-  const count = (text, needle) => text.split(needle).length - 1
   const drift = []
 
   for (const slug of order) {
-    const html = readFileSync(new URL(`${slug}.html`, generated), 'utf8')
+    const source = readFileSync(new URL(`${slug}.mdx`, content), 'utf8').split('\n')
+    const there = { h2: 0, h3: 0, tables: 0, code: 0, demos: 0, callouts: 0, diagrams: 0 }
+    let fenced = false
+    let inTable = false
+    let inLiteral = false
+
+    for (const line of source) {
+      const text = line.trim()
+      if (text.startsWith('```')) {
+        if (fenced) fenced = false
+        else {
+          fenced = true
+          there.code++
+        }
+        continue
+      }
+      if (fenced) continue
+
+      // **A diagram's content is a template literal, and what is in one is
+      // content rather than markup.** A journey's `| one socket, many streams`
+      // is a hop between two lanes; counted as source it is the first row of a
+      // table that the page never renders. An inline code span opens and closes
+      // on its own line, so only an odd count crosses one.
+      const wasLiteral = inLiteral
+      if (((text.match(/`/g) ?? []).length & 1) === 1) inLiteral = !inLiteral
+      if (wasLiteral) continue
+
+      // A table is one block of pipe rows, however many rows it has.
+      if (text.startsWith('|')) {
+        if (!inTable) there.tables++
+        inTable = true
+      } else inTable = false
+
+      if (text.startsWith('## ')) there.h2++
+      else if (text.startsWith('### ')) there.h3++
+      else if (text.startsWith('<Demo ')) there.demos++
+      else if (text.startsWith('<Callout ')) there.callouts++
+      else if (DIAGRAM.test(text)) there.diagrams++
+    }
+
     await page.goto(`${url}${slug === 'index' ? '' : slug}`, { waitUntil: 'networkidle0' })
     await page.waitForSelector('[data-testid="prose"] h1')
     const here = await page.evaluate(() => {
@@ -1061,24 +1392,16 @@ if (existsSync(new URL('index.html', generated))) {
         code: prose('pre.astryx-codeblock'),
         demos: document.querySelectorAll('[data-testid="prose"] .demo').length,
         callouts: prose('.astryx-banner'),
+        diagrams: prose('[data-diagram]'),
       }
     })
-    const there = {
-      h2: count(html, '<h2 id='),
-      h3: count(html, '<h3 id='),
-      tables: count(html, '<div class="table-wrap">'),
-      code: count(html, '<figure class="code">'),
-      demos: count(html, '<figure class="code demo">'),
-      callouts: count(html, '<aside class="callout'),
-    }
+
     for (const key of Object.keys(there)) {
       if (here[key] !== there[key]) drift.push(`${slug}: ${key} ${here[key]} vs ${there[key]}`)
     }
   }
 
-  check('the two renderers agree, page for page', drift.length === 0, drift.slice(0, 6).join('; '))
-} else {
-  console.log('  ..   website/site/ is not built — skipping the two-renderer comparison')
+  check('every block the source writes is a block the page shows', drift.length === 0, drift.slice(0, 6).join('; '))
 }
 
 // A path this site has never heard of is still this site.
@@ -1096,7 +1419,7 @@ check(
 // server, because `vite preview` has a fallback of its own and would pass either
 // way: it is the *files in the bundle* that decide what a host can answer.
 const dist = new URL('dist/', import.meta.url)
-const routes = JSON.parse(readFileSync(new URL('../website/nav.json', import.meta.url), 'utf8'))
+const routes = JSON.parse(readFileSync(new URL('./src/content/nav.json', import.meta.url), 'utf8'))
   .groups.flatMap((group) => group.pages.map((entry) => entry.slug))
   .filter((slug) => slug !== 'index')
   .concat('playground')

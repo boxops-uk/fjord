@@ -4,16 +4,15 @@ The design book with the engine itself running in it. React and Vite, with
 `fjord-engine` compiled to WebAssembly — so a page that shows what the lexer
 does is *asking the lexer*, not paraphrasing it.
 
-**The pages are `website/content/`**, imported raw and parsed here rather than
-copied: one book, two renderers. **This is the one CI publishes** — to
-<https://boxops-uk.github.io/fjord/>, and as the docs bundle a release carries.
-The generated site in [`website/`](../website/README.md) still builds, as the
-copy that needs no toolchain and as the renderer this one is held to, and its
-reading order — `website/nav.json` — is the one this sidebar renders. What this
-site adds is that the demos are the engine: a `:::demo` block in the content is a
-running lexer, parser, typechecker, planner, executor or database table. Most are
-editable in the page; a guided run fixes its query so every transition can carry
-an exact explanation.
+**The root is a landing page** — `src/Landing.tsx`, not a page of the book —
+and **the pages are `src/content/`**, one MDX file each, compiled in. **This is what
+CI publishes** — to <https://boxops-uk.github.io/fjord/>, and as the docs bundle
+a release carries. The reading order is `src/content/nav.json`, which the sidebar
+and the route list both read. A page is prose where prose is enough and a
+component where it is not, so the demos are the engine: a `<Demo>` in the content
+is a running lexer, parser, typechecker, planner, executor or database table.
+Most are editable in the page; a guided run fixes its query so every transition
+can carry an exact explanation.
 
 There is also a **workbench** at `/playground`: every view of one query at once,
 which is the thing a paragraph cannot hold. A demo hands its query to it through
@@ -67,7 +66,7 @@ written in design tokens rather than hex.
 
 `CodeBlock` takes a `tokenizer`, which is where the two meet: a `sigla` or
 `schema` block on a page that has the module is tokenized by **the engine's
-lexer**, and falls back to the rules from `website/assets/app.js` until it does.
+lexer**, and falls back to its own rules until it does.
 
 ```bash
 ../scripts/build-wasm.sh   # or: npm run wasm
@@ -116,21 +115,24 @@ N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}
 
 With no schema of its own a demo uses `schemas/demo.sigla`, which is the only one
 with a database behind it — `run` and `store` demos need rows, so they use it.
-`website/build.py` understands the same block and renders the source with a note
-that it is live here, so the generated site stays honest rather than showing an
-answer that would go stale.
 
 ## What is where
 
 | Path | Holds |
 |---|---|
-| `src/App.tsx` | the router: a path is a page, and `/playground` is the workbench |
-| `src/book/markdown.ts` | the book's dialect, as `website/build.py` renders it — a tree of blocks, because every one of them is a component |
-| `src/book/PageView.tsx` | that tree, rendered: a heading is a `Heading`, a table is a `Table`, a callout is a `Banner`, a fence is a `CodeBlock`, a demo is the engine |
-| `src/book/content.ts` | the pages, globbed raw from `website/content/`, parsed once each; the search index is every page's headings, built when somebody first searches |
+| `src/App.tsx` | the router: a path is a page, `/` is the landing page, and `/playground` is the workbench |
+| `src/Landing.tsx` | the landing page — what Fjord is, before the book explains it. A component rather than an MDX page, because it is not prose the reading order owns |
+| `src/OneQuery.tsx` | the band under the hero: one find-references over the real corpus, staged. Hover, query, the seek into the index, the answer. Where there is room the seek splits — the plan on the left, and beside it the workbench's picture at corpus scale: the stored keys around the range, shaded, with gutters for what is off each end. Everything but the pointer is engine output |
+| `src/Snippet.tsx`, `highlight.ts` | a few lines of a file with the walker's own colour runs on them, painted a line at a time. The search results and the walkthrough's pane are the same renderer |
+| `src/SearchDemo.tsx` | **the hero**: a search box over the corpus. One sigla query per keystroke, and two more per result for the summary and the use count, plus the declaration and the lines either side of it. A hit links into the code browser |
+| `src/book/mdx.tsx` | the book's tags as components: a heading is a `Heading`, a table is a `Table`, a callout is a `Banner`, a fence is a `CodeBlock`, a demo is the engine. Also where a body cell is given the heading above it, for the phone |
+| `src/book/Diagram.tsx` | the eight diagrams a page can name — a byte layout, a sequence diagram, a tree — drawn as elements rather than in box characters |
+| `src/book/PageView.tsx` | one page: its title, the compiled MDX rendered through that map, and the pager |
+| `mdx/headings.mjs` | the anchor every heading earns, and the list a page exports — read by the search index and by the link gate, so nothing computes an anchor twice |
+| `src/book/content.ts` | the pages, globbed from `src/content/`; the search index is every page's headings, built when somebody first searches |
 | `src/book/Layout.tsx` | the shell: the bar, the reading order, the page, and one click listener so a link in the prose is a navigation |
 | `src/book/Code.tsx` | a fenced block — a `CodeBlock` whose tokenizer is the engine's own lexer once a demo on the page has brought the module in, and the fallback rules until then |
-| `src/book/highlight.ts` | those fallback rules, ported from `website/assets/app.js`, for the languages neither the engine nor the design system knows |
+| `src/book/highlight.ts` | those fallback rules, for the languages neither the engine nor the design system knows |
 | `src/book/Search.tsx`, `router.ts`, `mode.ts` | the command palette over every heading, routing, and the light/dark choice |
 | `src/theme.ts` | the book's palette as an Astryx theme, and the syntax theme the lexer's token classes map onto |
 | `src/demo/Demo.tsx` | a demo: the engine, the view the block asked for, and an editor over the query |
@@ -148,7 +150,9 @@ answer that would go stale.
 | `src/Editor.tsx` | a textarea with the real tokens painted underneath it — used for the query and the schema, since the only difference is which lexer produced the tokens |
 | `src/TokenTable.tsx`, `src/TreeView.tsx` | the two views — the second walks the arena from its root, which is already in reading order |
 | `src/span.ts` | what the cursor is on, and the rule every view highlights by: a node lights up **its subtree** and the bytes it covers, never the path above it — that is what the indentation already shows |
-| `src/book.css` | the only custom CSS on a page: the two class names the *book* uses in its own authored HTML, scoped so they cannot collide with a component's |
+| `src/book.css` | the book's own CSS: the class names it uses in authored HTML, the reading rhythm, and the rule that turns a wide table into a list of cards on a phone |
+| `src/book/diagram.css` | the diagrams' styling, in design tokens |
+| `src/landing.css` | the landing page's |
 | `src/app.css` | the workbench's panels — the parts the design system has no component for — in design tokens |
 | `smoke.mjs` | the end-to-end check — it drives the built bundle in Chrome, over both halves |
 
@@ -167,13 +171,15 @@ a demo query that returns nothing demonstrates nothing. That is not tidiness. Th
 its own samples, and **every one of them was missing the head a query requires**
 — the lexer tokenised them happily, and it took the parse view to notice.
 
-## Two renderers, one book
+## Every block a page writes is a block the page shows
 
-The smoke check compares them page for page — headings, tables, code blocks,
-callouts and demos — against `website/site/`, when that has been built. A dialect
-that drifts is a page that reads differently depending on which copy of the site
-you found, and the two parsers are in different languages, so nothing but a check
-keeps them together.
+A page is MDX and the components it renders through are a lookup table, so the
+way this breaks is silent: a mapping that goes missing renders the children and
+drops the wrapper, and a table becomes six paragraphs that still read fine. So
+the smoke check counts the source — headings, tables, code blocks, callouts and
+demos — and counts the built page, and they have to agree. It is the comparison
+the book's two renderers used to give each other, with the page's own text as
+the oracle instead of a second parser of it.
 
 ## Serving it
 

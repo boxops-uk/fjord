@@ -15,7 +15,7 @@
 //! still returns a tree, so lowering routinely sees one with holes in it; a missing
 //! child becomes an [`ExprKind::Error`] node, never an `expect`.
 //!
-//! [chapter 7]: ../../../website/content/query-language.md
+//! [chapter 7]: ../../../web/src/content/query-language.mdx
 
 use crate::{
     cst::{CstKind, CstNode},
@@ -513,7 +513,7 @@ impl Lowering<'_> {
     /// codec-level requirement ([chapter 6]) and must mean the same thing every
     /// run.
     ///
-    /// [chapter 6]: ../../../website/content/schema-language.md
+    /// [chapter 6]: ../../../web/src/content/schema-language.mdx
     fn record(&mut self, mut fields: Vec<Field>, span: &Span) -> NodeId {
         fields.sort_by(|a, b| self.name_of(a.name).cmp(self.name_of(b.name)));
 

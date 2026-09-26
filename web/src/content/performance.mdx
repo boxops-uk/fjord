@@ -1,0 +1,225 @@
+export const meta = {
+  "title": "Performance",
+  "description": "The capacity target, the measurement method, what has been measured, and the two findings that changed the design."
+}
+
+This page is the **method**: how a number is held to evidence and what target it is read
+against. The **register** of what was measured is `bench/FINDINGS.md` in the repository.
+
+**The register is closed until a 1.0 pass.** The schema its corpus used has been replaced,
+and cost-based reordering and recursion are still ahead. Read the shapes and ratios below;
+expect the absolutes to be re-taken.
+
+<Callout tone="note" label={`Ratios travel, absolutes do not`}>
+
+Every absolute here is from one box: 8 cores, 32 GB, Linux 6.8, release build.
+
+</Callout>
+
+## The target
+
+| | Target | Where the number comes from |
+|---|---|---|
+| **Corpus** | 20 M facts, one repository, ~30 k files | `dotnet/runtime`'s `src/` tree is 18.2 M facts across 22 predicates |
+| **Population** | 1,000 concurrent users per instance | An order of magnitude below where the code-search mix saturates |
+| **Mix** | The code-search workload: prefix search, paged to 50 | The traffic a product actually sends |
+| **Interactive latency** | p50 &lt; 25 ms, p99 &lt; 250 ms | Measured p50 is 3.1 ms at 2,048 users |
+| **Freshness** | A full re-index, not an append | A Complete database is immutable |
+
+Not targeted: unbounded queries (bounding is the client's job), write throughput under
+concurrency (indexing is a build-time cost with no target yet), and anything absolute.
+
+## The ladder
+
+Each rung is a narrower surface than the one above, so a regression can be attributed.
+
+<Ladder>{`
+S0  corpus  a real .NET index at a dialed size, plus a synthetic control
+--
+S1  executor  in-process, real store, no compile, no wire, no async runtime
+S2  compile  the front end alone, the per-query floor
+S3  store  raw scan and point, the floor under S1
+--
+S4  session  server machinery, in-process socket, one connection
+S5  round trip  one connection, the whole latency budget
+--
+S6  population  N overlapping users, mixed workload, think time
+S7  soak  hours at a sustained rate: leaks, drift, disconnect storms
+`}</Ladder>
+
+| Instrument | Rung | Isolates |
+|---|---|---|
+| `examples/engine.rs` | S1–S3 | The engine alone |
+| `examples/breakdown.rs` | S4 | The fixed per-query cost, by subtraction |
+| `examples/loadgen.rs` | S5 | One connection, the whole round trip |
+| `examples/soak.rs` | S6–S7 | A mixed population over hours |
+| `examples/codesearch.rs` | S6 | The product's own traffic |
+| `examples/ingest.rs` | write | The write path per layer |
+
+## What has been measured
+
+### The executor's floor is ~330–430 ns per row, and flat in database size
+
+| Workload | Rows | Per row | Rows/s |
+|---|---|---|---|
+| scan files | 32,710 | 401 ns | 2,495,088 |
+| scan modules | 36,192 | 385 ns | 2,597,765 |
+| scan decls | 888,177 | 432 ns | 2,313,953 |
+| scan refs | 4,879,151 | 434 ns | 2,306,705 |
+| scan lines | 8,583,810 | 360 ns | 2,779,286 |
+
+262× the rows, and nanoseconds per row move by less than 20%. The raw store scan is
+233–426 ns/row, so the executor adds 25–50%. A fetch through a reference costs ~2.6 µs,
+against a bare point read at 1.7–2.1 µs.
+
+### Compilation is 4–14 µs, and linear
+
+| Conjuncts | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| Compile | 5.0 µs | 7.2 µs | 12.4 µs | 23.4 µs | 43.8 µs | 83.3 µs |
+
+About 2.5 µs fixed plus 2.5 µs per conjunct. Against a ~211 µs per-query floor over a
+socket, a plan cache would buy 2–7%.
+
+### Row encoding costs 1.5×, and the wire above it another 3.6×
+
+| Workload | Executor alone | + project & encode | Tax |
+|---|---|---|---|
+| scan files | 2,476,335 row/s | 1,637,046 row/s | 1.5× |
+| scan decls | 2,275,416 row/s | 1,515,723 row/s | 1.5× |
+| project record | 2,293,536 row/s | 1,093,153 row/s | **2.1×** |
+| wide row | 2,110,274 row/s | 1,032,222 row/s | **2.0×** |
+
+Building a record per row is what makes a row expensive to hand out. This is why `--count`
+exists.
+
+### The mix decides capacity, by two orders of magnitude
+
+A generic mix: 80% point lookups, 15% small scans, 4% full scans, 1% whole-database joins.
+
+| Class | Share | Service time | Share of the CPU |
+|---|---|---|---|
+| point lookup | 80% | 193 µs | 0.3% |
+| small scan | 15% | 1.8 ms | 0.5% |
+| full scan | 4% | 70.9 ms | 5.1% |
+| **join, whole database** | **1%** | **5.20 s** | **94%** |
+
+Capacity is ~67 q/s with that 1% and ~1,900 q/s without it. The unbounded query is the
+whole problem.
+
+| Users | Offered | Achieved | Point p50 | Point p99 | CPU |
+|---|---|---|---|---|---|
+| 512 | 51 q/s | 41 q/s | 1.7 ms | 12.3 ms | 49% |
+| 1,024 | 102 q/s | 61 q/s | 2.6 ms | 16.5 ms | 83% |
+| 2,048 | 205 q/s | 64 q/s | 4.4 ms | 20.7 ms | 92% |
+
+<Callout tone="note" label={`Achieved-below-offered is not saturation`}>
+
+At 512 users the server was at 49% CPU and still "missed" 19% of the offered rate, because
+a user waiting inside a five-second join is not issuing anything. Read the CPU column.
+
+</Callout>
+
+### The product's own traffic: ~6,000 q/s
+
+Prefix search, paged to 50, and no search term means no query.
+
+| In flight | Achieved | Typeahead p50 | p99 | CPU (generator / server) |
+|---|---|---|---|---|
+| 8 | 3,580 q/s | 2.3 ms | 5.5 ms | 88% (33 / 54) |
+| 32 | 4,676 q/s | 6.7 ms | 20.8 ms | 98% (41 / 57) |
+| 128 | 6,094 q/s | 24.5 ms | 47.7 ms | 98% (42 / 57) |
+
+Ninety times the generic mix, and the difference is the one class a search UI does not
+have. The server spends 0.75 ms of CPU per query. 2,048 users at a 3-second think time is
+16% of this box.
+
+### Page size is a dial
+
+| Page | Rows returned | Typeahead p50 | Achieved |
+|---|---|---|---|
+| 50 | 48 | 6.1 ms | 5,118 q/s |
+| 100 | 93 | 7.1 ms | 4,489 q/s |
+| 256 | 226 | 10.5 ms | 3,274 q/s |
+| 500 | 417 | 14.4 ms | 2,508 q/s |
+
+Cost is roughly linear in rows delivered, because framing and client decode dominate.
+
+### Steady state holds
+
+Fifty minutes, 145,582 queries, no drift. Across ~900,000 paged queries the server's
+memory went 756 → 792 → 797 MB: a high-water mark, not a bleed.
+
+### Ingest is ~5.2 k facts/s, and three quarters of the work was re-reading
+
+| | |
+|---|---|
+| Facts created | 25.0 M |
+| Facts *interned* to create them | **94.9 M** |
+| Point reads per intern | 2 |
+| Wall clock | 4,828 s ⇒ **5.2 k facts/s** |
+
+| Layer | Facts/s | Interns/s | Reads per fact | Cache hit |
+|---|---|---|---|---|
+| `commit` only | 321,968 | — | 0.00 | — |
+| `create` | 166,914 | 772,750 | 1.00 | 78.4% |
+| `dedup:warm` | — | 1,698,325 | 0.00 | 100% |
+| `dedup:cold` | — | 1,309,655 | 0.22 | 78.4% |
+
+Committing is 41% of interning, which is what `--commit-per-block` trades. The lookup
+cache is worth 23% of a resolve pass.
+
+### Many writers is correct, and not yet faster
+
+Four write streams produce exactly the counts one does. It was not faster on a small
+corpus because the writer was never the ceiling. Add writers when the queueing counter
+says so.
+
+### A guided fuzzy seek reads a flat number of rows
+
+| Query | Answers | Filtered scan | Guided | Hops |
+|---|---|---|---|---|
+| `"parse_node"~1` | 5 | 148,809 | 44 | 39 |
+| `"parse_node"~2` | 51 | 148,809 | 175 | 124 |
+| `"parse_node"~3` | 482 | 148,809 | 539 | 57 |
+| `"nosuchname"~1` | 0 | 148,809 | 19 | 19 |
+| `"pa"..` then `"parse_node"~2` | 51 | 7,416 | 156 | 105 |
+| `"parse"~<1` | 7,416 | 148,809 | 7,432 | 16 |
+| `"parse_node"~<1` | 470 | 148,809 | 500 | 30 |
+| `"pa"..` then `"parse"~<1` | 7,416 | 7,416 | 7,416 | 0 |
+
+As the predicate grows from 46 k to 228 k the filtered column grows with it and the guided
+column moves from 40 to 47. Not yet measured against a real fjall index.
+
+## Two findings that changed the design
+
+### Field order is the largest effect measured anywhere
+
+| Workload | Rows | Examined | Examined per row | Per row |
+|---|---|---|---|---|
+| Join on a **leading** field | 8,583,810 | 8,616,520 | 1.004 | 393 ns |
+| Join on a **middle** field | 2,000 (capped) | 112,548,829 | **56,274** | 26.0 ms |
+
+The second re-reads all 888,177 declarations once per module. `--profile` shows it;
+nothing warns you when you write it. The predicates had been declared alphabetically. See
+[field order is the index design](schema-language.html#field-order-is-the-index-design).
+
+### Sealing merges, because an unmerged tree seeks up to 180× slower
+
+Paging costs one seek per page, and on a freshly-ingested database that seek was measured
+at up to 600 µs. `finish` now merges every tree before computing identity. The artifact
+also roughly halves on disk.
+
+## Measure your own
+
+```bash
+./scripts/bench.sh                        # create, serve, seed, measure — one command
+FILES=100000 CONNS=16 ./scripts/bench.sh
+
+cargo run --release --example engine -- --store <instance> --layer executor
+cargo run --release --example codesearch -- --data-dir <root> --users 256 --page 50
+cargo run --release --example ingest
+```
+
+Three rules: release builds only; every timed run must reproduce the row count and
+examined counts of a warm-up or abort; and say what a measurement does not cover.

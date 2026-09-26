@@ -5,7 +5,7 @@
 //! `create` cannot add to a list nobody holds, and a `remove` cannot delete a directory
 //! this process has open. The registry is the mutable form of that list, plus the
 //! [`Catalog`] the CLI's offline path already uses — which is what makes
-//! [operations §5](../../../website/content/operations.md)'s "two front doors, one
+//! [operations §5](../../../web/src/content/operations.mdx)'s "two front doors, one
 //! implementation" true rather than aspirational. Everything below delegates the actual
 //! work to `fjord-store`; what lives here is *when* it is safe to do it.
 //!
@@ -62,7 +62,7 @@ use crate::{
 
 /// How a database's schema is arrived at.
 ///
-/// **A schema belongs to a database, not to a server** ([I13](../../../website/content/invariants.md#i13)):
+/// **A schema belongs to a database, not to a server** ([I13](../../../web/src/content/invariants.mdx#i13)):
 /// each one embedded its own at create, and this is what reads it back. Exactly one piece
 /// is the server's rather than the database's — the **virtual** predicates,
 /// `fjord.db.List` and `fjord.db.Interning`, which the server answers out of the root it
@@ -74,7 +74,7 @@ use crate::{
 /// a decode error, the quiet version a query answering zero rows. So a database with no
 /// embedded copy is **listed and not served**, which is already how a copy this
 /// server cannot *read* is treated, and is the same refusal
-/// [I15](../../../website/content/invariants.md#i15) makes of a database carrying no format stamp.
+/// [I15](../../../web/src/content/invariants.mdx#i15) makes of a database carrying no format stamp.
 ///
 /// The virtual half is carried as *source* rather than as a `Schema`, because composing
 /// two schemas means composing two interners, and the language already has an operator
@@ -553,7 +553,7 @@ impl Registry {
     /// of the guess [`Schemas`] refuses to read: a database whose embedded schema is
     /// whatever binary happened to be listening, so the same command against two
     /// builds produces two different artifacts. `create` requires a schema
-    /// ([operations](../../../website/content/operations.md)).
+    /// ([operations](../../../web/src/content/operations.mdx)).
     ///
     /// **What that must not become is a rule about the request field.** Refusing an
     /// empty `source` here refuses a legitimately empty schema *file* with it, and only
@@ -766,7 +766,7 @@ impl Registry {
 /// life of the process into a refusal and **repairs nothing**: the delete happened
 /// inside the open, before there was anything to compare. Only publishing the instance
 /// directory under one rename removes that window —
-/// [operations](../../../website/content/operations.md#publish-by-rename-required-for-a-live-root)
+/// [operations](../../../web/src/content/operations.mdx#publish-by-rename-required-for-a-live-root)
 /// requires it for a live root, and `Catalog::create` is what already does it.
 ///
 /// **Status and content identity come off the sidecar once the store is open**, never
@@ -959,7 +959,7 @@ mod tests {
     }
 
     /// **An on-demand open stamps the status on the disk it opened, not the status it
-    /// resolved** ([`ops-I2`](../../../website/content/invariants.md)).
+    /// resolved** ([`ops-I2`](../../../web/src/content/invariants.mdx)).
     ///
     /// The window is a whole `finish` — a scan of the database and an fsync — and what
     /// falls into it is not transient: the handle goes into the open map, so a

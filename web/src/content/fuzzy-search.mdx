@@ -1,0 +1,183 @@
+export const meta = {
+  "title": "Fuzzy search, step by step",
+  "description": "An executable walkthrough of the edit-distance automaton, then where a fuzzy match can sit in a query and what guiding a seek saves."
+}
+
+Fuzzy search answers one question: **is this stored string within a chosen number of
+single-character edits of my term?** `"parse"~1` allows one insertion, deletion or
+substitution. Leaving the number off means one.
+
+Fjord answers with a deterministic finite automaton. Its state is one short row of
+numbers, and each input character turns that row into exactly one next row. The demos
+below use the engine's own automaton. Use **next** and **previous** to step.
+
+## 1. Begin with the empty candidate
+
+Each column stands for a prefix of the term. Before any candidate character, matching `∅`
+costs nothing, matching `c` costs one deletion, and longer prefixes cost more.
+
+The distance here is one, so the row is capped at two. Two means "two or more": a cost
+past the limit cannot change any decision, and capping keeps the number of states finite.
+
+<Demo kind="dfa">{`{"term":"cat","candidate":"c","distance":1}`}</Demo>
+
+## 2. Consume one character at a time
+
+Each cell chooses the cheapest of three ways to arrive: substitute, delete a term
+character, or insert the new character. A matching pair costs nothing.
+
+Step through `cat` and watch the zero move diagonally. The final cell is the distance to
+the whole term. When it is at most the limit, the current prefix is an accepting state.
+
+<Demo kind="dfa">{`{"term":"cat","candidate":"cat","distance":1}`}</Demo>
+
+## 3. One row covers all three edit kinds
+
+A substitution: `u` replaces `a`, and `cut` is accepted for `cat~1`.
+
+<Demo kind="dfa">{`{"term":"cat","candidate":"cut","distance":1}`}</Demo>
+
+An insertion: one extra candidate character.
+
+<Demo kind="dfa">{`{"term":"cat","candidate":"cart","distance":1}`}</Demo>
+
+A deletion: the candidate omits a term character.
+
+<Demo kind="dfa">{`{"term":"cat","candidate":"ct","distance":1}`}</Demo>
+
+## 4. Dead states are what skip work
+
+A state is **live** while some extension of the prefix could still match. Walk `zzzz`.
+After `zz` every cell is past the limit, and no suffix can recover, so the state is dead
+and the rest is not read.
+
+<Demo kind="dfa">{`{"term":"cat","candidate":"zzzz","distance":1}`}</Demo>
+
+Stored strings are in key order, so every key starting with a dead prefix sits together.
+The executor seeks past the whole band and reopens the scan at the next prefix that is
+live.
+
+## 5. Ask the same machine a different question
+
+Everything above measures the distance to the whole stored string. For a search box that
+is the wrong question: `parse` is five characters, `parse_node` is ten, and five deletions
+separate them.
+
+`~<` asks whether **some prefix** of the candidate is within the distance. The machine is
+unchanged. What changes is where the answer is read: after every character, stopping at
+the first yes.
+
+Walk `cattle` against `cat~<1` and watch it stop three characters in. It settles the same
+way for `catalogue` and `cathedral`, because every extension of a matching prefix matches.
+
+<Demo kind="dfa">{`{"term":"cat","candidate":"cattle","distance":1,"anchored":true}`}</Demo>
+
+Anchored is not substring. `"parsr"~<1` finds `parser_function` and not
+`my_parser_function`. And a term no longer than its distance matches the empty prefix, so
+`"a"~<1` matches everything. That is what a search box asks on the first keystroke.
+
+## 6. Put the guide on a key
+
+A fuzzy pattern guides the scan when it reaches a string field the seek prefix is still
+open at. Here the key is the string itself. Change the term or distance and the compiler
+replans.
+
+<Demo kind="plan" schema={`schema search {
+  predicate Name : string
+}`}>{`N where search.Name N; N = "parse"~1`}</Demo>
+
+Results arrive in key order, not ranked by distance. The automaton decides which parts of
+the key order may hold answers; it does not score.
+
+## 7. Run it as part of a real query
+
+In the demo database a declaration's name comes after its file in the key, so this pattern
+cannot guide the scan. It runs as a filter on each row instead. Step the machine: when it
+reaches the fuzzy check, each click advances one automaton transition, then the executor
+continues.
+
+<Demo kind="run" guided>{`N where code.Decl {file = _, name = N, line = _}; N = "parse"~1`}</Demo>
+
+A guide and a filter answer the same question. A guide can additionally skip ranges.
+
+## 8. Where a fuzzy match can sit
+
+Anywhere: a trailing field, a union payload, a row reached through a reference. Position
+decides only whether it guides or filters. It guides when three things hold:
+
+1. **The seek prefix is still open at that field.** Every field before it is pinned by a
+   literal, an outer-level variable, a reference or a union tag. A prefix range ending on
+   the same field also counts.
+2. **Nothing else on that level took the guide.** A second fuzzy pattern filters. Between
+   `~` and `~<`, `~` guides.
+3. **The level scans.** A row reached by a fetch is one row already.
+
+| Written | What the compiler builds |
+|---|---|
+| `N where test.Name N; N = "ann"~1` | a guide: the field leads the key |
+| `N where test.Foo {id = 1, name = N}; N = "ann"~1` | a guide: the field before it is pinned |
+| `N where test.Bar {id = I}; test.Foo {id = I, name = N}; N = "ann"~1` | a guide: pinned by the outer level |
+| `N where test.Name N; N = "an"..; N = "ann"~2` | a guide, over the `"an"` bucket only |
+| `N where test.Name N; N = "ann"~<1` | a guide: anchoring changes the question, not the position |
+| `N where test.Name N; N = "ann"~1; N = "anno"~<1` | a guide and a filter |
+| `N where test.Foo {id = _, name = N}; N = "ann"~1` | a filter: the leading field is free |
+| `T where test.Label {id = _, what = {text = T}}; T = "a"~1` | a filter, on a payload behind an unpinned field |
+| `X where test.Link {at = _, of = F}; X = F.name; X = "ann"~1` | a filter, on a fetched row |
+
+In a plan, `seek~[…]` is a guide and `where … ~1 …` is a filter. The playground opens with
+a fuzzy match among its samples.
+
+### Bounds
+
+| Written | Answer |
+|---|---|
+| `N = "ann"~`, `N = "ann"~<` | one edit |
+| `N = "ann"~4`, `N = "ann"~<0` | `reject/fuzzy-distance`: the range is `1` to `3` |
+| a term of 64 characters or more | `reject/fuzzy-term` |
+| `N = "a"~<1` | everything, as described in §5 |
+| `N != "ann"~1`, `N != "ann"~<1` | `nyi/fuzzy-denial` |
+| a fuzzy match against `.value` | `nyi/value-match` |
+
+Distance stops at three because past it the automaton is live over most of the key space
+and a guide degrades to a full scan.
+
+## 9. What the guide saves
+
+Per row, the walk stops after `|term| + distance + 1` characters, and the field is decoded
+one character at a time, so a 4 KiB identifier rejected on its fourth character costs four
+characters. What the guide adds is the dead-state case: it re-opens the scan at the
+smallest key that could still match.
+
+Over a predicate of 148,809 identifier-shaped names:
+
+| Query | Answers | Rows a filter reads | Rows the guide reads | Hops |
+|---|---|---|---|---|
+| `"parse_node"~1` | 5 | 148,809 | 44 | 39 |
+| `"parse_node"~2` | 51 | 148,809 | 175 | 124 |
+| `"parse_node"~3` | 482 | 148,809 | 539 | 57 |
+| `"nosuchname"~1` | 0 | 148,809 | 19 | 19 |
+| `"pa"..` then `"parse_node"~2` | 51 | 7,416 | 156 | 105 |
+| `"parse"~<1` | 7,416 | 148,809 | 7,432 | 16 |
+| `"parsr"~<1` | 7,416 | 148,809 | 7,432 | 16 |
+| `"parse_node"~<1` | 470 | 148,809 | 500 | 30 |
+| `"parse_node"~<2` | 933 | 148,809 | 966 | 33 |
+| `"pa"..` then `"parse"~<1` | 7,416 | 7,416 | 7,416 | 0 |
+
+The number to compare is the gap between "answers" and "rows the guide reads", which stays
+within a few dozen throughout. `"parsr"~<1` answers 7,416 rows on a misspelt term where
+`~` answers none. A hop is a re-opened scan and costs roughly ten rows' worth, so an
+anchoring prefix (`"pa"..`) is the cheapest shape: it narrows the range before the guide
+starts.
+
+The guarantee the feature is held to: as the predicate doubles, the guided row count does
+not.
+
+## 10. Resume needs no automaton state
+
+A guided scan can suspend after any row. Its cursor stores the key position, and on resume
+the executor replays that key through the automaton from its start state. Move backwards
+and forwards through the same run:
+
+<Demo kind="run" guided>{`N where code.Decl {file = _, name = N, line = _}; N = "parse"~1`}</Demo>
+
+A guide is a scan that reads less. Nothing downstream can tell the difference.

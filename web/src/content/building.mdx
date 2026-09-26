@@ -1,0 +1,140 @@
+export const meta = {
+  "title": "Building from source",
+  "description": "The workspace, the build and test commands, the crates, and the .NET client."
+}
+
+Fjord is a Cargo workspace. No build system on top, no code generation to run by hand, no
+vendored C.
+
+## Build and test
+
+```bash
+cargo build                          # everything, debug
+cargo build --release --bin fjord # the tool, optimised
+
+cargo test                           # the green suite
+cargo test -- --ignored --list       # the invariant coverage ledger
+python3 scripts/check-guards.py      # the ledger is exact, owned and built
+cargo clippy --all-targets --workspace -- -D warnings
+cargo fmt --all
+```
+
+`default-members` is the whole workspace, so `cargo build` and `cargo test` mean
+everything.
+
+<Callout tone="note" label={`The coverage ledger`}>
+
+`cargo test -- --ignored --list` prints every guard written but not yet live. The ledger
+currently holds **seventeen**. Work that touches one is finished only when it is
+implemented, un-ignored and green. See [Testing method](testing.html).
+
+</Callout>
+
+The two grammars are compiled at build time by [`lelwel`](https://crates.io/crates/lelwel):
+
+| Grammar | Compiled by | Language |
+|---|---|---|
+| `crates/fjord-engine/src/grammar.llw` | `fjord-engine/build.rs` | sigla queries |
+| `crates/fjord-schema/src/syntax/grammar.llw` | `fjord-schema/build.rs` | the schema DSL |
+
+## The workspace
+
+Each crate depends only on the ones above it. The compiler enforces the direction.
+
+| Crate | Holds |
+|---|---|
+| `fjord-schema` | The type model, the row id, schema identity, and the schema DSL front end. Depends on no Fjord crate |
+| `fjord-encoding` | The order-preserving storage codec |
+| `fjord-wire` | The transport codec and protocol vocabulary. A sibling of `fjord-encoding`, sharing no bytes |
+| `fjord-store` | The storage seam: the `FactStore` trait, the format stamp, errors. Links no backend, no filesystem, no threads |
+| `fjord-store-mem` | `MemStore`, the in-memory implementation and the differential oracle |
+| `fjord-store-fjall` | The fjall backend and the database lifecycle |
+| `fjord-ingest` | The write funnel: a wire fact in, a `FactId` out |
+| `fjord-engine` | sigla and the executor. Depends on the seam, never on a backend |
+| `fjord-inspect` | The JSON view of every construct, for the browser |
+| `fjord-client` | The client: address, connection, rows, expand |
+| `fjord-server` | The protocol over a Unix socket or TCP |
+| `fjord-cli` | The `fjord` binary |
+| `fjord-db` | The published facade crate |
+
+`wasm/` and `web/` sit outside the workspace. `wasm/` builds only for
+`wasm32-unknown-unknown`, and `web/` is this site.
+
+### The browser build
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --locked      # the CLI and the crate must be the same version
+
+cargo check -p fjord-engine --target wasm32-unknown-unknown   # what must never break
+./scripts/build-wasm.sh                                       # the module the site imports
+(cd web && npm install && npm run dev)                        # http://localhost:5173
+(cd web && npm run smoke)                                     # the demo, driven in Chrome
+```
+
+This works because `fjord-engine` depends on the seam and not on a backend, so nothing
+drags in `fjall` or `getrandom`. A test fails if that edge grows back.
+
+## Measuring instruments
+
+They live in `crates/fjord-cli/examples/`, so nobody finds them while looking for how to
+use the database.
+
+| Example | Rung | What it isolates |
+|---|---|---|
+| `examples/engine.rs` | S1–S3 | The engine alone |
+| `examples/breakdown.rs` | S4 | The fixed per-query cost, by subtraction |
+| `examples/loadgen.rs` | S5 | One connection, the whole round trip, and the seeder |
+| `examples/soak.rs` | S6–S7 | A mixed population over hours |
+| `examples/codesearch.rs` | S6 | The product's own traffic |
+| `examples/ingest.rs` | write | The write path per layer |
+
+```bash
+cargo run --release --example loadgen -- --data-dir /tmp/fjbench --files 20000
+./scripts/bench.sh          # create, serve, seed, measure — one command
+```
+
+## A database to work against
+
+There is no bundled corpus. Point the .NET indexer at a real checkout:
+
+```bash
+./clients/dotnet/index-repo.sh ~/src/OrchardCore
+```
+
+Or `./scripts/bench.sh`, which creates, serves and seeds a synthetic corpus sized by
+`FILES` and `DECLS`.
+
+## The .NET client
+
+A second implementation of the wire protocol, in C#, sharing no constants with the Rust
+side.
+
+```bash
+./clients/dotnet/run-demo.sh                  # write a small index and query it back
+./clients/dotnet/index-repo.sh <checkout>     # index a real .NET repository
+./clients/dotnet/emit-golden.sh               # regenerate the byte-for-byte golden
+```
+
+The golden is checked in, and a Rust test asserts the Rust encoder produces the same bytes.
+The Rust test needs no `dotnet`. See [Clients](clients.html).
+
+## Repository layout
+
+<Tree>{`
+fjord/
+- crates/  the workspace, bottom to top. fjord-cli is the fjord binary, and its examples/ are the instruments
+- schemas/  demo.sigla, the sample schema and this site's own; and dotnet.sigla, the set a real producer writes
+- clients/dotnet/  the C# client, demo producer, real indexer, and a SCIP converter that reaches all of it through the same seam
+- bench/FINDINGS.md  what was measured, and why each number is now superseded
+- AGENTS.md  the working contract for contributors
+- PLAN.md  the roadmap, and the record of settled decisions
+- wasm/  the WebAssembly shell. Its own workspace, built by scripts/build-wasm.sh, never by a cargo build at the root
+- web/  the interactive site: this book, with the engine running in it, its pages under web/src/content/
+`}</Tree>
+
+**This book is the design of record.** Each page is one MDX file under `web/src/content/`.
+Every push to main deploys it to
+[https://boxops-uk.github.io/fjord/](https://boxops-uk.github.io/fjord/) after the suite,
+the drift gate, and a smoke run in a real browser, and every release carries it as
+`fjord-docs-site.tar.gz`.

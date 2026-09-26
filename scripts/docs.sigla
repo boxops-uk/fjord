@@ -1,0 +1,33 @@
+# **The book as a graph**, so the gate over it is a query rather than a regex.
+#
+# Whether a link resolves is two questions about a graph — does the page it names
+# exist, and does that page declare the anchor it names — and this repository builds
+# the database for exactly that. `scripts/check-links.py` writes these facts and asks
+# them in sigla; what it replaced was a regular expression that matched `^#{1,6} `
+# inside code fences, so it invented anchors no page declares and passed every link
+# that named one.
+#
+# The facts come from the same MDX parse the site renders from (`web/docs-facts.mjs`,
+# which runs the site's own remark plugins), so an anchor this schema holds is an
+# anchor a reader can actually land on. That is the property the old gate could not
+# have: it was a second parser, and a second parser is free to disagree.
+schema doc {
+
+  # A page of the book, by slug — `storage`, not `storage.mdx` and not `storage.html`.
+  predicate Page : string
+
+  # An anchor a page declares: a heading's own id, or an `<a id>` written by hand.
+  #
+  # Keyed by both, so a page's anchors are a prefix scan and `{page, id}` is a seek.
+  # `page` is a slug rather than a reference to `Page` because a link may name a page
+  # that does not exist — which is the whole point of the gate — and a reference can
+  # only point at a fact that is already there.
+  predicate Anchor : { page : string, id : string }
+
+  # A link, from wherever it was written to the page and anchor it names.
+  #
+  # `from` is a repository path, not a slug: most links into the registry are written
+  # in Rust doc comments, and a finding has to say which file to open. `toAnchor` is
+  # empty for a link that names a page and no anchor.
+  predicate Link : { from : string, toPage : string, toAnchor : string }
+}

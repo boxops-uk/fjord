@@ -1,0 +1,338 @@
+export const meta = {
+  "title": "Executor & resume",
+  "description": "The plan, the register file, the one driver loop, and the bytes-only cursor that lets a query stop and pick up exactly where it left off."
+}
+
+The back end is small on purpose: one plan shape, one driver loop, three step kinds, and a
+resume token that fits in a socket.
+
+## The plan
+
+```rust
+struct Plan {
+    nvars: usize,       // the size of the register file
+    body: Box<[Step]>,  // ordered: [0] outermost … [n-1] innermost
+    head: Project,      // how to build each output row
+}
+
+enum Step {
+    Level(Level),         // 0..N rows: a loop level
+    Derive(DerivedBind),  // exactly 1 row: a pure computation
+    Test(Test),           // 0..1 rows, binds nothing: a filter
+}
+
+struct Level {
+    sources: Box<[Source]>,  // alternatives, tried in order and concatenated
+    binds: Box<[Address]>,   // registers this level fills from the matched row
+}
+
+enum Source {
+    Seek   { access: Access, residuals: Box<[Residual]> },
+    Fetch  { reference: Address, path: FieldPath,
+             predicate_id: PredicateId, residuals: Box<[Residual]> },
+    Guided { access: Access, guide: Guide, residuals: Box<[Residual]> },
+}
+```
+
+A query is a nested loop, and the order of `body` is the loop nesting. `body.len()` counts
+steps; `Plan::levels()` counts loops, and a cursor holds one row per loop.
+
+### The source count is the construct
+
+| Sources | Means |
+|---|---|
+| 0 | `never`, the empty relation |
+| 1 | An ordinary scan |
+| N | A disjunction, one branch per source, tried in order |
+
+Residuals belong to the source, because two sources are two key layouts. Union types
+cost the machine one residual arm (a tag compare), one branch in the field walk, and a
+projection arm. The tag is checked before any read through the payload.
+
+### Access, seek, splice
+
+A seek key is built from constant bytes and **splices**, bytes copied from a register an
+outer level bound. There is no join operator. There is a seek key with someone else's
+bytes in it.
+
+A seek key may end in a range: `SeekKey::Bounded` for an order comparison, or
+`SeekKey::PrefixRange` for `..`. Nothing may follow a range, because its bytes are not one
+value. The two variants end differently: an equality on `"a"` stops at the separator
+between `"a"` and the next value, while the prefix `"a"..` runs to the successor of every
+string starting with those bytes.
+
+A **guided** source carries an ordinary access plus an automaton that decides what is
+visited inside the range. It binds what a seek binds and takes the cursor entry a seek
+takes.
+
+<Demo kind="plan">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
+
+### A test is not a level
+
+```rust
+enum Test {
+    Absent(Box<[Source]>),  // the row survives iff *no* source produces a row
+}
+```
+
+Negation probes each source for one row and closes it again. Passing is ascending with
+the registers untouched; failing is the same backtrack an exhausted level does.
+
+<Callout tone="note" label={`The rule that keeps this small`}>
+
+A new construct may add a `Source`, a `Test`, a residual operator or a computed-value
+arm. **It may not add a `Step`.** A step is a case in the driver, a case in the cursor,
+and a fresh proof that resume is exact.
+
+</Callout>
+
+### Fetching through a reference
+
+`Source::Fetch` takes a reference out of a register, does one point read, and binds the
+fetched fact as an ordinary register. Two reads of one reference are one fetch.
+
+## Every construct, as a plan
+
+`:plan` output over the sample schema.
+
+**Reading through a reference**, a fetch level:
+
+```text
+sigla> :plan N where code.Ref {to = D}; N = D.name
+  r0 <- code.Ref scan
+  r1 <- code.Decl fetch[r0.to]
+  head r1.name
+```
+
+**Arithmetic**, a derived bind in a register of its own. Not a loop level, and recomputed
+on resume:
+
+```text
+sigla> :plan Y where code.Decl {line = L}; Y = L + 1
+  r0 <- code.Decl scan
+  r1 = r0.line + 1
+  head r1=
+```
+
+**Negation**, a test:
+
+```text
+sigla> :plan F where F = code.File _; !code.Decl {file = F, name = "Plan"}
+  r0 <- code.File scan
+  absent code.Decl seek[file = r0#, name = "Plan", line = _]
+  head r0#
+```
+
+**A denial**, a residual, never a seek:
+
+```text
+sigla> :plan N where code.Decl {name = N}; N != "key"..
+  r0 <- code.Decl scan
+       where name does not start with "key"
+  head r0.name
+```
+
+**A disjunction**, one level with a source per branch:
+
+```text
+sigla> :plan X where code.Decl {file = X, name = _, line = _} | code.Digest {file = X}
+  r0 <- code.Decl scan
+     | code.Digest scan
+  head r0.0
+```
+
+## The register file
+
+```rust
+enum Slot {
+    Fact(Register),  // a stored row
+    Value(Value),    // a derived bind's output
+}
+
+struct Register { fact_id: FactId, bytes: ByteView }  // bytes = predicate_id ++ key
+```
+
+A register holds the whole row, and the field a variable denotes lives in the plan
+([I5](invariants.html#i5)). Binding N variables is N refcount bumps on one buffer. Fields
+decode lazily, and the offsets are cached in an inline array that never spills to the heap
+([I9](invariants.html#i9)). Rows and values are separate slot kinds, because splicing one
+where the other belongs would compare two encodings and quietly match nothing.
+
+## The driver
+
+```text
+loop:
+  if depth == body.len():           # past the innermost step → a full row is bound
+      hand the Row to the consumer
+      on Continue: if body is empty: return Done
+                   depth -= 1       # backtrack to find the next row
+      on Suspend:  if levels() == 0: return Done
+                   depth -= 1
+                   return Suspended{ cursor }
+
+  else match body[depth]:
+      Level(level):
+        if this frame's source index is past the last source:
+            close the frame
+            if depth == 0: return Done
+            depth -= 1; continue
+        if the frame has no open scan: open the current source
+        match frame.next():
+          Some(row): bind into registers; frame.current = row; depth += 1
+          None:      close this alternative; advance the source index
+
+      Derive(bind):
+        if not produced: compute into the value slot; produced = true; depth += 1
+        else:            produced = false; back up a level (or Done at 0)
+
+      Test(Absent(sources)):
+        if produced:            produced = false; back up a level (or Done at 0)
+        elif no source yields:  produced = true; depth += 1     # pass, registers untouched
+        else:                   drop the row, exactly as exhaustion does
+```
+
+`frame.next()` pulls rows, applies the source's residuals on key fields only
+([I6](invariants.html#i6)), and polls the cancellation token every ~4096 rows. A plan with
+no levels is exactly one row.
+
+<Demo kind="run" guided>{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
+
+### Why a state machine
+
+<Callout tone="invariant" label={`I7 — the executor is a defunctionalised state machine`}>
+
+What a recursive implementation would keep on the call stack is an explicit data
+structure here, so execution can suspend to bytes. Closures and coroutines cannot: a
+suspended closure pins live iterators and a snapshot. Do not simplify the driver back
+into recursion. [Registry entry](invariants.html#i7).
+
+</Callout>
+
+The alternative, a bytecode VM, was declined because its continuation cannot be made
+small: it carries the program, the counter, every register and every buffer, and is tied
+to the instruction set.
+
+## The consumer seam
+
+The consumer is a callback that receives each row and answers `Continue` or `Suspend`. A
+row is a borrowed view of the registers, alive for one step. Nothing materialises a result
+set at any layer.
+
+## The `Cursor` — bytes, and nothing else
+
+```rust
+struct Cursor {
+    version: u16,           // which cursor layout these bytes are in
+    plan: PlanFingerprint,  // which plan produced them
+    world: WorldStamp,      // which *base* it was read in — opaque to the engine
+    entries: Vec<Entry>,    // one per open loop *level*
+}
+struct Entry { source: usize, row: Register }
+```
+
+Three stamps and one detached row per level. No iterators, no plan pointer, no snapshot.
+
+- A derive step contributes nothing; it is recomputed ([I14](invariants.html#i14)).
+- A test contributes nothing; its verdict is re-decided.
+- A row is saved detached, so the cursor references no live scan.
+- An entry says which source produced the row, because alternatives can overlap.
+
+Anything determined by the bindings and the frozen base can be recomputed instead of
+saved. What the cursor holds is what a scan cannot recompute: its position.
+
+### Five checks before anything is trusted
+
+| Check | Catches | Error |
+|---|---|---|
+| `version` | A cursor from a build where an entry meant something else | `CursorVersion` |
+| plan fingerprint | A cursor from another plan | `CursorPlan` |
+| world stamp | A cursor from another base, or from before a write landed | `CursorWorld` |
+| entry count | A forged length | `CursorPlanMismatch` |
+| `source` index | An alternative this level does not have | `CursorSourceOutOfRange` |
+| `fact_id` | A saved key that is no longer the row it named | `BadResumeKey` |
+
+The plan fingerprint is FNV-1a over the plan's structure. Interned names are not hashed,
+because they differ between processes. Every residual operator carries its own tag, so a
+plan that requires a value and one that denies it cannot accept each other's cursors.
+
+## How resume reconstructs the run
+
+One forward walk over the plan: re-bind the fact slots, recompute the value slots.
+
+1. At a level, re-open the scan at the saved key, pull one row, re-bind it.
+2. Check the re-read row's `fact_id` equals the saved one, or fail with `BadResumeKey`.
+3. At a derive, recompute the value.
+4. At a test, mark it produced. The row it passed was already emitted.
+
+Then set `depth` to the innermost step and hand back to the driver, which advances past
+the last-emitted row. Outer levels stay pinned on their saved rows.
+
+### The world stamp
+
+The engine cannot know which database it is reading. The database-owning layer computes
+opaque bytes, and the engine compares them before trusting anything.
+
+| The base | What the stamp is | What it catches |
+|---|---|---|
+| **Complete** | The content fingerprint `finish` computed | A cursor from a different sealed database |
+| **Writable** | Instance, incarnation, and the write position at the snapshot | A write that landed between two pages |
+| Either, over a **virtual predicate** | …plus a digest of the listing | A `create`, `rm` or `finish` between two pages of `fjord.db.List` |
+| An **embedded** caller | `Unstamped`, explicitly | A resume must say so again |
+
+The incarnation is a nonce minted per open and never persisted, so a cursor from before a
+reopen is always refused. `fjord.db.Interning` has no stable value to digest, so a resume
+across requests over it is refused by name.
+
+<Callout tone="invariant" label={`I4 — resume equals an uninterrupted run`}>
+
+Resuming from a cursor produces exactly the rows, in exactly the order, that an
+uninterrupted run would. Tested by suspending at every boundary of generated plans and
+comparing. [Registry entry](invariants.html#i4).
+
+</Callout>
+
+<Callout tone="invariant" label={`I8 — the snapshot is released at suspend`}>
+
+Every stop (suspend, cancel, unwind) releases the snapshot. A paused query never holds
+storage open. [Registry entry](invariants.html#i8).
+
+</Callout>
+
+## Suspend, cancel, unwind
+
+| Kind | Trigger | Resumable? | Snapshot |
+|---|---|---|---|
+| **Suspend** | The consumer yields: a page boundary, backpressure | Yes, returns a `Cursor` | Released |
+| **Cancel** | A cancellation token, polled every ~4096 rows | No | Released |
+| **Terminal unwind** | A deadline or a rows-examined cap | No | Released |
+
+Cancellation is cooperative: the scan loop polls a flag. The executor is not `async`; the
+server runs it on a blocking pool. A deadline unwinds rather than suspends, because a
+cursor of one row per level cannot represent a mid-descent position.
+
+## What a run examined
+
+The executor counts rows examined per step, which is what `--profile` prints:
+
+```text
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
+```
+
+The same counter carries a ceiling. The server sets one (64,000,000 rows by default), an
+embedded caller gets none unless it asks. It refuses a run and never changes an answer, and
+it is not part of the plan's fingerprint.
+
+## Where this shows up
+
+| Feature | Built on |
+|---|---|
+| `:more`, `query --limit`, a paged web tier | The byte cursor |
+| Results streamed 256 rows at a time, never buffered | The same, once per chunk |
+| In-band per-stream cancellation | The cancellation token |
+| `--profile` | The rows-examined counter |
+| A bounded run | The same counter, with a ceiling |
+| A resume refused across a write or a rebuild | The world stamp |
+| `--count` | The same executor with a different accumulator |

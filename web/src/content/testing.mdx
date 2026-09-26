@@ -1,0 +1,117 @@
+export const meta = {
+  "title": "Testing method",
+  "description": "Property-first, generator-first, model-based: the three tiers, the mechanical guards, and the corpus that keeps the language honest."
+}
+
+Nearly every bug in this project's history was invisible to inspection and caught by a
+generated case. Three habits follow:
+
+- **Write the property first**, watch it fail, then implement.
+- **Every invariant owns a guard test, written up front.** The property statement is the
+  spec.
+- **Non-functional rules are tested, not asserted.** No per-row allocation, no value
+  fetch in the scan loop, no snapshot held across a suspend: each has a mechanical guard.
+
+## The coverage ledger
+
+```bash
+cargo test                       # the green suite
+cargo test -- --ignored --list   # the ledger
+python3 scripts/check-guards.py  # the ledger is exact, owned and built
+```
+
+A guard whose subsystem does not exist yet is `#[ignore]`d with its claim and owner in the
+message. Its body is `unimplemented!`, so un-ignoring it before writing it makes the suite
+red. The ledger currently holds **seventeen pending guards**. `scripts/check-guards.py`
+checks them against an independent manifest, so a guard cannot be deleted, weakened or
+re-owned silently.
+
+## The three tiers
+
+| Tier | Shape | Needs | Example |
+|---|---|---|---|
+| **1. Round-trip** | `decode(encode(x)) == x` | A generator for the semantic type | Every codec value type; `parse ∘ print == id` |
+| **2. Metamorphic** | Two runs related to each other | An independent oracle, never the code under test | `memcmp` order vs a hand-written comparator |
+| **3. Model-based** | Real system vs an obviously-correct slow model | The model, written first | Resume equals an uninterrupted run |
+
+A tier-2 property can say what a tier-3 one cannot: a model and the engine can share a
+wrong idea, but a query's own spellings cannot. A negation and its assertion partition the
+rows; `A | B` answers as `B | A`. Write both halves of such a law.
+
+## Generating valid inputs
+
+A random plan is almost always invalid and tests only the error path. So:
+
+- **Generate schema-first, valid by construction.** A schema, then conforming facts, then
+  a query valid against them. Every case is meaningful and shrinks to a minimal valid
+  counterexample.
+- **Reject sampling only for flat, mostly-valid domains.**
+- **Generate the interruption schedule too.** A store, a query, and a schedule of where to
+  suspend. The result must not depend on the schedule. That is what caught the
+  resume-duplicate bug.
+
+<Callout tone="note" label={`Generators are a co-owned artifact`}>
+
+A strategy that degenerates leaves a property green and vacuous, so each generator's
+population is asserted: every construct reached, statements per query, rows produced.
+
+</Callout>
+
+## Mechanical guards
+
+| Invariant | Guard mechanism |
+|---|---|
+| [I5](invariants.html#i5), lazy field decode | A decode-counting probe: binding N variables must cause zero decodes |
+| [I6](invariants.html#i6), no value in the scan | A store spy that fails if a point read happens during a key-only query |
+| [I8](invariants.html#i8), snapshot released | A drop probe cross-checked against the engine's own open-snapshot count |
+| [I9](invariants.html#i9), allocation-free hot path | A counting allocator: N versus 2N rows must match on count and bytes |
+
+Two more guard cost: projecting k fields costs k skips, not k(k+1)/2, and type-checking a
+deep type is linear in allocations. **An NFR with no mechanical guard is an aspiration.**
+
+## The corpus: the language surface as data
+
+`fjord_engine::corpus` is the whole sigla surface as a table, each snippet classified:
+
+| Classification | Means |
+|---|---|
+| `Supported(rows)` | Compiles, and returns exactly these rows against the fixture database |
+| `Diagnosed(code)` | Parses, then draws exactly this diagnostic code |
+| `ParseError` | Not sigla at all |
+
+Three gates run over it: every entry parses as classified, every entry draws the codes it
+claims, and every supported entry runs and returns its rows. Codes are asserted, not
+wording, so diagnostics can be reworded freely. A deferred construct must be reported by
+name, never as a parse error or a panic.
+
+## Required batteries
+
+| Subsystem | Gate |
+|---|---|
+| Codec | Round-trip, order-preservation against an independent comparator, skip-exactness |
+| Executor | Resume equals an uninterrupted run at every cut point, on both stores |
+| Ingestion | Encoder round-trip, order-independence under chunk shuffling, deterministic conflict rejection |
+| Schema | Fingerprint order-independence, incompatible-schema rejection |
+| Front end | The corpus and its three gates, plus no-panic properties over generated token soup |
+| Front end, tier 1 | `parse ∘ print == id` on generated trees, and a node's span is where its text was printed |
+| Front end, tier 3 | A generated query against a slow nested-loop model, in every permutation of the body |
+
+The permutation property is what makes the reorderer's completeness a tested claim rather
+than an argued one.
+
+## Where fixtures live
+
+- `fjord_store::fixtures` holds everything store-shaped, because a probe must be the same
+  store type as the store it wraps.
+- `fjord_store::fixture` (singular) is the shared database.
+- `fjord_engine::fixtures` holds the plan runners.
+- `fjord_store_mem::MemStore` is an implementation, not test machinery. It is the oracle
+  the fjall backend is held against and the store the browser build runs on.
+
+A test that runs a query belongs in a crate's `tests/`, never its `src/`. A unit test
+reaching back through the engine compiles a second copy of its own crate. The differential
+between the two stores lives in `fjord-store-fjall`, the one crate that can see both.
+
+## Regression examples pin, properties explore
+
+A property searches the space. An example nails the one case somebody already got wrong.

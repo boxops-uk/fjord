@@ -37,7 +37,7 @@
 //! # What the grammar has grown since
 //!
 //! One token: **`!=`**, a *denial*
-//! ([chapter 7](../../../website/content/query-language.md#denying-a-value)). The audit above was written
+//! ([chapter 7](../../../web/src/content/query-language.mdx#a-denial)). The audit above was written
 //! to make later work add *meaning* to constructs that already parse, and this is the one
 //! thing since that did not already parse — worth recording rather than folding into the table,
 //! because the table is what the original audit found and this is a later addition to it.
@@ -54,7 +54,7 @@
 //! the prompt. Every `Supported` entry records what it returns, and the gate below
 //! runs it against a **real** `FjallDb` to check.
 //!
-//! [chapter 7]: ../../../website/content/query-language.md
+//! [chapter 7]: ../../../web/src/content/query-language.mdx
 
 use crate::diag::Code;
 use Expectation::{Diagnosed, ParseError, Supported};
@@ -1669,7 +1669,7 @@ mod tests {
 
     /// **Every supported entry answers the same when it is interrupted.**
     ///
-    /// [I4](../../../website/content/invariants.md#i4) says a resumed run equals an uninterrupted
+    /// [I4](../../../web/src/content/invariants.mdx#i4) says a resumed run equals an uninterrupted
     /// one, and the property battery in `flatten` says it over generated queries —
     /// but a generator only draws the shapes it was taught, so every construct
     /// added to the language starts outside its reach. The corpus is the place that

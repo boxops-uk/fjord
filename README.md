@@ -116,9 +116,9 @@ cargo build
 cargo test                          # the green suite
 cargo test -- --ignored --list      # the invariant coverage ledger
 python3 scripts/check-guards.py     # the ledger is exact, owned and built
+python3 scripts/check-links.py      # every link in the book resolves, asked of fjord itself
 cargo +1.97.1 clippy --all-targets --workspace -- -D warnings
 cargo +1.97.1 fmt --all
-python3 website/build.py --strict   # the book builds clean, as CI requires
 (cd web && npm run smoke)           # the book's own engine, driven in a browser
 ```
 
@@ -126,10 +126,9 @@ python3 website/build.py --strict   # the book builds clean, as CI requires
 `+1.97.1` matches CI's lint gate, which is pinned so that a clippy release cannot redden a
 branch nobody has touched; the suite itself runs on `stable`.
 
-The book's pages are Markdown in [`website/content/`](website/content/), rendered by two
-independent renderers — the generator in [`website/`](website/README.md), and the interactive
-site in [`web/`](web/README.md), which is the one that publishes — with a check that compares
-them page for page.
+The book's pages are MDX in [`web/src/content/`](web/src/content/) — prose that compiles into
+the site in [`web/`](web/README.md), which is the one that publishes. A page is a component, so
+a diagram is drawn rather than described, and a demo in the prose is the engine running.
 
 ### Two invariant namespaces (don't conflate them)
 

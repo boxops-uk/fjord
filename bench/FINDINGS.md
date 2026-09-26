@@ -37,7 +37,7 @@
 > against the tree that produced it, and rewriting these to look current would destroy the
 > one thing they are still good for.
 
-> The method is [performance](../website/content/performance.md); the predictions this
+> The method is [performance](../web/src/content/performance.mdx); the predictions this
 > register was opened to check are the
 > [appendix](#appendix-the-eight-hypotheses-read-out-of-the-code-before-anything-was-measured).
 > One entry per thing measured: what was measured, the number, and what it costs to act on.
@@ -76,7 +76,7 @@ gone. Ratios travel, absolutes do not.
 **Hypothesis F7, answered, and it turned out to be two findings.**
 
 The server computes at most `CHUNK_ROWS = 256` rows per turn, then suspends to a
-bytes-only cursor and resumes ([chapter 5](../website/content/executor.md)). Nobody had measured
+bytes-only cursor and resumes ([chapter 5](../web/src/content/executor.mdx)). Nobody had measured
 what that costs, and it is paid on every query. Running the same plan straight through
 against the same plan suspended every 256 rows, both bounded to 100,000 rows:
 
@@ -89,7 +89,7 @@ against the same plan suspended every 256 rows, both bounded to 100,000 rows:
 | **scan decls** | 42.56 ms | 352.99 ms | **+729%** | 796.0 µs | 0.3 µs | **790.3 µs** |
 
 The three dotted columns take a page apart, and they settle where the cost is: **the
-snapshot is free** (0.1–0.3 µs, so [I8](../website/content/invariants.md#i8)'s release-at-suspend
+snapshot is free** (0.1–0.3 µs, so [I8](../web/src/content/invariants.mdx#i8)'s release-at-suspend
 discipline costs nothing) and **all of it is `Executor::resume`** replaying one seek per
 level.
 
@@ -149,7 +149,7 @@ major compaction of the whole index confirms it end to end:
 **Nothing in the tree compacted.** `grep -rn major_compact crates/ src/` was empty, and
 `Catalog::finish` — the one operation that declares a database immutable forever — wrote
 an identity hash and a sidecar and never touched the LSM. So the artifact that
-[operations §5](../website/content/operations.md) says gets copied per reader process was
+[operations §5](../web/src/content/operations.mdx) says gets copied per reader process was
 shipped in the shape a random write order left it.
 
 ### Fixed: sealing now merges
@@ -284,7 +284,7 @@ true: the order can be chosen directly, and only that test forbids it here.
 `{module, name, line}` — one line in `code_index.rs` — and retire or invert the sorted-order
 test, whose stated purpose (a swapped field list silently answering a different question)
 is served better by asserting the *intended* order per predicate than by asserting sorted.
-[I3](../website/content/invariants.md#i3)/[I1](../website/content/invariants.md#i1) freeze what is already
+[I3](../web/src/content/invariants.mdx#i3)/[I1](../web/src/content/invariants.mdx#i1) freeze what is already
 written, so this is a re-index rather than a migration — cheap now, at one index; not cheap
 later. Worth settling before [Phase 8](../PLAN.md)'s schema DSL fixes how a key is written
 down, since the DSL will have to say whether declaration order is load-bearing.
@@ -380,7 +380,7 @@ class  CodecError
 The corpus said so before this finding was written —
 `"X.value where X = test.Foo _"` is `Supported`, annotated *"`.value` is the fact's value
 side — Project::Value"*. What is deferred is **matching** on a value
-([I6](../website/content/invariants.md#i6)), not reading one. The `->` spellings tried here are
+([I6](../web/src/content/invariants.mdx#i6)), not reading one. The `->` spellings tried here are
 indeed parse errors; the mistake was generalising from them without trying the field
 access, and no plan was printed to check the conclusion against.
 
@@ -388,7 +388,7 @@ Two consequences. **F5 is not blocked** — a query over `src.Line`'s value side
 rows as wide as the corpus has text, which is the wide-row generator this finding said
 did not exist. And serving a file's source text out of the database is a seek plus one
 value read per row, which is what makes a code-search file view possible at all
-([phase 11](../website/content/clients.md)).
+([phase 11](../web/src/content/clients.mdx)).
 
 *Kept rather than deleted, struck through: a findings file that quietly edits its
 mistakes is one nobody can calibrate against.*
@@ -893,7 +893,7 @@ key-only predicates (22 of 27) remove.
 sides are nearly balanced — ~2,255 s of server intern against ~2,573 s of walk. So the single
 writer is *not* today's binding constraint, and cutting its work further buys headroom rather than
 wall clock. **The reason to make it parallel anyway is not throughput** — it is that the write-once
-half of [I12](../website/content/invariants.md#i12) was being held by there being one thread rather than by a
+half of [I12](../web/src/content/invariants.mdx#i12) was being held by there being one thread rather than by a
 mechanism, and that only becomes visible when you go looking for the throughput. See
 [Phase 12](../PLAN.md).
 
@@ -1240,7 +1240,7 @@ told by the other end.
 **What still separates them end to end is our `finish`.** 220 s of merging trees and hashing
 an identity, which Glean does inside its 352 s. Take that out and the two are 1,102 − 220 =
 882 s against 854 s — 3%. Whether sealing can be folded into ingest, or is simply the price
-of [`ops-I4`](../website/content/operations.md)'s content hash being computable at all, is a
+of [`ops-I4`](../web/src/content/operations.mdx)'s content hash being computable at all, is a
 question this makes worth asking.
 
 ### 17b. Two things the comparison did not set out to measure
@@ -1269,7 +1269,7 @@ plateaued at ~9 of ~14 available cores, which read as an internal limit on how m
 server will run at once. It is not one. Two costs *outside* the engine were being read as one
 inside it — **a process and a connection per request** on the client's side, and **glibc's
 per-arena mutexes** on a scan path that allocates per chunk. No guard the project has can see
-either. [I9](../website/content/invariants.md#i9) is about the *engine's* hot path, and its guard
+either. [I9](../web/src/content/invariants.mdx#i9) is about the *engine's* hot path, and its guard
 runs a plan in process: what it proves is that the executor allocates the same count and bytes
 for 2N rows as for N. Everything this contention is about sits outside that — fjall decompressing
 a block, the server decoding rows and turning each value into a `WireValue`, one connection's
@@ -1321,7 +1321,7 @@ all fourteen cores when driven from pooled connections. The plateau was a client
 ask fast enough, and no server-side change would have moved it.
 
 **What it costs to act on.** Nothing in the server. It is written down for consumers as
-[Hold the connection](../website/content/clients.md) — pool connections and keep them, and leave
+[Hold the connection](../web/src/content/clients.mdx) — pool connections and keep them, and leave
 `fjord query` to people. `examples/loadgen.rs` and `examples/soak.rs` were already built that
 way, which is why they measure the server rather than the connect path.
 
@@ -1356,7 +1356,7 @@ ms) while better on eight others. Four workloads, alternating arms, three rounds
 sign becomes consistent.
 
 **Why the scan path is exposed at all.** The engine's own loop allocates nothing per row and
-[I9](../website/content/invariants.md#i9)'s guard proves it — but that guard runs the executor in
+[I9](../web/src/content/invariants.mdx#i9)'s guard proves it — but that guard runs the executor in
 process, and a *served* query is more than the executor: fjall decompresses a block (`lz4_flex`),
 the server decodes rows and turns each value into a `WireValue`, and a join opens a level per
 outer row. Many threads, short-lived allocations, one arena set: that is the shape glibc

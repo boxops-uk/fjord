@@ -1,0 +1,333 @@
+export const meta = {
+  "title": "CLI reference",
+  "description": "Every command the fjord binary has, the address grammar, and configuration."
+}
+
+One binary, `fjord`. Every command that takes a database accepts any address form, so
+local versus remote is a property of the address, not the command.
+
+<Tree>{`
+fjord
+- serve  run the server over a store root
+- create <name>  a new Writable database. The schema is fixed here
+- finish <name>  seal it: Writable becomes Complete
+- list  enumerate databases
+- describe <name>  metadata and schema
+- query <name> <QUERY>  one-shot query
+- shell [<name>]  interactive REPL
+- schema
+-- check <file>  resolve, canonicalise, report
+-- fingerprint <file>  the schema's number, and each predicate's
+-- diff <a> <b>  Identical, Compatible (n added), or Breaking
+- db
+-- rm <name>  delete a database
+`}</Tree>
+
+## Global options
+
+| Flag | Also | Means |
+|---|---|---|
+| `--data-dir <PATH>` | `FJORD_DATA_DIR` | The store root: where databases live, and what the socket path derives from |
+| `--config <PATH>` | — | A config file. Without it, `./fjord.json` is read if present |
+| `--schema-path <PATH>` | `FJORD_SCHEMA_PATH` | Where a schema's imports are looked for. Repeatable, first match wins |
+| `-v`, `--verbose` | — | Say more. Repeatable |
+
+There are no `--host` or `--port` flags. The address says where. Only a server needs
+`--data-dir`; a client finds the default socket without it.
+
+## Addressing
+
+```text
+[where//]name[@instance]
+```
+
+| Address | Means |
+|---|---|
+| `code` | The default target |
+| `code@01M0B3D…` | A particular instance of it |
+| `//code` | The same thing, said explicitly |
+| `box:7280//code` | TCP |
+| `box//code` | TCP, port **7280** |
+| `/run/user/1000/fjord.sock//code` | A Unix socket |
+| `./dev.sock//code` | A relative socket path |
+| `box:7280//` | That server, no database: a control session |
+
+Two rules:
+
+- The split is at the **last** `//`, because a socket path may contain `//` and a database
+  name may not.
+- A relative socket path needs `./`, or it reads as a hostname.
+
+There is no scheme, no alias lookup, and no `user@host`. The handshake has no credential
+field.
+
+### Resolution
+
+1. An address naming no target goes to the default socket. If nothing is listening, that
+   is an error. The tool never silently opens the directory instead, because a server may
+   be holding it.
+2. An address naming a target goes there.
+3. The socket is the only server-detection mechanism.
+
+`create`, `finish` and `db rm` are the exception: with no server listening on the default
+socket they do the work in-process, under the root lock, so an artifact can be built in CI
+without a server. A root held by something that is not listening is refused.
+
+`list` and `describe` read sidecars only, take no lock, and open no store.
+
+## Configuration
+
+```text
+default  →  config file  →  environment (FJORD_…)  →  CLI flag  →  the address argument
+```
+
+The file is `./fjord.json` or `--config <path>`, in the working directory only. There is
+no walk upwards.
+
+```json
+{
+  "target": "/run/user/1000/fjord.sock",
+  "data_dir": "/var/lib/fjord"
+}
+```
+
+| Key | Used by | Notes |
+|---|---|---|
+| `target` | Client commands | Where a server is: a host, `host:port`, or a socket path. Also `FJORD_TARGET`. Never a database name |
+| `data_dir` | Server, offline lifecycle | The store root. Also `FJORD_DATA_DIR` |
+
+### Defaults
+
+| | Default |
+|---|---|
+| Store root | `$FJORD_DATA_DIR`, else `$XDG_DATA_HOME/fjord`, else `$HOME/.local/share/fjord`, else `./fjord-data` |
+| Socket, root **not** chosen | `$XDG_RUNTIME_DIR/fjord.sock` |
+| Socket, root chosen (`--data-dir`) | `<root>/fjord.sock` |
+
+A Unix socket path is limited to 108 bytes on Linux, which is why the default is short.
+
+---
+
+## `fjord serve`
+
+Run the server owning a store root. It refuses to start if another server holds the root.
+
+| Flag | Means |
+|---|---|
+| `--socket <PATH>` | Where to bind. Defaults to the derived path above |
+| `--listen-tcp <HOST:PORT>` | Also listen on TCP. Flag only: no config entry, no environment variable |
+| `--ready-file <PATH>` | Written once the listener is accepting |
+| `--max-connections <N>` | Serve at most `N` connections at once. Defaults to half the soft descriptor limit |
+| `--commit-per-block` | Commit a write stream's facts once per block instead of once per fact |
+
+```bash
+fjord --data-dir ./db serve --ready-file ./ready &
+while [ ! -e ./ready ]; do sleep 0.1; done
+```
+
+Past the connection cap a connection is answered `Busy` and closed.
+
+<Callout tone="warn" label={`\`--commit-per-block\` trades exactly one thing`}>
+
+Committing per fact is 41% of ingest cost. With this flag, a crash mid-ingest may leave a
+reference to a fact that was never written. `finish` walks every reference and refuses to
+seal such a database. The cost is re-running the index, never a wrong answer from one that
+sealed.
+
+</Callout>
+
+## `fjord create <name>`
+
+```bash
+fjord --data-dir ./db create code --schema ./schemas/demo.sigla
+```
+
+| Flag | Means |
+|---|---|
+| `--schema <FILE>` | **Required.** The entry file to create it against |
+
+The schema is resolved, canonicalised, fingerprinted and embedded, and cannot be changed
+afterwards. A schema that declares no predicates is refused. The directory is
+`<root>/<name>/<instance>/`, where the instance is a ULID.
+
+## `fjord write <name> <file.jsonl>…`
+
+```bash
+fjord --data-dir ./db write code facts.jsonl
+```
+
+One JSON object per line:
+
+```json
+{"id": "f", "predicate": "src.File", "fact": "store/keys.py"}
+{"id": "2", "predicate": "src.FileDigest", "fact": {"file": "f"}, "value": {"digest": "a3f1…"}}
+{"predicate": "src.FileInfo", "fact": {"file": "f"}, "value": {"bytes": 812, "lines": 31, "endsInNewline": {"true_": {}}}}
+```
+
+- `id` names a fact within the file, for later lines to reference. It is optional on a
+  fact nothing references, and it is not the id the database assigns.
+- A reference must point at an earlier line. Forward references are refused.
+- Blank lines and lines starting with `#` are skipped.
+- A union is an object naming one alternative: `{"true_": {}}`, `{"just": 3}`. `bytes` is
+  lowercase hex.
+
+This is the simple way in, for a person or a fixture. A producer writing at volume uses a
+client library. It needs a running server.
+
+## `fjord export <name> --to <file.jsonl>`
+
+```bash
+fjord --data-dir ./db export code --to code.jsonl
+```
+
+| Flag | Means |
+|---|---|
+| `--to <PATH>` | **Required.** Where to write it |
+| `--compact` | Group facts by predicate rather than by what references what |
+
+The output is what `write` reads, and a round trip preserves the database's identity. By
+default a fact's targets are the lines immediately above it. `--compact` is cheaper (2.5s
+against 6.0s on a 550,000-fact database) and the same size.
+
+The export is about 3× the store on disk and compresses to about the same. It reads the
+store directly, so stop the server first or export from a copy (`ops-I1`).
+
+## `fjord finish <name>`
+
+```bash
+fjord --data-dir ./db finish code
+```
+
+| Flag | Means |
+|---|---|
+| `--allow-zero-facts` | Seal a database holding no facts |
+
+In order: flush and sync, merge every tree, compute `hash(canonical schema, base facts)`,
+record it, flip the status. The merge is a major compaction and is what makes the sealed
+database fast to read: an unmerged tree was measured seeking up to 180× slower.
+
+An empty database is refused without the flag. Finishing a Complete database is a no-op. A
+crash mid-finish leaves it Writable, and the command can be re-run.
+
+## `fjord list`
+
+```bash
+fjord --data-dir ./db list
+fjord --data-dir ./db list --format json
+```
+
+```text
+NAME  INSTANCE                    STATUS    SCHEMA        CONTENT       FACTS  BYTES   CREATED
+code  01M0BNMTQ3RWQFMM755NV1MWA3  complete  b08eea634e86  f2c2e86612f5  5200   849350  2026-08-19 00:09:58Z
+```
+
+Reads sidecars only, so it works while a server holds the root. It creates nothing.
+
+## `fjord describe <name>`
+
+```bash
+fjord --data-dir ./db describe code
+fjord --data-dir ./db describe code --schema      # dump the embedded schema itself
+fjord --data-dir ./db describe code --format json
+```
+
+Prints the sidecar, then every predicate with its type and fingerprint. `--schema` dumps
+the canonical source, which `create --schema` accepts.
+
+## `fjord query <name> <query>`
+
+```bash
+fjord query code 'F where src.File F' --limit 20
+fjord query code 'D where D = codemarkup.Definition _' --expand
+fjord query code 'R where R = codemarkup.SymbolXRef _' --count --timing
+fjord query '/tmp/fjord.sock//code' 'F where src.File F'
+```
+
+| Flag | Means |
+|---|---|
+| `--format sigla\|jsonl\|json\|raw\|count` | How rows print. `sigla` is the default. `jsonl` is one JSON value per line |
+| `--limit <N>` | Stop after N rows, cancelling the rest in band |
+| `--timeout <SECONDS>` | Give up after this long |
+| `--timing` | Rows and elapsed time, to stderr |
+| `--profile` | Rows examined per plan step, to stderr |
+| `--count` | How many rows, and none of them |
+| `--expand[=HOPS]` | Show the fact a reference names instead of its id. Bare follows the chain to the end |
+
+`--limit` cancels the stream; the query is unchanged. `--count` runs the same plan and
+skips the encoding, which is most of the cost. `--expand` costs a lookup per distinct
+reference.
+
+## `fjord fact <name> <id>…`
+
+```bash
+fjord fact code 'code.File#1'
+```
+
+```text
+"store/keys.py"
+```
+
+What an id names. Several ids are one round trip. An id that names nothing is reported and
+the rest still print. It is a command rather than query syntax because a query names a
+fact by key, and ids change when a database is rebuilt.
+
+## `fjord shell [name]`
+
+```bash
+fjord --data-dir ./db shell code
+fjord --data-dir ./db shell            # the catalogue: which databases are there?
+```
+
+Always over the wire. Queries compile locally against the schema the server serves. With
+no name, the shell opens on the catalogue; `:connect <db>` moves onto a database. See the
+[Shell reference](shell.html).
+
+## `fjord schema …`
+
+```bash
+fjord schema check ./demo.sigla
+fjord schema fingerprint ./demo.sigla [--format json] [--canonical]
+fjord schema diff before.sigla after.sigla
+fjord schema diff before.sigla code           # a file against a database
+```
+
+`check` reports unresolved imports, syntax errors and redeclarations. `fingerprint` prints
+the schema's number and each predicate's; `--canonical` prints the form it is taken over.
+`diff` takes files or database names.
+
+## `fjord db rm <name>`
+
+```bash
+fjord --data-dir ./db db rm scratch -y
+```
+
+Through the server if it holds the database, otherwise offline under the lock. `-y` is
+required, and the command never prompts. Without it nothing is deleted and the command
+fails.
+
+## Errors
+
+Every failure is one sentence naming the tool. A compiler diagnostic is printed with its
+code and caret.
+
+```text
+fjord: could not connect to the Fjord server at /run/user/1000/fjord.sock
+           is one running? `fjord serve` starts one over this data directory
+```
+
+```text
+error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
+  ┌─ <input>:1:9
+  │
+1 │ X where src.Nope X
+  │         ^^^^^^^^^^
+```
+
+## Not built yet
+
+| Command | Status |
+|---|---|
+| `fjord write <db> [FILE…]` | Not built. The file format exists; the command does not |
+| `fjord db backup` / `db restore` | Not built. A Complete database is a directory: `tar` it |
+| `fjord db verify` | Not built |
+| `fjord completions <shell>` | Not built |

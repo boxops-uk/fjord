@@ -128,7 +128,7 @@ pub enum CatalogError {
     /// restore it: every path it had to send has been sent. What this converts is a
     /// wrong answer served silently and permanently into a refusal that names the
     /// database. It does not make the window safe;
-    /// [operations](../../../website/content/operations.md#publish-by-rename-required-for-a-live-root)'s
+    /// [operations](../../../web/src/content/operations.mdx#publish-by-rename-required-for-a-live-root)'s
     /// atomic publish is what does that.
     ///
     /// Counted rather than re-hashed: a fact count is a fifth of the walk that would
@@ -159,7 +159,7 @@ pub enum CatalogError {
     /// A schema that cannot be written down and read back as itself.
     ///
     /// A database embeds its schema as source and is served from that copy
-    /// ([I13](../../../website/content/invariants.md#i13)), so a schema that does not survive the
+    /// ([I13](../../../web/src/content/invariants.mdx#i13)), so a schema that does not survive the
     /// round trip is one no database could be opened with. Refused at `create`, where
     /// nothing has been written yet — the alternative is an artifact whose predicates
     /// come back at different positions, which reads every stored row through the wrong
@@ -186,7 +186,7 @@ pub enum CatalogError {
     /// created from one of these is an artifact nothing can ever write to and no query
     /// can name anything in. Refused for the reason the two checks above are, with one
     /// more on top: a schema is frozen for the database's lifetime
-    /// ([I13](../../../website/content/invariants.md#i13)), so an empty one cannot be
+    /// ([I13](../../../web/src/content/invariants.mdx#i13)), so an empty one cannot be
     /// filled in afterwards.
     #[error(
         "the schema for `{name}` declares no predicates, so nothing could ever be \

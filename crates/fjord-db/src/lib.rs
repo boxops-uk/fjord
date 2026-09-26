@@ -88,7 +88,7 @@
 //! key, and [`Expander`] walks that recursively — how deep to expand is a display
 //! decision, so it is the client's, and the server does one point read per id.
 //!
-//! [I13]: https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i13
+//! [I13]: https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i13
 //! [`Schema`]: fjord_schema::schema::Schema
 //! [`FactId`]: fjord_schema::id::FactId
 

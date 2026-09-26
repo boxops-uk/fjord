@@ -1,0 +1,294 @@
+export const meta = {
+  "title": "Getting started",
+  "description": "Install the binary, write nine facts about a tiny codebase, and ask where a function is used. About five minutes."
+}
+
+Fjord is one binary, and a database is a directory. There is no daemon to configure and no
+connection string. Every command below was run as written, and every output block is what
+it printed.
+
+## Install
+
+Each [release](https://github.com/boxops-uk/fjord/releases/latest) carries a Linux x86_64
+binary, a checksum, and a build attestation.
+
+```bash
+base=https://github.com/boxops-uk/fjord/releases/latest/download
+curl -LO $base/fjord
+curl -LO $base/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+```
+
+```text
+fjord: OK
+```
+
+The checksum proves the download is intact. The attestation proves who built it: GitHub
+Actions, from this repository, at a named commit.
+
+```bash
+gh attestation verify ./fjord --repo boxops-uk/fjord
+```
+
+It prints nothing and exits `0` when the provenance holds.
+
+```bash
+chmod +x fjord && ./fjord --version
+```
+
+```text
+fjord 0.5.1
+```
+
+On other platforms, build from source with a Rust toolchain:
+
+```bash
+cargo install --git https://github.com/boxops-uk/fjord fjord-cli
+```
+
+The `fjord-x86_64-linux-musl` build in the same release is statically linked, for Alpine,
+`scratch` containers, or glibc older than 2.34.
+
+## Write a schema
+
+A database is created against a **schema**, which is frozen into it for life. Here is one
+with three predicates: files, what they declare, and which declarations refer to which.
+
+```schema
+schema code {
+  # A path. Stored once, however many facts mention it.
+  predicate File : string
+
+  # What a file declares. The value side — after the arrow — is read
+  # only when a query asks for it.
+  predicate Decl : { file : File, name : string, line : int } -> string
+
+  # One declaration referring to another.
+  predicate Ref : { from : Decl, to : Decl }
+}
+```
+
+Save it as `example.sigla`. Everything before the `->` is the **key**: indexed, and what
+queries match on.
+
+```bash
+fjord schema check example.sigla
+```
+
+```text
+3 predicate(s) in 1 file(s)
+  example.sigla
+fingerprint 0x28816085c1ab2e8d
+```
+
+## Create a database
+
+```bash
+fjord create code --schema example.sigla
+```
+
+```text
+created code (01M3086YEDNMF7XMY6Z437QZN0) against example.sigla
+```
+
+`code` is the name. The ULID is the **instance**. Databases live under
+`~/.local/share/fjord` unless you set `--data-dir` or `FJORD_DATA_DIR`.
+
+## Start a server
+
+Readers talk to a server over a Unix socket. They never open the directory directly.
+
+```bash
+fjord serve --ready-file ./ready &
+while [ ! -e ./ready ]; do sleep 0.1; done
+```
+
+```text
+fjord serve
+  data dir   /home/ubuntu/.local/share/fjord
+  socket     /run/user/1000/fjord.sock
+  protocol   4
+  connections 524288 at once  (half the descriptor limit; --max-connections sets it)
+  databases  1
+    code                 writable
+```
+
+The socket path derives from the data directory, so clients find it without configuration.
+`--ready-file` appears once the server is accepting connections.
+
+## Write facts
+
+One JSON object per line. `id` names a fact within this file so later lines can refer to
+it.
+
+```json
+{"id": "keys", "predicate": "code.File", "fact": "store/keys.py"}
+{"id": "codec", "predicate": "code.File", "fact": "store/codec.py"}
+{"id": "plan", "predicate": "code.File", "fact": "query/plan.py"}
+
+{"id": "key_of", "predicate": "code.Decl", "fact": {"file": "keys", "name": "key_of", "line": 12}, "value": "def key_of(row)"}
+{"id": "key_prefix", "predicate": "code.Decl", "fact": {"file": "keys", "name": "key_prefix", "line": 48}, "value": "def key_prefix(pred)"}
+{"id": "encode_key", "predicate": "code.Decl", "fact": {"file": "codec", "name": "encode_key", "line": 7}, "value": "def encode_key(key)"}
+{"id": "Plan", "predicate": "code.Decl", "fact": {"file": "plan", "name": "Plan", "line": 5}, "value": "class Plan"}
+
+{"predicate": "code.Ref", "fact": {"from": "Plan", "to": "key_of"}}
+{"predicate": "code.Ref", "fact": {"from": "encode_key", "to": "key_of"}}
+```
+
+```bash
+fjord write code facts.jsonl
+```
+
+```text
+read 9 line(s): 9 fact(s) written, 12 already there
+```
+
+Twelve "already there" from nine lines: each `Ref` carries its two declarations, and each
+declaration carries its file. The server writes a fact once and recognises it every time
+after.
+
+`fjord write` is the simple way in. For millions of facts, use a client library, which
+sends hundreds of facts per block. See [Clients](clients.html#writing-facts-from-rust).
+
+## Query
+
+```bash
+fjord query code 'F where code.File F'
+```
+
+```sigla
+"query/plan.py"
+"store/codec.py"
+"store/keys.py"
+```
+
+Name fields to get records back:
+
+```bash
+fjord query code \
+  '{name = N, line = L} where code.Decl {file = F, name = N, line = L}'
+```
+
+```sigla
+{line = 12, name = "key_of"}
+{line = 48, name = "key_prefix"}
+{line = 7, name = "encode_key"}
+{line = 5, name = "Plan"}
+```
+
+Now the question a code index exists for. What refers to `key_of`?
+
+```bash
+fjord query code \
+  '{file = F, line = L} where code.Ref {to = code.Decl {name = "key_of"},
+                                        from = code.Decl {file = F, line = L}}' --expand
+```
+
+```sigla
+{file = "store/codec.py", line = 7}
+{file = "query/plan.py", line = 5}
+```
+
+`--expand` turns a file reference into its path. References are stored as ids, and
+resolving one costs a lookup, so it is off by default.
+
+The value side is fetched only when you name it:
+
+```bash
+fjord query code \
+  '{name = N, source = D.value} where D = code.Decl {file = _, name = N, line = _}'
+```
+
+```sigla
+{name = "key_of", source = "def key_of(row)"}
+{name = "key_prefix", source = "def key_prefix(pred)"}
+{name = "encode_key", source = "def encode_key(key)"}
+{name = "Plan", source = "class Plan"}
+```
+
+For a pipe, ask for JSON:
+
+```bash
+fjord query code 'F where code.File F' --format jsonl | jq -r .
+```
+
+## Use the shell
+
+```bash
+fjord shell code
+```
+
+```text
+fjord shell — `code` on /run/user/1000/fjord.sock
+  5 predicate(s) · rows print as sigla · :help for commands
+sigla> :limit 2
+  2 row(s) per page
+sigla> D.name where D = code.Decl _
+  : str
+"key_of"
+"key_prefix"
+  :more for the next 2 — 2 so far
+sigla> :more
+"encode_key"
+"Plan"
+  :more for the next 2 — 4 so far
+```
+
+The shell compiles queries locally, so a typo is a caret under the word with no round
+trip. `:more` resumes from a token; the server keeps nothing open between pages. See the
+[Shell reference](shell.html).
+
+## Seal it
+
+```bash
+fjord finish code
+```
+
+```text
+sealing code — merging trees, then computing identity
+sealed code: 9 facts, 34254 bytes, identity 0xf7b64f0fbd9255ad
+```
+
+The identity hashes the schema and the facts, so two machines that indexed the same commit
+get the same number. Writers are now refused at connection time:
+
+```text
+fjord: `code` is complete: it takes no more writes
+```
+
+## From your own program
+
+```bash
+cargo add fjord-db                        # Rust
+dotnet add package Boxops.Fjord.Client    # .NET — net8.0 or net10.0
+```
+
+```rust
+use std::{path::Path, sync::Arc};
+use fjord_db::{Connection, Mode, Schema};
+
+let mut connection = Connection::connect(
+    Path::new("/run/user/1000/fjord.sock"),   // the socket `serve` printed
+    "code",
+    Arc::new(Schema::empty()),   // a reader has no claim to make
+    Mode::ReadOnly,
+    false,
+)?;
+
+let schema = Arc::new(connection.served_schema()?);   // ask the database for its own
+
+let mut rows = connection.query("F where code.File F")?;
+for row in connection.take(&mut rows, 20)? {
+    println!("{row:?}");
+}
+```
+
+`take` reads *n* rows and leaves the stream open. Pausing costs the server nothing.
+
+## Next
+
+- [A guided tour](walkthrough.html): a real repository, indexed with Roslyn.
+- [Concepts](concepts.html): facts, predicates, keys, values, lifecycle.
+- [sigla query language](query-language.html): every construct.
+- [Schema language](schema-language.html): how to design keys.
+- [CLI reference](cli.html): every command and flag.

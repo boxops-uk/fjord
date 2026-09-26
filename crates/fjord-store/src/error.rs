@@ -22,7 +22,7 @@ use crate::format::FormatVersion;
 
 /// A database this build cannot read, decided from its
 /// [format stamp](crate::format) before a single row is touched
-/// ([I15](../../../website/content/invariants.md#i15)).
+/// ([I15](../../../web/src/content/invariants.mdx#i15)).
 ///
 /// Every variant is a *refusal*, and that is the point of the type: without a
 /// stamp the alternative is not an error but a silent misread, since bytes written
@@ -56,7 +56,7 @@ pub enum FormatError {
 }
 
 /// Faults raised by the storage backend itself, or by rows on disk that don't
-/// match the [layout](../../../website/content/storage.md) the store wrote.
+/// match the [layout](../../../web/src/content/storage.mdx) the store wrote.
 ///
 /// Corruption surfaces here as a typed error rather than a panic: the read path
 /// decodes bytes it did not produce in this process (a reopened DB, a file copied
@@ -86,7 +86,7 @@ pub enum StoreError {
     Fact(#[from] FactError),
 
     /// A `keys` row naming an id with no row behind it in `entities`. The
-    /// [scan → point mapping](../../../website/content/storage.md) is a total function
+    /// [scan → point mapping](../../../web/src/content/storage.mdx) is a total function
     /// only while every id resolves, so a gap is a fault in the store rather than
     /// a query answering nothing.
     #[error("dangling fact id {0:?}: key present but no entity in the `entities` column family")]
@@ -125,12 +125,12 @@ pub enum StoreError {
     /// A key maps to exactly one fact, so the alternative to refusing is to
     /// overwrite the `keys` row and strand the first fact's entity — a fact no
     /// query can reach, and one no bijection check can attribute to anything
-    /// ([I12](../../../website/content/invariants.md#i12)). Last-writer-wins is the one outcome
+    /// ([I12](../../../web/src/content/invariants.mdx#i12)). Last-writer-wins is the one outcome
     /// an immutable store cannot have.
     ///
     /// A byte-identical fact is *not* this: it dedups to the id already there,
     /// which is the merge frontier's rule for the same situation
-    /// ([operations §5](../../../website/content/operations.md)).
+    /// ([operations §5](../../../web/src/content/operations.mdx)).
     #[error(
         "{predicate:?} already holds a different fact keyed the same way, as {existing:?}; \
          a key is written once"

@@ -170,6 +170,32 @@ pub fn corpus_run(query: &str) -> String {
     fjord_inspect::corpus::rows_json(query)
 }
 
+/// Step `query` over the loaded corpus, one transition at a time — [`trace`]'s
+/// answer, over the index rather than the demo database.
+#[wasm_bindgen]
+#[must_use]
+pub fn corpus_trace(query: &str) -> String {
+    fjord_inspect::corpus::trace_json(query)
+}
+
+/// **A window onto the stored keys around a range the executor opened.**
+///
+/// `lo` and `hi` are a trace's own bounds, in the hex it prints; an empty `hi` is
+/// a range that runs to the end of the predicate. The counts either side say how
+/// many rows the window stands in for, which is what makes a seek over a large
+/// index legible without drawing all of it.
+#[wasm_bindgen]
+#[must_use]
+pub fn corpus_window(lo: &str, hi: &str, before: usize, inside: usize, after: usize) -> String {
+    fjord_inspect::corpus::window_json(
+        lo,
+        if hi.is_empty() { None } else { Some(hi) },
+        before,
+        inside,
+        after,
+    )
+}
+
 /// The schema the site opens with — `schemas/demo.sigla`, the database in the
 /// page rather than the code index `schemas/dotnet.sigla` describes.
 #[wasm_bindgen]

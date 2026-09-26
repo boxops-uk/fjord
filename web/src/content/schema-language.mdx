@@ -1,0 +1,328 @@
+export const meta = {
+  "title": "Schema language",
+  "description": "The .sigla schema DSL: predicates, types, unions, imports, identity and compatibility. Field order is key order, and it is the most important decision you make."
+}
+
+A schema is a `.sigla` file. It declares namespaces and the predicates in them. A database
+is created against a schema, embeds a copy, and is served from that copy for life
+([I13](invariants.html#i13)).
+
+## A whole schema
+
+```schema
+# Comments start with `#`.
+schema demo {
+
+  # A scalar key: the whole key is one string.
+  predicate Person : string
+
+  # A record key. Field order is key order.
+  predicate Knows : { from : Person, to : Person }
+
+  # `-> T` is the value side: read on demand, never matched on.
+  predicate Age : { person : Person } -> int
+
+  # A nested record, and a reference into another predicate.
+  predicate Sighting : { who : Person, at : { line : int, col : int } }
+}
+```
+
+Here is one running live. Edit it, break it, and the diagnostic is the compiler's own.
+
+<Demo kind="schema">{`schema code {
+  type What = { data : string = 5 | func : int = 2 }
+
+  predicate File : string
+  predicate Decl : { file : File, name : string, line : int } -> string
+  predicate Kind : { decl : Decl, what : What }
+}`}</Demo>
+
+## Grammar
+
+```text
+file        ::= decl*
+decl        ::= 'schema' ns '{' item* '}'
+              | 'schema' ns 'evolves' ns            (parses, not available)
+
+item        ::= 'import' ns
+              | 'type' UpperName '=' type
+              | 'predicate' UpperName ':' type [ '->' type ] [ 'stored' ]
+              | 'derive' name [ 'stored' ]          (parses, not available)
+
+type        ::= 'int' | 'string' | 'bytes'          builtin
+              | UpperName | qualified.UpperName     a predicate or a named type
+              | '{' fields '}'                      a record — or a sum, see below
+              | '(' type ')'
+              | '[' type ']'                        (parses, not available)
+              | 'maybe' type                        (parses, not available)
+              | 'set' type                          (parses, not available)
+              | 'enum' '{' name ('|' name)* '}'     (parses, not available)
+
+fields      ::= field (',' field)* [',']            a record
+              | field ('|' field)+                  a sum: `a : t = 0 | b : t = 1`
+field       ::= name [':' type] ['=' nat]           `= nat` is a discriminant
+ns          ::= a dotted lowercase name — `src`, `lang.rust`
+```
+
+A record and a union share their braces. The separator after the first field decides:
+`,` for a record, `|` for a union. A keyword may be a field name.
+
+## Types
+
+| Written | Means |
+|---|---|
+| `int` | A signed 64-bit integer. Negatives sort correctly |
+| `string` | UTF-8 text. A prefix is a range |
+| `bytes` | Uninterpreted bytes, ordered by `memcmp`. A prefix is a range. Written in a query as `0x…` |
+| `Predicate` / `ns.Predicate` | A **reference** to a fact of that predicate |
+| `{ a : int, b : string }` | A record. Ordered fields, nesting allowed |
+| `{ a : int = 0 \| b : string = 1 }` | A **union**. One of the alternatives, tagged by a number. See [unions](#unions) |
+| `type Name = …` | A named type. It is inlined, so the name is not part of the schema's identity |
+
+A **value side** is `-> T`, and `T` may be any type, including a record:
+
+```schema
+predicate Decl : { module : Module, name : string, line : int } -> string
+predicate Boxed : { id : int } -> { lo : int, hi : int }
+```
+
+Use `bytes` for a digest, a hash, or a packed table. A `string` pattern against a `bytes`
+field is a type error.
+
+## Unions
+
+A field may hold one of several **alternatives**, each with an explicit discriminant:
+
+```schema
+schema src {
+  predicate File : string
+  predicate Decl : { file : File, name : string }
+
+  # One of three shapes a reference can resolve to. `missing` has no payload
+  # type, which is the empty record.
+  type Target = { decl : Decl = 0 | file : File = 1 | missing = 2 }
+
+  predicate Ref : { at : int, to : Target }
+}
+```
+
+- **You write the discriminant.** It is never inferred from position, because positions
+  change when an alternative is inserted and stored data would be re-tagged
+  ([I10](invariants.html#i10)).
+- A single-alternative union needs a trailing `|`: `{ only : string = 0 | }`.
+- A payload may be any type. No payload means the empty record.
+- Lowering refuses a missing discriminant, two alternatives sharing a tag, and two sharing
+  a name.
+
+Once union data is written its discriminants are frozen, and `schema diff` reports every
+union edit as Breaking, appending included.
+
+In a query, `code.Resolves {to = {decl = D}}` names one alternative and `X.to.decl?`
+selects one. See [unions in the query language](query-language.html#unions).
+
+## Field order is the index design
+
+This is the most consequential decision in a schema.
+
+A key is encoded field by field in **declaration order**, and the encoding sorts. A query
+can narrow a scan on a **leading run** of key fields and can only filter on the rest.
+
+```schema
+# Fast at: "the declarations in this module", "…narrowed by name".
+# Slow at:  "every declaration called X, anywhere".
+predicate Decl : { module : Module, name : string, line : int } -> string
+
+# Fast at: "everything called X" — the same data, keyed for the other question.
+predicate SearchByName : { name : string, to : Decl }
+```
+
+Read each predicate as *what is this fast at*. If you want the same data in two orders,
+declare it twice. Two predicates in the sample schema were once declared alphabetically.
+The cost was 56,274 rows examined per row produced on an ordinary join.
+
+<Callout tone="warn" label={`Declaring a key alphabetically is a choice`}>
+
+It makes the index shape a consequence of what the fields happen to be called.
+
+</Callout>
+
+Two more placement rules:
+
+- **A field a query must match on belongs in the key.** A value cannot be matched
+  ([I6](invariants.html#i6)).
+- **A trailing key field costs nothing.** Put fields a query always reads at the end of the
+  key rather than in the value. Every prefix above them still narrows, and a value is a
+  separate read per row.
+
+## Namespaces and imports
+
+A namespace is a dotted lowercase name. It is open across files. An import names a
+namespace, not a path:
+
+```schema
+schema app {
+  import base
+
+  predicate Marker : { file : base.File, at : base.Span }
+}
+```
+
+`base` resolves to `base.sigla`, and `lang.rust` to `lang/rust.sigla`, under the entry
+file's own directory first and then each `--schema-path` (also `FJORD_SCHEMA_PATH`). First
+match wins.
+
+```bash
+fjord --schema-path ./schemas schema check ./app.sigla
+```
+
+```text
+2 predicate(s) in 2 file(s)
+  ./app.sigla
+  ./base.sigla
+fingerprint 0x72e0ddfeda09028f
+```
+
+<Callout tone="note" label={`Write \`./file.sigla\`, not \`file.sigla\``}>
+
+The entry file's own directory is the first root, and a bare filename has no directory.
+Use `./app.sigla`, an absolute path, or pass the directory as `--schema-path`.
+
+</Callout>
+
+Rules:
+
+- Cycles and diamonds are fine. A file already read is not read again.
+- One fully-qualified name declared twice is `reject/redeclaration`, even if identical.
+- The file an import finds must declare the namespace the import named, or it is
+  `reject/namespace-mismatch`.
+- What `a` imports, anything importing `a` can see.
+
+An embedder with no filesystem hands `fjord_db::read_schema` a list of `(name, text)`
+pairs instead. The list's order is the search order.
+
+```rust
+let schema = fjord_db::read_schema([
+    ("app.sigla", include_str!("../schemas/app.sigla")),
+    ("base.sigla", include_str!("../schemas/base.sigla")),
+])?;
+```
+
+## Identity: canonical form and fingerprints
+
+A schema's identity does not depend on file layout, comments, whitespace or declaration
+order.
+
+1. **Canonical form.** Every name fully qualified, everything else stripped.
+2. **Fingerprint.** A hash over that form, one per predicate and one for the schema.
+
+```bash
+fjord schema fingerprint ./app.sigla --canonical
+```
+
+```text
+fjord-schema-v1
+app.Marker:{file:@base.File#0beb86474c616b93,at:{line:int,col:int}}
+base.File:string
+```
+
+A named type is inlined. A reference is spelled as the target's name plus the target's own
+fingerprint, so changing a predicate changes the fingerprint of everything that references
+it. Field order is part of the identity.
+
+## Compatibility
+
+```text
+compatible(old → new)  ⇔  old_map ⊆ new_map
+```
+
+**The only compatible change is adding a predicate.** Any change to an existing predicate,
+including reordering fields, is Breaking.
+
+```bash
+fjord schema diff people.sigla people2.sigla
+fjord schema diff people.sigla people3.sigla
+```
+
+```text
+Compatible (1 added)
+  + demo.Employer
+
+Breaking (1 predicate(s))
+  ~ demo.Knows  (modified: 080f8e02ff957601 → c1779584fe40b587)
+```
+
+Either side of `diff` may be a schema file or the name of a database. The migration path
+for a breaking change is a new predicate name, or a new database. There is no `evolves`
+and no projection layer.
+
+## Where a schema is used
+
+| Moment | What happens |
+|---|---|
+| `fjord schema check` | Resolve imports, lower, report errors |
+| `fjord create --schema F` | Resolve, canonicalise, fingerprint, and embed |
+| A client connecting | The client's claimed predicates are checked against the embedded copy |
+| A client asking for the schema | The server answers with the database's own copy, as source |
+| Every write | Validated against the embedded copy |
+
+## What is not available yet
+
+Each of these parses and then names itself in a diagnostic:
+
+```schema
+schema t {
+  predicate A : [ int ]                          # nyi/array
+  predicate B : maybe string                     # nyi/maybe
+  predicate D : enum { x | y }                    # nyi/enum
+  predicate E : set int                           # nyi/set
+  derive t.A                                      # nyi/derivation
+}
+schema t evolves u                                # nyi/evolves
+```
+
+```text
+error[nyi/maybe]: `maybe` is sugar over a union, and waits on a naming decision: the
+                  alternative names it desugars to enter the fingerprint
+  ┌─ /tmp/nyi.sigla:3:17
+  │
+3 │   predicate B : maybe string
+  │                 ^^^^^^^^^^^^
+```
+
+A one-to-many is one fact per element, and that is the settled answer: an array cannot be
+prefix-matched, so it would close the seek prefix for every field after it. Edges like
+`predicate ProjectRef : { from : Project, to : Project }` express a many-to-many.
+
+## The schemas that ship
+
+`schemas/demo.sigla` is the worked example: a small code index with at least one predicate
+for every construct. Read it when designing a schema. Each predicate's comment says which
+question its key order answers.
+
+| Construct | Where to see it |
+|---|---|
+| a scalar key, and a reference to one | `code.File`, and every predicate that names it |
+| a record key with a value side | `code.Decl` |
+| a nested record in a key, and in a value | `code.Span`, `code.Extent` |
+| a union in a key, both ways round | `code.Kind` and `code.KindOf` |
+| every kind of union payload | `code.Resolves` |
+| a single-alternative union | `code.Note` |
+| `bytes` | `code.Digest` |
+| a keyword as a field name | `code.Extends`, whose first field is `type` |
+
+The set a real producer writes is `schemas/dotnet.sigla`, composed from these layers:
+
+| Schema | Holds |
+|---|---|
+| `src` | Files, symbols, line tables, digests, styles. Every other layer imports it, so a file is one type everywhere |
+| `config` | `config.Setting {dimension, value}`: what the index was built for. `position-encoding` (`utf8` or `utf16`, default `utf16`) says what unit every offset counts in |
+| `msbuild` | The project graph |
+| `csharp` | The semantic layer Roslyn answers |
+| `codemarkup` | The surface a UI reads: definitions, cross-references, search entries. Joins on `src.Symbol`, a string, so an index can reference declarations in another database |
+
+Three more (`typescript`, `npm`, `bundle`) are declared and checked but nothing here
+populates them. `index.sigla` imports all of them to prove the set composes.
+
+There are also two **virtual** predicates, `fjord.db.List` and `fjord.db.Interning`,
+answered by the server rather than stored. The reserved `fjord.` namespace can never
+collide with yours.

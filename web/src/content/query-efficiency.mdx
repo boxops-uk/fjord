@@ -1,0 +1,198 @@
+export const meta = {
+  "title": "Query efficiency",
+  "description": "A query's cost is the rows it examines, not the rows it answers. What narrows a scan, what closes it, and how to read the plan."
+}
+
+Two queries that answer the same rows can differ in cost by orders of magnitude. The
+difference is how many rows the executor looked at. This page is the rule for keeping that
+number small.
+
+There is no cost model and no statistics. The compiler chooses a loop order for legality,
+not speed. What decides the cost is the **schema's field order** and **what your query
+pins**, and both are visible in `:plan` before you run anything.
+
+## Rows examined is the number to watch
+
+```text
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
+```
+
+`--profile` prints this per step. **Examined** is rows read off a scan. **Produced** is rows
+that reached the head. A query that answers five rows out of eight million examines eight
+million if its filters cannot narrow the scan, and it looks instant on a demo database.
+
+## What each key field can do
+
+The compiler walks a predicate's key fields in declaration order and decides one of five
+things about each:
+
+| Decision | When | Cost |
+|---|---|---|
+| **seek** | A constant or a range, and every field before it also narrowed | Nothing. The scan opens on a shorter range |
+| **splice** | A value an outer loop already bound | Nothing. This is the join |
+| **guide** | A [fuzzy pattern](fuzzy-search.html), and every field before it narrowed | An automaton walk per row |
+| **bound** | A captured variable an order comparison constrains, and every field before it narrowed | Nothing. The scan opens on the window |
+| **filter** | Anything at all, once the prefix has closed | A row read, then dropped |
+
+## The rule: a field narrows only while everything before it did
+
+The seek prefix is built left to right. The first field that cannot contribute closes it,
+and everything after it filters, however specific it looks.
+
+| At a key field | The prefix |
+|---|---|
+| A literal, or a variable that folded to one | stays open |
+| A variable an outer level bound | stays open |
+| A reference to a row an outer level bound | stays open |
+| A union alternative, `{text = …}` | stays open |
+| A complete record, `{extra = 1, inner = 2}` | stays open |
+| A string prefix, `"a"..` | ends it, as the last part |
+| A fuzzy pattern, `"ann"~1` or `"ann"~<1` | ends it, and becomes the guide |
+| A captured variable an order comparison bounds, `Ln >= 1000` | ends it, and becomes the range |
+| A wildcard, `_` | closes it |
+| A captured variable with no constraint | closes it |
+| A partial record, `{extra = 1, inner = A}` | closes it |
+| A computed value, `Y + 1` | closes it (`nyi/value-match`) |
+
+The one that surprises people is the capture:
+
+```sigla
+X where test.Foo {id = X, name = "ann"}      → a scan, then a filter
+X where X = test.Foo {id = 1}                → a seek
+```
+
+`test.Foo` is keyed `{id, name}`. Asking *which ids are called `ann`* captures `id` first,
+so `name = "ann"` is a filter even though it is a constant. No spelling of that question
+seeks. **The fix is a second predicate keyed the other way.** See
+[field order is the index design](schema-language.html#field-order-is-the-index-design).
+
+## Constraints are collected before the order is chosen
+
+Where you write a constraint does not matter:
+
+```sigla
+X where test.Name X; X = "a"..               → the same range seek
+X where X = "a"..; test.Name X               → as this one
+```
+
+When a variable carries several constraints they are applied by what each can do, not by
+where it was written: an exact constant, then a prefix, then a fuzzy pattern. These two are
+one plan:
+
+```sigla
+N where test.Name N; N = "an"..; N = "ann"~2
+N where test.Name N; N = "ann"~2; N = "an"..
+```
+
+## A fuzzy match: guide or filter
+
+A fuzzy pattern works in any position. Position decides only whether it can skip work.
+
+```sigla
+N where test.Name N; N = "ann"~1                     guide  — the field leads the key
+N where test.Foo {id = 1, name = N}; N = "ann"~1     guide  — the field before it is pinned
+N where test.Bar {id = I};
+      test.Foo {id = I, name = N}; N = "ann"~1       guide  — pinned by the outer level
+N where test.Foo {id = _, name = N}; N = "ann"~1     filter — the leading field is free
+```
+
+Where a level carries both `~` and `~<`, the whole-string one guides and the other
+filters. [Fuzzy search](fuzzy-search.html) has the details.
+
+## An order comparison: seek or filter
+
+A comparison against a constant on the field that ends the seek prefix becomes a range.
+Anywhere else it filters.
+
+```sigla
+X where test.Count X; X < 7                                    range  — the capture is the key
+{n = Ln, v = L.value}
+  where F = content.File "src/parse.rs";
+        L = content.Line {file = F, line = Ln};
+        Ln >= 1000; Ln < 1200                                  range  — `file` is fixed
+{a = F, b = T} where test.Edge {from = F, to = T}; T > 2       filter — `from` closed it first
+Y where test.Edge {from = X, to = Y}; test.Bar {id = Z}; Z < X filter — the other side is a row
+```
+
+The middle one is the case that matters. As a range it opens the scan at line 1000. As a
+filter it reads lines 1 to 1200 and discards a thousand.
+
+One lower and one upper bound can fold into the seek. A second of either sense filters. A
+pattern outranks a bound on the same field.
+
+## What never seeks
+
+| Construct | Why |
+|---|---|
+| A denial, `X != "a"..` or `X != 3` | "Not this" is two ranges, and a seek walks one |
+| A comparison against another row, `A.x < B.y` | The other side is not known until the outer row is |
+| A negation, `!(…)` | A test, probed per row |
+| Anything reading `.value` | Values are not in the index ([I6](invariants.html#i6)) |
+| A repeated variable in one row, `{from = X, to = X}` | Refused by name |
+
+None of these is a reason to avoid them. A denial inside a narrow range costs almost
+nothing. The trap is a denial that is the only thing you said.
+
+## Order is yours to choose
+
+The compiler runs a statement as soon as everything it reads is bound, and otherwise keeps
+your order. So write the generator that binds the other's key first:
+
+```sigla
+N where test.Bar {id = I}; test.Foo {id = I, name = N}
+      r0 <- test.Bar scan
+      r1 <- test.Foo seek[id = r0.id, name = _]
+```
+
+`test.Bar` is scanned. `test.Foo` is sought once per row. Put the small or already narrowed
+predicate on the outside.
+
+<Callout tone="warn" label={`A join can still be a filter`}>
+
+```sigla
+N where test.Named {name = N, of = F}; F = test.Foo {id = 1, name = _}
+      r0 <- test.Foo seek[id = 1, name = _]
+      r1 <- test.Named scan
+           where of == r0#
+```
+
+`test.Named` is keyed `{name, of}`. `F` is bound, but `name` is captured in front of it, so
+the reference compare is a filter over the whole predicate.
+
+</Callout>
+
+## Read the plan, then the profile
+
+`:plan <query>` in the shell answers without running anything. `query --profile` reports
+what a run examined.
+
+| In a plan | Means |
+|---|---|
+| `scan` | The whole predicate |
+| `seek[…]` | A narrowed range. `= _` marks where the prefix stopped |
+| `seek~[…]` | A guided walk |
+| `fetch[r0.of]` | One row, by id |
+| `where …` | A filter: rows read and dropped |
+
+<Demo kind="plan">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
+
+## The ceiling is deployment policy
+
+The server refuses a query that examines more than 64,000,000 rows, and a listener can set
+a tighter ceiling. It counts input, not output, so a scan whose filters reject everything
+is still stopped. An embedded caller gets no ceiling unless it asks for one. The ceiling
+never changes an answer.
+
+`--limit` and `:more` are different: they cut a result short and hand back a cursor, and
+the query resumes exactly where it stopped.
+
+## When the answer is the schema
+
+If a question you ask often reads far more rows than it produces, and
+[the rule](#the-rule-a-field-narrows-only-while-everything-before-it-did) says every field
+it could narrow on is behind a capture, declare the same data keyed for that question.
+Field order is the largest effect measured anywhere in this project; see
+[Performance](performance.html#field-order-is-the-largest-effect-measured-anywhere).

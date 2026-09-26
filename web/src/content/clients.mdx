@@ -1,0 +1,203 @@
+export const meta = {
+  "title": "Clients & the viewer",
+  "description": "The .NET client and indexer, the retired viewer, and how to write a client of your own."
+}
+
+Everything that talks to Fjord is a client of one protocol. The CLI, the shell, and a C#
+program written outside the repository all use the same frames.
+
+## The .NET client
+
+| Project | What it is |
+|---|---|
+| `Boxops.Fjord.Client` | The library: varints, CRC-32, the value codec, blocks, frames, the handshake, a connection. Published for `net8.0` and `net10.0`, no dependencies |
+| `Boxops.Fjord.Demo` | A console program that writes a small code index and queries it back |
+| `Boxops.Fjord.Indexer` | A real indexer: Buildalyzer and Roslyn over a .NET checkout |
+
+```bash
+dotnet add package Boxops.Fjord.Client
+```
+
+It exists to prove the protocol is implementable from outside. It shares no constants with
+the server, only the specification, and its encoder is held byte-for-byte against the
+Rust one over a checked-in golden.
+
+```bash
+./clients/dotnet/run-demo.sh
+```
+
+```text
+writing 6 declarations, every reference nested
+  created 12, deduped 6 (of 18 facts touched)
+  6 declarations + 3 modules + 3 files = 12 distinct facts
+
+a reference with a nested-record key: created 1, deduped 4
+the same declarations again: created 0, deduped 18
+```
+
+Sending the same declarations again writes nothing. That is what makes retrying after a
+dropped connection safe.
+
+### What a client has to know
+
+**It has to have the schema.** The wire carries no field names or types, so a client
+encodes positionally against the schema and asserts its fingerprint at the handshake. A
+mismatch is a refused connection rather than a corrupt database.
+
+**It does not have to know how facts are stored.** The storage codec is never on the wire.
+
+### The real indexer
+
+```bash
+./clients/dotnet/index-repo.sh ~/src/OrchardCore
+```
+
+A design-time build per project, then Roslyn answers what every name means. It writes
+`schemas/dotnet.sigla`: sixty-five predicates across five schemas. A checkout that builds
+for two frameworks produces two databases, `code#net8.0` and `code#net10.0`, each
+recording its framework in `config.Setting`.
+
+```text
+  server                     105,126 created, 910,367 deduped
+```
+
+Every reference carries its target nested inside it, so facts touched outnumber facts
+created by a factor of eight. A producer holding no ids is the only tractable design at
+scale.
+
+The batching, the bounded queue and the writer threads belong to the client library, not
+the indexer, so `scip2fjord`, which converts a [SCIP](https://sourcegraph.com/docs/code-search/code-navigation/writing_an_indexer)
+index, reuses all of it and writes the same `codemarkup` surface.
+
+### Limits
+
+Streams are issued sequentially: one result open at a time. Disposing a `Rows` enumerator
+early sends `CANCEL` and drains the stream, so `Take(n)` costs one page. `Query` collects
+the whole result and cannot be stopped.
+
+## The viewer
+
+**`fjord-viewer` is retired.** It was a server-rendered code-search site, and it proved a
+viewer is an ordinary consumer of the protocol. What replaces it is a browser application,
+because rendering a source view (syntax runs merged with cross-reference anchors, over a
+virtualised scroll) is a browser's job.
+
+Three things it needs from this side:
+
+- **The unit columns count in.** `config.Setting {dimension = "position-encoding"}` is
+  `utf8` or `utf16`, default `utf16`.
+- **A transport a browser can open.** A WebSocket listener carrying the same frames.
+  Default-closed, like TCP.
+- **A language-independent layer.** That is `codemarkup`.
+
+## Writing a client
+
+<Callout tone="note" label={`There is no JavaScript client`}>
+
+Two implementations exist, Rust and C#. The [wire protocol](wire-protocol.html) is what
+a third would be written against.
+
+</Callout>
+
+A minimal read-only client:
+
+1. Connect to the socket (or TCP).
+2. Send `S` with the protocol version, the database name, `read-only`, and `0` for the
+   schema fingerprint.
+3. Read `R`.
+4. Send `H`, read `h`, and you have the schema as source.
+5. Send `Q` with query text on a fresh stream id.
+6. Read `T` once, then `D` frames, then `C`.
+
+A producer differs in three places: `read-write`, a non-zero schema claim, and
+`W` → `d`* → `c` instead of `Q`.
+
+### Writing facts from Rust
+
+```bash
+cargo add fjord-db
+```
+
+A fact is a predicate, a key and an optional value. A reference is an id or the whole
+target fact:
+
+```rust
+use std::sync::Arc;
+use fjord_client::{Connection, Mode};
+use fjord_wire::{WireFact, WireRef, WireValue};
+
+let mut connection = Connection::connect(
+    socket,          // &Path
+    "code",          // the database
+    Arc::clone(&schema),
+    Mode::ReadWrite,
+    true,            // assert the schema fingerprint — right for a producer
+)?;
+
+// A file fact: a scalar key.
+let file = |path: &str| WireFact {
+    predicate: FILE,
+    key: WireValue::Str(path.to_owned()),
+    value: None,
+};
+
+// A declaration whose module names a file — every reference nested, no ids held.
+let decl = WireFact {
+    predicate: DECL,
+    key: WireValue::Record(
+        vec![
+            WireValue::Ref(WireRef::Nested(Box::new(module("store/keys.py", "keys")))),
+            WireValue::Str("key_of".to_owned()),
+            WireValue::Int(12),
+        ]
+        .into(),
+    ),
+    value: Some(WireValue::Str("def".to_owned())),
+};
+
+let written = connection.write(DECL, &[decl])?;
+println!("created {}, deduped {}", written.created, written.deduped);
+```
+
+Record fields are in schema order, and the names are not sent. A nested reference is the
+whole target, and the server deduplicates it.
+
+Reading:
+
+```rust
+let mut rows = connection.query("F where src.File F")?;
+while let Some(row) = connection.next_row(&mut rows)? {
+    println!("{row:?}");
+}
+```
+
+`Rows` is a bookmark, not a borrow of the connection, so several results can be open at
+once.
+
+### Hold the connection
+
+**Pool connections. Do not open one per request.** This is the largest capacity lever
+available to anything built on Fjord. A request that starts by connecting pays for a
+socket, a handshake and a schema transfer before any query runs. A bridge shelling out to
+`fjord query` per request measured about 580 req/s on a box whose server could serve far
+more.
+
+- One connection per worker thread, kept for the life of the process.
+- `fjord query` is a person's tool, not a service's.
+- Streams multiplex, so one connection can have several results in flight.
+- `Connection::discard` drains a result you do not want to decode.
+
+### Things a client should get right
+
+| | Why |
+|---|---|
+| Bound `length` before allocating | It sizes a read from a number the peer chose |
+| Treat an unknown frame kind as unknown, not malformed | A newer peer can then be answered rather than rejected |
+| Emit **minimal** varints | One value must have one encoding, or the block CRC means nothing |
+| Cover the header in the block CRC | A corrupted `length` must be caught |
+| Nest references rather than inventing ids | An id you did not receive names some other fact |
+| Expect ids in rows | A reference comes back as `#p:n`. Expand with `F`/`f` if you need the key |
+| Carry the listing digest back on a `FETCH` | Ids from a [virtual predicate](wire-protocol.html#rows-off-a-virtual-predicate) are positions, not identities |
+| Release a stream on **its own** terminal frame | A session-level error on stream 0 does not end other streams |
+| Give a bookmark a terminal errored state | An error frame mid-result ends the stream as `COMPLETE` does |
+| Hold connections open and pool them | A connection per request caps a consumer far below what the server can serve |

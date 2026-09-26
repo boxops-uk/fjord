@@ -727,7 +727,7 @@ fn a_database_that_will_not_open_says_which_instance_and_why() {
 /// built-in one to hand over. That made the artifact a property of whichever binary
 /// happened to be listening: the same command against two builds produced two databases
 /// with two different embedded schemas, and nothing said so. `create` now requires the
-/// text, which is what [operations §5](../../../website/content/operations.md) always
+/// text, which is what [operations §5](../../../web/src/content/operations.mdx) always
 /// specified.
 ///
 /// **What is refused is the schema, not the field.** Stated as a check on the request
