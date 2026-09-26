@@ -120,6 +120,12 @@
 .story-tok-comment { color: var(--color-syntax-comment); }
 .story-tok-variable { color: var(--color-syntax-variable); }
 .story-tok-punctuation { color: var(--color-syntax-punctuation); }
+.story-tok-type { color: var(--color-syntax-type); }
+.story-tok-property { color: var(--color-syntax-property); }
+.story-tok-constant { color: var(--color-syntax-constant); }
+.story-tok-operator { color: var(--color-syntax-operator); }
+.story-tok-attribute { color: var(--color-syntax-attribute); }
+.story-tok-tag { color: var(--color-syntax-tag); }
 
 /* The name the whole story is about, under the cursor. */
 .story-code .subject {
@@ -128,10 +134,6 @@
   background: var(--color-accent-muted);
   box-shadow: inset 0 -1px 0 var(--color-accent);
 }
-
-/* A line the answer names, marked where it is. */
-.story-code .is-hit { background: var(--color-success-muted); }
-.story-code .is-hit .n { color: var(--color-text-primary); }
 
 /* ----------------------------------------------------------- the cursor -- */
 
@@ -262,7 +264,9 @@
   z-index: 4;
   inset-inline: 0;
   inset-block-end: 0;
-  height: 54%;
+  /* Tall enough for the nine rows the run opens: the band's argument is that
+     the list is short, and a list that scrolls does not look short. */
+  height: 60%;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   gap: var(--spacing-2);
@@ -287,10 +291,17 @@
   min-height: 0;
 }
 
-.story-query,
-.story-scan {
+.story-query {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--spacing-2);
+  min-height: 0;
+  height: 100%;
+}
+
+.story-scan {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: var(--spacing-2);
   min-height: 0;
   height: 100%;
@@ -329,6 +340,58 @@
   font-weight: var(--font-weight-normal);
 }
 
+/* **The whole index, and the part of it this run opened.** The proportion is
+   the real one — rows read over rows stored — which on a seek is a sliver a
+   reader has to look twice to find, and that is the entire argument. */
+.story-extent {
+  position: relative;
+  block-size: var(--spacing-2);
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-background-muted);
+  overflow: hidden;
+}
+
+.story-slice {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  min-inline-size: 2px;
+  border-radius: inherit;
+  background: var(--color-accent);
+  transition: inline-size 200ms linear;
+}
+
+/* The range's own first byte string. On the second level it opens with the row
+   the first level bound, which is the splice this engine has instead of a join. */
+.story-seek {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  margin: 0;
+  min-height: 1.35em;
+  font-size: var(--font-size-xs);
+}
+
+.story-seek .k {
+  flex: none;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: var(--font-weight-semibold);
+}
+
+.story-seek code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-code);
+  /* Stated, not inherited: the book gives `code` a size of its own, and here it
+     is a caption beside a label rather than a span of prose. */
+  font-size: var(--font-size-xs);
+  color: var(--color-syntax-string);
+}
+
 .story-rows {
   /* Positioned so a row's `offsetTop` is measured against this list and not
      against whatever the page happens to have positioned above it. */
@@ -347,7 +410,7 @@
 
 .story-rows li {
   display: grid;
-  grid-template-columns: 3.4rem minmax(0, 1fr);
+  grid-template-columns: 5.8rem minmax(0, 1fr);
   gap: var(--spacing-2);
   align-items: baseline;
   padding: var(--spacing-0-5) var(--spacing-1);

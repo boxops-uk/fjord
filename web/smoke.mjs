@@ -690,9 +690,9 @@ const stage = (n) =>
 const source = await texts('.story-code .src')
 check(
   'the hero shows the file the index holds',
-  (await page.$eval('.story-file-name', (el) => el.textContent)) === 'src/lib.rs' &&
+  (await page.$eval('.story-file-name', (el) => el.textContent)) === 'Buffers.cs' &&
     source.length > 15 &&
-    source.some((line) => line.includes('fn load(path: &str) -> Config')),
+    source.some((line) => line.includes('public sealed class ByteBuffer : IBufferSink')),
   `${source.length} line(s)`,
 )
 
@@ -702,17 +702,39 @@ check(
   (await page.$eval('.story-popover', (el) => el.textContent ?? '')).includes('finding references'),
 )
 
+// **The band is a seek, not a walk**, which is the whole reason the hero runs
+// over the real index instead of the demo database. A run that read most of
+// what it was given would be arguing the opposite of the page it sits on.
 await stage(2)
-const walked = await texts('.story-scan-head .examined')
-check('the scan reports what the engine examined', walked.join('').includes('rows examined'), walked.join(''))
+const read = await page.$eval('.story-scan-head .examined', (el) => el.textContent ?? '')
+const [examined, facts] = [...read.matchAll(/[\d,]+/g)].map((found) =>
+  Number(found[0].replace(/,/g, '')),
+)
+check(
+  'the scan reads a sliver of the index rather than walking it',
+  facts > 20_000 && examined > 0 && examined < facts / 500,
+  read,
+)
+
+// The second level's range opens with the row the first level bound — the
+// splice this engine has instead of a join operator.
+const key = await page.$eval('.story-seek code', (el) => el.textContent ?? '')
+check(
+  'the range the executor opened is the one the page prints',
+  /^0x[0-9a-f]+$/.test(key) && key.startsWith('0x00000009510000'),
+  key,
+)
 
 await stage(3)
 const found = await texts('.story-popover li')
 check(
-  'the card fills in with the two references the query answers',
-  found.length === 2 &&
-    found.some((row) => row.includes('src/lib.rs:20') && row.includes('load')) &&
-    found.some((row) => row.includes('src/main.rs:12') && row.includes('run')),
+  'the card fills in with the references the query answers',
+  (await page.$eval('.story-popover b', (el) => el.textContent ?? '')).includes(
+    '8 references to ByteBuffer',
+  ) &&
+    found.length === 2 &&
+    found.some((row) => row.includes('Blocks.cs')) &&
+    found.some((row) => row.includes('FjordConnection.cs')),
   found.join(' · '),
 )
 check(

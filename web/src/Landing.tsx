@@ -41,7 +41,8 @@ export function Landing() {
         <HeroStory />
         <Text as="p" size="sm" color="secondary" className="hero-foot">
           That is the real engine, compiled to WebAssembly and running in this page — the same
-          compiler, the same executor, and the index it is reading is a real one.
+          compiler and the same executor, reading a real index of a real repository. The file, the
+          byte range it seeks into and the count beside it are all its own answers.
         </Text>
       </section>
 

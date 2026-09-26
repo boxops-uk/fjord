@@ -23,6 +23,7 @@ import init, {
   type Project,
   type Reference,
   children,
+  corpus_trace,
   definitions,
   files,
   load_corpus_jsonl,
@@ -37,6 +38,8 @@ import init, {
   xrefs,
 } from './wasm/fjord_wasm.js'
 import wasmUrl from './wasm/fjord_wasm_bg.wasm?url'
+
+import type { Trace } from './wasm'
 
 export type { Blob, Definition, Entry, FileRefs, Hit, Info, PackageRef, Project, Reference }
 
@@ -68,6 +71,8 @@ export type Corpus = {
   definitions: (symbol: string) => Definition[]
   references: (symbol: string) => Reference[]
   search: (prefix: string) => Hit[]
+  /** One query, stepped — the trace the workbench scrubs, over this index. */
+  trace: (query: string) => Trace
   /** What a hover card needs, or `undefined` where this index only names the symbol. */
   info: (symbol: string) => Info | undefined
 }
@@ -128,6 +133,7 @@ export function loadCorpus(): Promise<Corpus> {
       references,
       search,
       info: symbol_info,
+      trace: (query: string) => JSON.parse(corpus_trace(query)) as Trace,
     }
   })()
 

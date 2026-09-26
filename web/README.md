@@ -122,7 +122,7 @@ with a database behind it — `run` and `store` demos need rows, so they use it.
 |---|---|
 | `src/App.tsx` | the router: a path is a page, `/` is the landing page, and `/playground` is the workbench |
 | `src/Landing.tsx` | the landing page — what Fjord is, before the book explains it. A component rather than an MDX page, because it is not prose the reading order owns |
-| `src/HeroStory.tsx` | its hero: one find-references, staged. Hover, query, the scan over stored rows, the answer. Every part but the pointer and the filler source lines is engine output |
+| `src/HeroStory.tsx` | its hero: one find-references over the real corpus, staged. Hover, query, the seek into the index, the answer. The file is the real file painted with the index's own semantic runs, and the byte ranges are the ones the executor opened — everything but the pointer is engine output |
 | `src/SearchDemo.tsx` | its second demo: a search box over the corpus. One sigla query per keystroke, and two more per card for the signature, the summary and the use count. A hit links into the code browser |
 | `src/book/mdx.tsx` | the book's tags as components: a heading is a `Heading`, a table is a `Table`, a callout is a `Banner`, a fence is a `CodeBlock`, a demo is the engine. Also where a body cell is given the heading above it, for the phone |
 | `src/book/Diagram.tsx` | the eight diagrams a page can name — a byte layout, a sequence diagram, a tree — drawn as elements rather than in box characters |

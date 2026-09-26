@@ -186,17 +186,30 @@ impl Watch for Watcher {
     }
 }
 
+/// Trace `query` over the demo database this schema describes.
 fn run(schema: &Schema, query: &str) -> Trace {
+    match crate::demo::store(schema) {
+        Ok(store) => run_over(schema, query, store),
+        Err(fault) => empty(vec![fault_view(&fault.to_string())]),
+    }
+}
+
+/// **The same run, over a store somebody else is holding.**
+///
+/// The demo database is built from a schema and thrown away; a loaded corpus is
+/// megabytes that arrived over the network and is kept. Both are a `MemStore`,
+/// and the executor does not care which it was handed — so the only thing this
+/// split buys is that a page can step a query over the real index instead of the
+/// toy one, which is the difference between a demo and a claim.
+///
+/// The store is taken by value, which is two refcount bumps rather than a copy:
+/// `MemStore` holds both its maps behind an `Arc` for exactly this call.
+pub fn run_over(schema: &Schema, query: &str, store: fjord_store_mem::MemStore) -> Trace {
     let mut compilation = Compilation::new(query, schema);
     let Some(plan) = compilation.plan() else {
         return empty(views_of(compilation.diagnostics()));
     };
     let interner = compilation.interner();
-
-    let store = match crate::demo::store(schema) {
-        Ok(store) => store,
-        Err(fault) => return empty(vec![fault_view(&fault.to_string())]),
-    };
 
     let body = plan.body.len();
     let mut profile = Profile::for_plan(&plan);

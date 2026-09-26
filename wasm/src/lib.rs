@@ -170,6 +170,14 @@ pub fn corpus_run(query: &str) -> String {
     fjord_inspect::corpus::rows_json(query)
 }
 
+/// Step `query` over the loaded corpus, one transition at a time — [`trace`]'s
+/// answer, over the index rather than the demo database.
+#[wasm_bindgen]
+#[must_use]
+pub fn corpus_trace(query: &str) -> String {
+    fjord_inspect::corpus::trace_json(query)
+}
+
 /// The schema the site opens with — `schemas/demo.sigla`, the database in the
 /// page rather than the code index `schemas/dotnet.sigla` describes.
 #[wasm_bindgen]

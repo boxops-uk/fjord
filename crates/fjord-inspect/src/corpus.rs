@@ -186,6 +186,38 @@ pub fn values(query: &str, cap: usize) -> Result<Vec<fjord_encoding::tuple::Valu
     })
 }
 
+/// **Step `query` over the loaded corpus**, one transition at a time.
+///
+/// [`rows`] answers what a query found; this answers how it got there — the same
+/// trace the workbench scrubs, over the real index rather than the demo
+/// database. The landing page's hero runs on it, because a walk over seventeen
+/// toy rows and a seek into twenty-four thousand real ones look the same on
+/// screen and are not the same claim.
+#[must_use]
+pub fn trace(query: &str) -> crate::trace::Trace {
+    LOADED.with_borrow(|slot| match slot {
+        Some(corpus) => crate::trace::run_over(&corpus.schema, query, corpus.store.clone()),
+        // Said, not silently empty, for the reason [`rows`] gives.
+        None => crate::trace::Trace {
+            steps: Vec::new(),
+            rows: 0,
+            examined_total: 0,
+            truncated: false,
+            diagnostics: vec![DiagnosticView {
+                code: None,
+                message: "no corpus is loaded — fetch the image and load it first".to_owned(),
+                labels: Vec::new(),
+            }],
+        },
+    })
+}
+
+/// The same answer, already JSON.
+#[must_use]
+pub fn trace_json(query: &str) -> String {
+    serde_json::to_string(&trace(query)).expect("a trace serialises")
+}
+
 /// The same answer, already JSON.
 #[must_use]
 pub fn rows_json(query: &str) -> String {
