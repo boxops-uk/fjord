@@ -100,6 +100,13 @@ pub enum CliError {
         detail: String,
     },
 
+    /// A fact id that is not one, or names a predicate this database does not have.
+    ///
+    /// Its own variant because the wording is an *example* — the shape is easy to get
+    /// slightly wrong and hard to guess from a parse failure.
+    #[error("{why}")]
+    BadFactId { why: String },
+
     /// Nothing is listening where a database was asked for.
     ///
     /// §2's rule 1, and the message it asks for: a bare name always means "ask the
@@ -297,6 +304,10 @@ fn dispatch(cli: &Cli, context: &Context) -> Result<(), CliError> {
                 written.lines, written.created, written.deduped
             );
             Ok(())
+        }
+
+        Command::Fact { name, ids, format } => {
+            commands::fact::run(&context.target(name)?, ids, *format)
         }
 
         Command::Finish {

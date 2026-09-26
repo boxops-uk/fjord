@@ -8,6 +8,7 @@
 pub mod create;
 pub mod describe;
 pub mod export;
+pub mod fact;
 pub mod finish;
 pub mod list;
 pub mod query;

@@ -125,11 +125,16 @@ pub fn run(
     // fields of an expanded reference on the way out.
     //
     // [I13]: ../../web/src/content/invariants.mdx#i13
-    let schema = if rendering.expand > 0 {
-        Some(Arc::new(connection.served_schema()?))
-    } else {
-        None
-    };
+    // **Always, not only when expanding.** Two things need it now: expansion, which
+    // turns a reference into the fact it names, and rendering, which spells a reference
+    // it did *not* expand as `code.Decl#1`. The second is the reason this is no longer
+    // conditional — a spelling that changed depending on whether another flag was set
+    // would be worse than the round trip it saves, and a row that reads one way piped
+    // and another at a prompt is the drift the shell's renderer exists to prevent.
+    //
+    // One request/response before the first row, against a schema the server already
+    // holds resolved. `--count` never reaches here: it returns before a sink exists.
+    let schema = Some(Arc::new(connection.served_schema()?));
 
     let started = Instant::now();
     let opened = if profile {

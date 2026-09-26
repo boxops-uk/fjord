@@ -10,10 +10,13 @@ local versus remote is a property of the address, not the command.
 fjord
 - serve  run the server over a store root
 - create <name>  a new Writable database. The schema is fixed here
+- write <name> <file.jsonl>...  write facts from JSONL files
+- export <name> --to <file.jsonl>  write a portable JSONL copy
 - finish <name>  seal it: Writable becomes Complete
 - list  enumerate databases
 - describe <name>  metadata and schema
 - query <name> <QUERY>  one-shot query
+- fact <name> <id>...  what a fact id names
 - shell [<name>]  interactive REPL
 - schema
 -- check <file>  resolve, canonicalise, report
@@ -327,7 +330,6 @@ error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
 
 | Command | Status |
 |---|---|
-| `fjord write <db> [FILE…]` | Not built. The file format exists; the command does not |
 | `fjord db backup` / `db restore` | Not built. A Complete database is a directory: `tar` it |
 | `fjord db verify` | Not built |
 | `fjord completions <shell>` | Not built |

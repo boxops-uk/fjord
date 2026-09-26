@@ -158,6 +158,28 @@ pub enum Command {
         files: Vec<PathBuf>,
     },
 
+    /// What a fact id names
+    ///
+    /// A row carries a reference as `code.Decl#1`; this is what spends one. Keys come back
+    /// in the order asked, rendered the way `query` renders rows.
+    ///
+    /// A command rather than query syntax on purpose. A query names a fact by its key,
+    /// and a key is the same in every copy of a database — an id is not, because
+    /// rebuilding renumbers everything. Asking at a prompt is fine; writing an id into
+    /// a saved query is a query that stops working the next time the index is built.
+    Fact {
+        /// The database to ask, as `name` or `name@instance`
+        name: String,
+
+        /// The ids, written `code.Decl#1`
+        #[arg(value_name = "ID", required = true)]
+        ids: Vec<String>,
+
+        /// How the keys print
+        #[arg(long, value_enum, default_value_t = RowFormat::Sigla)]
+        format: RowFormat,
+    },
+
     /// Seal a database: Writable to Complete, and immutable thereafter
     Finish {
         /// The database to seal, as `name` or `name@instance`
@@ -233,7 +255,7 @@ pub enum Command {
         query: String,
 
         /// How to print the rows
-        #[arg(long, value_enum, default_value_t = RowFormat::Table)]
+        #[arg(long, value_enum, default_value_t = RowFormat::Sigla)]
         format: RowFormat,
 
         /// Give up after this many seconds, cancelling in band
@@ -416,8 +438,12 @@ pub enum Format {
 /// results alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RowFormat {
-    /// Aligned columns for a person. The one shape that buffers
-    Table,
+    /// Rows as sigla, the language they were asked for in. The default
+    ///
+    /// A record is `{field = value}`, a union the one-field record it is written as,
+    /// bytes `0x…`. Every family but a reference is text the lexer takes back, and
+    /// `--expand` closes that one.
+    Sigla,
     /// One JSON document, written incrementally
     Json,
     /// One JSON value per line (JSON Lines)
