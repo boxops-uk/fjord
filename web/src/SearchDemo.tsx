@@ -78,7 +78,9 @@ export function SearchDemo() {
   // and a `setState` in its body is a second render before the first has painted.
   const [near, setNear] = useState(() => !('IntersectionObserver' in window))
   const [active, setActive] = useState(0)
-  const section = useRef<HTMLElement>(null)
+  // A `div` since the box stopped being its own `section`: it is the hero now,
+  // and the hero is the section around it.
+  const section = useRef<HTMLDivElement>(null)
   const field = useRef<HTMLInputElement>(null)
   const labelled = useId()
 
