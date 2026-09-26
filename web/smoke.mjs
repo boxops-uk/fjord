@@ -706,7 +706,7 @@ check(
 // over the real index instead of the demo database. A run that read most of
 // what it was given would be arguing the opposite of the page it sits on.
 await stage(2)
-const read = await page.$eval('.story-scan-head .examined', (el) => el.textContent ?? '')
+const read = await page.$eval('.story-keys .examined', (el) => el.textContent ?? '')
 const [examined, facts] = [...read.matchAll(/[\d,]+/g)].map((found) =>
   Number(found[0].replace(/,/g, '')),
 )
@@ -752,6 +752,38 @@ check(
   inside.every((row) => row.pinned.length > 8 && key.endsWith(row.pinned)) &&
     keys.filter((row) => !row.within).every((row) => row.pinned === ''),
   inside[0]?.pinned ?? 'nothing pinned',
+)
+
+// **The plan beside the band**, which is the cause beside the effect. It is the
+// engine's own `--plan` text, so a reader can match `target = r0.symbol` in the
+// plan against the bytes the seek line prints.
+const planned = await page.$$eval('.story-steps li', (rows) =>
+  rows.map((row) => ({
+    at: row.classList.contains('is-at'),
+    access: [...row.querySelectorAll('.a')].map((chip) => chip.textContent),
+    read: row.querySelector('.n')?.textContent ?? '',
+    text: row.querySelector('.story-step-text')?.textContent ?? '',
+  })),
+)
+check(
+  'the plan is shown beside the band, as the engine prints it',
+  planned.length === 3 &&
+    planned[0].text.startsWith('r0 <- codemarkup.SearchEntry seek[nameLowercase = "bytebuffer"') &&
+    planned[1].text.includes('seek[target = r0.symbol') &&
+    planned[2].text.includes('fetch[r1.file]'),
+  planned.map((row) => row.text.slice(0, 40)).join(' | '),
+)
+check(
+  "the hero's plan lights the step the band is showing",
+  planned.filter((row) => row.at).length === 1 && planned[1].at,
+  planned.map((row) => (row.at ? '*' : '-')).join(''),
+)
+// Two seeks and a fetch, and the counts are the profile's own per-step numbers.
+check(
+  'each plan step carries what it read',
+  planned.map((row) => row.access.join('')).join(',') === 'seek,seek,fetch' &&
+    planned.map((row) => row.read).join('/') === '1/8/8',
+  `${planned.map((row) => row.access.join('')).join(',')} — ${planned.map((row) => row.read).join('/')}`,
 )
 
 const gutters = await texts('.story-gutter')

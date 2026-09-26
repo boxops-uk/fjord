@@ -28,6 +28,7 @@ import { Spinner } from '@astryxdesign/core/Spinner'
 import { Text } from '@astryxdesign/core/Text'
 import { Code } from './book/Code'
 import { loadCorpus, type Blob, type Corpus, type Window } from './corpus'
+import type { PlanView } from './wasm'
 import { paint } from './highlight'
 import { fold, inRange, type Moment } from './run'
 
@@ -81,7 +82,7 @@ const HOLD: Record<Beat, number> = {
   leave: 850,
   rest: 550,
 }
-const FRAME = 230
+const FRAME = 170
 
 /** The four a reader can jump to; the rest are the movement between them. */
 const DOTS: { at: number; label: string }[] = [
@@ -125,6 +126,12 @@ type Story = {
   bands: Band[]
   /** Which of them the machine is inside, per moment. */
   band: (number | null)[]
+  /** What the query compiled to — the same plan `--plan` prints. */
+  plan: PlanView | null
+  /** Which plan step just bound a register, per moment. */
+  active: (number | null)[]
+  /** Rows examined per plan step, per moment. */
+  reads: number[][]
   examined: number[]
   answers: number
   where: Where[]
@@ -345,37 +352,47 @@ function build(corpus: Corpus): Story {
     }
   }
 
-  // One frame per row the machine moves onto, not per transition: a reader
-  // watching a band light up does not want the four steps it takes to leave a
-  // row it has already read.
+  /**
+   * **One frame per row the machine binds**, not per transition.
+   *
+   * A reader watching a band light up does not want the four steps it takes to
+   * leave a row already read. Every level counts, the fetch included: it is the
+   * plan's third step, and a step that never lights while the two above it take
+   * turns reads as one that did not run — when in fact it runs once per row, and
+   * watching the inner two alternate is what a nested loop looks like.
+   */
   const place = new Map(rows.map((row, at) => [row.fact, at]))
   const frames: number[] = []
-  let last = -2
+  const bound: (typeof trace.steps)[number]['registers'] = []
   for (let at = 0; at < trace.steps.length; at++) {
-    const bound = trace.steps[at].registers.find(
-      (register) => register.kind === 'fact' && register.fact && place.has(register.fact),
+    const written = trace.steps[at].registers.find(
+      (register) => register.kind === 'fact' && register.fact,
     )
-    const standing = bound?.fact ? (place.get(bound.fact) ?? -1) : -1
-    if (standing >= 0 && standing !== last) {
-      frames.push(at)
-      last = standing
-    }
+    if (!written) continue
+    frames.push(at)
+    bound.push(written)
   }
-  // A run that bound nothing recognisable still has to play something.
-  if (frames.length === 0) frames.push(Math.max(trace.steps.length - 1, 0))
   // And one frame at the end: after the last row is bound the executor still
   // reads its way off the end of the range to find out it is done, and that
   // read is in the count. Stopping a frame early leaves the counter one short
-  // of the number the profile reports.
+  // of the number the profile reports. It binds nothing, so it holds what the
+  // frame before it was standing on rather than blanking the panel at the exact
+  // moment the band has finished making its point.
   const finished = trace.steps.length - 1
-  if (finished > (frames.at(-1) ?? -1)) frames.push(finished)
+  const last = bound.at(-1)
+  if (last && finished > (frames.at(-1) ?? -1)) {
+    frames.push(finished)
+    bound.push(last)
+  }
+
+  if (frames.length === 0) throw new Error('the run bound no rows')
 
   const moments = frames.map((at) => fold(trace, at))
 
-  const standing = moments.map((moment) => {
-    const written = moment.registers.find((register) => register.written && register.fact)
-    return written?.fact ? (place.get(written.fact) ?? null) : null
-  })
+  const standing = bound.map((register) =>
+    register.fact ? (place.get(register.fact) ?? null) : null,
+  )
+  const active = bound.map((register) => register.address)
 
   /**
    * **Every range the run opened, with the stored keys around it.**
@@ -388,7 +405,9 @@ function build(corpus: Corpus): Story {
    * stand in for.
    *
    * A fetch opens no range — it is a point read through a reference a register
-   * already holds — so it contributes no band.
+   * already holds — so it contributes no band, and its frames carry the one the
+   * level above them left open. That is true, and it is what keeps the panel
+   * from blanking every other frame while the inner two steps take turns.
    */
   const bands: Band[] = []
   const found = new Map<string, number>()
@@ -403,25 +422,20 @@ function build(corpus: Corpus): Story {
     })
   }
 
-  const band = moments.map((moment) => {
-    const open = moment.scanning
-    return open && !open.fetch ? (found.get(open.lo) ?? null) : null
-  })
+  const band = carry(
+    moments.map((moment) => {
+      const open = moment.scanning
+      return open && !open.fetch ? (found.get(open.lo) ?? null) : null
+    }),
+  )
 
-  /**
-   * **A frame standing on no row holds the one before it.**
-   *
-   * The run's last act is to read its way off the end of the range, which binds
-   * nothing and leaves the machine back at the outer level — so the closing
-   * frame would drop the highlight and fall back to the *first* level's band,
-   * which reads as the panel undoing itself at the exact moment it has finished
-   * making its point. It rests on where it got to instead.
-   */
-  for (let at = 1; at < standing.length; at++) {
-    if (standing[at] === null) {
-      standing[at] = standing[at - 1]
-      band[at] = band[at - 1]
-    }
+  // The closing frame is the one appended above, which bound nothing and left
+  // the machine back at the outermost level — so it would show the *first*
+  // level's band, which reads as the panel undoing itself at the exact moment it
+  // has finished making its point. It repeats the register before it, and this
+  // is the one place that tells.
+  for (let at = 1; at < band.length; at++) {
+    if (bound[at] === bound[at - 1]) band[at] = band[at - 1]
   }
 
   return {
@@ -431,9 +445,12 @@ function build(corpus: Corpus): Story {
     facts: corpus.rows,
     rows,
     moments,
-    at: standing,
+    at: carry(standing),
     bands,
-    band: carry(band),
+    band,
+    plan: corpus.plan(QUERY),
+    active,
+    reads: frames.map((at) => trace.steps[at].examined),
     examined: frames.map((at) => trace.steps[at].examined.reduce((total, rows) => total + rows, 0)),
     answers: yields.length,
     where,
@@ -707,42 +724,105 @@ function Seeking({ story, step }: { story: Story; step: number }) {
 
   return (
     <div className="story-scan">
+      {/* **The cause beside the effect.** The plan says which stretch of which
+          predicate the executor will open; the band is it, opened. Side by side
+          only where there is room — on a phone the band is the one that has to
+          survive, because it is the one carrying the argument. */}
+      <Plan story={story} step={step} />
+
+      <div className="story-keys">
+        <div className="story-scan-head">
+          <span>{band?.predicate ?? 'the index'}</span>
+          <span className="examined">
+            {examined} of {story.facts.toLocaleString()} rows read
+          </span>
+        </div>
+
+        <p className="story-seek">
+          <span className="k">seek</span>
+          <code>{band ? `0x${band.lo}` : 'opening the range…'}</code>
+        </p>
+
+        <p className="story-gutter">
+          {band && band.above > 0 ? `${band.above.toLocaleString()} earlier rows` : 'the first row'}
+        </p>
+
+        <ol className="story-rows" ref={list}>
+          {(band?.rows ?? []).map((row) => {
+            const within = inRange(row.key, scanning)
+            const held = moment?.held.has(row.key) ?? false
+            return (
+              <li
+                key={row.key}
+                ref={held ? here : undefined}
+                className={[within ? 'is-within' : '', held ? 'is-here' : '']
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                <Key hex={row.key} lo={within ? band?.lo : undefined} />
+              </li>
+            )
+          })}
+        </ol>
+
+        <p className="story-gutter">
+          {band && band.below > 0
+            ? `${band.below.toLocaleString()} later rows, of ${band.total.toLocaleString()}`
+            : 'the last row'}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * **The plan, with the step the machine is standing at lit.**
+ *
+ * The text of each step is the engine's own — the same line `fjord query --plan`
+ * prints — because the claim the panel beside it makes is that the band is what
+ * this plan did, and a paraphrase would be a third thing that agrees with
+ * neither. The chips are the part a reader counts: which register it fills,
+ * whether it seeks or scans, and how many rows it has read so far.
+ *
+ * `seek` is the word the whole hero is about, so it is the only one with a
+ * colour. A `fetch` is a point read through a reference and reads plainly.
+ */
+function Plan({ story, step }: { story: Story; step: number }) {
+  const plan = story.plan
+  if (!plan) return null
+  const active = story.active[step] ?? null
+  const reads = story.reads[step] ?? []
+
+  return (
+    <div className="story-plan">
       <div className="story-scan-head">
-        <span>{band?.predicate ?? 'the index'}</span>
+        <span>the plan</span>
         <span className="examined">
-          {examined} of {story.facts.toLocaleString()} rows read
+          {plan.levels} {plan.levels === 1 ? 'level' : 'levels'}
         </span>
       </div>
 
-      <p className="story-seek">
-        <span className="k">seek</span>
-        <code>{band ? `0x${band.lo}` : 'opening the range…'}</code>
-      </p>
-
-      <p className="story-gutter">
-        {band && band.above > 0 ? `${band.above.toLocaleString()} earlier rows` : 'the first row'}
-      </p>
-
-      <ol className="story-rows" ref={list}>
-        {(band?.rows ?? []).map((row) => {
-          const within = inRange(row.key, scanning)
-          const held = moment?.held.has(row.key) ?? false
-          return (
-            <li
-              key={row.key}
-              ref={held ? here : undefined}
-              className={[within ? 'is-within' : '', held ? 'is-here' : ''].filter(Boolean).join(' ')}
-            >
-              <Key hex={row.key} lo={within ? band?.lo : undefined} />
-            </li>
-          )
-        })}
+      <ol className="story-steps">
+        {plan.steps.map((step) => (
+          <li key={step.index} className={step.index === active ? 'is-at' : undefined}>
+            <span className="story-step-head">
+              <span className="r">{step.register ?? '·'}</span>
+              {step.access.map((access, at) => (
+                <span key={at} className={`a is-${access}`}>
+                  {access}
+                </span>
+              ))}
+              <span className="p">{step.predicates.join(', ')}</span>
+              <span className="n">{reads[step.index] ?? 0}</span>
+            </span>
+            <span className="story-step-text">{step.text.trim()}</span>
+          </li>
+        ))}
       </ol>
 
-      <p className="story-gutter">
-        {band && band.below > 0
-          ? `${band.below.toLocaleString()} later rows, of ${band.total.toLocaleString()}`
-          : 'the last row'}
+      <p className="story-head-row">
+        <span className="r">head</span>
+        <span className="story-step-text">{plan.head}</span>
       </p>
     </div>
   )

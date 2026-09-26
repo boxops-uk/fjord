@@ -299,7 +299,31 @@
   height: 100%;
 }
 
+/* **One column on a phone, two where there is room.** The plan is the cause and
+   the band is the effect, so the plan leads — and where only one of them fits it
+   is the band that stays, because the band is what carries the argument. */
 .story-scan {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spacing-4);
+  min-height: 0;
+  height: 100%;
+}
+
+.story-plan { display: none; }
+
+/* The story is at most 64rem wide and shrinks with the viewport, so the split
+   has to fire well below a laptop's width or it never fires on one. */
+@container (min-width: 47rem) {
+  .story-scan { grid-template-columns: minmax(0, 18rem) minmax(0, 1fr); }
+  .story-plan { display: grid; }
+}
+
+@container (min-width: 58rem) {
+  .story-scan { grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); }
+}
+
+.story-keys {
   display: grid;
   /* Head, the range, the gutter above, the keys, the gutter below. The gutters
      sit outside the scroller on purpose: they are what says the band is a
@@ -308,6 +332,115 @@
   gap: var(--spacing-0-5) 0;
   min-height: 0;
   height: 100%;
+}
+
+/* ---------------------------------------------------------------- the plan -- */
+
+.story-plan {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--spacing-0-5) 0;
+  min-height: 0;
+  height: 100%;
+  border-inline-end: var(--border-width) solid var(--color-border);
+  padding-inline-end: var(--spacing-4);
+}
+
+.story-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-1);
+  min-height: 0;
+  overflow-y: auto;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+.story-steps li {
+  display: grid;
+  gap: 1px;
+  padding: var(--spacing-1) var(--spacing-2);
+  border-inline-start: 2px solid transparent;
+  border-radius: 0 var(--radius-inner) var(--radius-inner) 0;
+  color: var(--color-text-disabled);
+}
+
+/* The step the machine is standing at. The two inner ones take turns as the
+   loop runs, which is what a nested loop looks like from outside. */
+.story-steps li.is-at {
+  border-inline-start-color: var(--color-accent);
+  background: var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+.story-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+}
+
+.story-step-head .r {
+  color: var(--color-syntax-constant);
+  font-weight: var(--font-weight-semibold);
+}
+
+.story-step-head .p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-syntax-function);
+}
+
+/* The count runs to the edge so the numbers line up down the column. */
+.story-step-head .n {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* `seek` is the word the whole panel is about. A `scan` or a `fetch` is ink. */
+.story-step-head .a {
+  padding: 0 var(--spacing-1);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-2xs, var(--font-size-xs));
+  letter-spacing: 0.04em;
+}
+
+.story-step-head .a.is-seek {
+  background: var(--color-accent-muted);
+  color: var(--color-accent-text, var(--color-text-primary));
+}
+
+/* The engine's own line. Wrapped rather than clipped: `target = r0.symbol` is
+   the splice, and it is the last thing on a line long enough to lose it. */
+.story-step-text {
+  display: block;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.story-steps li.is-at .story-step-text { color: var(--color-text-primary); }
+
+.story-head-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  margin: 0;
+  padding: var(--spacing-1) var(--spacing-2);
+  border-block-start: var(--border-width) solid var(--color-border);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+.story-head-row .r {
+  flex: none;
+  color: var(--color-text-disabled);
 }
 
 .story-note {

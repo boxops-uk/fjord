@@ -23,6 +23,7 @@ import init, {
   type Project,
   type Reference,
   children,
+  compile,
   corpus_trace,
   corpus_window,
   definitions,
@@ -40,7 +41,7 @@ import init, {
 } from './wasm/fjord_wasm.js'
 import wasmUrl from './wasm/fjord_wasm_bg.wasm?url'
 
-import type { RowBytes, Trace } from './wasm'
+import type { Lowered, PlanView, RowBytes, Trace } from './wasm'
 
 /**
  * **A window onto one predicate's stored keys**, around a range a scan opened.
@@ -92,6 +93,9 @@ export type Corpus = {
   trace: (query: string) => Trace
   /** The stored keys around a range a scan opened, with what they stand in for. */
   window: (lo: string, hi: string | null, before: number, inside: number, after: number) => Window
+  /** What a query compiles to against this index's schema, or nothing if it was
+   *  refused. The same plan `fjord query --plan` prints. */
+  plan: (query: string) => PlanView | null
   /** What a hover card needs, or `undefined` where this index only names the symbol. */
   info: (symbol: string) => Info | undefined
 }
@@ -155,6 +159,10 @@ export function loadCorpus(): Promise<Corpus> {
       trace: (query: string) => JSON.parse(corpus_trace(query)) as Trace,
       window: (lo, hi, before, inside, after) =>
         JSON.parse(corpus_window(lo, hi ?? '', before, inside, after)) as Window,
+      // The schema source is kept for this one call. A `corpus_compile` would
+      // save re-reading it, and the saving is microseconds against a schema this
+      // size — not worth a second way to ask the same question.
+      plan: (query: string) => (JSON.parse(compile(schema, query)) as Lowered).plan,
     }
   })()
 
