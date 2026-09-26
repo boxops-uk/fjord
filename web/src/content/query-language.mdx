@@ -1,0 +1,498 @@
+export const meta = {
+  "title": "sigla query language",
+  "description": "Every construct sigla has, with the rows each one returns."
+}
+
+A query is a **head pattern**, the word `where`, and a list of **statements**:
+
+```sigla
+{file = F, span = S} where
+  codemarkup.SymbolByName {name = "Crc32", symbol = T};
+  codemarkup.SymbolXRef {target = T, file = F, span = S}
+```
+
+The head says what a row looks like. The statements say which rows there are. A join is
+two statements sharing a variable. There is no `select`, `from` or `join`.
+
+<Demo kind="lex">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
+
+## Grammar
+
+```text
+query      ::= pattern 'where' stmt (';' stmt)* [';']
+
+stmt       ::= '!' pattern                     negation — no such row exists
+             | pattern '=' pattern             bind, constraint, alias or fold
+             | pattern '!=' pattern            denial
+             | pattern ('<'|'<='|'>'|'>=') pattern    comparison
+             | pattern                         a generator (implicit bind)
+
+pattern    ::= sum ('|' sum)*                  disjunction, flat and n-ary
+sum        ::= branch (('+'|'-') branch)*       arithmetic, flat and left to right
+branch     ::= QualifiedName branch            a fact pattern
+             | primary ('.' field ['?'])*       field access
+primary    ::= '_'                             wildcard
+             | Variable                        an upper-case name
+             | 42 | -42 | 1_000                integers
+             | "text"                          a string
+             | "text"..                        a string prefix — a range, not a value
+             | "text"~2 | "text"~                 a fuzzy match — a set of ranges
+             | "text"~<2 | "text"~<               a fuzzy prefix match
+             | '{' field '=' pattern, … '}'     a record
+             | 'never'                         the empty relation
+             | '(' pattern ')'                  a group
+             | '(' pattern 'where' stmt… ')'    a subquery
+```
+
+A variable is `UpperCase`, a field is `lowerCase`, a predicate is `namespace.UpperCase`.
+Precedence, loosest to tightest: `|`, then `+`/`-`, then application (`test.Foo X`), then
+`.` access. Parenthesise a disjunction inside a key: `test.Foo (A | B)`.
+
+## The examples database
+
+Every result below is what the query answers against the test fixture, checked by a test.
+
+```schema
+predicate test.Foo    : { id : int, name : string } -> string
+predicate test.Bar    : { id : int }
+predicate test.Edge   : { from : int, to : int }
+predicate test.Node   : { id : int }
+predicate test.Nested : { outer : { inner : int } }
+predicate test.Name   : string
+predicate test.Count  : int
+predicate test.Wide   : { outer : { extra : int, inner : int } }
+predicate test.Ref    : { of : test.Foo }
+predicate test.Link   : { at : int, of : test.Foo }
+predicate test.Deep   : { via : test.Ref }
+predicate test.Boxed  : { id : int } -> { lo : int, hi : int }
+
+# One union, used twice: leading the key in Tagged, behind the key in Label.
+# The tags are deliberately not positions — `num` is 3 and `text` is 0.
+type test.What = { num : int = 3 | text : string = 0 }
+predicate test.Tagged : { what : test.What, id : int }
+predicate test.Label  : { id : int, what : test.What }
+```
+
+| Predicate | Facts |
+|---|---|
+| `test.Foo` | `{1, ann} -> one`, `{2, bob} -> two`, `{3, ann} -> three` |
+| `test.Bar` | `{1}`, `{2}` |
+| `test.Edge` | `{1,2}`, `{1,3}`, `{2,3}` |
+| `test.Node` | `{2}`, `{3}` |
+| `test.Name` | `abc`, `ann`, `anna`, `bob` |
+| `test.Count` | `i64::MIN`, `-42`, `7`, `1000` |
+| `test.Nested` | `{inner = 1}`, `{inner = 7}` |
+| `test.Ref` | `→ Foo#1`, `→ Foo#2` |
+| `test.Link` | `{10, Foo#1}`, `{11, Foo#2}`, `{12, Foo#2}` |
+| `test.Deep` | `→ Ref#1`, `→ Ref#2` |
+| `test.Boxed` | `{1} -> {10,20}`, `{2} -> {30,40}` |
+| `test.Tagged` | `{num 1, 10}`, `{text "a", 20}`, `{num 2, 30}`, `{text "b", 40}` |
+| `test.Label` | `{10, num 1}`, `{20, text "a"}`, `{30, num 2}`, `{40, text "b"}` |
+
+## Statements
+
+### A generator
+
+A fact pattern on its own loops over the rows of one predicate.
+
+```sigla
+X where test.Foo {name = X}          → ann; bob; ann
+```
+
+The key is mandatory. Scan a whole predicate with a wildcard:
+
+```sigla
+X where X = test.Foo _               → test.Foo#1; test.Foo#2; test.Foo#3
+```
+
+A scalar key is one field, so a variable can stand for the whole key:
+
+```sigla
+Y where test.Count Y                 → -9223372036854775808; -42; 7; 1000
+Y where test.Foo Y                   → {id = 1, name = ann}; {id = 2, name = bob}; {id = 3, name = ann}
+```
+
+Fields you do not mention are unconstrained.
+
+### A join is a shared variable
+
+```sigla
+X where test.Edge {from = X, to = Y}; test.Node {id = Y}     → 1; 1; 2
+```
+
+The compiler chooses the loop order, not you. These two are the same plan:
+
+```sigla
+P where test.Ref {of = P}; P = test.Foo {id = 1}             → test.Foo#1
+P where P = test.Foo {id = 1}; test.Ref {of = P}             → test.Foo#1
+```
+
+<Demo kind="plan" schema={`schema test {
+  predicate Foo : { id : int, name : string } -> string
+  predicate Ref : { of : Foo }
+}`}>{`P where test.Ref {of = P}; P = test.Foo {id = 1}`}</Demo>
+
+### A bind means one of four things
+
+`=` is not assignment.
+
+| Written | It is | Cost |
+|---|---|---|
+| `X = test.Foo _` | a **row bind**: a loop level | one register, one level |
+| `X = 42`, `X = {inner = 1}` | a **constant fold**: substituted at every use | nothing |
+| `Y = X.name` | an **alias** for a place already in a register | nothing |
+| `X = "a"..`, `X = "ab"~1`, `X = Y` (both bound) | a **constraint** on what the value looks like | a seek, a guide, or a filter |
+
+```sigla
+X where X = 42                               → 42
+Y where X = test.Foo _; Y = X.name           → ann; bob; ann
+Z where test.Bar {id = Z}; Z = 1             → 1
+X where test.Foo {id = X}; test.Bar {id = Y}; X = Y   → 1; 2
+```
+
+A folded constant reaches a key field as if you had written the literal there. A query
+whose every bind folded has no loops and answers exactly one row.
+
+### A constraint narrows the level that captures the variable
+
+A string prefix is a range, not a value. Where you write it does not matter:
+
+```sigla
+X where test.Name X; X = "a"..               → abc; ann; anna
+X where X = "a"..; test.Name X               → abc; ann; anna
+```
+
+Both seek `test.Name "a"..`. Behind a field that is already open, the same constraint
+filters instead:
+
+```sigla
+X where test.Foo {name = X}; X = "a"..       → ann; ann
+```
+
+### A fuzzy match: `~`
+
+`"ann"~1` matches strings within one edit of `ann` (an insertion, deletion or
+substitution). Leave the number off and it means one.
+
+```sigla
+N where test.Name N; N = "ann"~                → ann; anna
+N where test.Name N; N = "ann"~2               → abc; ann; anna
+X where X = test.Name "ann"~1                  → test.Name#2; test.Name#3
+N where test.Name N; N = "an"..; N = "ann"~2   → ann; anna
+```
+
+On a leading key field the automaton **guides** the scan, seeking past ranges that cannot
+match. Behind a closed prefix it filters. Either way the answer is the same. Distance is
+`1` to `3` and a term is at most 63 characters. See [Fuzzy search](fuzzy-search.html).
+
+### A fuzzy prefix match: `~<`
+
+`~` measures distance to the whole stored string, which is rarely what a search box wants.
+`~<` asks whether **some prefix** of the stored string is within the distance:
+
+```sigla
+N where test.Name N; N = "ann"~1               → ann; anna
+N where test.Name N; N = "ann"~<1              → ann; anna; annotate
+N where test.Name N; N = "ann"~<2              → abc; ann; anna; annotate
+N where test.Name N; N = "an"..; N = "ann"~<1  → ann; anna; annotate
+```
+
+It is anchored, not substring: `"parsr"~<1` finds `parser_function` and not
+`my_parser_function`.
+
+<Callout tone="note" label={`A short term matches everything`}>
+
+A term no longer than its distance is within that distance of the empty prefix, so
+`"a"~<1` answers the whole predicate. That is what a search box asks on the first
+keystroke. Anchor with `..` or type another character.
+
+</Callout>
+
+### A denial: `!=`
+
+Never a seek. It filters.
+
+```sigla
+X where test.Name X; X != "a"..              → bob
+X where test.Name X; X != "abc"              → ann; anna; bob
+X where test.Count X; X != 7                 → -9223372036854775808; -42; 1000
+X where test.Name X; X = "a"..; X != "an"..  → abc
+```
+
+`!` says *no such row exists*. `!=` says *this field does not look like that*. Denying a
+fuzzy match is `nyi/fuzzy-denial`.
+
+### Comparisons: `<` `<=` `>` `>=`
+
+Statements, not expressions. They bind nothing.
+
+```sigla
+X where test.Count X; X < 7                  → -9223372036854775808; -42
+X where test.Count X; X <= 7                 → -9223372036854775808; -42; 7
+X where test.Count X; 7 <= X                 → 7; 1000
+N where test.Name N; N > "ann"               → anna; bob
+{a = X, b = Y} where test.Edge {from = X, to = Y}; X < Y   → {a = 1, b = 2}; {a = 1, b = 3}; {a = 2, b = 3}
+```
+
+Strings compare by the same order the index uses. A comparison against a constant on the
+field that ends the seek prefix becomes a range seek: `Ln >= 1000; Ln < 1200` opens the
+scan at line 1000 instead of reading up to it. Anywhere else it filters. See
+[Query efficiency](query-efficiency.html#an-order-comparison-seek-or-filter).
+
+### Arithmetic: `+` `-`
+
+One value per row, in a register of its own. Not a loop level.
+
+```sigla
+Y where test.Count X; Y = X + 1              → -9223372036854775807; -41; 8; 1001
+Y where test.Count X; Y = X - 1              → 9223372036854775807; -43; 6; 999
+Y where test.Edge {from = A, to = B}; Y = A + B        → 3; 4; 5
+Y where test.Edge {from = A, to = B}; Y = A + B - 1    → 2; 3; 4
+Z where test.Count X; Y = X + 1; Z = Y + 1   → -9223372036854775806; -40; 9; 1002
+X where test.Count X; Y = X + 1; Y > 8       → 1000
+```
+
+Left to right. Integers wrap: `i64::MIN - 1` is `i64::MAX`.
+
+### Negation: `!`
+
+Binds nothing. Each source is probed for its first row only.
+
+```sigla
+X where test.Foo {id = X}; !test.Bar {id = X}                        → 3
+X where !test.Bar {id = X}; test.Foo {id = X}                        → 3
+X where test.Foo {id = X}; !(test.Bar {id = X} | test.Edge {from = X, to = _})   → 3
+X where test.Bar {id = X}; !never                                    → 1; 2
+```
+
+A variable that appears only inside a negation is `reject/unbound-variable`. Write `_`.
+
+### Disjunction: `|`
+
+Branches are tried in order and their rows concatenated, not deduplicated.
+
+```sigla
+X where test.Foo {id = X} | test.Bar {id = X}     → 1; 2; 3; 1; 2
+```
+
+### `never`
+
+The empty relation.
+
+```sigla
+X where X = never                            → (no rows)
+```
+
+### Subqueries
+
+A subquery in a generating position inlines into the enclosing query.
+
+```sigla
+X where X = (Y where test.Foo {id = Y})              → 1; 2; 3
+X where X = (Y where test.Name Y; Y != "a"..)        → bob
+```
+
+## Patterns
+
+### Records
+
+```sigla
+{a = X, b = Y} where test.Foo {name = X, id = Y}     → {a = ann, b = 1}; {a = bob, b = 2}; {a = ann, b = 3}
+X where test.Nested {outer = {inner = X}}            → 1; 7
+X where P = test.Nested _; {inner = X} = P.outer     → 1; 7
+X where P = test.Wide _; {extra = _, inner = X} = P.outer   → 2
+X where {a = X} = {a = 1}                            → 1
+```
+
+A record on the left of a bind destructures. A query's record fields are sorted by name,
+so `{a = 1, b = 2}` and `{b = 2, a = 1}` are the same type. A schema's fields are never
+sorted.
+
+### Field access, and `.value`
+
+```sigla
+X.name where X = test.Foo _                  → ann; bob; ann
+X.value where X = test.Foo _                 → one; two; three
+X.value where X = test.Boxed _               → {lo = 10, hi = 20}; {lo = 30, hi = 40}
+```
+
+`.value` is the fact's value side. It can be projected but not matched
+([I6](invariants.html#i6)), and it is fetched whole.
+
+### Unions
+
+A one-field record against a union field names one alternative. `.alt?` selects one and
+binds its payload.
+
+```sigla
+X where test.Tagged {what = {num = X}, id = _}    → 1; 2
+X where test.Tagged {what = {text = X}, id = _}   → a; b
+X where test.Tagged {what = {num = _}, id = X}    → 10; 30
+Y where test.Label X; Y = X.what.num?             → 1; 2
+X where test.Label {id = X, what = {num = 2}}     → 30
+```
+
+A tag is not a position: `num` is 3 and `text` is 0. Where the union leads the key, naming
+an alternative is a seek. A union-typed variable can be shared by two generators:
+
+```sigla
+X where test.Tagged {what = W, id = X}; test.Label {id = _, what = W}  → 20; 40; 10; 30
+```
+
+Selecting the wrong alternative is an error, never another type's bytes. A union field the
+query does not mention is a wildcard.
+
+### Literals
+
+```sigla
+X where X = test.Count -42                   → test.Count#2
+X where X = test.Count -9223372036854775808  → test.Count#1
+X where X = test.Count 1_000                 → test.Count#4
+X where X = test.Name "abc"..                → test.Name#1
+X where X = test.Name "ann"~1                → test.Name#2; test.Name#3
+```
+
+Underscores separate digits. Malformed literals are rejected by name (`lit/…`).
+
+## References
+
+**Following** a reference compares against an id already bound. It reads nothing:
+
+```sigla
+P where P = test.Foo {id = 1}; test.Ref {of = P}                 → test.Foo#1
+X where X = test.Ref {of = test.Foo {id = 1}}                    → test.Ref#1
+X where X = test.Deep {via = test.Ref {of = test.Foo {id = 1}}}  → test.Deep#1
+```
+
+A fact pattern nested inside another is the idiomatic join.
+
+**Reading through** a reference fetches the target fact, one point read per row:
+
+```sigla
+X.name where test.Ref {of = X}                       → ann; bob
+X.value where test.Ref {of = X}                      → one; two
+N where test.Deep {via = R}; N = R.of.name           → ann; bob
+{a = X.id, b = X.name} where test.Ref {of = X}       → {a = 1, b = ann}; {a = 2, b = bob}
+P.id where test.Ref {of = P}; test.Bar {id = P.id}   → 1; 2
+```
+
+Two reads of one reference are one fetch. A row on the way out carries a reference as an
+id (`code.Decl#1`). To see the fact it names, use `query --expand` or `:expand`.
+
+## The head
+
+```sigla
+X where …                    a variable — the whole row, or the whole value it names
+X.name where …               a field of a bound row
+{a = X, b = Y.name} where …  a record built out of pieces
+test.Bar {id = 1} where …    a fact pattern — hoisted into the last level, projected as the fact
+```
+
+A wildcard head and a prefix head are refused.
+
+## Seek, splice, guide, filter
+
+For each key field in declaration order, the compiler decides one of four things:
+
+| Decision | When | Cost |
+|---|---|---|
+| **seek** | The field is a constant or a range, and every field before it was too | Narrows the scan |
+| **splice** | The field's value is in a register an outer level bound | Narrows the scan. This is the join |
+| **guide** | The field is a fuzzy pattern, and every field before it narrowed | Skips ranges the automaton rules out |
+| **filter** | Anything after the seek prefix has closed | Reads the row, then tests it |
+
+The moment a key field is captured by a variable, the prefix closes:
+
+```sigla
+X where X = test.Foo {id = 1}                → test.Foo#1        (a seek)
+X where test.Foo {id = X, name = "ann"}      → 1; 3              (a scan, then a filter)
+```
+
+`:plan` shows which happened. `--profile` shows what it cost.
+
+```plan
+  r0 <- codemarkup.SearchEntry scan
+       where name == "Crc32"
+  r1 <- codemarkup.SymbolXRef seek[target = r0.symbol, file = _, span = _]
+  head {at = r1.span, f = r1.file}
+```
+
+```text
+STEP                    EXAMINED
+codemarkup.SearchEntry  904       full scan
+codemarkup.SymbolXRef   5
+909 examined, 5 produced
+```
+
+If a query reads far more rows than it produces, the fix is usually a second predicate
+keyed for that question. [Query efficiency](query-efficiency.html) has the full rule.
+
+<Demo kind="plan">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
+
+## Errors
+
+Every diagnostic carries a code. Three families:
+
+| Prefix | Means |
+|---|---|
+| `reject/…` | Meaningless, rejected for good |
+| `nyi/…` | Has a meaning, not implemented yet |
+| `lit/…` | A malformed literal |
+
+```text
+error[reject/unknown-predicate]: `src.Nope` is not a predicate in this schema
+  ┌─ <input>:1:9
+  │
+1 │ X where src.Nope X
+  │         ^^^^^^^^^^
+```
+
+### Rejections
+
+| Code | Example | Why |
+|---|---|---|
+| `reject/unbound-variable` | `X where test.Foo _` | Nothing captures `X` |
+| `reject/unknown-field` | `X where test.Foo {nosuch = X}` | Not a key field |
+| `reject/unknown-predicate` | `X where X = nosuch.Pred _` | Not in the schema |
+| `reject/type-mismatch` | `N where test.Name N; N < 3` | Both sides of a comparison must have one type |
+| `reject/type-mismatch` | `X where X = test.Foo _; X < 3` | A whole row has no order |
+| `reject/no-value` | `X.value where X = test.Bar _` | The predicate is key-only |
+| `reject/value-shadowed` | `X.value where X = test.Shadow _` | A key field is named `value` |
+| `reject/duplicate-field` | `X where test.Foo {name = X, name = Y}` | A field twice |
+| `reject/not-a-generator` | `X where X = test.Foo _; 42` | A statement that does nothing |
+| `reject/bind-lhs` | `X where 42 = test.Foo _` | A literal cannot be bound to |
+| `reject/wildcard-in-head` | `_ where test.Foo _` | A wildcard head projects nothing |
+| `reject/not-a-union` | `X.alt? where X = test.Foo _` | A select on a non-union |
+| `reject/unknown-alternative` | `X where test.Tagged {what = {nosuch = X}, id = _}` | Not an alternative |
+| `reject/union-arity` | `X where test.Tagged {what = {num = X, text = _}, id = _}` | A union holds one alternative |
+| `reject/fuzzy-distance` | `N where test.Name N; N = "ann"~9` | Distance is `1` to `3` |
+| `reject/fuzzy-term` | a term of 64 characters or more | Terms are at most 63 |
+
+<Demo kind="types">{`N where code.Decl {file = _, name = N, line = L}; L > 15`}</Demo>
+
+### Not implemented yet
+
+| Code | Example | Workaround |
+|---|---|---|
+| `nyi/fuzzy-denial` | `N where test.Name N; N != "ann"~1` | — |
+| `nyi/repeated-variable` | `X where test.Edge {from = X, to = X}` | Bind two variables and compare |
+| `nyi/value-match` | `Y where test.Foo {id = X}; test.Bar {id = Y + 1}` | A seek needs bytes known before the run |
+| `nyi/value-match` | `X where X = test.Foo _; X.value < "b"` | A value cannot be filtered on |
+| `nyi/value-bind` | `X where test.Nested {outer = {inner = Y}}; X = {inner = Y}` | — |
+| `nyi/value-field` | `X.value.lo where X = test.Boxed _` | Project the whole value |
+| `nyi/bind-unification` | `X where X = test.Foo _; X.name != "a"..` | `Y = X.name; Y != "a"..` |
+| `nyi/negation` | `X where test.Foo {id = X}; !(Y where test.Bar {id = Y})` | No subquery inside a negation |
+| `nyi/negation` | `P where …; !test.Ref {of = test.Foo {id = 2}}` | Bind the inner fact first |
+| `nyi/fact-field` | reading through a reference held in a value | Put the reference in the key |
+| `nyi/whole-key` | matching a whole key against a record field | — |
+
+The general workaround: name the intermediate value in a statement of its own. An alias
+costs nothing.
+
+## What sigla does not have
+
+- **No recursion.**
+- **No aggregation.** `query --count` counts without adding it to the language.
+- **No `LIMIT`.** Bounding a result is the client's job (`--limit`, `:more`).
+- **No naming a fact by id.** Expansion happens on the protocol.
+- **No if-then-else.** `(C; T) | (!C; E)` is the desugaring.

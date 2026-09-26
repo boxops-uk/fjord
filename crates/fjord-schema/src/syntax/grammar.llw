@@ -18,7 +18,7 @@
 //   * **no `inherit`** (`schema a : b`) — deprecated in Angle.
 //   * **an alternative carries an explicit discriminant** — `{ a : t = 0 | b : t = 1 }`.
 //     Angle numbers alternatives by position, so inserting one renumbers the rest;
-//     [I10](../../../website/content/invariants.md#i10) requires the opposite, and the syntax has
+//     [I10](../../../web/src/content/invariants.mdx#i10) requires the opposite, and the syntax has
 //     to give somewhere to write the number down.
 //   * **an import names a namespace, never a path.** See `import_item`.
 

@@ -1,0 +1,345 @@
+export const meta = {
+  "title": "Wire protocol",
+  "description": "Frames, streams, the handshake, the four query kinds, the write stream, blocks and the value encoding: what a client needs."
+}
+
+One socket, framed and multiplexed. The CLI, the shell, and a C# client that shares no
+code with the server all speak it. Protocol version is **4**.
+
+The transport is a Unix socket by default. TCP is `serve --listen-tcp host:port`, with no
+config-file entry and no environment variable.
+
+## The frame layer
+
+<Bytes
+  caption="A 9-byte header, then the payload. The two counts are little-endian."
+  fields={[
+    { name: 'kind', size: 1, span: '1 byte' },
+    { name: 'stream', size: 4, span: '4 bytes' },
+    { name: 'length', size: 4, span: '4 bytes' },
+    { name: 'payload', size: 7, span: 'length bytes', variable: true },
+  ]}
+/>
+
+Every frame names its stream. A query is a stream, a write is a stream, and several run at
+once on one connection.
+
+- `kind` is a byte with named constants, not a closed enum. An unrecognised kind is
+  handed up intact.
+- `length` is capped at 64 MiB before it is trusted.
+
+## Frame kinds
+
+| Byte | Name | Direction | Carries |
+|---|---|---|---|
+| `S` | `STARTUP` | → | Version, database, session mode, schema claim |
+| `R` | `READY` | ← | Version, the database's schema fingerprint, predicate count |
+| `Q` | `QUERY` | → | Query text, on a new stream |
+| `P` | `QUERY_PROFILE` | → | The same, and report what it examined |
+| `G` | `QUERY_PAGE` | → | The same, stop after N rows and hand back a token |
+| `N` | `QUERY_COUNT` | → | The same, report only how many rows |
+| `T` | `ROW_DESCRIPTION` | ← | The head's shape, once per query stream |
+| `l` | `LISTING_DIGEST` | ← | Which virtual predicate these ids were minted from, and the digest of that listing |
+| `D` | `DATA_ROW` | ← | One row |
+| `p` | `PROFILE` | ← | What the query examined, once, just before `C` |
+| `n` | `COUNT` | ← | How many rows |
+| `r` | `RESUME` | ← | The resume token, when a page was cut short |
+| `C` | `COMPLETE` | ← | The stream finished, with counts |
+| `E` | `ERROR` | ↔ | This stream failed, with a code and a message |
+| `X` | `CANCEL` | → | Stop this stream |
+| `W` | `OPEN_WRITE` | → | Open a write stream |
+| `G` | `COPY_IN_RESPONSE` | ← | Ready for blocks *(write streams)* |
+| `d` | `COPY_DATA` | ↔ | One block of facts |
+| `c` | `COPY_DONE` | → | The write stream's blocks are finished |
+| `L` | `CONTROL` | → | A lifecycle request: create, finish, remove |
+| `M` | `CONTROL_REPLY` | ← | What it came to |
+| `H` | `SCHEMA` | → | "What can I ask you?" No payload |
+| `h` | `SCHEMA_REPLY` | ← | The schema this session is served with, as source |
+| `Y` | `TYPES` | → | "What shape is everything you serve?" No payload |
+| `y` | `TYPES_REPLY` | ← | Every predicate this session can name, as a type tree |
+| `I` | `OPEN_WRITE_IDS` | → | Open a write stream, and say what the facts were called |
+| `i` | `IDS` | ← | The id of each fact written, once, just before `C` |
+| `F` | `FETCH` | → | A batch of fact ids |
+| `f` | `FETCHED` | ← | One key each, positionally, or an absence |
+
+`G` appears twice. A kind is only ever read in one direction, so the byte means one thing
+outbound and another inbound.
+
+## The handshake
+
+<Sequence>{`
+→ S  { version, database, mode, schema_fingerprint, [(predicate, fingerprint)…] }
+← R  { version, schema_fingerprint, predicates }
+`}</Sequence>
+
+The database may be empty, which makes a control session for `create` and `list`.
+
+`mode` is `read-only` or `read-write`, resolved once against the database's status. A
+write session against a Complete database is refused here, not per fact.
+
+The schema claim has two halves. `schema_fingerprint` is an equality check, or `0` for
+"do not check", which is right for a reader. `predicates` lists what the client claims,
+each with its fingerprint, checked by subset containment: a producer that writes six of a
+database's twenty-seven predicates need not name the other twenty-one.
+
+<Callout tone="note" label={`There is no credential field`}>
+
+Access control is the transport's job: socket permissions, or a gateway in front of
+opted-in TCP (`ops-I10`).
+
+</Callout>
+
+## Asking what you may ask
+
+<Sequence>{`
+→ H  no payload
+← h  the schema, as source
+`}</Sequence>
+
+A database carries the schema it was created against, and `h` returns it. Virtual
+predicates are included. A session bound to no database answers with the catalogue alone.
+
+For a client with no sigla parser:
+
+<Sequence>{`
+→ Y  no payload
+← y  every predicate, as a descriptor
+`}</Sequence>
+
+The payload is a count and then, per predicate:
+
+```text
+  varint  id
+  string  name              fully qualified
+  varint  is_virtual        0 or 1
+  desc    key
+  varint  has_value         0 or 1
+  desc    value             only when has_value
+```
+
+The descriptors use the same encoding `T` carries for a row's shape. A predicate with no
+value takes no descriptor; one whose value is `{}` takes an empty record. Predicates
+arrive in id order.
+
+Predicate ids are assigned at `create` by sorted fully-qualified name, with `fjord.*`
+last, and never move for the life of the database. Adding a predicate to a *schema* can
+insert an id, so databases created after the change number differently.
+
+<Callout tone="warn" label={`A \`FactId\`'s tag is the database's numbering`}>
+
+A `FactId` packs its predicate id in its high bits. Decode it against the schema the
+server gave you, never against a hardcoded table.
+
+</Callout>
+
+## A query stream
+
+<Sequence>{`
+→ Q  "{f = F, at = S} where codemarkup.SymbolXRef {…}"
+← T  {at: {start: int, length: int}, f: src.File}
+← D  one row
+← D  one row
+…
+← C  complete
+`}</Sequence>
+
+| Kind | Adds | Answers with |
+|---|---|---|
+| `Q` | — | `T`, `D`*, `C` |
+| `P` | Report what it examined | …plus `p`, once, just before `C` |
+| `G` | Stop after N rows | …plus `r`, only if the result was cut short |
+| `N` | Count instead of encoding | `n`. No `T`, no `D` |
+
+`G` is what makes paging stateless: page two is a fresh request carrying the token. A page
+that reached the end sends no token. `N` runs the same plan and counts instead of
+encoding.
+
+Rows go out 256 at a time off the executor's suspend, so a result of any size never
+buffers in the server. Between chunks is where a cancel lands.
+
+### Rows off a virtual predicate
+
+A query reading `fjord.db.List` gets one extra frame after `T`:
+
+<Sequence>{`
+← T  {name: string, state: string}
+← l  fjord.db.List, digest 9f3c…
+← D  one row
+`}</Sequence>
+
+Those rows are a view, not a keyspace, so their ids are positions in a listing. The
+digest comes back on a `FETCH` and in a page's resume token, so a listing that moved is
+refused rather than answered with the wrong row.
+
+### Cancellation
+
+<Sequence>{`
+→ X  on the stream it cancels
+`}</Sequence>
+
+In band, on the stream. Other streams on the socket are untouched.
+
+### Errors
+
+<Sequence>{`
+← E  { code, message }
+`}</Sequence>
+
+A stream's failure leaves the connection usable.
+
+| Code | Means |
+|---|---|
+| 1 `Protocol` | Malformed or out-of-sequence frames |
+| 2 `UnknownDatabase` | No such database or instance, or one this server cannot open |
+| 3 `SchemaMismatch` | The claim disagrees with the database |
+| 4 `ModeRefused` | A write session against a Complete database |
+| 5 `BadFacts` | A block that does not validate |
+| 6 `Conflict` | Same key, different value |
+| 7 `BadQuery` | The query did not compile |
+| 8 `Internal` | Look at the server's logs |
+| 9 `InUse` | The database is there and not usable yet. Retry |
+| 10 `Refused` | A well-formed request the server will not carry out. The message says why |
+| 11 `Busy` | The server is at its connection cap. Arrives before the handshake. Retry |
+
+Two refusals to handle: a `FETCH` whose listing digest is stale is refused whole, so re-run
+the query. A resume across requests over `fjord.db.Interning` is refused by name, so ask
+for the whole answer in one request.
+
+## Fetching what an id names
+
+<Sequence>{`
+→ F  a batch of ids, batched per predicate, with the listing digest for a virtual one
+← f  one key each, in the order asked
+`}</Sequence>
+
+- The answer is the key, not the value. A reference names an identity.
+- Positional against the request, with a count. Batches are capped at 4096.
+- An id naming no fact is an absence, not a failed stream. A bad predicate id is a
+  refusal.
+- Two kinds of absence: *missing* for a stored predicate, where it means corruption, and
+  *unstored* for a virtual one, where the row may simply have moved.
+- Read-only is enough. Facts are immutable and ids are never reused.
+
+## The write stream
+
+<Sequence>{`
+→ W  open a write stream
+← G  ready
+→ d  one block
+→ d  one block
+→ c  done
+← C  facts written, facts deduped, the id range per predicate
+`}</Sequence>
+
+Per block, concurrently with every other stream: decode (CRC first), validate against the
+embedded schema, intern nested references bottom-up, encode, write both maps atomically.
+Exclusion is per key, so blocks from different streams proceed together.
+
+Failure is per stream, not per fact. A conflict names the offending key. A fact that
+interned cleanly before a later conflict stays written; retrying the message dedups
+against it.
+
+### Blocks
+
+The same bytes on the wire and on disk.
+
+<Bytes
+  fields={[
+    { name: 'sync', size: 10, span: 'FF × 10', group: '30 bytes of framing' },
+    { name: 'magic', size: 4, span: '"FJBK"', group: '30 bytes of framing' },
+    { name: 'name_len', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'count', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'length', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'crc32', size: 4, span: 'u32', group: '30 bytes of framing' },
+    { name: 'name', size: 6, span: 'name_len bytes', variable: true },
+    { name: 'payload', size: 10, span: 'length bytes', variable: true },
+  ]}
+/>
+
+- The predicate is named, not numbered, so a block is meaningful against any database.
+- Header fields are fixed-width little-endian; the payload is varints.
+- The CRC covers the header as well as the payload.
+- Caps: 16.7 M facts, 64 MiB payload, 64 KiB name.
+
+The sync marker is a candidate, not a guarantee, because `bytes` fields carry arbitrary
+content. A splitter confirms the magic and the CRC before believing one, and on failure
+scans past it, reporting the skip. A reader that can start at offset 0 should walk the
+headers instead and never scan.
+
+### Asking what the facts were called
+
+<Sequence>{`
+→ I  open the stream, instead of W
+→ d  [block]
+→ c  done
+← i  count, then each id (only on a stream opened with I)
+← C  created, deduped
+`}</Sequence>
+
+`I` reports the id of each top-level fact, so a producer can send a heavily-referenced
+target once and reference it by id after. A deduplicated fact reports the id it already
+had. Opt-in, because an indexer writing millions of facts has no use for the ids.
+
+## The value encoding
+
+| | Storage | Transport |
+|---|---|---|
+| int | Marker carrying the width, big-endian magnitude | LEB128 varint over zigzag |
+| string | Marker, escaped contents, terminator | Varint length, then the bytes |
+| record | Marker, fields, terminator | The fields, concatenated |
+| union | Marker, discriminant, payload, terminator | Varint discriminant, then the payload |
+| reference | Marker plus fixed 8 bytes | A varint branch: an id, or the target fact |
+| names, types, arities | — | Not sent |
+
+Both peers hold the schema, so names, order, arity and type are never on the wire. This is
+Avro's model. A union's discriminant is the one exception, because it is a property of the
+value.
+
+Two rules for an implementer: emit minimal varints, so one value has one encoding and the
+CRC means something; and a reference is type-checked against the predicate its field
+names, in both directions.
+
+## What a client sends: the whole fact
+
+```text
+    code.Ref {
+      from = code.Decl {                       ← a whole fact, not an id
+        file = code.File "query/plan.py",      ← nested again
+        name = "Plan", line = 5
+      },
+      to = code.Decl {
+        file = code.File "store/keys.py",
+        name = "key_of", line = 12
+      }
+    }
+```
+
+A reference field holds the target fact inline, to any depth, or a `FactId` if the
+producer already has one. The server interns each nested fact and substitutes the id. A
+repeated target is sent repeatedly; `I` is the answer when that costs too much.
+
+## Control frames
+
+`create`, `finish` and `remove` are frames on an ordinary stream, so a slow `create` does
+not block the reader loop. `list` and `describe` are not control frames: they read
+sidecars, and the remote form of `list` is a query over `fjord.db.List`.
+
+## Server obligations
+
+- A stream is a task. The reader loop reads a frame, routes it, and goes back to reading.
+- One fair writer takes a frame from each stream's queue in turn, so a million-row result
+  cannot starve a four-frame answer.
+- A chunk boundary is a real resume, and the snapshot is released at each one.
+- Backpressure is bounded per-stream queues plus per-connection backpressure.
+
+## What is built
+
+| | |
+|---|---|
+| **Built** | Frames, handshake, all four query kinds, paging, profiling, counting, write streams with and without ids, `H`/`h`, `Y`/`y`, `F`/`f`, listing digests, in-band cancellation, control frames, a fair writer |
+| **Deferred** | Per-stream flow-control windows |
+| **Opt-in** | TCP |
+| **Not built** | Ingesting a fact file from disk. The format exists; the command does not |
+
+A second implementation, in C#, shares no constants with the server and is held
+byte-for-byte against the Rust encoder. See [Clients](clients.html).

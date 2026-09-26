@@ -9,7 +9,7 @@
 //!
 //! What it is made of is `fjord-wire` and a socket. It depends on **no** storage
 //! engine, no query engine and no runtime, which is
-//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)'s `client → wire → encoding` and
+//! [operations §10](https://github.com/boxops-uk/fjord/blob/main/web/src/content/operations.mdx)'s `client → wire → encoding` and
 //! its rule that nothing depends on the server.
 //!
 //! ```no_run
@@ -49,7 +49,7 @@
 //! buffered here and nothing is buffered there: the server's outbound queue for that
 //! stream fills, its query loop suspends holding a **bytes-only cursor**, and the
 //! snapshot was already released at the chunk boundary
-//! ([I8](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i8)). A pause of a millisecond and a pause of an hour
+//! ([I8](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i8)). A pause of a millisecond and a pause of an hour
 //! cost it the same thing. That is the property `\more` is built on, and the reason a
 //! result is a bookmark
 //! ([`Rows`]) rather than an iterator holding the socket.

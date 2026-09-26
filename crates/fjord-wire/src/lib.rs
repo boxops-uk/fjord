@@ -20,7 +20,7 @@
 //! at all.
 //!
 //! (The design book's [wire protocol
-//! page](https://github.com/boxops-uk/fjord/blob/main/website/content/wire-protocol.md)
+//! page](https://github.com/boxops-uk/fjord/blob/main/web/src/content/wire-protocol.mdx)
 //! holds the argument against per-field tags.)
 //!
 //! ```text
@@ -77,12 +77,11 @@
 //! copy of the message formats is exactly the drift the .NET client exists to detect
 //! rather than to cause.
 //!
-//! [I1]: ../../website/content/invariants.md#i1
-//! [I2]: ../../website/content/invariants.md#i2
-//! [I3]: ../../website/content/invariants.md#i3
-//! [I13]: ../../website/content/invariants.md#i13
+//! [I1]: ../../web/src/content/invariants.mdx#i1
+//! [I2]: ../../web/src/content/invariants.mdx#i2
+//! [I3]: ../../web/src/content/invariants.mdx#i3
+//! [I13]: ../../web/src/content/invariants.mdx#i13
 //! [settled]: ../../PLAN.md#settled-decisions--recorded-so-they-are-not-reopened
-//! [operations §6 and §8]: ../../website/content/operations.md#6-wire-protocol--the-write-stream
 
 pub mod block;
 pub mod crc;

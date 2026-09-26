@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Issue** | [#42](https://github.com/boxops-uk/fjord/issues/42) items 2 and 3 — `[07]`; the predicate is revision 2's Decision 6, and appendix B of [#39](https://github.com/boxops-uk/fjord/issues/39) |
-| **Area** | `schemas/`, `website/content/`, `clients/dotnet` (R3.5 writes it) |
+| **Area** | `schemas/`, `web/src/content/`, `clients/dotnet` (R3.5 writes it) |
 | **Depends on** | W4 for the file split (fallback: declare inside `code.sigla`). **Not W6** — `config` imports nothing and stands alone, though its `position-encoding` dimension describes `src.ByteSpan`, so the two read best together |
 | **Blocks** | **R3.5** (which must write these facts), W8 and W9 (which read `position-encoding`), W11 |
 | **Invariants** | none |

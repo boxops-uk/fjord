@@ -90,8 +90,8 @@ class DriftGate(unittest.TestCase):
         self.addCleanup(self.tree.close)
         # Every control starts from a tree the gate passes, so a failure is the plant
         # and not the fixture.
-        self.tree.write("website/content/index.md", PAGE)
-        self.tree.write("website/content/invariants.md", INVARIANTS)
+        self.tree.write("web/src/content/index.mdx", PAGE)
+        self.tree.write("web/src/content/invariants.mdx", INVARIANTS)
         for rel in EXEMPTED:
             self.tree.write(rel, "")
 
@@ -108,29 +108,14 @@ class DriftGate(unittest.TestCase):
     def test_a_clean_tree_is_clean(self) -> None:
         self.assert_clean()
 
-    # ---- 1. links and anchors ----------------------------------------------------
+    # **Links, anchors and invariant citations are not this gate's**: they moved to
+    # `scripts/check-links.py`, which asks them of a fjord database in sigla. Their
+    # controls moved with them, to `scripts/test_check_links.py`.
 
-    def test_a_link_to_a_page_that_does_not_exist_is_caught(self) -> None:
-        self.tree.write("website/content/one.md", PAGE + "\nSee [the other](two.html).\n")
-        self.assert_caught("two.html")
-
-    def test_a_link_to_an_anchor_the_page_does_not_declare_is_caught(self) -> None:
-        self.tree.write("website/content/one.md", PAGE + "\nSee [there](index.html#nowhere).\n")
-        self.assert_caught("#nowhere")
-
-    # ---- 2. invariant citations --------------------------------------------------
-
-    def test_a_citation_of_an_invariant_the_registry_does_not_declare_is_caught(self) -> None:
-        self.tree.write(
-            "crates/fjord-thing/src/lib.rs",
-            "//! Holds [I9](../../../website/content/invariants.md#i9).\n",
-        )
-        self.assert_caught("#i9")
-
-    # ---- 3 and 3b. retired files, and retired names ------------------------------
+    # ---- 1 and 1b. retired files, and retired names ------------------------------
 
     def test_a_retired_name_in_the_book_is_caught(self) -> None:
-        self.tree.write("website/content/one.md", PAGE + "\nThe worked example is `code.sigla`.\n")
+        self.tree.write("web/src/content/one.mdx", PAGE + "\nThe worked example is `code.sigla`.\n")
         self.assert_caught("code.sigla")
 
     def test_a_retired_name_in_a_crate_is_caught(self) -> None:
@@ -161,7 +146,7 @@ class DriftGate(unittest.TestCase):
         findings and one real one, so it is gated in the book and nowhere else."""
         self.tree.write("crates/fjord-thing/src/lib.rs", "//! e.g. `src.Decl {name = N}`.\n")
         self.assert_clean()
-        self.tree.write("website/content/one.md", PAGE + "\nQuery `src.Decl {name = N}`.\n")
+        self.tree.write("web/src/content/one.mdx", PAGE + "\nQuery `src.Decl {name = N}`.\n")
         self.assert_caught("src.Decl")
 
     def test_a_longer_name_that_merely_starts_with_a_retired_one_is_not_caught(self) -> None:
@@ -170,7 +155,7 @@ class DriftGate(unittest.TestCase):
         `fjord-viewer-x86_64-linux-musl` are not references to the deleted flag or crate,
         and a required gate that blocks a merge over correct prose gets switched off."""
         self.tree.write(
-            "website/content/one.md",
+            "web/src/content/one.mdx",
             PAGE + "\nA tool taking `--skip-files-larger-than`, and `fjord-viewer-x86_64-linux-musl`,\n"
             "and a digest of `sample-code.sigla`.\n",
         )
@@ -207,8 +192,8 @@ class DriftGate(unittest.TestCase):
         exempting a real file and watching the announcement pass."""
         self.tree.copy("clients/dotnet/README.md")
         for rel in (
-            "website/content/clients.md",
-            "website/content/status.md",
+            "web/src/content/clients.mdx",
+            "web/src/content/status.mdx",
             "docs/gitnexus.md",
             "AGENTS.md",
             "clients/dotnet/Boxops.Fjord.Tests/OptionsTests.cs",
@@ -219,30 +204,30 @@ class DriftGate(unittest.TestCase):
         self.assertNotIn("flag-day.sh", done.stderr)
         self.assertNotIn("does not exist", done.stderr)
 
-    # ---- 4. build-plan phase numbers ---------------------------------------------
+    # ---- 2. build-plan phase numbers ---------------------------------------------
 
     def test_a_build_plan_phase_number_is_caught(self) -> None:
         self.tree.write("crates/fjord-thing/src/lib.rs", "//! Landed in Phase 3.\n")
         self.assert_caught("phase number")
 
-    # ---- 6. numbers the tree computes --------------------------------------------
+    # ---- 4. numbers the tree computes --------------------------------------------
 
     def test_a_protocol_number_the_tree_does_not_carry_is_caught(self) -> None:
         self.tree.write(
             "crates/fjord-wire/src/protocol.rs", "pub const VERSION: u32 = 4;\n"
         )
-        self.tree.write("website/content/one.md", PAGE + "\n    connected: protocol 3\n")
+        self.tree.write("web/src/content/one.mdx", PAGE + "\n    connected: protocol 3\n")
         self.assert_caught("says protocol 3")
 
     def test_the_protocol_number_the_tree_carries_is_left_alone(self) -> None:
         self.tree.write(
             "crates/fjord-wire/src/protocol.rs", "pub const VERSION: u32 = 4;\n"
         )
-        self.tree.write("website/content/one.md", PAGE + "\n    connected: protocol 4\n")
+        self.tree.write("web/src/content/one.mdx", PAGE + "\n    connected: protocol 4\n")
         self.assert_clean()
 
     def test_a_missing_protocol_source_is_a_finding_rather_than_a_traceback(self) -> None:
-        self.tree.write("website/content/one.md", PAGE + "\n    protocol 4\n")
+        self.tree.write("web/src/content/one.mdx", PAGE + "\n    protocol 4\n")
         stderr = self.assert_caught("nothing checks it")
         self.assertNotIn("Traceback", stderr)
 
@@ -294,7 +279,7 @@ class DriftGate(unittest.TestCase):
         self.assert_caught("not 1..n")
 
 
-    # ---- 7. the book's type tables against the type model ------------------------
+    # ---- 5. the book's type tables against the type model ------------------------
 
     # Four families, one of which the printer does not spell: enough for a table to be
     # short of one without the fixture having to restate the real type model.
@@ -330,14 +315,14 @@ class DriftGate(unittest.TestCase):
 
     def concepts(self, rows: str, lead: str = "Four") -> None:
         self.tree.write(
-            "website/content/concepts.md",
+            "web/src/content/concepts.mdx",
             f"{PAGE}\n{lead} building blocks, and that is all of them:\n\n"
             f"| Type | Written | What it is |\n|---|---|---|\n{rows}",
         )
 
     def schema_language(self, rows: str) -> None:
         self.tree.write(
-            "website/content/schema-language.md",
+            "web/src/content/schema-language.mdx",
             f"{PAGE}\n| Written | Means |\n|---|---|\n{rows}",
         )
 
@@ -373,7 +358,7 @@ class DriftGate(unittest.TestCase):
         reworded looks exactly like a page with nothing wrong."""
         self.model()
         self.concepts(self.CONCEPTS_ROWS)
-        page = self.tree.root / "website/content/concepts.md"
+        page = self.tree.root / "web/src/content/concepts.mdx"
         page.write_text(
             page.read_text(encoding="utf-8").replace(
                 "| Type | Written | What it is |", "| Type | Written | Notes |"

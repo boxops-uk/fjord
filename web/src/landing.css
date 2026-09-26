@@ -1,0 +1,1096 @@
+/* **The landing page.**
+
+   The book's pages are prose in one measure; this one is a page with sections,
+   so it sets its own rhythm. Everything here is a design token, as everywhere
+   else on this site — the landing page is not where a brand colour gets
+   invented. */
+
+.landing {
+  --measure: clamp(20rem, 92vw, 64rem);
+  display: grid;
+  justify-items: center;
+  gap: var(--spacing-12);
+  padding: var(--spacing-10) var(--spacing-4) var(--spacing-12);
+}
+
+.landing section {
+  width: var(--measure);
+  display: grid;
+  gap: var(--spacing-4);
+}
+
+.landing .hero { gap: var(--spacing-5); justify-items: center; text-align: center; }
+.landing .band .story { container-type: inline-size; }
+
+/* The hero is centred prose; what it holds is not. */
+.landing .hero .search-demo { width: 100%; text-align: start; }
+
+/* The pitch reads at a shorter measure than the demo under it. */
+.landing .hero > p { max-width: 44rem; }
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--spacing-3);
+}
+
+.landing .hero-foot { max-width: 40rem; }
+
+.landing .band { padding-block-start: var(--spacing-6); }
+.landing .band.last { padding-block-end: var(--spacing-8); }
+
+.landing h3 {
+  margin: 0 0 var(--spacing-2);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+}
+
+.landing p { margin: 0; line-height: 1.65; text-wrap: pretty; }
+
+/* ------------------------------------------------------------ hero story --
+
+   One question, on a loop. The file pane is the whole panel; the query and the
+   scan slide in over it and back out again, so the thing being used is never
+   shrunk to make room for the explanation of it. */
+
+.story {
+  width: 100%;
+  display: grid;
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  overflow: hidden;
+  text-align: start;
+}
+
+.story-body {
+  position: relative;
+  overflow: hidden;
+  min-height: 30rem;
+}
+
+/* ------------------------------------------------------------- the file -- */
+
+.story-file {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  background: var(--color-syntax-background);
+}
+
+.story-file-name {
+  padding: var(--spacing-2) var(--spacing-4);
+  border-block-end: var(--border-width) solid var(--color-border);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.story-code {
+  margin: 0;
+  padding: var(--spacing-2) 0;
+  list-style: none;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+/* **A numbered listing.** The gutter is a fixed column so the source starts at
+   the same place on every line, which is what `1ch` off it means something. */
+.listing {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.listing li {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--gutter, 3.2rem) minmax(0, 1fr);
+  align-items: baseline;
+}
+
+/* Source keeps its own spaces: an indented line that lost them is not code. */
+.listing .src {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listing .n {
+  padding-inline-end: var(--spacing-3);
+  color: var(--color-text-disabled);
+  text-align: end;
+  font-size: var(--font-size-xs);
+}
+
+/* **The index's own semantic runs**, which is what the code browser paints with.
+   Code that is one flat colour with a word picked out of it does not look like
+   code, and the claim every pane here makes is precisely that this is code. */
+.code-tok-keyword { color: var(--color-syntax-keyword); font-weight: 600; }
+.code-tok-function { color: var(--color-syntax-function); }
+.code-tok-string { color: var(--color-syntax-string); }
+.code-tok-number { color: var(--color-syntax-number); }
+.code-tok-comment { color: var(--color-syntax-comment); }
+.code-tok-variable { color: var(--color-syntax-variable); }
+.code-tok-punctuation { color: var(--color-syntax-punctuation); }
+.code-tok-type { color: var(--color-syntax-type); }
+.code-tok-property { color: var(--color-syntax-property); }
+.code-tok-constant { color: var(--color-syntax-constant); }
+.code-tok-operator { color: var(--color-syntax-operator); }
+.code-tok-attribute { color: var(--color-syntax-attribute); }
+.code-tok-tag { color: var(--color-syntax-tag); }
+
+/* The name the whole story is about, under the cursor. */
+.code-tok.is-subject {
+  padding: 0 var(--spacing-0-5);
+  border-radius: var(--radius-inner);
+  background: var(--color-accent-muted);
+  box-shadow: inset 0 -1px 0 var(--color-accent);
+}
+
+/* ----------------------------------------------------------- the cursor -- */
+
+/* **Two axes, two curves, so the path bends.** A pointer that slides along a
+   straight line at one rate is a tween; a hand moves fast, arcs, and settles.
+   The outer element carries the horizontal, the inner the vertical, and the
+   difference between their easings is the arc. Arriving overshoots a little and
+   corrects, the way a hand does; leaving accelerates away and does not. */
+
+.story-cursor {
+  position: absolute;
+  z-index: 3;
+  inset-block-start: 1.15em;
+  /* The gutter, then the column the name starts at, then a little way into it —
+     `ch` because the pane is monospaced, so a character is a unit. */
+  inset-inline-start: calc(3.2rem + (var(--at, 0) + 2.5) * 1ch);
+  width: 18px;
+  height: 18px;
+  transform: translateX(5.5rem);
+  transition: transform 560ms cubic-bezier(0.55, 0, 0.9, 0.45);
+  filter: drop-shadow(0 1px 2px var(--color-shadow));
+}
+
+.story-cursor-y {
+  display: block;
+  transform: translateY(3.25rem);
+  transition: transform 560ms cubic-bezier(0.5, 0, 0.75, 0.3);
+}
+
+.story-cursor.is-on {
+  transform: translateX(0);
+  transition: transform 760ms cubic-bezier(0.3, 1.18, 0.5, 1);
+}
+
+.story-cursor.is-on .story-cursor-y {
+  transform: translateY(0);
+  transition: transform 800ms cubic-bezier(0.62, 0.03, 0.3, 1);
+}
+
+.story-cursor svg { position: absolute; inset-block-start: 0; }
+
+/* The hand's fingertip sits where the arrow's tip did, so the shape changes
+   without the cursor appearing to jump. */
+.story-cursor .is-hand {
+  inset-inline-start: -5px;
+  inset-block-start: -2px;
+}
+
+/* Arrow on the way, hand on arrival — the shape every editor shows over a name
+   you can do something with. Delayed on the way in so it turns as it lands, and
+   immediate on the way out. */
+.story-cursor .is-arrow { opacity: 1; transition: opacity 140ms linear; }
+.story-cursor .is-hand { opacity: 0; transition: opacity 140ms linear; }
+.story-cursor.is-on .is-arrow { opacity: 0; transition-delay: 520ms; }
+.story-cursor.is-on .is-hand { opacity: 1; transition-delay: 520ms; }
+
+/* ---------------------------------------------------------- the popover -- */
+
+/* At the cursor, over the code: a hover card covers the lines under it in every
+   editor there is, and a reader knows the shape on sight. */
+.story-popover {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: 2.3em;
+  inset-inline-start: 3.2rem;
+  /* As wide as what it says. Spanning the pane it buried the two lines under
+     it, and a card that hides the file it is about is not the shape an editor
+     draws. */
+  width: max-content;
+  max-width: min(26rem, calc(100% - 4.5rem));
+  display: grid;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3);
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-popover);
+  box-shadow: 0 6px 16px var(--color-shadow);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+  /* The beat an editor waits before it decides you meant to hover. Without it
+     the card is already open as the pointer lands, which reads as the card
+     having been waiting rather than having been asked. */
+  animation: story-pop 190ms ease-out 240ms both;
+}
+
+@keyframes story-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.story-popover ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--spacing-1);
+}
+
+.story-popover li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacing-2);
+}
+
+.story-popover code {
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+.story-popover span { color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+
+/* While it is looking. */
+.story-looking {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+/* ------------------------------------------------------------- the panel -- */
+
+/* **It comes up from underneath, not in from the side.** The code window is
+   full size whenever the panel has nothing to say, and when it does the panel
+   rises into the room below the card rather than taking the width — which is
+   the one arrangement that is the same shape on a phone as on a desktop. */
+.story-panel {
+  position: absolute;
+  z-index: 4;
+  inset-inline: 0;
+  inset-block-end: 0;
+  /* Tall enough for the nine rows the run opens: the band's argument is that
+     the list is short, and a list that scrolls does not look short. */
+  height: 56%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--spacing-2);
+  padding: var(--spacing-2) var(--spacing-3);
+  border-block-start: var(--border-width) solid var(--color-border-emphasized);
+  background: var(--color-background-card);
+  box-shadow: 0 -8px 24px -12px var(--color-shadow);
+  transform: translateY(102%);
+  transition: transform 460ms cubic-bezier(0.32, 0.72, 0.2, 1);
+  overflow: hidden;
+}
+
+.story-panel.is-open { transform: none; }
+
+.story-panel pre.astryx-codeblock { margin: 0; height: 100%; }
+
+/* The block scrolls its own body, and that body is sized to the text. Left
+   alone its scrollbar lands wherever the last line ends, floating in the middle
+   of the pane. Stretching it puts the bar on the floor, where a scrollbar goes. */
+.story-panel pre.astryx-codeblock > div:not(.astryx-codeblock-header) {
+  flex: 1;
+  min-height: 0;
+}
+
+.story-query {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--spacing-2);
+  min-height: 0;
+  height: 100%;
+}
+
+/* **One column on a phone, two where there is room.** The plan is the cause and
+   the band is the effect, so the plan leads — and where only one of them fits it
+   is the band that stays, because the band is what carries the argument. */
+.story-scan {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spacing-4);
+  min-height: 0;
+  height: 100%;
+}
+
+.story-plan { display: none; }
+
+/* The story is at most 64rem wide and shrinks with the viewport, so the split
+   has to fire well below a laptop's width or it never fires on one. */
+@container (min-width: 47rem) {
+  .story-scan { grid-template-columns: minmax(0, 18rem) minmax(0, 1fr); }
+  .story-plan { display: grid; }
+}
+
+@container (min-width: 58rem) {
+  .story-scan { grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); }
+}
+
+.story-keys {
+  display: grid;
+  /* Head, the range, the gutter above, the keys, the gutter below. The gutters
+     sit outside the scroller on purpose: they are what says the band is a
+     stretch of something longer, and a claim that scrolls away is not made. */
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: var(--spacing-0-5) 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* ---------------------------------------------------------------- the plan -- */
+
+.story-plan {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--spacing-0-5) 0;
+  min-height: 0;
+  height: 100%;
+  border-inline-end: var(--border-width) solid var(--color-border);
+  padding-inline-end: var(--spacing-4);
+}
+
+.story-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-1);
+  min-height: 0;
+  overflow-y: auto;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+.story-steps li {
+  display: grid;
+  gap: 1px;
+  padding: var(--spacing-1) var(--spacing-2);
+  border-inline-start: 2px solid transparent;
+  border-radius: 0 var(--radius-inner) var(--radius-inner) 0;
+  color: var(--color-text-disabled);
+}
+
+/* The step the machine is standing at. The two inner ones take turns as the
+   loop runs, which is what a nested loop looks like from outside. */
+.story-steps li.is-at {
+  border-inline-start-color: var(--color-accent);
+  background: var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+.story-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+}
+
+.story-step-head .r {
+  color: var(--color-syntax-constant);
+  font-weight: var(--font-weight-semibold);
+}
+
+.story-step-head .p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-syntax-function);
+}
+
+/* The count runs to the edge so the numbers line up down the column. */
+.story-step-head .n {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* `seek` is the word the whole panel is about. A `scan` or a `fetch` is ink. */
+.story-step-head .a {
+  padding: 0 var(--spacing-1);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-2xs, var(--font-size-xs));
+  letter-spacing: 0.04em;
+}
+
+.story-step-head .a.is-seek {
+  background: var(--color-accent-muted);
+  color: var(--color-accent-text, var(--color-text-primary));
+}
+
+/* The engine's own line. Wrapped rather than clipped: `target = r0.symbol` is
+   the splice, and it is the last thing on a line long enough to lose it. */
+.story-step-text {
+  display: block;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.story-steps li.is-at .story-step-text { color: var(--color-text-primary); }
+
+.story-head-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  margin: 0;
+  padding: var(--spacing-1) var(--spacing-2);
+  border-block-start: var(--border-width) solid var(--color-border);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+.story-head-row .r {
+  flex: none;
+  color: var(--color-text-disabled);
+}
+
+.story-note {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.story-scan-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.story-scan-head .examined {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: var(--font-weight-normal);
+}
+
+/* The range's own first byte string. On the second level it opens with the row
+   the first level bound, which is the splice this engine has instead of a join. */
+.story-seek {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  margin: 0;
+  min-height: 1.35em;
+  font-size: var(--font-size-xs);
+}
+
+.story-seek .k {
+  flex: none;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: var(--font-weight-semibold);
+}
+
+.story-seek code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-code);
+  /* Stated, not inherited: the book gives `code` a size of its own, and here it
+     is a caption beside a label rather than a span of prose. */
+  font-size: var(--font-size-xs);
+  color: var(--color-syntax-string);
+}
+
+.story-rows {
+  /* Positioned so a row's `offsetTop` is measured against this list and not
+     against whatever the page happens to have positioned above it. */
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-0-5);
+  min-height: 0;
+  overflow-y: auto;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+}
+
+.story-rows li {
+  display: block;
+  padding-inline: var(--spacing-2);
+  border-inline-start: 2px solid transparent;
+  color: var(--color-text-disabled);
+  line-height: 1.5;
+}
+
+/* A key is one line, always: a row that wraps moves every row under it, which
+   is exactly what a reader watching one row cannot afford. */
+.story-rows .key {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* **The band.** Inside the range the executor opened; the rows above and below
+   it are the same predicate, in the same order, that this query never reads. */
+.story-rows .is-within {
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+}
+
+/* The bytes the seek pinned. Everything left of the boundary it jumped straight
+   to; everything right of it the scan walks. */
+.story-rows .key b {
+  color: var(--color-syntax-string);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* What is off each end, and how much of it. */
+.story-gutter {
+  margin: 0;
+  padding-inline: var(--spacing-2);
+  line-height: 1.7;
+  color: var(--color-text-disabled);
+  font-size: var(--font-size-xs);
+  font-style: italic;
+}
+
+.story-gutter::before { content: '⋯ '; font-style: normal; }
+
+/* The row a register is standing on. */
+.story-rows .is-here {
+  background: var(--color-accent-muted);
+  border-inline-start-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
+
+/* --------------------------------------------------------------- the foot -- */
+
+.story-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4);
+  border-block-start: var(--border-width) solid var(--color-border);
+  background: var(--color-background-muted);
+}
+
+.story-caption { margin: 0; flex: 1 1 18rem; }
+
+.story-dots {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.story-dots button {
+  width: var(--spacing-2);
+  height: var(--spacing-2);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-border-emphasized);
+  cursor: pointer;
+}
+
+.story-dots button.is-at { background: var(--color-accent); }
+
+/* Moving content that plays on its own needs a way to stop it. */
+.story-dots .story-play {
+  width: auto;
+  height: auto;
+  padding: var(--spacing-1) var(--spacing-2);
+  margin-inline-start: var(--spacing-2);
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+}
+
+.story-dots .story-play:hover { color: var(--color-text-primary); }
+
+/* Nobody who asked not to be moved should watch a cursor travel. */
+@media (prefers-reduced-motion: reduce) {
+  .story-cursor,
+  .story-cursor-y,
+  .story-cursor .is-arrow,
+  .story-cursor .is-hand,
+  .story-panel {
+    transition: none;
+  }
+  .story-popover { animation: none; }
+}
+
+@container (max-width: 46rem) {
+  .story-panel { height: 58%; }
+  .story-popover { max-width: calc(100% - 4rem); }
+  .story-code { font-size: var(--font-size-xs); }
+}
+
+/* ---------------------------------------------------------------- columns -- */
+
+.landing .three,
+.landing .two,
+.landing .cards {
+  display: grid;
+  gap: var(--spacing-4);
+}
+
+.landing .three { grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.landing .two { grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+.landing .cards { grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+
+.landing .three article,
+.landing .two article {
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+}
+
+.landing .three article p,
+.landing .two article li {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+/* The reset takes the markers off every list; a column of claims reads as
+   prose without them. */
+.landing .two ul {
+  margin: 0;
+  padding-inline-start: var(--spacing-5);
+  list-style: disc;
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.landing .two li::marker { color: var(--color-text-disabled); }
+
+/* A tick and a rule, rather than two colours doing the work: the page's accent
+   is a red that means *a byte the lexer refused* everywhere else on this site,
+   and a column of it under "not for" would read as a list of faults. */
+.landing .two .good { border-color: var(--color-success-muted); }
+
+.landing .cards .card {
+  display: grid;
+  gap: var(--spacing-1);
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.landing .cards .card:hover { border-color: var(--color-accent); }
+.landing .cards .card b { font-weight: var(--font-weight-semibold); }
+
+.landing .cards .card span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.55;
+}
+
+@media (max-width: 40rem) {
+  .landing { gap: var(--spacing-8); padding-block-start: var(--spacing-6); }
+  .landing .band { padding-block-start: var(--spacing-2); }
+
+  /* A display heading is sized for a page that has room for one. Six words at
+     that size is four lines on a phone, which is a wall rather than a
+     headline. */
+  .landing .hero h1 { font-size: var(--font-size-3xl); line-height: 1.15; }
+  .landing .hero > p { font-size: var(--font-size-base); }
+}
+
+/* ======================================================================== */
+/* The search demo                                                          */
+/* ======================================================================== */
+
+/* **A box that behaves like the thing it is imitating.** The point of the band
+   is that a reader recognises the affordance before they read a word about
+   predicates, so the bar is the size of the promise it is making and the cards
+   under it are the ones every code host has trained them on. */
+
+.finder {
+  display: grid;
+  gap: var(--spacing-4);
+  justify-items: center;
+}
+
+/* ------------------------------------------------------------------ the bar -- */
+
+/* The label *is* the box, so the whole bar is a click target for the field and
+   a stray click beside the icon lands in the input rather than nowhere. */
+.finder-bar {
+  width: min(100%, 42rem);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  padding: var(--spacing-4) var(--spacing-6);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-background-card);
+  box-shadow: 0 2px 10px -4px var(--color-shadow);
+  color: var(--color-text-secondary);
+  cursor: text;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.finder-bar:hover { border-color: var(--color-border-emphasized); }
+
+/* `:focus-within` rather than a ring on the input: the input has no border of
+   its own, so the box is what a reader sees take focus. */
+.finder-bar:has(input:focus-visible),
+.finder-bar:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+.finder-bar > .astryx-icon { flex: none; font-size: var(--font-size-2xl, 1.5rem); }
+
+.finder-bar input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-2xl, 1.5rem);
+  line-height: 1.4;
+}
+
+.finder-bar input::placeholder { color: var(--color-text-disabled); }
+.finder-bar input::-webkit-search-cancel-button { display: none; }
+
+.finder-clear {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.finder-clear:hover { color: var(--color-text-primary); }
+
+/* --------------------------------------------------------------- the words -- */
+
+.finder-try {
+  width: min(100%, 42rem);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.finder-try button {
+  padding: var(--spacing-1) var(--spacing-3);
+  white-space: nowrap;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-background-card);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.finder-try button:hover {
+  border-color: var(--color-border-emphasized);
+  color: var(--color-text-primary);
+}
+
+.finder-try button.is-on {
+  border-color: var(--color-accent);
+  background: var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+/* -------------------------------------------------------------- the results -- */
+
+.finder-note {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin: 0;
+  padding: var(--spacing-5) var(--spacing-1);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.finder-cards {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--spacing-3);
+}
+
+/* **A card is one answer, whole.** What it is, what it is called, how it is
+   declared, what it is called in full, and where it lives — five rows the index
+   already holds, so the card is a projection and not a design. */
+.finder-cards button {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-2);
+  width: 100%;
+  height: 100%;
+  padding: var(--spacing-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-card);
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.finder-cards button:hover,
+.finder-cards button.is-active,
+.finder-cards button:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 4px 16px -8px var(--color-shadow);
+  transform: translateY(-1px);
+}
+
+.card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+}
+
+/* **One chip, four tints.** A kind is what the index said this thing is, so
+   colouring by it adds no claim of its own — and a reader scanning for the class
+   among thirty methods is doing the thing the colour is for. */
+.hit-kind {
+  padding: var(--spacing-0-5) var(--spacing-2);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.hit-kind[data-family='type'] {
+  background: var(--color-accent-muted);
+  color: var(--color-accent-text, var(--color-text-primary));
+}
+
+.hit-kind[data-family='value'] { color: var(--color-text-disabled); }
+
+.hit-uses {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hit-name {
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hit-name mark {
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--color-accent);
+  text-underline-offset: 3px;
+}
+
+/* **The summary the source wrote.** Two lines, because the first sentence of a
+   doc comment is the part that says what a thing is for and the rest is for the
+   page that has room for it. */
+.hit-doc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+/* **The declaration, and the lines either side of it.** The gutter is narrower
+   than the walkthrough's because the numbers are small and there are five of
+   them, not twenty-two. */
+.hit-lines {
+  --gutter: 2.6rem;
+  padding: var(--spacing-2) 0;
+  border-radius: var(--radius-inner);
+  background: var(--color-syntax-background);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  overflow: hidden;
+}
+
+/* The line the result is about. The rest is the context that makes it legible. */
+.hit-lines li.is-at { background: var(--color-accent-muted); }
+.hit-lines li.is-at .n { color: var(--color-text-secondary); }
+
+/* The declaration as the file writes it — one line, because the point is what
+   sort of declaration it is and not to reproduce the source. */
+.hit-sig {
+  display: block;
+  padding: var(--spacing-2);
+  border-radius: var(--radius-inner);
+  background: var(--color-syntax-background);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  margin-block-start: auto;
+  padding-block-start: var(--spacing-1);
+  color: var(--color-text-disabled);
+}
+
+.finder-cards button:hover .card-foot,
+.finder-cards button.is-active .card-foot { color: var(--color-text-secondary); }
+
+.hit-where {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+}
+
+/* The full name, then where the declaration is. Both clipped rather than
+   wrapped: a namespace is long and a card that grows a line when one result
+   happens to be deeply nested is a grid that jumps as it is typed into. */
+.hit-where b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+
+.hit-where em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  font-family: var(--font-family-code);
+  color: var(--color-text-disabled);
+}
+
+.finder-said {
+  width: min(100%, 42rem);
+  margin-block-start: var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.finder-said summary {
+  cursor: pointer;
+  list-style: none;
+  padding: var(--spacing-1) 0;
+  /* The one line of the hero that is not the box, so it sits under it rather
+     than beside it. What it opens is prose and a query, and those read left. */
+  text-align: center;
+}
+
+.finder-said summary::-webkit-details-marker { display: none; }
+.finder-said summary::after { content: ' ▸'; }
+.finder-said[open] summary::after { content: ' ▾'; }
+.finder-said summary:hover { color: var(--color-text-primary); }
+.finder-said > p { margin-block: var(--spacing-3) 0; }
+
+.search-demo pre.astryx-codeblock { margin-block: var(--spacing-3); }
+
+/* **Five words, one line.** A phone is 17px short of fitting them at the desktop
+   size, which wraps exactly one chip onto a line of its own — the worst of both,
+   since it costs a whole row to show one word. Tighter padding and a smaller gap
+   buy the 60px back; centring is for the narrowest phones, where it still wraps
+   and a centred orphan at least reads as deliberate. */
+@media (max-width: 26rem) {
+  .finder-try {
+    justify-content: center;
+    gap: var(--spacing-1);
+  }
+  .finder-try button { padding: var(--spacing-1) var(--spacing-2); }
+}
+
+@media (max-width: 40rem) {
+  .finder-bar {
+    padding: var(--spacing-3) var(--spacing-4);
+    gap: var(--spacing-2);
+  }
+  .finder-bar input { font-size: var(--font-size-lg); }
+  .finder-bar > .astryx-icon { font-size: var(--font-size-lg); }
+
+}

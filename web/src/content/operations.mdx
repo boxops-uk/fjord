@@ -1,0 +1,185 @@
+export const meta = {
+  "title": "Operations",
+  "description": "The lifecycle, the ten operational invariants, running a server, deploying artifacts, and the gaps this design names."
+}
+
+Operational rules are written `ops-Ix`, separately from the engine invariants.
+
+## The lifecycle
+
+<Lifecycle />
+
+| State | Means |
+|---|---|
+| **Writable** | Ingestion happens here. Many writers, one process |
+| **Complete** | Sealed. Every open-for-write is refused at session establishment |
+| **Broken** | A database whose build failed |
+
+## The ten operational invariants
+
+| # | Statement |
+|---|---|
+| `ops-I1` | **Single-process store ownership.** A storage directory is opened by exactly one process; a running server owns every database under its root; no silent connect→open fallback. **A process, not a thread**, and that is what makes per-key exclusion inside the process sufficient |
+| `ops-I2` | **Complete = immutable.** Once Complete, every open-for-write is refused at session establishment: structural, not per write |
+| `ops-I3` | **Finish ordering.** Durable first, then flip the status via an atomic sidecar write as the **last** durable action. Never observable that metadata says Complete while data is not durable |
+| `ops-I4` | **Reproducibility.** A database built twice from identical inputs is identical; identity is `hash(canonical schema, base facts)`. Timestamps and random ids are descriptive, never identity. Conflict handling is order-independent: strict reject, neither first- nor last-writer-wins |
+| `ops-I5` | **One write funnel.** Every writer passes the same pipeline: schema-validate → dedup identical → reject same-key-different-value. **One pipeline, not one thread** |
+| `ops-I6` | **Session modes.** A session declares `read-only` or `read-write` at open, resolved once against the database's status |
+| `ops-I7` | **The filesystem is the catalog.** No manifest of databases; enumeration is a walk of the store root plus sidecar reads. Any index is rebuildable and never authoritative |
+| `ops-I8` | **Derivation is phased.** create → ingest base → derive → finish |
+| `ops-I9` | **No cross-database anything in P0.** No cross-database queries, stacking or ownership |
+| `ops-I10` | **No in-database auth; the transport is the trust boundary.** No RBAC; authentication is the transport's job. Safe only because binding is default-closed |
+
+`ops-I4` and `ops-I5` do not require a single writer thread. The identity hash is a
+multiset over each fact's logical form, so write order cannot move it, and the one funnel
+is a pipeline, not a thread. What needed serialising was the key-to-fact mapping, which
+[per-key exclusion](storage.html#the-other-half-one-key-names-exactly-one-fact) provides.
+
+## Ownership and locking
+
+- A **root lock** gives one process the store root. A root held by something that is not
+  listening on the socket is refused by name rather than opened.
+- The **socket is the server-detection mechanism**. Its presence is what a client uses; its
+  absence is what an offline lifecycle command uses.
+- Inside the server, writers are excluded per key. At the database level there is only the
+  seal barrier: writers hold it shared, `finish` takes it exclusive (`ops-I2`).
+- `list` and `describe` take no lock and open no store (`ops-I7`).
+
+## On disk
+
+<Tree>{`
+<data_dir>/
+- fjord.sock  the socket. Its presence means a server is here
+- <name>/<instance>/  one database. The instance is a ULID
+-- FJORD_META  the sidecar: temp, fsync, rename (ops-I3). Name, instance, status, format version, schema fingerprint, content fingerprint at finish, counts, size, created_at
+-- schema/  the embedded canonical schema
+-- keyspaces/<n>/tables/  the LSM tables, where a sealed database's data is
+-- <n>.jnl  the write-ahead journal, and a residual after sealing
+-- lock, version  the root lock and the format stamp
+`}</Tree>
+
+`finish` runs, in order: fsync, flush every memtable to a table, merge, fsync again,
+compute the identity, flip the status. After sealing the data is in
+`keyspaces/<n>/tables/`, and a journal residual remains. `FJORD_META.bytes` is the size of
+the instance directory at the moment of sealing, journal included.
+
+<Callout tone="warn" label={`Never remove a \`*.jnl\` from a sealed directory`}>
+
+Recovery is the storage engine's, and a database whose journal was deleted has an
+undefined next open.
+
+</Callout>
+
+## Running a server
+
+```bash
+fjord --data-dir /var/lib/fjord serve --ready-file /run/fjord.ready
+```
+
+- **Unix socket only, by default** (`ops-I10`). `--listen-tcp host:port` opens TCP. That
+  is reachability, not access control: the handshake accepts anonymous, so put a gateway
+  in front.
+- **`--ready-file` appears after the listener accepts and is removed when the server
+  stops.** `SIGINT` and `SIGTERM` are handled. `SIGKILL` leaves both files behind, and a
+  stale socket is answered as "no server".
+- **Connections are capped** at half the soft descriptor limit by default
+  (`--max-connections`). Past the cap a connection is told `Busy` and closed.
+- **A failed `accept` never ends the server.** Descriptor exhaustion is logged and backed
+  off by 50 ms.
+- **Every query has a rows-examined ceiling**: 64,000,000 by default. See
+  [Query efficiency](query-efficiency.html#the-ceiling-is-deployment-policy).
+
+### Systemd
+
+```text
+[Service]
+ExecStart=/usr/local/bin/fjord --data-dir /var/lib/fjord serve \
+         --ready-file /run/fjord/ready
+Restart=on-failure
+```
+
+There is nothing to configure beyond the root. Access control is the socket's permissions.
+
+## Deployment
+
+### Build in CI, serve elsewhere
+
+```bash
+fjord --data-dir ./out create code --schema ./schemas/demo.sigla
+fjord --data-dir ./out serve --ready-file ./ready &
+# … a producer writes facts over the socket …
+fjord --data-dir ./out finish code
+```
+
+Lifecycle commands work with no server running. A reader always goes through one.
+
+The artifact is a directory: `tar` it, publish it, unpack it into a store root on the
+serving side. There is no registration step. A server resolves every bind against the
+disk, so an instance that appears under a live root is served by the next session that
+asks for it.
+
+#### Publish by rename — required for a live root
+
+**The instance directory must appear all at once.** Copying into a root a server is
+serving can destroy the artifact: the storage engine treats a part-delivered keyspace as
+one it never finished creating and deletes it, and the published artifact is then
+permanently unopenable. Unpack into a dot-prefixed staging path inside the same store
+root, then rename:
+
+```bash
+staging="$root/.staging-$instance"                   # dot-prefixed: the scan ignores it
+mkdir -p "$staging" && tar -C "$staging" -xf code.tar
+mkdir -p "$root/code"
+mv "$staging/$instance" "$root/code/$instance"       # one atomic rename
+rmdir "$staging"
+```
+
+The staging path must be under the store root so `mv` is a rename, and must start with a
+dot so the catalogue scan ignores it. `fjord create` does the same thing internally.
+
+A bind that lands during a copy is refused by name where the store's marker file has not
+arrived, and refused where the recovered store holds fewer facts than the sidecar records.
+Neither is a silent wrong answer, but the second has already deleted files.
+
+### Scaling readers
+
+Horizontal scaling is more processes, each with its own copy of an immutable database. A
+copy per reader multiplies the artifact rather than amortising it, and that is the
+recorded cost of the "no cross-database anything" rule.
+
+### Freshness
+
+A Complete database is immutable, so freshness is how often a new one is built. That is an
+indexing-throughput question, not a serving one.
+
+## Backup and restore
+
+- **Backup** is a tar of the directory, Complete databases only. A file-level copy of a
+  Writable database is unsafe under single-process ownership.
+- **Restore** unpacks to a staging path and renames the instance directory in, as
+  [above](#publish-by-rename-required-for-a-live-root). Check the sidecar parses, the
+  status is Complete, and the content fingerprint matches, before the rename.
+
+## Gaps this design names
+
+| Gap | Where it stands |
+|---|---|
+| `fjord write` from files | Unbuilt. The format is defined; the pipeline is not wired to a command |
+| `db verify` | Unbuilt. Recomputing the content fingerprint is specified |
+| Per-predicate statistics | Not recorded, so the reorderer has no selectivity heuristic |
+| Retention | No policy. Rebuilds accumulate and `db rm` is manual |
+| Provenance and properties | No field records what a database was built from |
+| Per-stream flow control | Deferred. Bounded queues and per-connection backpressure in the meantime |
+| A resumable deadline | A timeout unwinds rather than handing back a cursor |
+| A per-connection budget | The rows-examined ceiling is per run. Nothing sums a session's work |
+| Admission control past the connection cap | Connections are capped; in-flight queries queue on the blocking pool as latency |
+| Authentication | None, by design (`ops-I10`) |
+
+## Two rules to internalise
+
+**Never reach past a server.** A bare name means "ask the local server". A failure says
+what to do rather than quietly opening the directory.
+
+**Sealing decides the artifact's shape.** `finish` merges every tree, which on a large
+database is tens of seconds. It is the difference between a reader seeking once per plan
+level per page and seeking up to 180× that.

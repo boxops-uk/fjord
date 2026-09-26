@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AppShell } from '@astryxdesign/core/AppShell'
 import { TopNav, TopNavHeading } from '@astryxdesign/core/TopNav'
-import { SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav'
+import { SideNav, SideNavItem } from '@astryxdesign/core/SideNav'
+import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible'
 import { MobileNav } from '@astryxdesign/core/MobileNav'
 import { Icon } from '@astryxdesign/core/Icon'
-import { Layout as Panes, LayoutContent, LayoutPanel } from '@astryxdesign/core/Layout'
+import { Layout as Panes, LayoutContent } from '@astryxdesign/core/Layout'
 import { Center } from '@astryxdesign/core/Center'
 import { useMediaQuery } from '@astryxdesign/core/hooks'
 import { Outline } from '@astryxdesign/core/Outline'
 import { Button } from '@astryxdesign/core/Button'
 import { IconButton } from '@astryxdesign/core/IconButton'
 import { Kbd } from '@astryxdesign/core/Kbd'
-import { HStack } from '@astryxdesign/core/Stack'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Text } from '@astryxdesign/core/Text'
 import { GROUPS } from './content'
-import type { Heading } from './markdown'
-import { route } from './markdown'
+import type { Heading } from './content'
+import { route } from './links'
 import { navigate } from './router'
 import { ScrollRootProvider } from './scrollRoot'
 import { Search } from './Search'
@@ -35,6 +37,11 @@ import { ContrastIcon } from './ContrastIcon'
  * share it with an outline. `height` is what separates them — `auto` lets a page
  * grow, `fill` hands the viewport to the panes inside it.
  */
+/** The group a page sits in, which is the section the reading order opens at. */
+function groupOf(slug: string): string {
+  return GROUPS.find((group) => group.pages.some((page) => page.slug === slug))?.label ?? ''
+}
+
 export function Layout({
   slug,
   toc,
@@ -51,6 +58,14 @@ export function Layout({
 }) {
   const [searching, setSearching] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
+
+  // The sections standing open. The page's own group is always one of them; the
+  // rest are whatever the reader has unfolded.
+  const [openGroups, setOpenGroups] = useState<string[]>(() => [groupOf(slug)])
+  useEffect(() => {
+    const group = groupOf(slug)
+    setOpenGroups((open) => (open.includes(group) ? open : [...open, group]))
+  }, [slug])
   // The outline is the first thing to go: below this the three regions cannot
   // all have their width, and the one a reader can do without is the one that
   // only says where they are.
@@ -116,24 +131,58 @@ export function Layout({
   const column = useRef<HTMLDivElement>(null)
 
   const items = useMemo(
-    () => toc.map(({ anchor, text, level }) => ({ id: anchor, label: text, level })),
+    () => toc.map(({ id, text, level }) => ({ id, label: text, level })),
     [toc],
   )
 
   // The reading order itself, which is the same list wherever it is put: the
   // column beside a book page, or the drawer a demo page opens over itself.
-  const readingOrder = GROUPS.map((group) => (
-    <SideNavSection key={group.label} title={group.label}>
-      {group.pages.map((page) => (
-        <SideNavItem
-          key={page.slug}
-          label={page.title}
-          href={route(page.slug)}
-          isSelected={page.slug === slug}
-        />
-      ))}
-    </SideNavSection>
-  ))
+  //
+  // **Closed by default, and the section you are reading is open.** Twenty-three
+  // names in six groups is a list you scroll rather than scan, and most of it is
+  // somewhere you are not.
+  //
+  // `multiple`, so opening one section does not shut the one you were comparing it
+  // against — the groups are a reading order rather than a set of alternatives, and
+  // "how it works" beside "the model" is a reasonable thing to want.
+  //
+  // Controlled rather than `defaultValue`, because the shell does not remount
+  // between pages: a reader who arrives somewhere by the pager, by search or by a
+  // link in the prose would otherwise find the nav still opened at wherever they
+  // started. Arriving *adds* that group rather than replacing what is open, so the
+  // navigation never closes a section the reader opened on purpose.
+  const readingOrder = (
+    <CollapsibleGroup
+      type="multiple"
+      value={openGroups}
+      onChange={(next) => setOpenGroups(Array.isArray(next) ? next : [next])}
+    >
+      <VStack gap={1} width="100%" className="reading-order">
+        {GROUPS.map((group) => (
+          <Collapsible
+            key={group.label}
+            value={group.label}
+            trigger={
+              <Text type="label" weight="semibold" color="secondary">
+                {group.label}
+              </Text>
+            }
+          >
+            <VStack gap={0} width="100%">
+              {group.pages.map((page) => (
+                <SideNavItem
+                  key={page.slug}
+                  label={page.title}
+                  href={route(page.slug)}
+                  isSelected={page.slug === slug}
+                />
+              ))}
+            </VStack>
+          </Collapsible>
+        ))}
+      </VStack>
+    </CollapsibleGroup>
+  )
 
   return (
     <ScrollRootProvider value={column}>
@@ -236,26 +285,43 @@ export function Layout({
         {fills ? (
           children
         ) : (
+          /* **The outline scrolls with the page, and sticks.**
+
+              It was a `LayoutPanel` in the `end` slot, which is a *pane*: its own
+              region, its own scroll, and therefore the content region's scrollbar
+              drawn down the middle of the page — between the prose and the list of
+              its own headings, which is the one place a scrollbar cannot mean
+              anything. A pane is the right shape for an inspector, whose content
+              is unrelated to the content beside it and as long. This is a dozen
+              links about the very page it sits next to.
+
+              So it moves inside the one scroll region and holds its place with
+              `position: sticky`. `scrollContainerRef` is unchanged and still
+              right: the scroll root is still this `LayoutContent`, and the outline
+              is now a child of it rather than its neighbour. */
           <Panes
             content={
               <LayoutContent padding={0} ref={column}>
-                <Center axis="horizontal">{children}</Center>
+                <Center axis="horizontal">
+                  <HStack gap={0} align="start" width="100%" className="page-frame">
+                    {children}
+                    {items.length > 1 && roomForTheOutline && (
+                      <VStack className="page-outline" paddingBlock={8} padding={4}>
+                        {/* The bar overlays the top of the scroll root, so the
+                            outline has to land headings below it rather than
+                            under it. */}
+                        <Outline
+                          items={items}
+                          density="compact"
+                          offset={24}
+                          scrollContainerRef={column}
+                          label="On this page"
+                        />
+                      </VStack>
+                    )}
+                  </HStack>
+                </Center>
               </LayoutContent>
-            }
-            end={
-              items.length > 1 && roomForTheOutline ? (
-                <LayoutPanel width={300} label="On this page" padding={4}>
-                  {/* The bar overlays the top of the scroll root, so the
-                      outline has to land headings below it rather than under
-                      it. */}
-                  <Outline
-                  items={items}
-                  density="compact"
-                  offset={24}
-                  scrollContainerRef={column}
-                />
-                </LayoutPanel>
-              ) : undefined
             }
           />
         )}

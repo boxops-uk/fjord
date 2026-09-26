@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
 """The drift gate: the checks that would have caught the documentation going stale.
 
-Seven checks, each of which failed silently once:
-  1. every relative link and anchor in website/content/ resolves;
-  2. every `invariants.md#iN`-style citation in crates/, docs/ and clients/ resolves
-     to an anchor the registry actually declares;
-  3. nothing references a documentation file that no longer exists;
-  4. no `Phase [0-9]` reference survives in crates/ or website/ — the compiler-pass
+Five checks, each of which failed silently once:
+  1. nothing references a documentation file that no longer exists;
+  2. no `Phase [0-9]` reference survives in crates/ or the book — the compiler-pass
      sense of "phase" is fine, a build-plan number is not (bench/ keeps its history);
-  5. nothing describes a retired **name** as live — a deleted schema, a retired crate,
-     a deleted script, a removed flag, a retired predicate. This is the largest of the
-     five, because a file can only be deleted once and a name outlives its thing in
+  3. nothing describes a retired **name** as live — a deleted schema, a retired crate,
+     a deleted script, a removed flag, a retired predicate. This is the largest,
+     because a file can only be deleted once and a name outlives its thing in
      prose: four hand sweeps in one release each missed what the last one missed.
      HISTORY says where naming the dead is a fact rather than a mistake, and
      SAYS_IT_IS_GONE where a live file spells a name in order to announce it is gone;
-  6. a number the docs print is a number the tree computes — the protocol version and
+  4. a number the docs print is a number the tree computes — the protocol version and
      the plan's acceptance-criteria total. Both went stale inside one release, and a
      headline figure no gate computes is a claim that rots on the next edit.
-  7. the two tables that enumerate the type model list the families the type model has.
+  5. the two tables that enumerate the type model list the families the type model has.
      A scalar family reached the book by somebody remembering which pages tabulate it,
      and both tables were missed for a whole release.
 
-Standard library only, like the site generator. Exit 1 on any finding.
+**Links and anchors are not here.** Resolving them is a graph question — does a link
+have a page, does a page declare the anchor a link names — and this repository builds
+the database for graph questions. `scripts/check-links.py` asks it in sigla instead,
+against the same MDX parse the site renders from. Two checks left this file that way,
+and left a defect behind: the regex below matched `^#{1,6} ` inside code fences, so it
+invented anchors no page declares and passed every link that named one.
+
+Standard library only. Exit 1 on any finding.
 """
 
 import re
@@ -29,7 +33,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CONTENT = ROOT / "website" / "content"
+CONTENT = ROOT / "web" / "src" / "content"
 
 findings: list[str] = []
 
@@ -38,54 +42,13 @@ def fail(message: str) -> None:
     findings.append(message)
 
 
-# ---- 1. site-internal links and anchors -----------------------------------------
-
-def site_anchors(text: str) -> set[str]:
-    anchors = set(re.findall(r'<a id="([A-Za-z0-9_-]+)"></a>', text))
-    anchors |= set(re.findall(r"\{#([A-Za-z0-9_-]+)\}", text))
-    for heading in re.findall(r"^#{1,6} +(.+?)(?:\{#[A-Za-z0-9_-]+\})?$", text, re.M):
-        # **The marks come off first**, as `build.py` and `web/`'s parser both do
-        # (`plain`, then `slugify`). A heading that cites an invariant carries a
-        # link, and slugifying the raw text mangles the target into the anchor —
-        # which reads as a missing anchor for a link that resolves perfectly.
-        stripped = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", heading.strip())
-        stripped = re.sub(r"[`*~]", "", stripped)
-        slug = re.sub(r"[^a-z0-9 -]", "", stripped.lower())
-        anchors.add(re.sub(r"[ -]+", "-", slug).strip("-"))
-    return anchors
+# The book, as text. Checks 4 and 5 read the pages for the figures and the tables
+# they print; what a page *links to* is `scripts/check-links.py`'s question, and it
+# reads them as MDX rather than as text.
+pages = {p.stem: p.read_text(encoding="utf-8") for p in CONTENT.glob("*.mdx")}
 
 
-pages = {p.stem: p.read_text(encoding="utf-8") for p in CONTENT.glob("*.md")}
-anchors = {slug: site_anchors(text) for slug, text in pages.items()}
-
-for slug, text in pages.items():
-    for target in re.findall(r"\]\(([^)]+)\)", text):
-        if target.startswith(("http://", "https://", "mailto:")):
-            continue
-        page, _, anchor = target.partition("#")
-        if page and not page.endswith(".html"):
-            continue  # not a site link
-        name = page[:-5] if page else slug
-        if name not in pages:
-            fail(f"website/content/{slug}.md links to missing page {target}")
-        elif anchor and anchor not in anchors[name]:
-            fail(f"website/content/{slug}.md links to missing anchor {target}")
-
-# ---- 2. invariant citations resolve ----------------------------------------------
-
-registry = anchors.get("invariants", set())
-citation = re.compile(r"invariants\.md#([A-Za-z0-9_-]+)")
-
-for area in ("crates", "docs", "clients", "bench"):
-    for path in (ROOT / area).rglob("*"):
-        if path.suffix not in {".rs", ".md", ".cs", ".llw", ".toml"}:
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for anchor in citation.findall(text):
-            if anchor not in registry:
-                fail(f"{path.relative_to(ROOT)} cites invariants.md#{anchor}, not in the registry")
-
-# ---- 3. no references to retired documentation files -----------------------------
+# ---- 1. no references to retired documentation files -----------------------------
 
 RETIRED = re.compile(
     r"docs/(0[1-7]-[a-z-]+|invariants|conventions|testing|fjord-cli-design|glossary"
@@ -93,12 +56,12 @@ RETIRED = re.compile(
     r"|glean|glean-comparison|glean-capabilities|phase-[0-9.]+[a-z-]*)\.md"
 )
 
-for area in ("crates", "docs", "clients", "bench", "website", "scripts", ".github"):
+for area in ("crates", "docs", "clients", "bench", "scripts", ".github"):
     base = ROOT / area
     if not base.exists():
         continue
     for path in base.rglob("*"):
-        if path.suffix not in {".rs", ".md", ".cs", ".llw", ".toml", ".yml", ".py", ".sh"}:
+        if path.suffix not in {".rs", ".md", ".mdx", ".cs", ".llw", ".toml", ".yml", ".py", ".sh"}:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for line_no, line in enumerate(text.splitlines(), 1):
@@ -113,7 +76,7 @@ for name in ("README.md", "AGENTS.md", "PLAN.md", "CLAUDE.md", "CHANGELOG.md", "
         if RETIRED.search(line):
             fail(f"{name}:{line_no} references a retired doc: {line.strip()[:90]}")
 
-# ---- 3b. no references to things the tree has retired ----------------------------
+# ---- 1b. no references to things the tree has retired ----------------------------
 #
 # **Check 3 knows about retired *files*, and a release retires more than files.** The
 # schema switch deleted a schema, a crate, two scripts, a flag and six predicates, and
@@ -189,13 +152,13 @@ def is_history(rel: str) -> bool:
 # exemption that quietly lapses is a gate that fires on prose it was told to allow.
 # `check_the_allowlist_is_live` below refuses a key no retired entry declares.
 SAYS_IT_IS_GONE = {
-    "website/content/clients.md": {
+    "web/src/content/clients.mdx": {
         "fjord-viewer": "the paragraph announcing its retirement and what replaces it",
     },
     "docs/gitnexus.md": {
         "fjord-viewer": "the sentence separating what the retirement removed (a rendering) from what it did not (the queries), which is the whole reason the `context` verdict stays a tick",
     },
-    "website/content/status.md": {
+    "web/src/content/status.mdx": {
         "fjord-viewer": "the 'not built' row that says so — the page index.md sends a reader to for the honest list, where a silent absence would read as an oversight",
     },
     "clients/dotnet/README.md": {
@@ -220,7 +183,7 @@ SAYS_IT_IS_GONE = {
 # bundle CI publishes — and the root `Cargo.toml` is precisely where a retired *crate* name
 # survives, as `members`. `CHANGELOG.md` and `scratchpad` are swept and then excused by HISTORY
 # below: an excuse for a file no sweep reaches reads as coverage and is not.
-LIVE_AREAS = ("crates", "clients", "website", "schemas", "scripts", ".github", "docs", "bench", "web", "wasm", "scratchpad")
+LIVE_AREAS = ("crates", "clients", "schemas", "scripts", ".github", "docs", "bench", "web", "wasm", "scratchpad")
 LIVE_FILES = ("README.md", "AGENTS.md", "PLAN.md", "CLAUDE.md", "Cargo.toml", "CHANGELOG.md")
 
 live: list[Path] = []
@@ -235,7 +198,7 @@ for area in LIVE_AREAS:
             # surface and nothing in them is documentation.
             if not {"site", "obj", "bin", "node_modules", "dist"} & set(p.parts)
             if p.suffix
-            in {".rs", ".md", ".cs", ".llw", ".toml", ".yml", ".py", ".sh", ".sigla", ".csproj", ".props", ".slnx", ".json", ".mjs", ".ts"}
+            in {".rs", ".md", ".mdx", ".cs", ".llw", ".toml", ".yml", ".py", ".sh", ".sigla", ".csproj", ".props", ".slnx", ".json", ".mjs", ".ts"}
         ]
 live += [ROOT / name for name in LIVE_FILES if (ROOT / name).exists()]
 
@@ -267,14 +230,14 @@ for rel, exemptions in SAYS_IT_IS_GONE.items():
             fail(f"the allowlist exempts `{key}` in {rel}, which no retired entry declares")
 
 sweep(RETIRED_NAMES, live)
-sweep(RETIRED_IN_THE_BOOK, [p for p in CONTENT.glob("*.md")])
+sweep(RETIRED_IN_THE_BOOK, [p for p in CONTENT.glob("*.mdx")])
 
 # ---- 4. no build-plan phase numbers in code or the book ---------------------------
 
 PHASE = re.compile(r"Phase [0-9]")
-for area in ("crates", "website"):
+for area in ("crates", "web/src/content"):
     for path in (ROOT / area).rglob("*"):
-        if path.suffix not in {".rs", ".md", ".llw", ".toml"}:
+        if path.suffix not in {".rs", ".md", ".mdx", ".llw", ".toml"}:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for line_no, line in enumerate(text.splitlines(), 1):
@@ -297,7 +260,7 @@ WORDS = {
 
 spoken = re.compile(r"\bprotocol\s+(\d+)\b")
 said_where: list[tuple[str, int, str, str]] = []
-for path in sorted(CONTENT.glob("*.md")):
+for path in sorted(CONTENT.glob("*.mdx")):
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         for said in spoken.findall(line):
             said_where.append((str(path.relative_to(ROOT)), line_no, said, line.strip()[:60]))
@@ -421,7 +384,7 @@ if "concepts" in pages:
         )
     elif listed is None:
         fail(
-            f"website/content/concepts.md no longer opens its type table with {CONCEPTS_TABLE!r}, "
+            f"web/src/content/concepts.mdx no longer opens its type table with {CONCEPTS_TABLE!r}, "
             f"so the check that keeps it in step with `PredicateTyNamed` reads an empty table"
         )
     else:
@@ -430,14 +393,14 @@ if "concepts" in pages:
         for family in families:
             if family not in named:
                 fail(
-                    f"website/content/concepts.md's type table does not list `{family}`, "
+                    f"web/src/content/concepts.mdx's type table does not list `{family}`, "
                     f"which `PredicateTyNamed` declares"
                 )
         word = NUMBER_WORDS[len(families)] if len(families) < len(NUMBER_WORDS) else ""
         headline = f"{word.capitalize()} building blocks, and that is all of them:"
         if word and headline not in pages["concepts"]:
             fail(
-                f"website/content/concepts.md does not carry the count its type table has rows "
+                f"web/src/content/concepts.mdx does not carry the count its type table has rows "
                 f"for — expected {headline!r} for the {len(families)} `PredicateTyNamed` declares"
             )
 
@@ -451,7 +414,7 @@ if "schema-language" in pages:
         )
     elif listed is None:
         fail(
-            f"website/content/schema-language.md no longer opens its types table with "
+            f"web/src/content/schema-language.mdx no longer opens its types table with "
             f"{WRITTEN_TABLE!r}, so the check that keeps it in step with `print::ty` reads an "
             f"empty table"
         )
@@ -459,9 +422,45 @@ if "schema-language" in pages:
         for family, written in sorted(spelled.items()):
             if written not in listed:
                 fail(
-                    f"website/content/schema-language.md's types table does not list "
+                    f"web/src/content/schema-language.mdx's types table does not list "
                     f"`{written}`, which `print::ty` writes `PredicateTy::{family}` as"
                 )
+
+# ---- 6. a fenced block is labelled with the language it is in --------------------
+
+# **Two languages, two lexers, and the fence is what chooses.** `Code.tsx` paints a
+# `sigla` block with the query lexer and a `schema` block with the schema one, so a
+# schema fenced as `sigla` is lexed as a query: its keywords come back as errors and
+# its comments as nothing at all. That renders, wrongly, rather than failing — which
+# is exactly the kind of drift nobody reports and everybody sees.
+FENCE = re.compile(r"^```(\w*)[^\n]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
+
+
+def opening(body: str) -> str:
+    """The first line that decides the language. A comment may open either."""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return ""
+
+
+for name, text in sorted(pages.items()):
+    for match in FENCE.finditer(text):
+        language, first = match.group(1), opening(match.group(2))
+        line = text.count("\n", 0, match.start()) + 1
+
+        if language == "sigla" and first.startswith("schema "):
+            fail(
+                f"web/src/content/{name}.mdx:{line} fences a schema as `sigla`, so the page "
+                f"paints it with the query lexer — label it `schema`"
+            )
+        if language == "schema" and first and not first.startswith(("schema ", "predicate ")):
+            fail(
+                f"web/src/content/{name}.mdx:{line} fences `{first[:40]}` as `schema`, which "
+                f"the schema lexer will refuse — label it for what it is"
+            )
+
 
 if findings:
     print(f"{len(findings)} finding(s):", file=sys.stderr)
@@ -469,4 +468,7 @@ if findings:
         print(f"  {finding}", file=sys.stderr)
     sys.exit(1)
 
-print("docs are consistent: links resolve, citations resolve, nothing retired is referenced")
+print(
+    "docs are consistent: nothing retired is referenced, no phase numbers, the figures and "
+    "tables the book prints are the ones the tree has, and every fence names its own language"
+)

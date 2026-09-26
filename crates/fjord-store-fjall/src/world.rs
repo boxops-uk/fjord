@@ -2,7 +2,7 @@
 //! like when a chunk was read, encoded to the opaque bytes
 //! [`fjord_engine::iter::Cursor`] carries and compares.
 //!
-//! [I4](../../../website/content/invariants.md#i4) says a resume equals an uninterrupted
+//! [I4](../../../web/src/content/invariants.mdx#i4) says a resume equals an uninterrupted
 //! run; a cursor that names only a plan, a layout version and a level count cannot
 //! keep that promise against a *different* database, the *same* database reopened,
 //! or a Writable database a write has crossed since the cursor was made — the

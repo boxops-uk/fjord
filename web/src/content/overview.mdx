@@ -1,0 +1,133 @@
+export const meta = {
+  "title": "Overview",
+  "description": "A database of facts about code. Index once, seal it, query it with a small typed language."
+}
+
+Fjord DB stores **facts**: small typed records like *`Crc32` is declared in `Crc32.cs` at
+line 7*. You describe the shape of your facts once, write them in, and seal the database.
+After that it never changes, and the result is a directory you can copy anywhere and serve
+from as many processes as you like.
+
+You query it in **sigla**, a small typed language. Fjord was built to be a **code index**:
+files, declarations, references, the build graph. That is the data behind *go to
+definition* and *find all references*.
+
+<div className="authored">
+<div className="cards">
+  <a className="card" href="getting-started.html"><b>Getting started →</b>
+    <span>Install, create a database, write facts, ask a question. Five minutes.</span></a>
+  <a className="card" href="walkthrough.html"><b>A guided tour →</b>
+    <span>A real code index, end to end, with the output it printed.</span></a>
+  <a className="card" href="concepts.html"><b>Concepts →</b>
+    <span>Facts, predicates, keys and values, on one page.</span></a>
+  <a className="card" href="query-language.html"><b>sigla reference →</b>
+    <span>Every construct, with the rows it returns.</span></a>
+</div>
+</div>
+
+## How it works
+
+**Facts live in predicates.** A predicate is Fjord's word for a table. Part of each fact is
+the **key**, which is indexed and is what queries match on. A fact may also carry a
+**value**: extra data read only when a query asks for it.
+
+**A database is built once, then frozen.** Create it against a schema, write facts, run
+`finish`. From then on it is read-only. Every build produces a fresh database, the way you
+rebuild an artifact rather than patching it.
+
+**Queries can pause.** A query runs one row at a time and can stop part-way, hand back a few
+bytes, and resume from exactly there later. Paging holds nothing open, and a different
+process can serve the next page.
+
+## Why read-only
+
+- Every query sees one stable version of the data, with no locking.
+- A paused query costs a few bytes, not an open connection.
+- Writers never conflict, so ingestion runs in parallel.
+- The database is a directory. `tar` it, copy it, serve it anywhere.
+
+## A schema, a query, and the rows
+
+A schema names your predicates and says what each holds:
+
+```schema
+schema demo {
+  predicate Person : string
+  predicate Knows  : { from : Person, to : Person }
+  predicate Age    : { person : Person } -> int
+}
+```
+
+A query is the shape you want back, `where`, and what to match:
+
+```sigla
+{a = X, b = Y} where demo.Knows {from = X, to = Y}
+```
+
+Rows come back in the same language:
+
+```sigla
+{a = demo.Person#1, b = demo.Person#2}
+```
+
+`demo.Person#1` is an **id**, because `Knows` points at two `Person` facts rather than
+containing them. Ask for references to be expanded and you get the people:
+
+```sigla
+{a = "ada", b = "grace"}
+```
+
+## Try it here
+
+The engine is compiled to WebAssembly and running on this page, over a small code index.
+Every demo in this book is the real engine.
+
+<Demo kind="run" guided>{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
+
+## What is built
+
+<Callout tone="note" label={`Status`}>
+
+The engine, storage, language, wire protocol, server, client, CLI and shell are built and
+tested. Bulk ingestion from files and stored derivation are not. See
+[Status & roadmap](status.html).
+
+</Callout>
+
+<div className="authored">
+<p>
+<span className="pill ok">codec</span>
+<span className="pill ok">executor + resume</span>
+<span className="pill ok">fjall store</span>
+<span className="pill ok">sigla front end</span>
+<span className="pill ok">fuzzy search</span>
+<span className="pill ok">fuzzy prefix search</span>
+<span className="pill ok">schema DSL</span>
+<span className="pill ok">union types</span>
+<span className="pill ok">wire protocol</span>
+<span className="pill ok">server + client</span>
+<span className="pill ok">CLI + shell</span>
+<span className="pill ok">parallel ingest</span>
+<span className="pill ok">JSONL in and out</span>
+<span className="pill todo">bulk file ingestion</span>
+<span className="pill todo">stored derivation</span>
+</p>
+</div>
+
+## Where next
+
+- **New here:** [Getting started](getting-started.html), then the [guided tour](walkthrough.html).
+- **Writing queries:** [sigla](query-language.html) and [Query efficiency](query-efficiency.html).
+- **Designing a schema:** [Schema language](schema-language.html). Field order matters most.
+- **How it works inside:** [A query, step by step](query-lifecycle.html), [Storage](storage.html), [Executor](executor.html).
+- **Building a client:** [Wire protocol](wire-protocol.html) and [Clients](clients.html).
+- **Running it:** [CLI](cli.html) and [Operations](operations.html).
+- **Binaries:** the [latest release](https://github.com/boxops-uk/fjord/releases/latest), with SLSA provenance.
+
+<Callout tone="note" label={`About these docs`}>
+
+This site is also Fjord's design book. The [Invariants](invariants.html) page is the
+registry of rules the code is tested against. Where a page says something is built, a test
+says so too.
+
+</Callout>

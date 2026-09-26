@@ -31,7 +31,7 @@ default = ["fs"]
 fs = []
 
 [dependencies]
-# The schema DSL's front end. [Operations](../../website/content/operations.md)
+# The schema DSL's front end. [Operations](../../web/src/content/operations.mdx)
 # puts "parse → AST → canonical model; imports/resolution; fingerprints" in this
 # crate, which is why the bottom of the stack has a lexer in it — the dependency
 # *direction* is unchanged, and everything above still reads the type model without

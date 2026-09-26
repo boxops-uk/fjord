@@ -8,10 +8,10 @@
 //! Two implementations meet here: `FjallStore` (`fjord-store-fjall`) on disk
 //! and `MemStore` (`fjord-store-mem`) in memory, held to
 //! each other as a differential oracle
-//! ([testing](../../../website/content/testing.md)). The executor consumes a `(handle,
+//! ([testing](../../../web/src/content/testing.mdx)). The executor consumes a `(handle,
 //! snapshot)` and assumes nothing about a connection, which is the cut that lets
 //! the same engine run embedded and served
-//! ([operations §10](../../../website/content/operations.md)).
+//! ([operations §10](../../../web/src/content/operations.mdx)).
 
 use byteview::ByteView;
 

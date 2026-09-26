@@ -3,7 +3,7 @@
 //! One block is a run of facts of *one predicate*, so the predicate id is paid once
 //! rather than per fact. An indexer writing in visitation order emits small blocks in
 //! bursts; a writer that has grouped its output emits large ones
-//! ([operations §8](https://github.com/boxops-uk/fjord/blob/main/website/content/operations.md)). The same bytes are a
+//! ([operations §8](https://github.com/boxops-uk/fjord/blob/main/web/src/content/operations.mdx)). The same bytes are a
 //! `CopyData` frame's payload on the wire and a run of a fact file on disk, which is
 //! what makes "one fact encoding, not two" a thing that can be checked.
 //!
@@ -58,7 +58,7 @@
 //! read `length` *before* it can trust anything else — a variable-width field would
 //! have to be parsed to be skipped, and skipping is what walking the chain is. Little-endian
 //! because there is nothing to order: the storage codec's big-endian is an
-//! [I1](https://github.com/boxops-uk/fjord/blob/main/website/content/invariants.md#i1) requirement, and this is the file where that
+//! [I1](https://github.com/boxops-uk/fjord/blob/main/web/src/content/invariants.mdx#i1) requirement, and this is the file where that
 //! requirement is not inherited.
 
 use fjord_schema::schema::{PredicateId, Schema};

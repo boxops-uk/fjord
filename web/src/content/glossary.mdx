@@ -1,0 +1,181 @@
+export const meta = {
+  "title": "Glossary",
+  "description": "Every term of art in one place, with a pointer to the page that goes deep."
+}
+
+## A–C
+
+**Access**: a level's target, a predicate id plus a seek key. [Executor](executor.html)
+
+**block**: a run of one predicate's facts behind a sync marker, with a header and a CRC.
+The same bytes on the wire and in a file. [Wire protocol](wire-protocol.html#blocks)
+
+**bookmark**: a `Rows` value. What a client holds instead of a borrow of the connection,
+so several results can be open at once. [Clients](clients.html)
+
+**canonical form**: the order-independent, fully-qualified, comment-stripped form a schema
+fingerprint is computed over.
+[Schema language](schema-language.html#identity-canonical-form-and-fingerprints)
+
+**column family**: one of the two sorted maps, `keys` and `entities`.
+[Storage](storage.html#two-column-families)
+
+**Complete**: the sealed, immutable lifecycle state. Opposite: **Writable**.
+
+**constraint**: a bind whose right side is a pattern (`X = "a"..`). Applied by whichever
+level captures the variable, so it can seek.
+[sigla](query-language.html#a-constraint-narrows-the-level-that-captures-the-variable)
+
+**corpus**: the sigla language surface as data, each snippet classified with the rows or
+diagnostic it produces. [Testing](testing.html#the-corpus-the-language-surface-as-data)
+
+**Cursor**: the resume token. Bytes only: one detached row per open loop level, plus a
+version, a plan fingerprint and a world stamp.
+[Executor](executor.html#the-cursor-bytes-and-nothing-else)
+
+## D–F
+
+**denial**: `!=`. This field does not look like that. A filter, never a seek.
+[sigla](query-language.html#a-denial)
+
+**derived bind**: a plan step computing a value into a register. Not a loop level.
+Recomputed on resume. [I14](invariants.html#i14)
+
+**derived predicate**: a predicate whose facts a query could compute. *Stored* derivation
+(not built) would write them at build time. *Dynamic* derivation (built) computes a value
+while a query runs.
+
+**discriminant**: the explicit, append-only tag identifying a union alternative.
+[I10](invariants.html#i10)
+
+**entities**: the map from fact id to key plus value. Read at projection and at a fetch.
+
+**expansion**: replacing a reference in a row with the fact it names. A client concern,
+built on the protocol's fetch.
+[A query, step by step](query-lifecycle.html#expanding-a-reference)
+
+**fact**: a typed record. Belongs to a predicate, has a `FactId`.
+
+**FactId**: a 64-bit id: predicate in the high 24 bits, per-predicate sequence in the low
+40. Stable, unique, never reused, and not portable across databases.
+[I11](invariants.html#i11)
+
+**FactStore**: the storage seam, `scan` and `point`.
+
+**fetch**: a `Source::Fetch` level reads through a reference inside a query. The `F`/`f`
+frames ask what an id names.
+
+**field-offset cache**: the inline memo of where each field of a row ends. Never spills to
+the heap. [I9](invariants.html#i9)
+
+**fingerprint**: a hash over the canonical form, one per predicate and one for the schema.
+
+**fjall**: the LSM key–value store Fjord is built on.
+
+**Fjord DB**: the database.
+
+**flatten**: the compiler phase that folds constants, collects constraints, hoists nested
+generators and decides what seeks and what filters.
+[A query, step by step](query-lifecycle.html#7-compilation)
+
+**folding**: substituting a constant-bound variable at every use, with no register.
+
+**fuzzy match**: `"parse"~2`, within that many edits of the term. Distance `1` to `3`,
+term at most 63 characters. [Fuzzy search](fuzzy-search.html)
+
+**fuzzy prefix match**: `"parse"~<2`, within that many edits of some prefix of the stored
+string. The question a search box asks.
+[Fuzzy search](fuzzy-search.html#5-ask-the-same-machine-a-different-question)
+
+## G–P
+
+**generator**: a fact pattern as a statement. A loop over one predicate's rows.
+
+**guide**: a fuzzy automaton driving a scan, seeking past ranges it rules out.
+[Fuzzy search](fuzzy-search.html#8-where-a-fuzzy-match-can-sit)
+
+**head**: the plan's output projection.
+
+**interning**: resolve-or-create at ingest. A nested fact's key is looked up and either
+takes the id there or is written with a new one. Bottom-up.
+[Storage](storage.html#interning-a-nested-fact)
+
+**keys**: the map from predicate id plus key to fact id. The index, and the only map the
+scan loop touches.
+
+**level**: one loop of the nested loop. A cursor holds one row per level.
+
+**Levenshtein automaton**: the machine behind `~`. Fixed-size and copyable, so a walk can
+re-enter at any string. [Fuzzy search](fuzzy-search.html)
+
+**listing digest**: a hash of a virtual predicate's rows, carried with the results and
+back on a `FETCH`. [Wire protocol](wire-protocol.html#fetching-what-an-id-names)
+
+**marker**: the leading byte of an encoded value. Determines sort position and skip shape.
+Frozen once data exists. [I3](invariants.html#i3)
+
+**one write funnel**: every writer passes the same validate, intern, dedup, reject
+pipeline. One pipeline, not one thread (`ops-I5`).
+
+**order-preserving**: `memcmp(encode(a), encode(b)) == compare(a, b)`.
+[I1](invariants.html#i1)
+
+**Plan**: the IR the executor consumes: `{ nvars, body: [Step], head }`.
+
+**point**: the store operation that reads a fact by id. Never called during a key-only
+scan. [I6](invariants.html#i6)
+
+**predicate**: a relation, and the unit of storage. Its id is the key prefix.
+
+**Project**: a projection node in the head.
+
+## Q–Z
+
+**range restriction**: every used variable must be captured by some generator's key.
+
+**register**: a bound row: a fact id plus the row's bytes.
+
+**reorder**: the compiler phase that chooses loop order. Greedy, and complete.
+
+**residual**: a filter applied to a scanned row, on key fields only.
+
+**resume**: reconstructing executor state from a cursor. [I4](invariants.html#i4)
+
+**Row**: the borrowed view of a fully bound result handed to the consumer.
+
+**rows-examined ceiling**: the executor's one limit on input. Deployment policy, not
+semantics. [Query efficiency](query-efficiency.html#the-ceiling-is-deployment-policy)
+
+**sargeable**: a key field that can narrow the scan rather than being filtered afterwards.
+[Query efficiency](query-efficiency.html)
+
+**seek / SeekKey**: the range a level's scan opens on, built from constant bytes and
+register splices, optionally ending in a range. [Executor](executor.html)
+
+**sigla**: Fjord's query and schema language.
+
+**slot**: what a register holds: a stored row, or a derived value.
+
+**snapshot**: a query's consistent read view. Dropped at every suspend.
+[I8](invariants.html#i8)
+
+**splice**: bytes copied from an outer register into a seek key. How a join works.
+
+**Step**: one position in a plan's body: a level, a derive or a test. Exactly three kinds.
+
+**suspend**: a resumable yield producing a cursor.
+
+**sync marker**: ten `0xFF` bytes marking a block boundary. A candidate, confirmed by the
+magic and the CRC.
+
+**transport codec**: the wire format. Compact, schema-driven, not order-preserving.
+
+**tuple codec**: the storage codec. Order-preserving, self-delimiting, frozen on disk.
+
+**virtual predicate**: a predicate answered by the server rather than stored, such as
+`fjord.db.List`.
+
+**world stamp**: opaque bytes on a cursor naming the base it was read in.
+[I4](invariants.html#i4)
+
+**Writable**: the mutable lifecycle state before `finish`.
