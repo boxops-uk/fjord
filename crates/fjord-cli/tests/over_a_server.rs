@@ -209,10 +209,9 @@ fn what_the_server_made_outlives_it() {
 /// **`fjord query` is always over the wire** (§2's rule 1), streams its rows, and
 /// renders them client-side in whichever shape was asked for.
 ///
-/// It writes nothing itself — the CLI has no `write` command until 7b — so what it
-/// queries is an empty database. That is enough to check the whole path: connect,
-/// compile on the server, descriptor, zero rows, complete. The *rows* path is checked
-/// where rows exist, in `fjord-client`'s tests and the loadgen.
+/// What it queries here is an **empty** database, which is enough to check the whole
+/// path: connect, compile on the server, descriptor, zero rows, complete. The *rows*
+/// path is checked where rows exist, in `fjord-client`'s tests and the loadgen.
 #[test]
 fn query_speaks_to_the_server_and_renders_client_side() {
     let (_dir, root) = scratch();
@@ -220,10 +219,17 @@ fn query_speaks_to_the_server_and_renders_client_side() {
 
     ok(&root, &["create", "code", "--schema", SAMPLE]);
 
-    // A scalar head: one unnamed column.
-    let table = ok(&root, &["query", "code", "F where code.File F"]);
-    assert!(table.contains("VALUE"), "{table}");
-    assert!(table.contains("0 row(s)"), "{table}");
+    // **No rows is no output.** Every shape streams now, so an empty result writes
+    // nothing at all rather than a header over a tally — which is what lets a query be
+    // piped into something that counts lines.
+    assert_eq!(ok(&root, &["query", "code", "F where code.File F"]), "");
+    assert_eq!(
+        ok(
+            &root,
+            &["query", "code", "F where code.File F", "--format", "jsonl"]
+        ),
+        ""
+    );
 
     // `count` is the shape a measurement wants: the tally and nothing else.
     assert_eq!(

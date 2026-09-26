@@ -72,6 +72,7 @@ use fjord_schema::{
     schema::{PredicateId, Schema},
     syntax::print as schema_print,
 };
+use fjord_wire::{Desc, protocol::Found};
 
 use crate::{
     CliError,
@@ -121,7 +122,7 @@ const INTERNING: &str = "{name = I.name, hits = I.hits, misses = I.misses, \
 /// hand trained on psql types without thinking; neither can begin a sigla query, so
 /// accepting both costs nothing. Aliases are not advertised — a help screen that lists
 /// every spelling twice is one nobody reads to the end.
-pub const COMMANDS: [Command; 16] = [
+pub const COMMANDS: [Command; 17] = [
     Command {
         name: ":type",
         aliases: &[],
@@ -162,7 +163,13 @@ pub const COMMANDS: [Command; 16] = [
         name: ":format",
         aliases: &[],
         argument: None,
-        help: "how a row prints: jsonl, json, table, raw",
+        help: "how a row prints: sigla, jsonl, json, raw",
+    },
+    Command {
+        name: ":id",
+        aliases: &[],
+        argument: Some("<id>"),
+        help: "what a fact id names, written code.Decl#1",
     },
     Command {
         name: ":expand",
@@ -321,7 +328,7 @@ impl Repl {
             timing: false,
             profiling: false,
             page: PAGE,
-            format: RowFormat::Jsonl,
+            format: RowFormat::Sigla,
             expand: 0,
             interrupt: Arc::new(AtomicBool::new(false)),
         })
@@ -414,6 +421,7 @@ impl Repl {
                 Err(error) => refused(error, out)?,
             },
 
+            ":id" => self.fact(argument, out)?,
             ":limit" => self.limit(argument, out)?,
             ":format" => self.set_format(argument, out)?,
             ":expand" => self.set_expand(argument, out)?,
@@ -464,6 +472,79 @@ impl Repl {
     }
 
     /// Run a query and show its first page, reporting a refusal rather than raising it.
+    /// **`:id #4:1` — what an id names**, which is the one question a query cannot ask.
+    ///
+    /// A row carries a reference as a number, and sigla names a fact by its key, so
+    /// there is no way to spend an id in the language itself. That is deliberate: a key
+    /// survives a rebuild and an id does not (`ops-I4` calls ids descriptive, never
+    /// identity). At a prompt, though, the id is right there on the previous line, and
+    /// this is the protocol's own `F`/`f` exchange put behind a colon.
+    fn fact(&mut self, argument: &str, out: &mut impl Write) -> Result<(), CliError> {
+        if argument.is_empty() {
+            writeln!(out, "  :id takes a fact id, written code.Decl#1")?;
+            return Ok(());
+        }
+
+        let mut ids = Vec::new();
+        for word in argument.split_whitespace() {
+            match crate::commands::fact::parse(&self.schema, word) {
+                Ok(id) => ids.push(id),
+                Err(why) => {
+                    writeln!(out, "  {why}")?;
+                    return Ok(());
+                }
+            }
+        }
+
+        // No digest: a catalogue id is a position in a listing, and the shell has no
+        // listing to read one against. The server refuses those by name rather than
+        // answering with whatever now sits in that position.
+        let found = match self.connection.fetch(&self.schema, &ids, None) {
+            Ok(found) => found,
+            Err(error) => return refused(error, out),
+        };
+
+        for (id, answer) in ids.iter().zip(found) {
+            match answer {
+                Found::Key(key) => {
+                    let desc = self
+                        .schema
+                        .get(id.predicate())
+                        .map(|predicate| predicate.predicate().key.clone())
+                        .and_then(|key| Desc::of(&self.schema, &key).ok());
+
+                    let mut sink = Sink::naming(
+                        &mut *out,
+                        self.format,
+                        desc.as_ref().unwrap_or(&Desc::Str),
+                        Arc::clone(&self.schema),
+                    )
+                    .map_err(CliError::Io)?;
+                    sink.row(&key).map_err(CliError::Io)?;
+                    sink.end().map_err(CliError::Io)?;
+                }
+                Found::Missing => {
+                    writeln!(
+                        out,
+                        "  #{}:{} names no fact",
+                        id.predicate().0,
+                        id.sequence()
+                    )?;
+                }
+                Found::Unstored => {
+                    writeln!(
+                        out,
+                        "  {} is a row nothing stores — a catalogue id is a position in \
+                         a listing",
+                        crate::rows::fact_id(Some(&self.schema), *id)
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn run_or_report(&mut self, source: &str, out: &mut impl Write) -> Result<(), CliError> {
         match self.query(source, out) {
             Ok(()) => Ok(()),
@@ -540,19 +621,20 @@ impl Repl {
         };
 
         // A page at a time through the same renderer `query` uses, so the shell cannot
-        // drift from the non-interactive tool in how a row reads. The schema goes with it
-        // only when expanding, because it is needed for exactly one thing: naming the
-        // fields of a reference that has become a fact.
-        let mut sink = if self.expand > 0 {
-            Sink::naming(
-                &mut *out,
-                self.format,
-                held.rows.desc(),
-                Arc::clone(&self.schema),
-            )
-        } else {
-            Sink::new(&mut *out, self.format, held.rows.desc())
-        }
+        // drift from the non-interactive tool in how a row reads.
+        //
+        // **The schema always goes with it.** It used to go only when expanding, on the
+        // grounds that naming the fields of an expanded reference was the one thing it
+        // was for. There are two things now: a reference that was *not* expanded is
+        // spelled `code.Decl#1`, which also needs it. The shell holds the schema anyway
+        // — it compiles every line against it — so there was never a round trip to save
+        // here, only a spelling to get wrong.
+        let mut sink = Sink::naming(
+            &mut *out,
+            self.format,
+            held.rows.desc(),
+            Arc::clone(&self.schema),
+        )
         .map_err(ClientError::Io)?;
 
         let (reads, unresolved) = (self.expander.fetched(), self.expander.unresolved());
@@ -637,7 +719,7 @@ impl Repl {
             // added a total underneath would print two numbers that agree, which reads
             // as a bug in whichever one you did not expect. The shapes that count
             // nothing get the total here, where it is the only one.
-            if !matches!(self.format, RowFormat::Table | RowFormat::Count) {
+            if !matches!(self.format, RowFormat::Count) {
                 writeln!(out, "  {delivered} row(s)").map_err(ClientError::Io)?;
             }
 
@@ -728,9 +810,9 @@ impl Repl {
         }
 
         let chosen = match argument {
+            "sigla" => Some(RowFormat::Sigla),
             "jsonl" => Some(RowFormat::Jsonl),
             "json" => Some(RowFormat::Json),
-            "table" => Some(RowFormat::Table),
             "raw" => Some(RowFormat::Raw),
             _ => None,
         };
@@ -751,7 +833,7 @@ impl Repl {
                     )?;
                 }
             }
-            None => writeln!(out, "  :format takes jsonl, json, table or raw")?,
+            None => writeln!(out, "  :format takes sigla, jsonl, json or raw")?,
         }
 
         Ok(())
@@ -1012,8 +1094,8 @@ fn on_off(on: bool) -> &'static str {
 
 fn format_name(format: RowFormat) -> &'static str {
     match format {
-        RowFormat::Table => "table",
         RowFormat::Json => "json",
+        RowFormat::Sigla => "sigla",
         RowFormat::Jsonl => "jsonl",
         RowFormat::Raw => "raw",
         RowFormat::Count => "count",
@@ -1099,7 +1181,7 @@ pub fn run(target: &Target) -> Result<(), CliError> {
     } else {
         println!("fjord shell — `{}` on {}", repl.database, target.endpoint);
         println!(
-            "  {} predicate(s) · rows print as jsonl · :help for commands",
+            "  {} predicate(s) · rows print as sigla · :help for commands",
             repl.schema.len()
         );
     }
@@ -1451,34 +1533,48 @@ mod tests {
         assert!(first.contains(":more for the next 3"), "{first}");
     }
 
-    /// **Rows are JSON**, one value per line, and the shape follows the head.
+    /// **Rows are sigla**, the language they were asked for in — a record prints as the
+    /// record a query writes, and `:format jsonl` is a command away for a pipe.
     #[test]
-    fn rows_are_json_by_default() {
+    fn rows_are_sigla_by_default() {
         let serving = serving(2);
         let mut repl = repl(&serving);
 
         let rows = typed(&mut repl, "{path = F} where code.File F");
+        let printed: Vec<&str> = rows.lines().filter(|line| line.starts_with('{')).collect();
 
-        let objects: Vec<serde_json::Value> = rows
+        assert_eq!(printed.len(), 2, "{rows}");
+        assert!(printed[0].starts_with("{path = \""), "{rows}");
+        assert!(printed[0].ends_with(".py\"}"), "{rows}");
+
+        // The same rows as JSON, for a consumer rather than a reader.
+        assert!(typed(&mut repl, ":format jsonl").contains("jsonl"));
+        let json = typed(&mut repl, "{path = F} where code.File F");
+        let objects: Vec<serde_json::Value> = json
             .lines()
             .filter(|line| line.starts_with('{'))
             .map(|line| serde_json::from_str(line).expect("valid JSON"))
             .collect();
 
-        assert_eq!(objects.len(), 2, "{rows}");
+        assert_eq!(objects.len(), 2, "{json}");
         assert!(
             objects[0]["path"]
                 .as_str()
                 .is_some_and(|p| p.ends_with(".py"))
         );
 
-        // And the table is still a command away, for a person reading rather than
-        // piping.
-        assert!(typed(&mut repl, ":format table").contains("table"));
-        let table = typed(&mut repl, "{path = F} where code.File F");
-        assert!(table.contains("PATH"), "{table}");
+        // **There is no aligned table any more**, and asking for one is the same
+        // mistake as asking for any other shape that does not exist: the aligned view
+        // was the only renderer that could not start until the last row had arrived.
+        assert!(typed(&mut repl, ":format table").contains("takes sigla"));
 
-        assert!(typed(&mut repl, ":format sideways").contains("takes jsonl"));
+        // `raw` is what a person at a terminal wants instead — tab-separated, and it
+        // streams.
+        assert!(typed(&mut repl, ":format raw").contains("raw"));
+        let raw = typed(&mut repl, "{path = F} where code.File F");
+        assert!(raw.contains(".py"), "{raw}");
+
+        assert!(typed(&mut repl, ":format sideways").contains("takes sigla"));
     }
 
     /// **`:expand` shows the fact a reference names, all the way down.**
@@ -1493,6 +1589,11 @@ mod tests {
         let serving = serving(1);
         let mut repl = repl(&serving);
 
+        // **Pinned to JSON**, because this test is about expansion rather than about
+        // rendering: the default is sigla, and parsing that here would make a change to
+        // either one fail in the other's test.
+        assert!(typed(&mut repl, ":format jsonl").contains("jsonl"));
+
         let query = "{name = R.to.name, decl = R.from} where code.Ref R";
         let object = |rows: &str| -> serde_json::Value {
             rows.lines()
@@ -1505,8 +1606,9 @@ mod tests {
         // expansion costs something nobody has asked for yet.
         let plain = object(&typed(&mut repl, query));
         assert!(
-            plain["decl"].as_str().is_some_and(|id| id.starts_with('#')),
-            "unexpanded, a reference is an id: {plain}"
+            plain["decl"].as_str() == Some("code.Decl#1"),
+            "unexpanded, a reference is an id — named by the predicate that owns it, \
+             because the shell has the schema in hand: {plain}"
         );
 
         assert!(typed(&mut repl, ":expand").contains("all the way down"));
@@ -1528,8 +1630,8 @@ mod tests {
         assert!(
             shallow["decl"]["file"]
                 .as_str()
-                .is_some_and(|id| id.starts_with('#')),
-            "the second hop is not taken: {shallow}"
+                .is_some_and(|id| id.contains('#')),
+            "the second hop is not taken, so it is still an id: {shallow}"
         );
 
         // Bare again turns it off, and a nonsense argument changes nothing.
