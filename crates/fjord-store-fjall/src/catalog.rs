@@ -960,6 +960,21 @@ fn seal(
     // merging it costs nothing, so the check stays where it reads best.
     db.compact()?;
 
+    // **And then drop the journal, which the tables now hold in full.**
+    //
+    // The comment above says the flush exists because a resident memtable was only ever
+    // in the journal. The converse is this line: once it *is* in a table, the journal is
+    // duplication that no future open can avoid replaying. Flushing does not reclaim it
+    // — maintenance only collects *sealed* journals and the active one rotates on a size
+    // threshold — so a database small enough never to trip that threshold carries its
+    // whole write history into every open it will ever serve. Measured on a sealed
+    // 550,000-fact database: 3,105 ms to open with the journal, 1.7 ms without, and
+    // `approximate_len` reporting double in between.
+    //
+    // After `flush_to_tables` and `compact`, never before: a journal is evicted only once
+    // every keyspace's tables have persisted past its last sequence number.
+    db.checkpoint()?;
+
     // **Durable again, and the reason is `ops-I3` exactly as it reads.** The flush and
     // the merge both wrote files; an identity computed over bytes a power loss could
     // still take back would describe a database that might not exist.
