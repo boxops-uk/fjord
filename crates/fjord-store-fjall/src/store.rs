@@ -1449,6 +1449,28 @@ impl FjallDb {
     /// # Errors
     ///
     /// [`StoreError::Backend`] if a rotation fails.
+    /// **Drop the write-ahead journal the tables already hold.**
+    ///
+    /// Sealing flushes every memtable to tables, so from that point the journal is pure
+    /// duplication — and flushing does not reclaim it. Journal maintenance only
+    /// considers *sealed* journals, and the active one rotates only once its write
+    /// position passes a threshold the backend's flush worker checks, so a database
+    /// whose whole history fits under that threshold keeps its journal for good however
+    /// often it flushes. What it costs is the open, every time, for the life of the
+    /// artifact: a sealed 550,000-fact database opened in 3,105 ms with the journal and
+    /// 1.7 ms without, and reported twice its real length in between.
+    ///
+    /// Call after [`flush_to_tables`](Self::flush_to_tables): a journal is evicted only
+    /// once every keyspace's *tables* have persisted past its last sequence number, so
+    /// calling it on unflushed memtables reclaims nothing and loses nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the backend cannot roll or collect its journals.
+    pub fn checkpoint(&self) -> Result<(), StoreError> {
+        self.db.checkpoint().map_err(StoreError::backend)
+    }
+
     pub fn flush_to_tables(&self) -> Result<(), StoreError> {
         let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
 
@@ -1464,6 +1486,17 @@ impl FjallDb {
                 .rotate_memtable_and_wait()
                 .map_err(StoreError::backend)?;
         }
+
+        // **The metadata keyspace too, and it is not an afterthought.** It holds the
+        // sequence reservations `allocate` writes, so it is very nearly always dirty at
+        // seal — and one keyspace with a resident memtable and no table is enough to stop
+        // [`checkpoint`](Self::checkpoint) reclaiming anything at all: a journal is
+        // evicted only once *every* watermarked keyspace has persisted past it, and a
+        // keyspace with no tables has persisted past nothing. Left out, sealing rotated
+        // the journal and then kept both halves.
+        self.meta
+            .rotate_memtable_and_wait()
+            .map_err(StoreError::backend)?;
 
         Ok(())
     }

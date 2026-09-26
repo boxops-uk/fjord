@@ -1106,3 +1106,48 @@ fn a_row_that_does_not_decode_is_corrupt_not_a_panic() {
         "an undecodable stored row must be reported as corruption"
     );
 }
+
+/// **Sealing leaves no journal behind.**
+///
+/// A `Complete` database is immutable, so everything in its write-ahead log is also in
+/// its tables — and a journal left behind is replayed into a memtable at every open for
+/// the life of the artifact, costing the open and reporting a length twice the real one.
+///
+/// The guard is the file count rather than a timing, because the cost only shows at a
+/// size a unit test should not build. The reclaim itself is the thing that either
+/// happened or did not.
+///
+/// **It is one keyspace short of not working.** A journal is evicted only once *every*
+/// watermarked keyspace has persisted past it, and a keyspace with a resident memtable
+/// and no tables has persisted past nothing — so one unflushed keyspace stops the whole
+/// reclaim. The metadata keyspace holds the sequence reservations and is nearly always
+/// dirty at seal; before it was flushed too, sealing rotated the journal and then kept
+/// both halves. That is exactly what this catches.
+#[test]
+fn a_sealed_database_keeps_no_journal_it_does_not_need() {
+    let (dir, catalog) = catalog();
+    build(&catalog, "code", CONTENT);
+
+    let instance = std::fs::read_dir(dir.path().join("store").join("code"))
+        .expect("the name directory")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
+        .expect("one instance");
+
+    let journals: Vec<_> = std::fs::read_dir(&instance)
+        .expect("the instance directory")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".jnl"))
+        .collect();
+
+    // One: the fresh empty journal a rotation leaves in place. Two means the sealed one
+    // it replaced is still there, holding every write the tables already hold.
+    assert_eq!(
+        1,
+        journals.len(),
+        "a sealed database kept {} journals: {journals:?}",
+        journals.len(),
+    );
+}
