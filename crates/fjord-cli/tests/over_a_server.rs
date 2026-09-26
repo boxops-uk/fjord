@@ -393,6 +393,102 @@ fn bytes_holds_what_a_string_cannot() {
     );
 }
 
+/// **`fjord fact` spends an id**, which is the one question sigla cannot ask.
+///
+/// A query names a fact by its key, because a key is what survives a rebuild — so an
+/// id has no literal in the grammar and a row that hands you one leaves you holding
+/// something the language will not take back. This command is the way to spend it, and
+/// the claim worth testing is that what comes back reads like a row: the same
+/// renderer, the same `--format`, the same spelling of a nested reference.
+///
+/// Over a server, because that is the only door: `fetch` is a protocol exchange
+/// (`F` out, `f` back) and there is no offline path to it.
+#[test]
+fn fact_spends_an_id_the_way_a_row_prints_one() {
+    use std::sync::Arc;
+
+    use fjord_client::{Connection, Mode};
+    use fjord_wire::{WireFact, WireValue};
+
+    let (_dir, root) = scratch();
+    let _serving = serve(&root);
+    ok(&root, &["create", "code", "--schema", SAMPLE]);
+
+    // The served schema rather than a restated one: a schema belongs to the database
+    // (I13), and the ids below are only meaningful against the predicate numbering it
+    // carries.
+    let endpoint = fjord_client::Endpoint::Unix(root.join("fjord.sock"));
+    let mut probe = Connection::open(
+        &endpoint,
+        "code",
+        Arc::new(fjord_cli::sample_schema::schema()),
+        Mode::ReadOnly,
+        false,
+    )
+    .expect("a probe connection");
+    let served = Arc::new(probe.served_schema().expect("the served schema"));
+    drop(probe);
+
+    let file = |name: &str| WireFact {
+        predicate: fjord_cli::sample_schema::id("code.File"),
+        key: WireValue::Str(name.to_owned()),
+        value: None,
+    };
+
+    let mut writer = Connection::open(
+        &endpoint,
+        "code",
+        Arc::clone(&served),
+        Mode::ReadWrite,
+        true,
+    )
+    .expect("a write connection");
+    let written = writer
+        .write(
+            fjord_cli::sample_schema::id("code.File"),
+            &[file("store/keys.py"), file("query/plan.py")],
+        )
+        .expect("the files are accepted");
+    assert_eq!(written.created, 2, "{written:?}");
+    drop(writer);
+
+    // Sequences are 1-based and per predicate, so these are the two just written.
+    let first = ok(&root, &["fact", "code", "code.File#1"]);
+    assert_eq!(first.trim(), r#""store/keys.py""#, "{first}");
+
+    // **In the order asked**, which is what makes a line of ids a list rather than a
+    // set. The store's own order is the other one, and it is not this.
+    let both = ok(&root, &["fact", "code", "code.File#2", "code.File#1"]);
+    assert_eq!(
+        both.lines().collect::<Vec<_>>(),
+        [r#""query/plan.py""#, r#""store/keys.py""#],
+        "{both}"
+    );
+
+    // `--format` means here what it means for `query`, because it is the same sink.
+    let json = ok(&root, &["fact", "code", "code.File#1", "--format", "jsonl"]);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(json.trim()).expect("valid JSON"),
+        serde_json::json!("store/keys.py"),
+        "{json}"
+    );
+
+    // **A sequence past the end is an answer about the database**, not a failure of
+    // the command — and the whole line still exits zero, because the other ids on it
+    // resolved and printing them is more use than refusing all of them.
+    let (success, stdout, stderr) = fjord(&root, &["fact", "code", "code.File#1", "code.File#999"]);
+    assert!(success, "{stderr}");
+    assert_eq!(stdout.trim(), r#""store/keys.py""#, "{stdout}");
+    assert!(stderr.contains("code.File#999 names no fact"), "{stderr}");
+
+    // An id that does not parse is the command's own error, before a frame is sent,
+    // and it says which half was wrong.
+    let refused = fails(&root, &["fact", "code", "code.Nope#1"]);
+    assert!(refused.contains("code.Nope"), "{refused}");
+    let refused = fails(&root, &["fact", "code", "nonsense"]);
+    assert!(refused.contains("code.Decl#1"), "{refused}");
+}
+
 /// **§2 rule 1 has no fallback.** With nothing listening, a query says what to do
 /// about it — it never opens the directory, because a server might be holding it.
 #[test]

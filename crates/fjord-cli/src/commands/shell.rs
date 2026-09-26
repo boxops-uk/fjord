@@ -524,11 +524,14 @@ impl Repl {
                     sink.end().map_err(CliError::Io)?;
                 }
                 Found::Missing => {
+                    // The same spelling the row above it would have used. This printed
+                    // the raw `#predicate:sequence` pair, three lines from the arm
+                    // below that does not — so the one message a person reads *because
+                    // they mistyped an id* showed them a different form of id.
                     writeln!(
                         out,
-                        "  #{}:{} names no fact",
-                        id.predicate().0,
-                        id.sequence()
+                        "  {} names no fact",
+                        crate::rows::fact_id(Some(&self.schema), *id)
                     )?;
                 }
                 Found::Unstored => {
@@ -1697,6 +1700,71 @@ mod tests {
             narrowed.contains("0 row(s)"),
             "nothing is sealed: {narrowed}"
         );
+    }
+
+    /// **`:id` spends an id**, which is the one question a query cannot ask.
+    ///
+    /// A row carries a reference as `code.File#1` and sigla names a fact by its key, so
+    /// there is no syntax that takes an id — the whole point of the colon command. The
+    /// battery is one test because the arms only mean anything against each other: what
+    /// a key looks like coming back, and what each way of getting it wrong says.
+    #[test]
+    fn id_answers_what_a_fact_id_names() {
+        let serving = serving(2);
+        let mut repl = repl(&serving);
+
+        // A scalar key is the value itself, as sigla would write it.
+        assert_eq!(typed(&mut repl, ":id code.File#1").trim(), r#""f00000.py""#);
+
+        // **In the order asked**, which is what makes a line of ids readable as a list.
+        let both = typed(&mut repl, ":id code.File#2 code.File#1");
+        assert_eq!(
+            both.lines().collect::<Vec<_>>(),
+            [r#""f00001.py""#, r#""f00000.py""#],
+            "{both}"
+        );
+
+        // A record key comes back as a record, and the reference inside it is printed
+        // the way every renderer prints one — so the answer to `:id` contains the next
+        // id you would ask for.
+        let decl = typed(&mut repl, ":id code.Decl#1");
+        assert!(decl.contains("file = code.File#1"), "{decl}");
+        assert!(decl.contains(r#"name = "d00000""#), "{decl}");
+
+        // **`#predicate:sequence` is taken too.** It is what a row prints when the
+        // schema cannot name the predicate, so refusing to read back what we just wrote
+        // would be perverse. `code.Decl` is predicate 0 in the sample schema.
+        assert_eq!(typed(&mut repl, ":id #0:1"), decl);
+
+        // Nothing to spend: the command says what an id looks like rather than what a
+        // parser wanted.
+        assert!(typed(&mut repl, ":id").contains("written code.Decl#1"));
+
+        // Every way of getting one wrong, and each says which part was wrong.
+        let cases = [
+            ("nonsense", "is not a fact id"),
+            ("code.Nope#1", "not a predicate in this database's schema"),
+            ("code.File#0", "outside 1..="),
+        ];
+        for (written, expected) in cases {
+            let said = typed(&mut repl, &format!(":id {written}"));
+            assert!(said.contains(expected), "`:id {written}` said {said:?}");
+        }
+
+        // **A sequence past the end is an answer, not a failure**, and it names the id
+        // back in the spelling it was asked in — the same one the arm beside it uses.
+        let missing = typed(&mut repl, ":id code.File#999");
+        assert!(missing.contains("code.File#999 names no fact"), "{missing}");
+        assert!(
+            !missing.contains("#4:999"),
+            "the raw pair leaked: {missing}"
+        );
+
+        // One bad id stops the line rather than answering the good ones beside it: a
+        // partial answer to a list you got wrong is harder to read than none.
+        let mixed = typed(&mut repl, ":id code.File#1 nonsense");
+        assert!(mixed.contains("is not a fact id"), "{mixed}");
+        assert!(!mixed.contains("f00000.py"), "{mixed}");
     }
 
     /// `:facts` is sugar, and it shows the query it is sugar for.
