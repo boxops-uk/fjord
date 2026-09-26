@@ -828,6 +828,7 @@
 
 .finder-try button {
   padding: var(--spacing-1) var(--spacing-3);
+  white-space: nowrap;
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-full, 999px);
   background: var(--color-background-card);
@@ -1070,6 +1071,19 @@
 .finder-said > p { margin-block: var(--spacing-3) 0; }
 
 .search-demo pre.astryx-codeblock { margin-block: var(--spacing-3); }
+
+/* **Five words, one line.** A phone is 17px short of fitting them at the desktop
+   size, which wraps exactly one chip onto a line of its own — the worst of both,
+   since it costs a whole row to show one word. Tighter padding and a smaller gap
+   buy the 60px back; centring is for the narrowest phones, where it still wraps
+   and a centred orphan at least reads as deliberate. */
+@media (max-width: 26rem) {
+  .finder-try {
+    justify-content: center;
+    gap: var(--spacing-1);
+  }
+  .finder-try button { padding: var(--spacing-1) var(--spacing-2); }
+}
 
 @media (max-width: 40rem) {
   .finder-bar {

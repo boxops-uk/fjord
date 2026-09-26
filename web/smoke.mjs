@@ -901,6 +901,21 @@ check(
 // the box has to work before it has to be explained — so opening the fold is
 // half of what this checks, and the other half is that what it opens is the
 // query the box just ran.
+// **Five words, one line, on a phone.** They are 17px too wide at the desktop
+// size, which wraps exactly one onto a row of its own — a whole line spent on
+// one word, and the worst-looking way to run out of room.
+await page.setViewport({ width: 360, height: 900 })
+await settle()
+check(
+  'the words to try stay on one line on a phone',
+  await page.$$eval('.finder-try button', (chips) => {
+    const tops = chips.map((chip) => Math.round(chip.getBoundingClientRect().top))
+    return chips.length === 5 && new Set(tops).size === 1
+  }),
+)
+await page.setViewport({ width: 1440, height: 900 })
+await settle()
+
 check('the explanation is folded away until it is asked for', !(await page.$('.finder-said[open]')))
 await page.$eval('.finder-said summary', (el) => el.click())
 await settle()
