@@ -18,6 +18,27 @@ program written outside the repository all use the same frames.
 dotnet add package Boxops.Fjord.Client
 ```
 
+For a read-only client, connect without asserting a schema and stream rows a page at a
+time:
+
+```csharp
+using Boxops.Fjord.Client;
+
+var noSchemaClaim = new FjordSchema([], fingerprint: 0);
+using var connection = FjordConnection.Connect(
+    FjordAddress.Parse("/run/user/1000/fjord.sock//code"),
+    noSchemaClaim,
+    SessionMode.ReadOnly,
+    assertSchema: false);
+
+foreach (var row in connection.Rows("F where src.File F", pageSize: 100))
+    Console.WriteLine(row);
+```
+
+The server describes the result before sending its rows, so a reader does not need to
+restate the database's schema. A producer does: it encodes facts positionally and should
+assert the schema fingerprint before it writes.
+
 It exists to prove the protocol is implementable from outside. It shares no constants with
 the server, only the specification, and its encoder is held byte-for-byte against the
 Rust one over a checked-in golden.

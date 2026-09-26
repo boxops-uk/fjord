@@ -5,6 +5,10 @@ export const meta = {
 
 Operational rules are written `ops-Ix`, separately from the engine invariants.
 
+If you are here to operate a deployment, start with [Running a server](#running-a-server),
+then [Deployment](#deployment) and [Backup and restore](#backup-and-restore). The lifecycle
+and invariants below explain the rules those procedures preserve.
+
 ## The lifecycle
 
 <Lifecycle />
@@ -164,7 +168,7 @@ indexing-throughput question, not a serving one.
 
 | Gap | Where it stands |
 |---|---|
-| `fjord write` from files | Unbuilt. The format is defined; the pipeline is not wired to a command |
+| High-throughput file ingestion | `fjord write` handles JSONL over the ordinary write protocol; a faster offline or bulk path is not built |
 | `db verify` | Unbuilt. Recomputing the content fingerprint is specified |
 | Per-predicate statistics | Not recorded, so the reorderer has no selectivity heuristic |
 | Retention | No policy. Rebuilds accumulate and `db rm` is manual |

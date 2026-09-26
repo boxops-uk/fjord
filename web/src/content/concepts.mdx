@@ -62,36 +62,18 @@ numbering. If the schema cannot name the predicate, an id prints as `#23:60`.
 
 <Lifecycle />
 
-Once a database is **Complete**, a client that asks to write is refused when it connects.
+Before `finish`, a database is **Writable**. It accepts parallel writers, deduplicates
+identical facts and rejects two different values for the same key. `fjord finish` moves it
+to **Complete**: sealed and read-only. A client that asks to write is then refused when it
+connects.
+
 Because a Complete database never changes:
 
 - every query sees a stable snapshot for free;
 - a paused query resumes from a few saved bytes;
-- writers never conflict, so ingestion runs in parallel;
 - the database is a directory you can copy and serve from anywhere.
 
 The workflow is a fresh sealed database per build, not an index updated in place.
-
-## The two halves
-
-A **front end** turns sigla text into a plan. A **back end** runs plans. They meet at one
-data structure.
-
-<Flow
-  stages={[
-    { label: 'sigla text', tone: 'io' },
-    { band: 'front end', phases: ['lex', 'parse', 'typecheck', 'flatten', 'reorder'] },
-    { label: 'Plan IR', tone: 'seam', note: 'the fixed contract between the halves' },
-    { band: 'back end', label: 'executor', note: 'scans storage, one row at a time' },
-    { label: 'projected rows', tone: 'io', note: 'to the shell, the wire, a viewer' },
-  ]}
-/>
-
-A **plan** is an ordered list of steps, and the order is the loop nesting: the first step
-is the outer loop. The **executor** walks that nested loop one row at a time, as an
-explicit state machine, which is what lets a query stop and resume exactly.
-
-[A query, step by step](query-lifecycle.html) follows one query through both halves.
 
 ## Storage in one picture
 
@@ -123,4 +105,5 @@ band because the encoding sorts bytes in the same order as values.
 - [Schema language](schema-language.html): designing predicates, and why field order matters.
 - [sigla query language](query-language.html): every construct, with the rows it returns.
 - [Query efficiency](query-efficiency.html): what a query costs and how to tell.
+- [A query, step by step](query-lifecycle.html): how text becomes a plan and rows come back.
 - [Invariants](invariants.html): the rules the design is tested against.

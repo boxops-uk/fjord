@@ -6,13 +6,13 @@
       "pages": [
         { "slug": "overview", "title": "Overview" },
         { "slug": "getting-started", "title": "Getting started" },
+        { "slug": "concepts", "title": "Concepts" },
         { "slug": "walkthrough", "title": "A guided tour" }
       ]
     },
     {
       "label": "The model",
       "pages": [
-        { "slug": "concepts", "title": "Concepts" },
         { "slug": "schema-language", "title": "Schema language" },
         { "slug": "query-language", "title": "sigla query language" },
         { "slug": "query-efficiency", "title": "Query efficiency" }

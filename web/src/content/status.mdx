@@ -3,6 +3,11 @@ export const meta = {
   "description": "What is built, what is not, what is settled, and the one decision still open."
 }
 
+Fjord is pre-1.0. The core path is usable today: create a database, write facts through
+JSONL or a client, query it, and seal it into an immutable artifact. The largest product
+gaps are stored derivation, recursion, authentication, a code-search UI, and a
+high-throughput file-ingestion path.
+
 Where something is built, a test says so. Where it is not, it is listed here.
 
 ## Built and guarded
@@ -34,15 +39,15 @@ Where something is built, a test says so. Where it is not, it is listed here.
 
 | Missing | What it means for you | Gating |
 |---|---|---|
-| **Bulk ingestion from files** | `fjord write` reads JSONL over the socket and is the simple way in. A producer at volume uses a client library | The shape a fast path would take |
+| **High-throughput file ingestion** | `fjord write` reads JSONL over the socket and is the simple way in. A producer at volume uses a client library | The shape a faster offline or bulk path would take |
 | **Stored derivation** | A derived predicate cannot be declared. Derived data is written by the producer | The re-derivation decision below |
 | **Arrays and sets** | A one-to-many is one fact per element | An open design question |
 | **A code-search UI** | `fjord-viewer` is retired. A browser application replaces it. [Clients](clients.html#the-viewer) lists what it needs | A WebSocket listener carrying the same frames |
-| **`fjord write` from files, `db backup/restore/verify`, `completions`** | Absent from the binary. `tar` is the backup | — |
+| **`db backup/restore/verify`, `completions`** | Absent from the binary. `tar` is the backup | — |
 | **Per-predicate statistics** | The reorderer has no selectivity heuristic. [Query efficiency](query-efficiency.html) is what to do meanwhile | `finish` is the natural place to record them |
 | **Recursion** | A query cannot name a relation and derive it. The first movement has landed: the pure pieces a driver will call, none wired to a pipeline yet | The relation store, a naive driver, semi-naive, resume re-proved, stratification, magic sets, then the surface |
 | **Per-stream flow control** | Bounded queues and per-connection backpressure in the meantime | — |
-| **Publishing the interactive site** | The interactive copy of this book is built and checked, and not yet what the domain serves | A deployment decision |
+| **Serving the interactive site from the primary domain** | The site is built, checked and published on GitHub Pages, but the primary domain does not serve it yet | A deployment decision |
 | **A resumable deadline** | A timeout unwinds instead of handing back a cursor | The token cannot represent a mid-descent position |
 | **Authentication** | None, by design. The transport is the trust boundary | — |
 
@@ -120,7 +125,7 @@ piece with its acceptance criteria, and the record of settled decisions.
 
 | Remaining | State |
 |---|---|
-| File ingestion (`fjord write`) | designed; the format is built |
+| High-throughput file ingestion | the JSONL command is built; the shape of a faster path remains open |
 | Stored derivation | designed; gated on the re-derivation decision |
 | The read-path benchmark | the instruments exist; the corpus and question set are owed |
 | Authentication | design of record written; nothing built |

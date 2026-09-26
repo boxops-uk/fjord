@@ -43,7 +43,8 @@ process can serve the next page.
 
 - Every query sees one stable version of the data, with no locking.
 - A paused query costs a few bytes, not an open connection.
-- Writers never conflict, so ingestion runs in parallel.
+- Serving needs no writer coordination. While the database is Writable, ingestion accepts
+  parallel writers, deduplicates identical facts and rejects conflicting values.
 - The database is a directory. `tar` it, copy it, serve it anywhere.
 
 ## A schema, a query, and the rows
@@ -89,7 +90,7 @@ Every demo in this book is the real engine.
 <Callout tone="note" label={`Status`}>
 
 The engine, storage, language, wire protocol, server, client, CLI and shell are built and
-tested. Bulk ingestion from files and stored derivation are not. See
+tested. High-throughput file ingestion and stored derivation are not. See
 [Status & roadmap](status.html).
 
 </Callout>
@@ -109,14 +110,15 @@ tested. Bulk ingestion from files and stored derivation are not. See
 <span className="pill ok">CLI + shell</span>
 <span className="pill ok">parallel ingest</span>
 <span className="pill ok">JSONL in and out</span>
-<span className="pill todo">bulk file ingestion</span>
+<span className="pill todo">high-throughput file ingestion</span>
 <span className="pill todo">stored derivation</span>
 </p>
 </div>
 
 ## Where next
 
-- **New here:** [Getting started](getting-started.html), then the [guided tour](walkthrough.html).
+- **New here:** [Getting started](getting-started.html), [Concepts](concepts.html), then the
+  [guided tour](walkthrough.html).
 - **Writing queries:** [sigla](query-language.html) and [Query efficiency](query-efficiency.html).
 - **Designing a schema:** [Schema language](schema-language.html). Field order matters most.
 - **How it works inside:** [A query, step by step](query-lifecycle.html), [Storage](storage.html), [Executor](executor.html).

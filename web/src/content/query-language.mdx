@@ -6,17 +6,33 @@ export const meta = {
 A query is a **head pattern**, the word `where`, and a list of **statements**:
 
 ```sigla
+N where code.Decl {file = _, name = N, line = _}
+```
+
+Read it in three parts:
+
+1. `N` is the **head**: what each result row contains.
+2. `where` separates the result shape from the work that finds it.
+3. `code.Decl …` is a **statement**: it reads declaration facts and binds their `name`
+   field to `N`. `_` means that field may contain anything.
+
+Several statements are separated by `;`. When two share a variable, that is a join:
+
+```sigla
 {file = F, span = S} where
   codemarkup.SymbolByName {name = "Crc32", symbol = T};
   codemarkup.SymbolXRef {target = T, file = F, span = S}
 ```
 
-The head says what a row looks like. The statements say which rows there are. A join is
-two statements sharing a variable. There is no `select`, `from` or `join`.
+The head says what a row looks like; the statements say which rows there are. There is no
+`select`, `from` or `join` keyword.
 
 <Demo kind="lex">{`N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}`}</Demo>
 
-## Grammar
+This page is the complete reference. If you are learning the language, start with
+[Statements](#statements) and return to the grammar when you need an exact spelling.
+
+## Grammar reference
 
 ```text
 query      ::= pattern 'where' stmt (';' stmt)* [';']
@@ -48,7 +64,7 @@ A variable is `UpperCase`, a field is `lowerCase`, a predicate is `namespace.Upp
 Precedence, loosest to tightest: `|`, then `+`/`-`, then application (`test.Foo X`), then
 `.` access. Parenthesise a disjunction inside a key: `test.Foo (A | B)`.
 
-## The examples database
+## The fixture used below
 
 Every result below is what the query answers against the test fixture, checked by a test.
 
