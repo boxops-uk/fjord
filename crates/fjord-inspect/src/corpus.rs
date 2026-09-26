@@ -314,7 +314,9 @@ pub fn window(lo: &str, hi: Option<&str>, before: usize, inside: usize, after: u
         let rows = earlier
             .into_iter()
             .chain(kept)
-            .filter_map(|(key, fact)| crate::database::row(&corpus.schema, &corpus.store, &key, fact))
+            .filter_map(|(key, fact)| {
+                crate::database::row(&corpus.schema, &corpus.store, &key, fact)
+            })
             .collect();
 
         Window {
@@ -329,7 +331,13 @@ pub fn window(lo: &str, hi: Option<&str>, before: usize, inside: usize, after: u
 
 /// The same answer, already JSON.
 #[must_use]
-pub fn window_json(lo: &str, hi: Option<&str>, before: usize, inside: usize, after: usize) -> String {
+pub fn window_json(
+    lo: &str,
+    hi: Option<&str>,
+    before: usize,
+    inside: usize,
+    after: usize,
+) -> String {
     serde_json::to_string(&window(lo, hi, before, inside, after)).expect("a window serialises")
 }
 
