@@ -54,7 +54,7 @@ The `fjord-x86_64-linux-musl` build in the same release is statically linked, fo
 A database is created against a **schema**, which is frozen into it for life. Here is one
 with three predicates: files, what they declare, and which declarations refer to which.
 
-```sigla
+```schema
 schema code {
   # A path. Stored once, however many facts mention it.
   predicate File : string

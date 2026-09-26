@@ -426,10 +426,49 @@ if "schema-language" in pages:
                     f"`{written}`, which `print::ty` writes `PredicateTy::{family}` as"
                 )
 
+# ---- 6. a fenced block is labelled with the language it is in --------------------
+
+# **Two languages, two lexers, and the fence is what chooses.** `Code.tsx` paints a
+# `sigla` block with the query lexer and a `schema` block with the schema one, so a
+# schema fenced as `sigla` is lexed as a query: its keywords come back as errors and
+# its comments as nothing at all. That renders, wrongly, rather than failing — which
+# is exactly the kind of drift nobody reports and everybody sees.
+FENCE = re.compile(r"^```(\w*)[^\n]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
+
+
+def opening(body: str) -> str:
+    """The first line that decides the language. A comment may open either."""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return ""
+
+
+for name, text in sorted(pages.items()):
+    for match in FENCE.finditer(text):
+        language, first = match.group(1), opening(match.group(2))
+        line = text.count("\n", 0, match.start()) + 1
+
+        if language == "sigla" and first.startswith("schema "):
+            fail(
+                f"web/src/content/{name}.mdx:{line} fences a schema as `sigla`, so the page "
+                f"paints it with the query lexer — label it `schema`"
+            )
+        if language == "schema" and first and not first.startswith(("schema ", "predicate ")):
+            fail(
+                f"web/src/content/{name}.mdx:{line} fences `{first[:40]}` as `schema`, which "
+                f"the schema lexer will refuse — label it for what it is"
+            )
+
+
 if findings:
     print(f"{len(findings)} finding(s):", file=sys.stderr)
     for finding in findings:
         print(f"  {finding}", file=sys.stderr)
     sys.exit(1)
 
-print("docs are consistent: nothing retired is referenced, no phase numbers, the figures and tables the book prints are the ones the tree has")
+print(
+    "docs are consistent: nothing retired is referenced, no phase numbers, the figures and "
+    "tables the book prints are the ones the tree has, and every fence names its own language"
+)
