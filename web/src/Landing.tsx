@@ -15,7 +15,7 @@ import { Heading } from '@astryxdesign/core/Heading'
 import { Link } from '@astryxdesign/core/Link'
 import { Text } from '@astryxdesign/core/Text'
 import { route } from './book/links'
-import { HeroStory } from './HeroStory'
+import { OneQuery } from './OneQuery'
 import { SearchDemo } from './SearchDemo'
 import './landing.css'
 
@@ -24,29 +24,25 @@ const REPO = 'https://github.com/boxops-uk/fjord'
 export function Landing() {
   return (
     <main className="landing" data-testid="landing">
+      {/* **The box first, and the explanation after it.** A reader who arrives
+          from a link has not agreed to read anything yet. They have agreed to
+          type a word into a box, which is the one thing every page has taught
+          them, and this box answers out of a real index. */}
       <section className="hero">
         <Heading level={1} type="display-1">
           A database of facts about your code
         </Heading>
         <Text as="p" size="lg" color="secondary">
           Fjord indexes a repository once, seals the result, and answers questions about it in a
-          small typed query language. What you get is a directory: copy it, ship it, serve it
-          from as many processes as you like.
+          small typed query language. Here is one, indexed and sealed. Ask it something.
         </Text>
+        <SearchDemo />
         <div className="hero-actions">
           <Button variant="primary" label="Get started" href={route('getting-started')} />
           <Button variant="secondary" label="Read the docs" href={route('overview')} />
           <Button variant="ghost" label="GitHub" href={REPO} />
         </div>
-        <HeroStory />
-        <Text as="p" size="sm" color="secondary" className="hero-foot">
-          That is the real engine, compiled to WebAssembly and running in this page — the same
-          compiler and the same executor, reading a real index of a real repository. The file, the
-          byte range it seeks into and the count beside it are all its own answers.
-        </Text>
       </section>
-
-      <SearchDemo />
 
       <section className="band">
         <Heading level={2}>The idea, in three parts</Heading>
@@ -76,6 +72,20 @@ export function Landing() {
             </p>
           </article>
         </div>
+      </section>
+
+      {/* Demoted from the hero, because a loop of somebody else using it is a
+          thing to watch and the box above is a thing to do. It is still what
+          makes the claim: every panel in it is the engine's own answer. */}
+      <section className="band">
+        <Heading level={2}>What happens when you ask</Heading>
+        <Text as="p" color="secondary">
+          The same index, one question, end to end. An editor opens a card and goes looking; behind
+          it is one query, a seek into a sorted map of bytes, and the rows it found. Every panel is
+          the engine&rsquo;s own answer — the plan it compiled, the byte range it opened, the count
+          it kept. The only invented thing is the pointer.
+        </Text>
+        <OneQuery />
       </section>
 
       <section className="band">

@@ -20,7 +20,10 @@
 }
 
 .landing .hero { gap: var(--spacing-5); justify-items: center; text-align: center; }
-.landing .hero .story { container-type: inline-size; }
+.landing .band .story { container-type: inline-size; }
+
+/* The hero is centred prose; what it holds is not. */
+.landing .hero .search-demo { width: 100%; text-align: start; }
 
 /* The pitch reads at a shorter measure than the demo under it. */
 .landing .hero > p { max-width: 44rem; }
@@ -93,42 +96,54 @@
   line-height: 1.6;
 }
 
-.story-code li {
+/* **A numbered listing.** The gutter is a fixed column so the source starts at
+   the same place on every line, which is what `1ch` off it means something. */
+.listing {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.listing li {
   position: relative;
   display: grid;
-  grid-template-columns: 3.2rem minmax(0, 1fr);
+  grid-template-columns: var(--gutter, 3.2rem) minmax(0, 1fr);
   align-items: baseline;
 }
 
 /* Source keeps its own spaces: an indented line that lost them is not code. */
-.story-code .src { white-space: pre; }
+.listing .src {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-.story-code .n {
+.listing .n {
   padding-inline-end: var(--spacing-3);
   color: var(--color-text-disabled);
   text-align: end;
   font-size: var(--font-size-xs);
 }
 
-/* **Painted by the rules the code browser falls back to.** A hero whose code is
-   one flat colour with a word picked out of it does not look like code, and the
-   claim it is making is precisely that this is code. */
-.story-tok-keyword { color: var(--color-syntax-keyword); font-weight: 600; }
-.story-tok-function { color: var(--color-syntax-function); }
-.story-tok-string { color: var(--color-syntax-string); }
-.story-tok-number { color: var(--color-syntax-number); }
-.story-tok-comment { color: var(--color-syntax-comment); }
-.story-tok-variable { color: var(--color-syntax-variable); }
-.story-tok-punctuation { color: var(--color-syntax-punctuation); }
-.story-tok-type { color: var(--color-syntax-type); }
-.story-tok-property { color: var(--color-syntax-property); }
-.story-tok-constant { color: var(--color-syntax-constant); }
-.story-tok-operator { color: var(--color-syntax-operator); }
-.story-tok-attribute { color: var(--color-syntax-attribute); }
-.story-tok-tag { color: var(--color-syntax-tag); }
+/* **The index's own semantic runs**, which is what the code browser paints with.
+   Code that is one flat colour with a word picked out of it does not look like
+   code, and the claim every pane here makes is precisely that this is code. */
+.code-tok-keyword { color: var(--color-syntax-keyword); font-weight: 600; }
+.code-tok-function { color: var(--color-syntax-function); }
+.code-tok-string { color: var(--color-syntax-string); }
+.code-tok-number { color: var(--color-syntax-number); }
+.code-tok-comment { color: var(--color-syntax-comment); }
+.code-tok-variable { color: var(--color-syntax-variable); }
+.code-tok-punctuation { color: var(--color-syntax-punctuation); }
+.code-tok-type { color: var(--color-syntax-type); }
+.code-tok-property { color: var(--color-syntax-property); }
+.code-tok-constant { color: var(--color-syntax-constant); }
+.code-tok-operator { color: var(--color-syntax-operator); }
+.code-tok-attribute { color: var(--color-syntax-attribute); }
+.code-tok-tag { color: var(--color-syntax-tag); }
 
 /* The name the whole story is about, under the cursor. */
-.story-code .subject {
+.code-tok.is-subject {
   padding: 0 var(--spacing-0-5);
   border-radius: var(--radius-inner);
   background: var(--color-accent-muted);
@@ -147,7 +162,9 @@
   position: absolute;
   z-index: 3;
   inset-block-start: 1.15em;
-  inset-inline-start: 7.6rem;
+  /* The gutter, then the column the name starts at, then a little way into it —
+     `ch` because the pane is monospaced, so a character is a unit. */
+  inset-inline-start: calc(3.2rem + (var(--at, 0) + 2.5) * 1ch);
   width: 18px;
   height: 18px;
   transform: translateX(5.5rem);
@@ -726,7 +743,7 @@
 .finder {
   display: grid;
   gap: var(--spacing-4);
-  margin-block: var(--spacing-5) var(--spacing-6);
+  justify-items: center;
 }
 
 /* ------------------------------------------------------------------ the bar -- */
@@ -734,14 +751,15 @@
 /* The label *is* the box, so the whole bar is a click target for the field and
    a stray click beside the icon lands in the input rather than nowhere. */
 .finder-bar {
+  width: min(100%, 42rem);
   display: flex;
   align-items: center;
   gap: var(--spacing-3);
-  padding: var(--spacing-4) var(--spacing-5);
+  padding: var(--spacing-4) var(--spacing-6);
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-container);
+  border-radius: var(--radius-full, 999px);
   background: var(--color-background-card);
-  box-shadow: 0 1px 2px var(--color-shadow);
+  box-shadow: 0 2px 10px -4px var(--color-shadow);
   color: var(--color-text-secondary);
   cursor: text;
   transition:
@@ -760,7 +778,7 @@
   color: var(--color-text-primary);
 }
 
-.finder-bar > .astryx-icon { flex: none; font-size: var(--font-size-xl); }
+.finder-bar > .astryx-icon { flex: none; font-size: var(--font-size-2xl, 1.5rem); }
 
 .finder-bar input {
   flex: 1;
@@ -772,7 +790,7 @@
   background: none;
   color: var(--color-text-primary);
   font-family: var(--font-family-body);
-  font-size: var(--font-size-xl);
+  font-size: var(--font-size-2xl, 1.5rem);
   line-height: 1.4;
 }
 
@@ -799,6 +817,7 @@
 /* --------------------------------------------------------------- the words -- */
 
 .finder-try {
+  width: min(100%, 42rem);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -835,6 +854,7 @@
 /* -------------------------------------------------------------- the results -- */
 
 .finder-note {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: var(--spacing-2);
@@ -845,11 +865,11 @@
 }
 
 .finder-cards {
+  width: 100%;
   margin: 0;
   padding: 0;
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
   gap: var(--spacing-3);
 }
 
@@ -953,6 +973,24 @@
   line-height: 1.45;
 }
 
+/* **The declaration, and the lines either side of it.** The gutter is narrower
+   than the walkthrough's because the numbers are small and there are five of
+   them, not twenty-two. */
+.hit-lines {
+  --gutter: 2.6rem;
+  padding: var(--spacing-2) 0;
+  border-radius: var(--radius-inner);
+  background: var(--color-syntax-background);
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  overflow: hidden;
+}
+
+/* The line the result is about. The rest is the context that makes it legible. */
+.hit-lines li.is-at { background: var(--color-accent-muted); }
+.hit-lines li.is-at .n { color: var(--color-text-secondary); }
+
 /* The declaration as the file writes it — one line, because the point is what
    sort of declaration it is and not to reproduce the source. */
 .hit-sig {
@@ -1009,7 +1047,27 @@
   color: var(--color-text-disabled);
 }
 
-.finder-said { margin-block-start: var(--spacing-5); }
+.finder-said {
+  width: min(100%, 42rem);
+  margin-block-start: var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.finder-said summary {
+  cursor: pointer;
+  list-style: none;
+  padding: var(--spacing-1) 0;
+  /* The one line of the hero that is not the box, so it sits under it rather
+     than beside it. What it opens is prose and a query, and those read left. */
+  text-align: center;
+}
+
+.finder-said summary::-webkit-details-marker { display: none; }
+.finder-said summary::after { content: ' ▸'; }
+.finder-said[open] summary::after { content: ' ▾'; }
+.finder-said summary:hover { color: var(--color-text-primary); }
+.finder-said > p { margin-block: var(--spacing-3) 0; }
 
 .search-demo pre.astryx-codeblock { margin-block: var(--spacing-3); }
 
@@ -1020,5 +1078,5 @@
   }
   .finder-bar input { font-size: var(--font-size-lg); }
   .finder-bar > .astryx-icon { font-size: var(--font-size-lg); }
-  .finder-cards { grid-template-columns: minmax(0, 1fr); }
+
 }

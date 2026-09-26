@@ -676,11 +676,24 @@ check(
   ),
 )
 
-// **The hero is one question answered end to end**, and every part of it is
-// the engine: the file pane is built from the index's own declarations, the
-// scan is the real trace, and the card fills in with what the query returns.
-// A landing page that showed a picture of any of that is the thing this site
-// exists not to be.
+// **The box is the hero and the walkthrough is a band under it.** A loop of
+// somebody else using it is a thing to watch; a box is a thing to do, and a
+// reader who arrived from a link has agreed to the second and not the first.
+check(
+  'the box comes before the walkthrough that explains it',
+  await page.evaluate(() => {
+    const box = document.querySelector('[data-testid="search-demo"]')
+    const story = document.querySelector('[data-testid="one-query"]')
+    return Boolean(
+      box && story && box.compareDocumentPosition(story) & Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+  }),
+)
+
+// **One question answered end to end**, and every part of it is the engine: the
+// file pane is the real file painted with the index's own runs, the band is the
+// real trace, and the card fills in with what the query returns. A landing page
+// that showed a picture of any of that is the thing this site exists not to be.
 await page.waitForFunction(() => document.querySelectorAll('.story-code li').length > 0, {
   timeout: 25_000,
 })
@@ -689,7 +702,7 @@ const stage = (n) =>
 
 const source = await texts('.story-code .src')
 check(
-  'the hero shows the file the index holds',
+  'the walkthrough shows the file the index holds',
   (await page.$eval('.story-file-name', (el) => el.textContent)) === 'Buffers.cs' &&
     source.length > 15 &&
     source.some((line) => line.includes('public sealed class ByteBuffer : IBufferSink')),
@@ -810,11 +823,10 @@ check(
   await page.$eval('.story-panel', (el) => !el.classList.contains('is-open')),
 )
 
-// **The second demo is a search box over the real corpus.** The band it
-// replaced was three paragraphs about predicates; the claim is now made by
-// letting somebody use it, so what matters is that the cards are real rows with
-// the kind and the summary the index recorded, and that clicking one is a way
-// into the browser.
+// **The hero is a search box over the real corpus.** The claim is made by
+// letting somebody use it, so what matters is that the results are real rows
+// with the kind, the summary and the source the index recorded, and that
+// clicking one is a way into the browser.
 await page.evaluate(() =>
   document.querySelector('[data-testid="search-demo"]').scrollIntoView({ block: 'center' }),
 )
@@ -857,16 +869,44 @@ check(
 // The summary is the source's own doc comment, which the walker put in the
 // index — a card carrying one is a card that asked a second question.
 check(
-  'a card carries the summary the source wrote',
+  'a result carries the summary the source wrote',
   cards.some((card) => card.doc.startsWith('A block: a run of facts of one predicate')),
-  cards.find((card) => card.doc)?.doc ?? 'no card had a summary',
+  cards.find((card) => card.doc)?.doc ?? 'no result had a summary',
 )
 
-// The pattern is the one `codeview::search` builds, and it is printed because
-// the point of the band is that the box is a query and not a search API.
+// **The snippet is the feature.** A name and a path is a row in a table; the
+// declaration with the lines either side of it is what a reader came for, and
+// the colour runs on it are the walker's own rather than a guess at C#.
+const snippets = await page.$$eval('.finder-cards > li', (rows) =>
+  rows.map((row) => ({
+    lines: row.querySelectorAll('.hit-lines li').length,
+    at: row.querySelector('.hit-lines li.is-at')?.textContent ?? '',
+    painted: row.querySelectorAll('.hit-lines .code-tok').length,
+  })),
+)
+check(
+  'each result shows the declaration with the lines around it',
+  snippets.length > 0 &&
+    snippets.every((row) => row.lines >= 3 && row.lines <= 5) &&
+    snippets.some((row) => row.at.includes('public static class Block')),
+  snippets.map((row) => `${row.lines} lines`).join(' · '),
+)
+check(
+  'the snippet is painted by the index, not by a guess at the language',
+  snippets.every((row) => row.painted > 3),
+  snippets.map((row) => row.painted).join(' · '),
+)
+
+// The pattern is the one `codeview::search` builds. It is folded away because
+// the box has to work before it has to be explained — so opening the fold is
+// half of what this checks, and the other half is that what it opens is the
+// query the box just ran.
+check('the explanation is folded away until it is asked for', !(await page.$('.finder-said[open]')))
+await page.$eval('.finder-said summary', (el) => el.click())
+await settle()
 check(
   'the query under the box is the one the box ran',
-  (await page.$eval('.search-demo pre.astryx-codeblock', (el) => el.innerText)).includes(
+  (await page.$eval('.finder-said pre.astryx-codeblock', (el) => el.innerText)).includes(
     'nameLowercase = "block"~<1',
   ),
 )

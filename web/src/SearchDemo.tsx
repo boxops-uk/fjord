@@ -31,22 +31,28 @@
  * links into is already loaded by the time anybody clicks through.
  */
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { Heading } from '@astryxdesign/core/Heading'
 import { Icon } from '@astryxdesign/core/Icon'
 import { Spinner } from '@astryxdesign/core/Spinner'
 import { Text } from '@astryxdesign/core/Text'
 import { Code } from './book/Code'
 import { route } from './book/links'
 import { navigate } from './book/router'
-import { loadCorpus, type Corpus } from './corpus'
+import { loadCorpus, type Blob, type Corpus } from './corpus'
+import { snippet, type Line } from './highlight'
+import { Listing } from './Snippet'
 
 /** Names that are actually in this index, so every word offered is a hit and not
  *  a guess — and between them they turn up a class, a struct, an interface, a
  *  method, a property, a field and a constant. */
 const TRY = ['block', 'query', 'fact', 'frame', 'crc32']
 
-/** Enough cards to show that the kinds differ, few enough to read at a glance. */
-const SHOWN = 6
+/** Enough results to show that the kinds differ, few enough to read at a glance.
+ *  Each one now carries five lines of source, so fewer of them go further. */
+const SHOWN = 5
+
+/** Lines of the file above and below the one a hit is declared on. */
+const ABOVE = 2
+const BELOW = 2
 
 /** A hit and what the index knows about it, read out of WebAssembly once. */
 type Card = {
@@ -59,6 +65,8 @@ type Card = {
   qualified: string
   doc: string
   uses: number
+  /** The declaration and the lines either side of it, as the index paints them. */
+  lines: Line[]
 }
 
 export function SearchDemo() {
@@ -123,6 +131,18 @@ export function SearchDemo() {
     const lowered = asked.toLowerCase()
     const starts = (name: string) => (name.toLowerCase().startsWith(lowered) ? 0 : 1)
 
+    // One handle per file, not one per result: two hits in the same file are the
+    // common case, and opening it twice is reading it twice.
+    const held = new Map<string, Blob>()
+    const open = (path: string) => {
+      let blob = held.get(path)
+      if (!blob) {
+        blob = corpus.open(path)
+        held.set(path, blob)
+      }
+      return blob
+    }
+
     return corpus
       .search(asked)
       .map((hit) => ({
@@ -144,6 +164,7 @@ export function SearchDemo() {
         const signature = about?.signature ?? ''
         return {
           ...hit,
+          lines: snippet(open(hit.path), hit.line, ABOVE, BELOW),
           // For a type the index's signature is the bare name, which the card
           // has already said in larger letters. Only keep it where it carries
           // the return type and the declaring type, as it does for a member.
@@ -190,14 +211,7 @@ export function SearchDemo() {
   }
 
   return (
-    <section className="band search-demo" ref={section} data-testid="search-demo">
-      <Heading level={2}>Ask it something</Heading>
-      <Text as="p" color="secondary">
-        A real index of a real repository — the C# client, walked by Roslyn, sealed, and served as a
-        static file. Every card below is rows out of it. Click one and you land in the code browser
-        with the symbol selected.
-      </Text>
-
+    <div className="search-demo" ref={section} data-testid="search-demo">
       <div className="finder">
         <label className="finder-bar" htmlFor={labelled}>
           <Icon icon="search" color="inherit" />
@@ -274,11 +288,20 @@ export function SearchDemo() {
                   <span className="hit-name">{marked(hit.name, asked)}</span>
 
                   {/* The summary the source wrote, which the walker put in the
-                      index — so a card says what the thing is for and not only
+                      index — so a result says what the thing is for and not only
                       what it is called. */}
                   {hit.doc ? <span className="hit-doc">{hit.doc}</span> : null}
 
-                  {hit.signature ? <span className="hit-sig">{hit.signature}</span> : null}
+                  {/* **The lines around it, as the index paints them.** A name
+                      and a path is a row in a table; the declaration itself is
+                      what a reader was looking for, and the walker already holds
+                      the colour runs for it. */}
+                  <Listing
+                    className="hit-lines"
+                    lines={hit.lines}
+                    at={hit.line}
+                    mark={hit.lines.find((line) => line.n === hit.line)?.text.indexOf(hit.name)}
+                  />
 
                   <span className="card-foot">
                     <span className="hit-where">
@@ -296,18 +319,24 @@ export function SearchDemo() {
         )}
       </div>
 
-      <Text as="p" color="secondary" className="finder-said">
-        There is no search API behind that box. It is one query, re-run as you type, and the fuzz
-        widens as the word gets longer:
-      </Text>
-      <Code lang="sigla" source={queryFor(asked || TRY[0])} />
-      <Text as="p" size="sm" color="secondary">
-        {corpus ? <>{corpus.rows.toLocaleString()} facts in the index. </> : null}
-        The pattern sits on <code>nameLowercase</code>, which leads the key, so this is a seek and
-        not a scan over every name. Each card then asks two more: what the symbol says about itself,
-        which is the signature and the summary the source wrote, and every place that refers to it.
-      </Text>
-    </section>
+      {/* **Folded away until a reader wants it.** The box has to work before it
+          has to be explained, and the explanation is a query in a language
+          nobody has read yet — which is the thing the page has to earn, not the
+          thing it opens with. */}
+      <details className="finder-said">
+        <summary>
+          {corpus ? `${corpus.rows.toLocaleString()} facts. ` : ''}
+          There is no search API behind that box — it is one query. Show me.
+        </summary>
+        <Text as="p" size="sm" color="secondary">
+          Re-run as you type, and the fuzz widens as the word gets longer. The pattern sits on{' '}
+          <code>nameLowercase</code>, which leads the key, so this is a seek and not a scan over
+          every name. Each result then asks two more: what the symbol says about itself, and every
+          place that refers to it.
+        </Text>
+        <Code lang="sigla" source={queryFor(asked || TRY[0])} />
+      </details>
+    </div>
   )
 }
 

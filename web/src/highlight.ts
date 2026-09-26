@@ -131,6 +131,61 @@ type Stretch = { from: number; to: number }
 type Run = Stretch & { type: SyntaxType }
 
 /**
+ * **One line's text and colour runs**, in that line's own indices.
+ *
+ * [`paint`] joins the whole file because `CodeBlock` renders the whole file. A
+ * snippet does not: a search result shows five lines of a file that may be nine
+ * hundred, and painting all of them to keep five is most of what a keystroke
+ * would cost. The conversion is the same one, restricted to a line.
+ */
+export function line(blob: Blob, at: number): { text: string; runs: Run[] } {
+  const text = blob.text(at) ?? ''
+  const legend = blob.encoding ? LEGENDS[blob.encoding] : undefined
+  if (!legend) return { text, runs: [] }
+
+  const bytes = blob.encoding ? COUNTS_BYTES[blob.encoding] === true : false
+  const units = bytes ? unitsByByte(text) : null
+  const painted = blob.runs(at)
+  const runs: Run[] = []
+
+  for (let cut = 0; cut < painted.length; cut += 4) {
+    const type = legend[painted[cut + 2]]
+    if (!type) continue
+
+    const from = units ? (units[painted[cut]] ?? text.length) : painted[cut]
+    const to = units
+      ? (units[painted[cut] + painted[cut + 1]] ?? text.length)
+      : painted[cut] + painted[cut + 1]
+
+    // Dropped rather than clamped, exactly as `paint` drops it: a run that does
+    // not lie inside its line means the payload and the text disagree, and a
+    // clamped span paints the wrong characters while looking like it worked.
+    if (from >= to || to > text.length) continue
+    runs.push({ type, from, to })
+  }
+
+  return { text, runs }
+}
+
+/** A line of a file, painted, ready to render. */
+export type Line = { n: number; text: string; runs: Run[] }
+
+/**
+ * **The lines around `at`**, clamped to the file.
+ *
+ * A hit near the top of a file gets fewer lines above it rather than blank ones:
+ * padding a snippet to a fixed height with rows that are not in the file is a
+ * small lie about the file.
+ */
+export function snippet(blob: Blob, at: number, before: number, after: number): Line[] {
+  const lines: Line[] = []
+  for (let n = Math.max(1, at - before); n <= Math.min(blob.lines, at + after); n++) {
+    lines.push({ n, ...line(blob, n) })
+  }
+  return lines
+}
+
+/**
  * Join a blob's lines into the string `CodeBlock` renders, and lift every run onto
  * an offset into that string.
  *

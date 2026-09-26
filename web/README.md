@@ -122,8 +122,9 @@ with a database behind it — `run` and `store` demos need rows, so they use it.
 |---|---|
 | `src/App.tsx` | the router: a path is a page, `/` is the landing page, and `/playground` is the workbench |
 | `src/Landing.tsx` | the landing page — what Fjord is, before the book explains it. A component rather than an MDX page, because it is not prose the reading order owns |
-| `src/HeroStory.tsx` | its hero: one find-references over the real corpus, staged. Hover, query, the seek into the index, the answer. Where there is room the seek splits: the plan on the left, and beside it the workbench's picture at corpus scale — the stored keys around the range, shaded, with gutters for what is off each end. Everything but the pointer is engine output |
-| `src/SearchDemo.tsx` | its second demo: a search box over the corpus. One sigla query per keystroke, and two more per card for the signature, the summary and the use count. A hit links into the code browser |
+| `src/OneQuery.tsx` | the band under the hero: one find-references over the real corpus, staged. Hover, query, the seek into the index, the answer. Where there is room the seek splits — the plan on the left, and beside it the workbench's picture at corpus scale: the stored keys around the range, shaded, with gutters for what is off each end. Everything but the pointer is engine output |
+| `src/Snippet.tsx`, `highlight.ts` | a few lines of a file with the walker's own colour runs on them, painted a line at a time. The search results and the walkthrough's pane are the same renderer |
+| `src/SearchDemo.tsx` | **the hero**: a search box over the corpus. One sigla query per keystroke, and two more per result for the summary and the use count, plus the declaration and the lines either side of it. A hit links into the code browser |
 | `src/book/mdx.tsx` | the book's tags as components: a heading is a `Heading`, a table is a `Table`, a callout is a `Banner`, a fence is a `CodeBlock`, a demo is the engine. Also where a body cell is given the heading above it, for the phone |
 | `src/book/Diagram.tsx` | the eight diagrams a page can name — a byte layout, a sequence diagram, a tree — drawn as elements rather than in box characters |
 | `src/book/PageView.tsx` | one page: its title, the compiled MDX rendered through that map, and the pager |

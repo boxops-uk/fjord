@@ -29,8 +29,9 @@ import { Text } from '@astryxdesign/core/Text'
 import { Code } from './book/Code'
 import { loadCorpus, type Blob, type Corpus, type Window } from './corpus'
 import type { PlanView } from './wasm'
-import { paint } from './highlight'
 import { fold, inRange, type Moment } from './run'
+import { snippet, type Line } from './highlight'
+import { Painted } from './Snippet'
 
 /** The name the story is about, and the one the cursor comes to rest on. */
 const SUBJECT = 'ByteBuffer'
@@ -95,14 +96,6 @@ const DOTS: { at: number; label: string }[] = [
 /** Whether this reader has asked for no movement. */
 const still = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 
-/** A line of the file, with the colour runs the index carries for it. */
-type Line = {
-  n: number
-  text: string
-  tokens: { type: string; from: number; to: number }[]
-  subject: boolean
-}
-
 /** One row the run actually opened, in the order it met them. */
 type Row = { fact: string; predicate: string; label: string }
 
@@ -116,6 +109,9 @@ type Story = {
   path: string
   name: string
   lines: Line[]
+  /** The line the declaration is on, and where in it the name sits. */
+  declared: number
+  column: number
   /** Every fact in the index, which is the number the band is measured against. */
   facts: number
   rows: Row[]
@@ -137,7 +133,7 @@ type Story = {
   where: Where[]
 }
 
-export function HeroStory() {
+export function OneQuery() {
   const [corpus, setCorpus] = useState<Corpus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   // Read at first render rather than in an effect: starting the story and then
@@ -204,7 +200,7 @@ export function HeroStory() {
   const step = Math.min(frame, Math.max(count - 1, 0))
 
   return (
-    <div className="story" data-testid="hero-story">
+    <div className="story" data-testid="one-query">
       <div className="story-body">
         <Pane story={story} onName={onName} cardOpen={cardOpen} answered={answered} />
 
@@ -293,7 +289,12 @@ function build(corpus: Corpus): Story {
 
   // A window around the declaration rather than the whole file: the pane is the
   // reader's editor, and an editor is open somewhere rather than everywhere.
-  const lines = source(blob, Math.max(1, declaredAt - LEAD), WINDOW, declaredAt)
+  const lines = snippet(blob, declaredAt, LEAD, WINDOW - LEAD - 1)
+  // **Where the name is on its line**, which is where the pointer has to come to
+  // rest. Found by name rather than through the index's span, which counts bytes
+  // — one word's offset is not worth a second UTF-8 map for a line the pane
+  // already holds the text of, and a declaration names itself once.
+  const column = (lines.find((row) => row.n === declaredAt)?.text ?? '').indexOf(SUBJECT)
 
   const trace = corpus.trace(QUERY)
   if (trace.diagnostics.length > 0) throw new Error(trace.diagnostics[0].message)
@@ -442,6 +443,8 @@ function build(corpus: Corpus): Story {
     path: declared.path,
     name: hit.name,
     lines,
+    declared: declaredAt,
+    column,
     facts: corpus.rows,
     rows,
     moments,
@@ -506,46 +509,6 @@ function lineAt(blob: Blob, byte: number): number {
   return line
 }
 
-/**
- * A window of the file, with the index's own colour runs lifted onto each line.
- *
- * `paint` joins the whole file and hands back offsets into that string, so this
- * splits it back apart rather than asking the blob line by line — the byte to
- * unit conversion a run needs is the fiddly part, and doing it twice is how two
- * copies of it come to disagree.
- *
- * **The subject is found on its declaration's line by name.** The index has a
- * span for it, counted in bytes, and converting one word's offset would mean a
- * second UTF-8 map for a line this already holds the text of. A declaration
- * names itself once.
- */
-function source(blob: Blob, from: number, count: number, declared: number): Line[] {
-  const { code, spans } = paint(blob)
-  const texts = code.split('\n')
-
-  const starts: number[] = []
-  let offset = 0
-  for (const text of texts) {
-    starts.push(offset)
-    offset += text.length + 1
-  }
-
-  const lines: Line[] = []
-  for (let n = from; n < from + count && n <= texts.length; n++) {
-    const start = starts[n - 1]
-    const text = texts[n - 1] ?? ''
-    lines.push({
-      n,
-      text,
-      tokens: spans
-        .filter((span) => span.start >= start && span.end <= start + text.length)
-        .map((span) => ({ type: span.type, from: span.start - start, to: span.end - start })),
-      subject: n === declared,
-    })
-  }
-  return lines
-}
-
 // ======================================================================================
 // The panels
 // ======================================================================================
@@ -566,58 +529,38 @@ function Pane({
   return (
     <div className="story-file">
       <div className="story-file-name">{short(story.path)}</div>
-      <ol className="story-code">
-        {story.lines.map((line) => (
-          <li key={line.n}>
-            <span className="n">{line.n}</span>
-            <span className="src">
-              <Source line={line} />
-            </span>
-            {line.subject ? (
-              <>
-                {cardOpen ? <Popover story={story} answered={answered} /> : null}
-                <Pointer on={onName} />
-              </>
-            ) : null}
-          </li>
-        ))}
+      <ol className="listing story-code">
+        {story.lines.map((line) => {
+          const here = line.n === story.declared
+          return (
+            <li key={line.n}>
+              <span className="n">{line.n}</span>
+              <span className="src">
+                <Painted line={line} mark={here ? story.column : undefined} />
+              </span>
+              {here ? (
+                <>
+                  {cardOpen ? <Popover story={story} answered={answered} /> : null}
+                  <Pointer on={onName} at={story.column} />
+                </>
+              ) : null}
+            </li>
+          )
+        })}
       </ol>
     </div>
   )
 }
 
 /**
- * One line, painted by the index rather than by a regular expression.
+ * The one invented thing on this panel.
  *
- * These are `roslyn-lsp-1` semantic runs — the walker's own answer about what
- * each stretch of the line is — so the hero's code is coloured by the same facts
- * the rest of the query is reading. On the declaration's line the subject is
- * boxed, once.
+ * **It lands on the name, wherever the name is.** `at` is the column the subject
+ * starts at and the offset is `ch`, so the pointer follows the declaration
+ * rather than a number that happened to be right for the file this used to show
+ * — which is how it came to be resting on `sealed`.
  */
-function Source({ line }: { line: Line }) {
-  const out: React.ReactNode[] = []
-  let cut = 0
-  const boxed = line.subject ? line.text.indexOf(SUBJECT) : -1
-
-  line.tokens.forEach((token, i) => {
-    if (token.from > cut) out.push(line.text.slice(cut, token.from))
-    const word = line.text.slice(token.from, token.to)
-    out.push(
-      <span
-        key={i}
-        className={`story-tok story-tok-${token.type}${token.from === boxed ? ' subject' : ''}`}
-      >
-        {word}
-      </span>,
-    )
-    cut = token.to
-  })
-  if (cut < line.text.length) out.push(line.text.slice(cut))
-  return <>{out}</>
-}
-
-/** The one invented thing on this panel. */
-function Pointer({ on }: { on: boolean }) {
+function Pointer({ on, at }: { on: boolean; at: number }) {
   const paint = {
     fill: 'var(--color-background-card)',
     stroke: 'var(--color-text-primary)',
@@ -625,7 +568,11 @@ function Pointer({ on }: { on: boolean }) {
     strokeLinejoin: 'round' as const,
   }
   return (
-    <span className={`story-cursor${on ? ' is-on' : ''}`} aria-hidden="true">
+    <span
+      className={`story-cursor${on ? ' is-on' : ''}`}
+      style={{ '--at': at } as React.CSSProperties}
+      aria-hidden="true"
+    >
       <span className="story-cursor-y">
         <svg className="is-arrow" width="18" height="18" viewBox="0 0 18 18">
           <path d="M2 1.5 L2 13.5 L5.4 10.4 L7.6 15.4 L10 14.3 L7.8 9.5 L12.3 9.3 Z" {...paint} />
