@@ -13,7 +13,7 @@
 //! same rows the machine will walk, in the same order.
 
 use fjord_encoding::tuple::decode_key;
-use fjord_schema::schema::{LocalInterner, PredicateId};
+use fjord_schema::schema::{LocalInterner, PredicateId, Schema};
 use fjord_store::fact_store::FactStore;
 use serde::Serialize;
 
@@ -135,6 +135,50 @@ pub fn database(schema_source: &str) -> Database {
     }
 
     Database { predicates, facts }
+}
+
+/// **One stored row, read out of a store.**
+///
+/// Split out of [`database`] because a window onto a large index needs exactly
+/// this and nothing else around it: decoding every row of a predicate to show
+/// fifteen of them is the whole cost of the picture, and the caller already knows
+/// which fifteen.
+#[must_use]
+pub fn row(
+    schema: &Schema,
+    store: &fjord_store_mem::MemStore,
+    key_bytes: &[u8],
+    fact_id: fjord_schema::id::FactId,
+) -> Option<RowBytes> {
+    let declared = schema.get(fact_id.predicate())?;
+    let key_ty = declared.key().ty.clone();
+    let value_ty = declared.value().map(|value| value.ty.clone());
+
+    let interner = LocalInterner::new(schema.interner().clone());
+    let entity = store.point(fact_id).ok().flatten();
+
+    let decoded = entity
+        .as_ref()
+        .and_then(|entity| decode_key(&interner, &entity.key, &key_ty).ok())
+        .map_or(serde_json::Value::Null, |value| json(&value, schema));
+
+    let (value, value_decoded) = match (&value_ty, entity.as_ref()) {
+        (Some(ty), Some(entity)) if !entity.value.is_empty() => (
+            Some(hex(&entity.value)),
+            fjord_encoding::tuple::decode_typed(&interner, &entity.value, ty)
+                .ok()
+                .map(|value| json(&value, schema)),
+        ),
+        _ => (None, None),
+    };
+
+    Some(RowBytes {
+        fact: crate::value::fact(&fact_id, schema),
+        key: hex(key_bytes),
+        decoded,
+        value,
+        value_decoded,
+    })
 }
 
 /// The same view, already JSON.

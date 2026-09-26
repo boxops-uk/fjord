@@ -725,6 +725,42 @@ check(
   key,
 )
 
+// **The band is the picture, and it only works if the rows either side are
+// there.** A panel showing the range alone would be claiming the predicate is
+// eight rows long; a panel showing every row would be a scan. Both, with the
+// gutters saying what is off each end, is the one that is true.
+const keys = await page.$$eval('.story-rows li', (rows) =>
+  rows.map((row) => ({
+    within: row.classList.contains('is-within'),
+    pinned: row.querySelector('b')?.textContent ?? '',
+    hex: row.textContent ?? '',
+  })),
+)
+const inside = keys.filter((row) => row.within)
+check(
+  'the range is a band with unread rows on either side of it',
+  inside.length > 1 &&
+    inside.length < keys.length &&
+    !keys[0].within &&
+    !keys[keys.length - 1].within,
+  `${inside.length} of ${keys.length} rows within`,
+)
+// Every row in the range shares the bytes the seek pinned, and the rows outside
+// it do not — which is the whole of why a seek is a seek.
+check(
+  'every row in the range carries the bytes the seek pinned',
+  inside.every((row) => row.pinned.length > 8 && key.endsWith(row.pinned)) &&
+    keys.filter((row) => !row.within).every((row) => row.pinned === ''),
+  inside[0]?.pinned ?? 'nothing pinned',
+)
+
+const gutters = await texts('.story-gutter')
+check(
+  'the gutters say how many rows the band stands in for',
+  gutters.length === 2 && gutters.some((line) => /[\d,]+ later rows, of [\d,]+/.test(line)),
+  gutters.join(' / '),
+)
+
 await stage(3)
 const found = await texts('.story-popover li')
 check(

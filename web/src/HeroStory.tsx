@@ -27,9 +27,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Spinner } from '@astryxdesign/core/Spinner'
 import { Text } from '@astryxdesign/core/Text'
 import { Code } from './book/Code'
-import { loadCorpus, type Blob, type Corpus } from './corpus'
+import { loadCorpus, type Blob, type Corpus, type Window } from './corpus'
 import { paint } from './highlight'
-import { fold, type Moment } from './run'
+import { fold, inRange, type Moment } from './run'
 
 /** The name the story is about, and the one the cursor comes to rest on. */
 const SUBJECT = 'ByteBuffer'
@@ -52,6 +52,18 @@ const QUERY = `{file = P, at = S} where
 /** How much of the file the pane shows, and how much of it sits above the name. */
 const WINDOW = 22
 const LEAD = 7
+
+/**
+ * How much of the keyspace the band shows around each range.
+ *
+ * One unread row either side, because the panel is paying for every row it draws
+ * out of the file pane above it — and the cursor resting on the name is the
+ * thread the whole story hangs from, so it is the one thing that may not be
+ * covered. One row is enough to read the range as a *stretch* of something
+ * longer; the gutters say what the rest amounts to.
+ */
+const OUTSIDE = 1
+const INSIDE = 12
 
 /**
  * The beats, in order, and how long each holds. `scan` sets its own pace from
@@ -93,6 +105,9 @@ type Line = {
 /** One row the run actually opened, in the order it met them. */
 type Row = { fact: string; predicate: string; label: string }
 
+/** A range the executor opened, and the stored keys around it. */
+type Band = Window & { lo: string; hi: string | null }
+
 /** Where the answers are, as an editor would group them. */
 type Where = { file: string; lines: number[] }
 
@@ -106,8 +121,10 @@ type Story = {
   moments: Moment[]
   /** Which opened row the machine stands on, per moment. */
   at: (number | null)[]
-  /** The range the current level opened, per moment. */
-  seeking: (string | null)[]
+  /** The ranges the run opened, in the order it opened them. */
+  bands: Band[]
+  /** Which of them the machine is inside, per moment. */
+  band: (number | null)[]
   examined: number[]
   answers: number
   where: Where[]
@@ -359,21 +376,51 @@ function build(corpus: Corpus): Story {
     const written = moment.registers.find((register) => register.written && register.fact)
     return written?.fact ? (place.get(written.fact) ?? null) : null
   })
-  const ranges = moments.map((moment) => moment.scanning?.lo || null)
+
+  /**
+   * **Every range the run opened, with the stored keys around it.**
+   *
+   * This is the picture the workbench draws over the demo database, and the one
+   * a reader finds convincing there: the keys in the order the store keeps them,
+   * the range shaded across a few of them, and the rest of the predicate
+   * carrying on either side. An index of twenty-four thousand rows cannot be
+   * drawn, so the rows next to the range are drawn and the gutters say what they
+   * stand in for.
+   *
+   * A fetch opens no range — it is a point read through a reference a register
+   * already holds — so it contributes no band.
+   */
+  const bands: Band[] = []
+  const found = new Map<string, number>()
+  for (const step of trace.steps) {
+    const opened = step.scanning
+    if (!opened || opened.fetch || found.has(opened.lo)) continue
+    found.set(opened.lo, bands.length)
+    bands.push({
+      lo: opened.lo,
+      hi: opened.hi,
+      ...corpus.window(opened.lo, opened.hi, OUTSIDE, INSIDE, OUTSIDE),
+    })
+  }
+
+  const band = moments.map((moment) => {
+    const open = moment.scanning
+    return open && !open.fetch ? (found.get(open.lo) ?? null) : null
+  })
 
   /**
    * **A frame standing on no row holds the one before it.**
    *
    * The run's last act is to read its way off the end of the range, which binds
    * nothing and leaves the machine back at the outer level — so the closing
-   * frame would drop the highlight and print the *first* level's key, which
-   * reads as the band undoing itself at the exact moment it has finished making
-   * its point. It rests on where it got to instead.
+   * frame would drop the highlight and fall back to the *first* level's band,
+   * which reads as the panel undoing itself at the exact moment it has finished
+   * making its point. It rests on where it got to instead.
    */
   for (let at = 1; at < standing.length; at++) {
     if (standing[at] === null) {
       standing[at] = standing[at - 1]
-      ranges[at] = ranges[at - 1]
+      band[at] = band[at - 1]
     }
   }
 
@@ -385,7 +432,8 @@ function build(corpus: Corpus): Story {
     rows,
     moments,
     at: standing,
-    seeking: carry(ranges),
+    bands,
+    band: carry(band),
     examined: frames.map((at) => trace.steps[at].examined.reduce((total, rows) => total + rows, 0)),
     answers: yields.length,
     where,
@@ -411,10 +459,10 @@ function reference(
 }
 
 /** Each gap filled with the last thing that was there. */
-function carry(values: (string | null)[]): (string | null)[] {
-  let held: string | null = null
+function carry<T>(values: (T | null)[]): (T | null)[] {
+  let held: T | null = null
   return values.map((value) => {
-    if (value) held = value
+    if (value !== null) held = value
     return held
   })
 }
@@ -612,22 +660,32 @@ function Popover({ story, answered }: { story: Story; answered: boolean }) {
 /**
  * **The seek, not the walk.**
  *
- * The first version of this listed the whole index and ran a highlight down it,
- * which is what a linear scan looks like and is the opposite of what happens.
- * What happens is that the executor opens one stretch of a sorted keyspace and
- * never reads the rest, so the bar is that proportion drawn honestly, a sliver
- * against the whole index, and the rows beneath it are the ones inside the
- * stretch. The key printed between them is the range's own first byte string,
- * and on the second level it begins with the row the first level bound, which
- * is what this engine does instead of having a join.
+ * The first version of this listed the index and ran a highlight down it, which
+ * is what a linear scan looks like and is the opposite of what happens. What
+ * happens is that the executor opens one stretch of a sorted map of bytes and
+ * never reads the rest — so this draws the stretch: the stored keys in the order
+ * the store keeps them, the range shaded across the middle of them, and a few
+ * unread rows either side so the shading reads as a band rather than as the
+ * whole predicate.
+ *
+ * **The gutters are what makes it honest at this size.** Twenty-four thousand
+ * rows cannot be drawn, and a picture that quietly showed fourteen would be
+ * claiming the predicate is fourteen rows long. They say what is off each end.
+ *
+ * Inside a row the pinned prefix is marked off from the rest, which is the cost
+ * model in one place: everything left of the boundary the seek jumped straight
+ * to, everything right of it the scan walks. On the second level that prefix
+ * begins with the row the level above bound, which is the splice this engine has
+ * instead of a join operator.
  */
 function Seeking({ story, step }: { story: Story; step: number }) {
   const list = useRef<HTMLOListElement>(null)
   const here = useRef<HTMLLIElement>(null)
 
-  const standing = story.at[step] ?? null
+  const moment = story.moments[step] ?? null
   const examined = story.examined[step] ?? 0
-  const seeking = story.seeking[step]
+  const band = story.band[step] !== null ? story.bands[story.band[step] as number] : null
+  const scanning = band ? { lo: band.lo, hi: band.hi, step: 0, fetch: null } : null
 
   /**
    * **Keep the row in view, and touch nothing else.**
@@ -645,48 +703,64 @@ function Seeking({ story, step }: { story: Story; step: number }) {
     const bottom = top + row.offsetHeight
     if (top < box.scrollTop) box.scrollTop = top
     else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight
-  }, [standing])
-
-  // Floored so that a sliver stays a sliver a reader can see rather than a
-  // rounding error they cannot. The number beside it is the real one.
-  const share = Math.max((examined / Math.max(story.facts, 1)) * 100, 0.5)
+  }, [step])
 
   return (
     <div className="story-scan">
       <div className="story-scan-head">
-        <span>the index</span>
+        <span>{band?.predicate ?? 'the index'}</span>
         <span className="examined">
           {examined} of {story.facts.toLocaleString()} rows read
         </span>
       </div>
 
-      <div className="story-extent" aria-hidden="true">
-        <span className="story-slice" style={{ inlineSize: `${share}%` }} />
-      </div>
-
       <p className="story-seek">
-        {seeking ? (
-          <>
-            <span className="k">seek</span>
-            <code>0x{seeking}</code>
-          </>
-        ) : (
-          <span className="k">opening the range…</span>
-        )}
+        <span className="k">seek</span>
+        <code>{band ? `0x${band.lo}` : 'opening the range…'}</code>
+      </p>
+
+      <p className="story-gutter">
+        {band && band.above > 0 ? `${band.above.toLocaleString()} earlier rows` : 'the first row'}
       </p>
 
       <ol className="story-rows" ref={list}>
-        {story.rows.map((row, at) => (
-          <li
-            key={row.fact}
-            ref={at === standing ? here : undefined}
-            className={at === standing ? 'is-here' : at < (standing ?? -1) ? 'is-held' : undefined}
-          >
-            <span className="p">{row.predicate}</span>
-            <span className="k">{row.label}</span>
-          </li>
-        ))}
+        {(band?.rows ?? []).map((row) => {
+          const within = inRange(row.key, scanning)
+          const held = moment?.held.has(row.key) ?? false
+          return (
+            <li
+              key={row.key}
+              ref={held ? here : undefined}
+              className={[within ? 'is-within' : '', held ? 'is-here' : ''].filter(Boolean).join(' ')}
+            >
+              <Key hex={row.key} lo={within ? band?.lo : undefined} />
+            </li>
+          )
+        })}
       </ol>
+
+      <p className="story-gutter">
+        {band && band.below > 0
+          ? `${band.below.toLocaleString()} later rows, of ${band.total.toLocaleString()}`
+          : 'the last row'}
+      </p>
     </div>
+  )
+}
+
+/**
+ * A stored key, with the bytes the seek pinned marked off from the ones it left
+ * free. Whole bytes only, because half a byte pinned is not a thing a seek does.
+ */
+function Key({ hex, lo }: { hex: string; lo?: string }) {
+  if (!lo) return <span className="key">{hex}</span>
+  let shared = 0
+  while (shared < lo.length && hex[shared] === lo[shared]) shared++
+  shared -= shared % 2
+  return (
+    <span className="key">
+      <b>{hex.slice(0, shared)}</b>
+      {hex.slice(shared)}
+    </span>
   )
 }

@@ -24,6 +24,7 @@ import init, {
   type Reference,
   children,
   corpus_trace,
+  corpus_window,
   definitions,
   files,
   load_corpus_jsonl,
@@ -39,7 +40,23 @@ import init, {
 } from './wasm/fjord_wasm.js'
 import wasmUrl from './wasm/fjord_wasm_bg.wasm?url'
 
-import type { Trace } from './wasm'
+import type { RowBytes, Trace } from './wasm'
+
+/**
+ * **A window onto one predicate's stored keys**, around a range a scan opened.
+ *
+ * `above` and `below` are the rows it is standing in for. A seek over an index
+ * of this size is only legible as a band if the rows either side of it are shown
+ * unread and in the same order, and those cannot all be drawn.
+ */
+export type Window = {
+  predicate: string
+  /** Every row of the predicate, which is what this is a window onto. */
+  total: number
+  above: number
+  below: number
+  rows: RowBytes[]
+}
 
 export type { Blob, Definition, Entry, FileRefs, Hit, Info, PackageRef, Project, Reference }
 
@@ -73,6 +90,8 @@ export type Corpus = {
   search: (prefix: string) => Hit[]
   /** One query, stepped — the trace the workbench scrubs, over this index. */
   trace: (query: string) => Trace
+  /** The stored keys around a range a scan opened, with what they stand in for. */
+  window: (lo: string, hi: string | null, before: number, inside: number, after: number) => Window
   /** What a hover card needs, or `undefined` where this index only names the symbol. */
   info: (symbol: string) => Info | undefined
 }
@@ -134,6 +153,8 @@ export function loadCorpus(): Promise<Corpus> {
       search,
       info: symbol_info,
       trace: (query: string) => JSON.parse(corpus_trace(query)) as Trace,
+      window: (lo, hi, before, inside, after) =>
+        JSON.parse(corpus_window(lo, hi ?? '', before, inside, after)) as Window,
     }
   })()
 

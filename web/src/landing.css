@@ -266,11 +266,11 @@
   inset-block-end: 0;
   /* Tall enough for the nine rows the run opens: the band's argument is that
      the list is short, and a list that scrolls does not look short. */
-  height: 60%;
+  height: 56%;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   gap: var(--spacing-2);
-  padding: var(--spacing-3) var(--spacing-4);
+  padding: var(--spacing-2) var(--spacing-3);
   border-block-start: var(--border-width) solid var(--color-border-emphasized);
   background: var(--color-background-card);
   box-shadow: 0 -8px 24px -12px var(--color-shadow);
@@ -301,8 +301,11 @@
 
 .story-scan {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-  gap: var(--spacing-2);
+  /* Head, the range, the gutter above, the keys, the gutter below. The gutters
+     sit outside the scroller on purpose: they are what says the band is a
+     stretch of something longer, and a claim that scrolls away is not made. */
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: var(--spacing-0-5) 0;
   min-height: 0;
   height: 100%;
 }
@@ -338,27 +341,6 @@
   text-transform: none;
   letter-spacing: 0;
   font-weight: var(--font-weight-normal);
-}
-
-/* **The whole index, and the part of it this run opened.** The proportion is
-   the real one — rows read over rows stored — which on a seek is a sliver a
-   reader has to look twice to find, and that is the entire argument. */
-.story-extent {
-  position: relative;
-  block-size: var(--spacing-2);
-  border-radius: var(--radius-full, 999px);
-  background: var(--color-background-muted);
-  overflow: hidden;
-}
-
-.story-slice {
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: 0;
-  min-inline-size: 2px;
-  border-radius: inherit;
-  background: var(--color-accent);
-  transition: inline-size 200ms linear;
 }
 
 /* The range's own first byte string. On the second level it opens with the row
@@ -409,30 +391,54 @@
 }
 
 .story-rows li {
-  display: grid;
-  grid-template-columns: 5.8rem minmax(0, 1fr);
-  gap: var(--spacing-2);
-  align-items: baseline;
-  padding: var(--spacing-0-5) var(--spacing-1);
-  border-radius: var(--radius-inner);
+  display: block;
+  padding-inline: var(--spacing-2);
+  border-inline-start: 2px solid transparent;
+  color: var(--color-text-disabled);
+  line-height: 1.5;
+}
+
+/* A key is one line, always: a row that wraps moves every row under it, which
+   is exactly what a reader watching one row cannot afford. */
+.story-rows .key {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* **The band.** Inside the range the executor opened; the rows above and below
+   it are the same predicate, in the same order, that this query never reads. */
+.story-rows .is-within {
+  background: var(--color-background-muted);
   color: var(--color-text-secondary);
 }
 
-.story-rows .p { color: var(--color-text-disabled); }
-.story-rows .k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* **Where the machine moved to, and where it still stands.** A nested loop
-   holds a row per level, so lighting every held row says it is in four places
-   at once. The one that changed is the one that reads as *now*. */
-.story-rows .is-here {
-  background: var(--color-accent-muted);
-  color: var(--color-text-primary);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+/* The bytes the seek pinned. Everything left of the boundary it jumped straight
+   to; everything right of it the scan walks. */
+.story-rows .key b {
+  color: var(--color-syntax-string);
+  font-weight: var(--font-weight-semibold);
 }
 
-.story-rows .is-here .p { color: var(--color-text-secondary); }
-.story-rows .is-held { background: var(--color-background-muted); }
-.story-rows .is-dropped { opacity: 0.45; }
+/* What is off each end, and how much of it. */
+.story-gutter {
+  margin: 0;
+  padding-inline: var(--spacing-2);
+  line-height: 1.7;
+  color: var(--color-text-disabled);
+  font-size: var(--font-size-xs);
+  font-style: italic;
+}
+
+.story-gutter::before { content: '⋯ '; font-style: normal; }
+
+/* The row a register is standing on. */
+.story-rows .is-here {
+  background: var(--color-accent-muted);
+  border-inline-start-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
 
 /* --------------------------------------------------------------- the foot -- */
 
@@ -495,7 +501,7 @@
 }
 
 @container (max-width: 46rem) {
-  .story-panel { height: 52%; }
+  .story-panel { height: 58%; }
   .story-popover { max-width: calc(100% - 4rem); }
   .story-code { font-size: var(--font-size-xs); }
 }
