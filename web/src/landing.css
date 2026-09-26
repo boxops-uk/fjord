@@ -816,11 +816,15 @@
 
 /* --------------------------------------------------------------- the words -- */
 
+/* Centred, like the bar above it and the line below it: the three of them are
+   one column down the middle of the hero, and a row that started at the bar's
+   left edge read as a caption hung off it. */
 .finder-try {
   width: min(100%, 42rem);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: var(--spacing-2);
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
@@ -1048,9 +1052,14 @@
   color: var(--color-text-disabled);
 }
 
+/* **Centred against the bar, not against the section.** This sits outside
+   `.finder`, so the grid that centres the bar and the words to try never reached
+   it: the box was the bar's width but hard against the section's left edge, and
+   centring the text inside it only centred it there. */
 .finder-said {
   width: min(100%, 42rem);
   margin-block-start: var(--spacing-2);
+  margin-inline: auto;
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
 }
@@ -1078,10 +1087,7 @@
    buy the 60px back; centring is for the narrowest phones, where it still wraps
    and a centred orphan at least reads as deliberate. */
 @media (max-width: 26rem) {
-  .finder-try {
-    justify-content: center;
-    gap: var(--spacing-1);
-  }
+  .finder-try { gap: var(--spacing-1); }
   .finder-try button { padding: var(--spacing-1) var(--spacing-2); }
 }
 
