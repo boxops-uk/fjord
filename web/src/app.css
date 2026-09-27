@@ -469,6 +469,22 @@
   .transport .astryx-slider { display: none; }
 }
 
+/* **It may run out of room; it may not lose a control to the edge.** Seven
+   buttons in a row do not fit a phone, and the toolbar neither wraps nor
+   scrolls — so `end` was drawn outside the bar and could not be reached. A
+   scroller is the smallest honest answer: every control stays, and the ones
+   past the edge are a swipe away rather than gone. Wrapping was the other
+   option and breaks the group's joined border into two half-pills. */
+.transport {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.transport::-webkit-scrollbar { display: none; }
+
+/* A group that can be scrolled to must not be squeezed on the way. */
+.transport .astryx-button-group { flex: none; }
+
 /* The glyphs are the labels here, so the size of the control is the size of the
    type in it: a step forward should not be as loud as the query it steps. */
 .transport .astryx-button {

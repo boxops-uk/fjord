@@ -105,10 +105,12 @@ const openSection = async (name) => {
 }
 
 /** Press one of the transport's buttons, by the word on it. */
+/** A transport control, by its accessible name — the controls are icons now,
+ *  so their text is no longer the thing that identifies them. */
 const transport = (label) =>
   page.evaluate((label) => {
     const button = [...document.querySelectorAll('.transport button')].find(
-      (button) => button.textContent?.trim() === label,
+      (button) => (button.getAttribute('aria-label') ?? button.textContent)?.trim() === label,
     )
     if (!button) throw new Error(`no transport button called ${label}`)
     if (button.disabled) return 'disabled'
@@ -194,7 +196,7 @@ check(
 // A join: the inner level seeks, so its range covers exactly the rows of one
 // file — a band across the table rather than the whole predicate.
 await type('.editor .input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
-for (let i = 0; i < 3; i++) await transport('▶')
+for (let i = 0; i < 3; i++) await transport('one transition')
 await settle()
 
 check(
@@ -230,7 +232,7 @@ check('a predicate opened by hand stays open', (await unfolded()).includes('code
 
 // A scan with a residual: the rows it reads and drops go red.
 await type('.editor .input', 'N where code.Decl {file = _, name = N, line = L}; L > 15')
-await transport('▶')
+await transport('one transition')
 await settle()
 check('a row read and dropped is marked as dropped', (await page.$$('.data tr.dropped')).length === 1)
 
@@ -261,7 +263,7 @@ const events = async () => {
   const total = Number((await page.$eval('.transport .count', (el) => el.textContent)).split('/')[1])
   for (let i = 0; i < total; i++) {
     seen.push(await page.$eval('.run .event .astryx-badge', (el) => el.textContent))
-    if (i < total - 1) await transport('▶')
+    if (i < total - 1) await transport('one transition')
   }
   return seen
 }
@@ -273,14 +275,14 @@ check('a row answered is shown as one', seen.includes('yield'))
 check('the run ends by saying so', seen.at(-1) === 'done')
 
 // Stepping back is free, because the whole trace is already here.
-await transport('|◀ start')
+await transport('to the start')
 check(
   'stepping back to the start empties the registers',
   (await page.$$('.run .registers li')).length === 0,
 )
 
 // Step over: to the next row rather than the next transition.
-await transport('row ▶')
+await transport('on to the next row')
 check(
   'step over lands on a row',
   (await page.$eval('.run .event .astryx-badge', (el) => el.textContent)) === 'yield',
@@ -298,35 +300,58 @@ check(
 // someone who just stepped back is fighting them for the play head, so any
 // navigation stops it — and the end of the run stops it too, rather than leaving
 // a button that says "pause" and takes two clicks to start again.
+// The control is an icon, so its state is its accessible name rather than its
+// text — which is also the only place the state is written down now.
 const playLabel = () =>
   page.evaluate(() =>
     [...document.querySelectorAll('.transport button')]
-      .map((button) => button.textContent.trim())
+      .map((button) => button.getAttribute('aria-label'))
       .find((label) => label === 'play' || label === 'pause'),
   )
 const stepNow = async () =>
   Number((await page.$eval('.transport .count', (el) => el.textContent)).split('/')[0])
 
-await transport('|◀ start')
+await transport('to the start')
 await transport('play')
 await new Promise((resolve) => setTimeout(resolve, 700))
 const playedTo = await stepNow()
 check('play advances the run on its own', playedTo > 1 && (await playLabel()) === 'pause')
 
-await transport('◀')
+await transport('back one transition')
 await new Promise((resolve) => setTimeout(resolve, 600))
 check(
   'navigating while playing stops the run',
   (await playLabel()) === 'play' && (await stepNow()) === playedTo - 1,
 )
 
-await transport('end ▶|')
+await transport('to the end')
 await settle()
 check('the end of the run stops the run', (await playLabel()) === 'play')
 await transport('play')
 await settle()
 check('play from the end starts again from the start', (await stepNow()) < 3)
 await transport('pause')
+
+// **The play control is a shape, and the same shape's worth of room either
+// way.** It was the word `play` becoming the word `pause`, so the one control
+// whose label changes as you use it also changed width as you used it — and the
+// button that moves out from under the pointer is the one being clicked.
+const playBox = async () =>
+  page.$eval('.transport button[aria-label="play"], .transport button[aria-label="pause"]', (el) => {
+    const box = el.getBoundingClientRect()
+    return { w: Math.round(box.width), h: Math.round(box.height), text: el.innerText.trim(), svg: el.querySelectorAll('svg').length }
+  })
+const paused = await playBox()
+await transport('play')
+await settle()
+const playing = await playBox()
+await transport('pause')
+await settle()
+check(
+  'the play control is an icon that keeps its size when it becomes pause',
+  paused.text === '' && paused.svg === 1 && paused.w === playing.w && paused.h === playing.h,
+  `paused ${paused.w}x${paused.h} ${JSON.stringify(paused.text)} · playing ${playing.w}x${playing.h}`,
+)
 
 // ---- the lowered view: the phase that needs a schema ----
 
@@ -447,7 +472,7 @@ check(
 // The plan is not a description while a run is stepping: it is the thing being
 // executed, and the step the machine is standing at says so.
 await type('.editor .input', 'N where F = code.File "src/lib.rs"; code.Decl {file = F, name = N, line = _}')
-for (let i = 0; i < 2; i++) await transport('▶')
+for (let i = 0; i < 2; i++) await transport('one transition')
 await settle()
 check('the plan lights the step the machine is standing at', (await page.$$('.plan .steps li.on')).length === 1)
 check(
@@ -1077,7 +1102,7 @@ let insideDfa = false
 for (let step = 0; step < 30 && !insideDfa; step++) {
   await page.$eval('.demo-guided .transport', (transport) => {
     const next = [...transport.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === '▶',
+      (button) => button.getAttribute('aria-label') === 'one transition',
     )
     next?.click()
   })
@@ -1100,6 +1125,28 @@ check(
   'the database marks the row whose fuzzy field is being evaluated',
   (await page.$$('.demo-guided .data tr.testing')).length === 1,
 )
+// **Seven controls in a row did not fit a phone.** The toolbar neither wrapped
+// nor scrolled, so the last of them was drawn outside the bar and could not be
+// reached. Measured here rather than on the workbench, whose panes collapse to
+// nothing at this width and would make the question meaningless.
+await page.setViewport({ width: 390, height: 1400 })
+await settle()
+const bar = await page.$eval('.transport', (bar) => {
+  const box = bar.getBoundingClientRect()
+  return {
+    outside: [...bar.querySelectorAll('button')].filter((button) => {
+      const at = button.getBoundingClientRect()
+      return at.right > box.right + 1 || at.left < box.left - 1
+    }).length,
+    scrolls: getComputedStyle(bar).overflowX === 'auto',
+  }
+})
+check('every transport control fits the bar on a phone', bar.outside === 0, `${bar.outside} outside`)
+// It fits at this width because the controls became icons. Narrower than this
+// it does not, and the bar has to be able to scroll or the last of them is
+// drawn outside and cannot be reached — which is what it used to do.
+check('and the bar can scroll when it does not fit', bar.scrolls)
+
 // **A phone turns a prose table into cards, and leaves a matrix alone.** The
 // card layout works by giving each cell the heading above it, which reads when a
 // row is one thing with named fields and destroys a table whose meaning is the
@@ -1137,7 +1184,7 @@ await settle()
 const dfaRows = (await page.$$('.demo-guided [data-testid="run-dfa"] table tr')).length
 await page.$eval('.demo-guided .transport', (transport) => {
   const next = [...transport.querySelectorAll('button')].find(
-    (button) => button.textContent?.trim() === '▶',
+    (button) => button.getAttribute('aria-label') === 'one transition',
   )
   next?.click()
 })
@@ -1152,7 +1199,7 @@ let backInMachine = false
 for (let step = 0; step < 20 && !backInMachine; step++) {
   await page.$eval('.demo-guided .transport', (transport) => {
     const next = [...transport.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === '▶',
+      (button) => button.getAttribute('aria-label') === 'one transition',
     )
     next?.click()
   })
@@ -1289,7 +1336,7 @@ const explanationBefore = await page.$eval(
   '.demo-guided [data-testid="step-description"]',
   (panel) => panel.textContent.trim(),
 )
-await transport('▶')
+await transport('one transition')
 await settle()
 check(
   'the guided plan follows the executor',
@@ -1308,7 +1355,7 @@ check(
     /[.!?]$/.test(explanationAfter),
   explanationAfter,
 )
-await transport('▶')
+await transport('one transition')
 await settle()
 check(
   'the guided database follows a join into both relevant predicates',
