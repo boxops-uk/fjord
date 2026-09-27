@@ -462,6 +462,32 @@ for name, text in sorted(pages.items()):
             )
 
 
+# ---- 7. indented source in a JSX literal, which MDX eats -------------------
+
+# **MDX takes two spaces off every line of a multi-line JSX expression.** It is a
+# uniform dedent of the whole literal, so a schema indented one stop inside its
+# braces arrives at the component with no indentation at all and the page draws a
+# flat wall of declarations — correct text, wrong shape, and nothing says so. A
+# fenced block is markdown rather than JSX and keeps its bytes, which is what the
+# `demo-<kind>` fences are for.
+LITERAL = re.compile(r"\{`([^`]*)`\}", re.DOTALL)
+
+for name, text in sorted(pages.items()):
+    for match in LITERAL.finditer(text):
+        body = match.group(1)
+        if "\n" not in body:
+            continue
+        indented = [line for line in body.split("\n") if line.startswith(" ")]
+        if not indented:
+            continue
+        line = text.count("\n", 0, match.start()) + 1
+        fail(
+            f"web/src/content/{name}.mdx:{line} indents a multi-line `{{`…`}}` literal, and MDX "
+            f"takes two spaces off every line of one — write it as a ```demo-<kind> fence, "
+            f"which keeps its whitespace"
+        )
+
+
 if findings:
     print(f"{len(findings)} finding(s):", file=sys.stderr)
     for finding in findings:
@@ -470,5 +496,6 @@ if findings:
 
 print(
     "docs are consistent: nothing retired is referenced, no phase numbers, the figures and "
-    "tables the book prints are the ones the tree has, and every fence names its own language"
+    "tables the book prints are the ones the tree has, every fence names its own language, and "
+    "no demo relies on indentation MDX would eat"
 )

@@ -192,7 +192,41 @@ function Pre({ children }: { children?: ReactNode }) {
   const className = code?.props?.className ?? ''
   const lang = /language-([\w-]+)/.exec(className)?.[1] ?? ''
   const source = String(code?.props?.children ?? '').replace(/\n$/, '')
+
+  /**
+   * **A demo whose source is indented has to be a fence.**
+   *
+   * Written as `<Demo>{\`…\`}</Demo>`, MDX takes two spaces off every line of
+   * the literal — a uniform dedent, so a schema indented one stop inside its
+   * braces arrives with no indentation at all and the page shows a flat wall of
+   * declarations. A fence is markdown rather than JSX and keeps its bytes.
+   *
+   * The kind rides in the language, because a fence's meta string does not
+   * reach a component. `demo-run-guided` is the guided variant; a `---` line
+   * splits a schema from the query written against it, which is the shape the
+   * README already documents.
+   */
+  const demo = /^demo-(.+)$/.exec(lang)?.[1]
+  if (demo) {
+    const guided = demo.endsWith('-guided')
+    const kind = guided ? demo.slice(0, -'-guided'.length) : demo
+    const [first, rest] = split(source)
+    return (
+      <Demo kind={kind} guided={guided} schema={rest === null ? '' : first}>
+        {rest ?? first}
+      </Demo>
+    )
+  }
+
   return <Code lang={lang} source={source} />
+}
+
+/** A source split on its own `---` line: the schema, then the query. */
+function split(source: string): [string, string | null] {
+  const at = source.split('\n').findIndex((line) => line.trim() === '---')
+  if (at < 0) return [source, null]
+  const lines = source.split('\n')
+  return [lines.slice(0, at).join('\n').trim(), lines.slice(at + 1).join('\n').trim()]
 }
 
 /**

@@ -82,9 +82,13 @@ A fuzzy pattern guides the scan when it reaches a string field the seek prefix i
 open at. Here the key is the string itself. Change the term or distance and the compiler
 replans.
 
-<Demo kind="plan" schema={`schema search {
+```demo-plan
+schema search {
   predicate Name : string
-}`}>{`N where search.Name N; N = "parse"~1`}</Demo>
+}
+---
+N where search.Name N; N = "parse"~1
+```
 
 Results arrive in key order, not ranked by distance. The automaton decides which parts of
 the key order may hold answers; it does not score.

@@ -1306,9 +1306,11 @@ check(
 // A rail is one row's border and the next row's below it, so any gap between
 // the rows is a gap in the line. It was four pixels everywhere and twenty-four
 // wherever a note wrapped.
-const rails = await page.$$eval('.tree .tree-row .name', (names) => {
-  const boxes = names.map((name) => {
-    const box = name.getBoundingClientRect()
+// The rails, not the names: the rails are the cell that has to be continuous,
+// and since they were lifted out of the name they are no longer the same box.
+const rails = await page.$$eval('.tree .tree-row .rails', (cells) => {
+  const boxes = cells.map((cell) => {
+    const box = cell.getBoundingClientRect()
     return { top: Math.round(box.top), bottom: Math.round(box.bottom) }
   })
   return boxes.slice(1).filter((box, at) => box.top - boxes[at].bottom > 1).length
@@ -1566,7 +1568,13 @@ check(
         if (fenced) fenced = false
         else {
           fenced = true
-          there.code++
+          // **A `demo-…` fence is a demo, not a code block.** A demo whose
+          // source is indented has to be written as a fence, because MDX takes
+          // two spaces off every line of a JSX template literal — so the page
+          // renders a demo where the source shows a fence, and the counter has
+          // to know which fences those are.
+          if (text.startsWith('```demo-')) there.demos++
+          else there.code++
         }
         continue
       }

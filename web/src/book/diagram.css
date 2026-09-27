@@ -305,25 +305,38 @@
    everywhere and twenty-four wherever a note wrapped to a second line, which is
    the one place a reader is already working to follow the stem. The rhythm
    comes from the line height instead, which the rails are inside. */
+/* **Every row is its own grid.** It has to be: a rail has to be able to span a
+   name and the note under it, which on a phone are two rows, and a cell of a
+   shared grid cannot. The cost is that the columns no longer line themselves
+   up, so the names column states its width — `--head`, which the component
+   works out from the longest row. */
 .tree {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-  column-gap: var(--spacing-4);
-  align-items: baseline;
+  --tree-step: calc(var(--spacing-4) + var(--spacing-2));
+  display: block;
   line-height: 2;
 }
 
-.tree-row { display: contents; }
+.tree-row {
+  display: grid;
+  grid-template-columns: var(--head) minmax(0, 1fr);
+  column-gap: var(--spacing-4);
+  align-items: baseline;
+}
 
-/* Stretched, so a row made tall by a wrapped note is a row whose rail is that
-   tall too. Baseline-aligned it took its height from its own one line and left
-   the rest of the row with no stem at all. */
-.tree-row .name {
+/* The name and the stems beside it are one cell, so the name steps with its
+   depth rather than starting wherever the deepest row happens to leave it. */
+.tree-row .head {
   display: flex;
   align-items: baseline;
   align-self: stretch;
-  white-space: nowrap;
 }
+
+.tree-row .rails {
+  display: flex;
+  align-self: stretch;
+}
+
+.tree-row .name { white-space: nowrap; }
 
 .tree-row .rail {
   flex: none;
@@ -378,13 +391,23 @@
   text-wrap: pretty;
 }
 
+/* **On a phone the note drops under the name, and the stem has to come with
+   it.** One column means the row is two lines, so the rails cell spans both —
+   which needs a real box per row, not `display: contents` handing three cells
+   to a grid that has already run out of columns. */
 @container (max-width: 34rem) {
-  .tree { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .tree-row .note {
-    /* One rail's width per level, so the note starts under its own name. */
-    padding-inline-start: calc(var(--spacing-6) * var(--depth, 0));
-    padding-block-end: var(--spacing-2);
-  }
+  /* The note drops under the name, so the head stops being one cell and the
+     rails take a column of their own — spanning both rows, which is the whole
+     reason they are not inside the name. */
+  .tree-row { grid-template-columns: auto minmax(0, 1fr); column-gap: var(--spacing-2); }
+  .tree-row .head { display: contents; }
+  .tree-row .rails { grid-row: 1 / span 2; }
+
+  .tree-row .name,
+  .tree-row .note { grid-column: 2; }
+  /* The depth is the rails cell's own width now, so the note needs no padding
+     of its own to find its name — it is in the same column as it. */
+  .tree-row .note { padding-block-end: var(--spacing-2); }
 }
 
 /* ------------------------------------------------------------------- flow --
