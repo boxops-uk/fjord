@@ -1100,6 +1100,40 @@ check(
   'the database marks the row whose fuzzy field is being evaluated',
   (await page.$$('.demo-guided .data tr.testing')).length === 1,
 )
+// **A phone turns a prose table into cards, and leaves a matrix alone.** The
+// card layout works by giving each cell the heading above it, which reads when a
+// row is one thing with named fields and destroys a table whose meaning is the
+// grid — the automaton's state table came out as a bare column of numbers. So
+// the switch keys off the labels `mdx.tsx` writes into prose tables rather than
+// off the column count, and this is both halves of that.
+await page.setViewport({ width: 390, height: 1400 })
+await settle()
+const shapes = await page.$$eval('[data-testid="prose"] table', (tables) =>
+  tables
+    .filter((table) => table.querySelectorAll('tr:has(th) th').length >= 3)
+    .map((table) => ({
+      demo: Boolean(table.closest('.demo')),
+      block: getComputedStyle(table).display === 'block',
+      labels: [...table.querySelectorAll('.cell-label')].filter(
+        (label) => getComputedStyle(label).display !== 'none',
+      ).length,
+    })),
+)
+check(
+  'a wide prose table becomes labelled cards on a phone',
+  shapes.some((table) => !table.demo) &&
+    shapes.filter((table) => !table.demo).every((table) => table.block && table.labels > 0),
+  shapes.map((table) => `${table.demo ? 'demo' : 'prose'}:${table.block ? 'cards' : 'table'}`).join(' '),
+)
+check(
+  "a demo's table keeps its shape, because its meaning is the grid",
+  shapes.some((table) => table.demo) &&
+    shapes.filter((table) => table.demo).every((table) => !table.block),
+  shapes.map((table) => `${table.demo ? 'demo' : 'prose'}:${table.block ? 'cards' : 'table'}`).join(' '),
+)
+await page.setViewport({ width: 1440, height: 900 })
+await settle()
+
 const dfaRows = (await page.$$('.demo-guided [data-testid="run-dfa"] table tr')).length
 await page.$eval('.demo-guided .transport', (transport) => {
   const next = [...transport.querySelectorAll('button')].find(
