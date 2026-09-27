@@ -1270,6 +1270,26 @@ check(
   'the page a reader is on is the page the tab says',
   (await page.title()) === 'Storage model · Fjord DB',
 )
+// **A bullet is prose and wraps.** These were the design system's `ListItem`,
+// whose `label` is the primary text of a *row* and truncates to one line — so
+// any bullet longer than its column lost its ending, on every page that had
+// one, without a mark to say so.
+// The `li` itself is not where the clip lands: the component put the text in a
+// span inside it and truncated that, so measuring the item alone saw nothing
+// wrong. Every element under a bullet, then.
+const cutLists = await page.$$eval('[data-testid="prose"] li, [data-testid="prose"] li *', (items) =>
+  items
+    .filter((item) => {
+      const style = getComputedStyle(item)
+      return (
+        item.scrollWidth > item.clientWidth + 1 &&
+        (style.textOverflow === 'ellipsis' || style.whiteSpace === 'nowrap')
+      )
+    })
+    .map((item) => item.textContent?.slice(0, 40) ?? ''),
+)
+check('no bullet in the prose is cut off at its column', cutLists.length === 0, cutLists.join(' | '))
+
 check(
   "the table of contents is the page's own headings",
   (await page.$$('.astryx-outline a')).length > 5,

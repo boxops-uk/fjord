@@ -233,8 +233,28 @@
   text-wrap: pretty;
 }
 
+/* The markers and the indent, now that these are plain elements again. The
+   browser's own defaults for a `ul` are close, but a book should not be taking
+   its measure from whatever a user agent happens to think. */
 [data-testid='prose'] ul,
-[data-testid='prose'] ol { padding-inline-start: var(--spacing-5); }
+[data-testid='prose'] ol {
+  margin-block: var(--spacing-4);
+  padding-inline-start: var(--spacing-5);
+}
+
+[data-testid='prose'] ul { list-style: disc; }
+[data-testid='prose'] ol { list-style: decimal; }
+
+/* A list inside a list steps in rather than starting again at the margin. */
+[data-testid='prose'] li > ul,
+[data-testid='prose'] li > ol { margin-block: var(--spacing-2); }
+
+[data-testid='prose'] li + li { margin-block-start: var(--spacing-2); }
+
+/* A loose list wraps each item in a paragraph; it should not then inherit a
+   paragraph's margins and space the bullets like sections. */
+[data-testid='prose'] li > p { margin-block: 0; }
+[data-testid='prose'] li > p + p { margin-block-start: var(--spacing-2); }
 
 /* --------------------------------------------------------------- demos ----
 

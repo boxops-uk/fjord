@@ -25,7 +25,6 @@ import { Heading } from '@astryxdesign/core/Heading'
 import { Text } from '@astryxdesign/core/Text'
 import { Link } from '@astryxdesign/core/Link'
 import { Code as InlineCode } from '@astryxdesign/core/Code'
-import { List, ListItem } from '@astryxdesign/core/List'
 import { Table, TableCell, TableHeaderCell, TableRow } from '@astryxdesign/core/Table'
 import { Banner } from '@astryxdesign/core/Banner'
 import { Blockquote } from '@astryxdesign/core/Blockquote'
@@ -236,17 +235,18 @@ export const components = {
   code: ({ children }: ComponentProps<'code'>) => <InlineCode>{children}</InlineCode>,
   pre: Pre,
 
-  ul: ({ children }: ComponentProps<'ul'>) => (
-    <List listStyle="disc" density="compact">
-      {children}
-    </List>
-  ),
-  ol: ({ children }: ComponentProps<'ol'>) => (
-    <List listStyle="decimal" density="compact">
-      {children}
-    </List>
-  ),
-  li: ({ children }: ComponentProps<'li'>) => <ListItem label={children} />,
+  // **A bullet in the book is prose, not a row.** These were `List` and
+  // `ListItem`, whose `label` is the primary text of a *row* and truncates to
+  // one line with an ellipsis — so a bullet longer than its column lost its
+  // ending, silently, on every page that had one. The design system says as
+  // much itself: content that must wrap is a node rather than a label.
+  //
+  // Plain elements, then, styled by `book.css` along with every other paragraph
+  // — which is what it was already doing to them, `line-height`, `hyphens` and
+  // `text-wrap: pretty` and all.
+  ul: ({ children }: ComponentProps<'ul'>) => <ul>{children}</ul>,
+  ol: ({ children }: ComponentProps<'ol'>) => <ol>{children}</ol>,
+  li: ({ children }: ComponentProps<'li'>) => <li>{children}</li>,
 
   table: TableBlock,
   thead: ({ children }: ComponentProps<'thead'>) => <InHead value={true}>{children}</InHead>,
