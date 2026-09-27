@@ -1,49 +1,22 @@
-import { Toolbar } from '@astryxdesign/core/Toolbar'
-import { Button } from '@astryxdesign/core/Button'
-import { Icon } from '@astryxdesign/core/Icon'
-import { ButtonGroup } from '@astryxdesign/core/ButtonGroup'
 import { Slider } from '@astryxdesign/core/Slider'
 import { Text } from '@astryxdesign/core/Text'
 import { HStack } from '@astryxdesign/core/Stack'
+import { Stepper } from './Stepper'
 import type { Trace } from './wasm'
 
 /**
- * **Play and pause, as shapes rather than words.**
+ * **The controls that move a run**, in the vocabulary of the debugger this is.
  *
- * The one control whose label changed as you used it, so it changed width as
- * you used it — and the button that moves out from under the pointer is the one
- * being clicked. A square icon is fixed at both states, reads at a glance, and
- * gives the row back the width the word `play` was holding.
- *
- * Drawn here rather than named, because the registry has no `play`: the theme's
- * semantic names cover navigation and status, and a transport is neither. An
- * SVG component is what `Icon` takes for exactly this.
- */
-function PlayMark() {
-  return (
-    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M5 3.4v9.2a.6.6 0 0 0 .92.5l7.2-4.6a.6.6 0 0 0 0-1l-7.2-4.6a.6.6 0 0 0-.92.5Z" />
-    </svg>
-  )
-}
-
-function PauseMark() {
-  return (
-    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <rect x="4" y="3" width="3.2" height="10" rx="0.8" />
-      <rect x="8.8" y="3" width="3.2" height="10" rx="0.8" />
-    </svg>
-  )
-}
-
-/**
- * **The controls that move a run** — start, a row back, a transition either
- * way, on to the next row, play, the end, and a scrub bar over the whole trace.
+ * Restart, step back over, step back, step, step over, continue and run to end
+ * — a reader who has stepped a program in an editor already knows every one of
+ * them, and what they mean here is what they mean there. A row is this
+ * machine's unit of work, so the transitions that build one are what `step
+ * over` steps over.
  *
  * Two traps, both about a hand and a timer wanting the play head at once. Any
  * navigation stops the run, or a reader who steps back watches the machine step
- * forward over them. And the buttons keep their size as they change state: the
- * one being clicked is the one under the pointer.
+ * forward over them. And the controls are square icons, so the one being
+ * clicked is the one under the pointer whatever it says.
  */
 export function Transport({
   trace,
@@ -70,105 +43,81 @@ export function Transport({
   const previousYield = findLast(events, here - 1, (event) => event === 'yield')
 
   return (
-    <Toolbar
+    <Stepper
       className="transport"
       label="Run"
-      size="sm"
-      variant="muted"
-      startContent={
-        // **Words where a word says it, icons where a shape does.** The
-        // original rule was that ⏮ and ⏩ are not in every monospace font and a
-        // control rendering as a box is worse than a word — which is about
-        // *text* glyphs. An SVG has no font to be missing from, so the controls
-        // whose meaning is a direction are chevrons now: one for a transition,
-        // one either side of the word `row` for stepping over to the next one,
-        // and a doubled pair for the ends. That leaves exactly one triangle in
-        // the row and it is the play mark — which is what makes it findable.
-        // It is also what makes the row fit a phone rather than running half of
-        // itself off the edge.
-        <ButtonGroup label="Move the run">
-          <Button
-            variant="secondary"
-            isIconOnly
-            icon={<Icon icon="chevronsLeft" />}
-            label="to the start"
-            tooltip="to the start"
-            onClick={() => seek(0)}
-            isDisabled={here === 0}
-          />
-          <Button
-            variant="secondary"
-            icon={<Icon icon="chevronLeft" />}
-            // The word is what a reader sees; the sentence is what a screen
-            // reader says. Both buttons show `row`, so `label` alone would
-            // announce the same name twice with nothing to tell them apart.
-            label="back to the previous row"
-            tooltip="back to the previous row"
-            onClick={() => seek(previousYield)}
-            isDisabled={previousYield < 0}
-          >
-            row
-          </Button>
-          {/* **Chevrons step, a triangle plays.** These were bare `◀` and `▶`,
-              which put a second solid triangle two controls from the play mark
-              and made the pair impossible to tell apart at a glance. A chevron
-              is the registry's own word for moving one along; the triangle now
-              belongs to the transport alone. */}
-          <Button
-            variant="secondary"
-            isIconOnly
-            icon={<Icon icon="chevronLeft" />}
-            label="back one transition"
-            tooltip="back one transition"
-            onClick={() => seek(here - 1)}
-            isDisabled={here === 0}
-          />
-          <Button
-            variant="secondary"
-            isIconOnly
-            icon={<Icon icon="chevronRight" />}
-            label="one transition"
-            tooltip="one transition"
-            onClick={() => seek(here + 1)}
-            isDisabled={here >= end}
-          />
-          <Button
-            variant="secondary"
-            endContent={<Icon icon="chevronRight" />}
-            label="on to the next row"
-            tooltip="on to the next row — step over"
-            onClick={() => seek(nextYield)}
-            isDisabled={nextYield < 0}
-          >
-            row
-          </Button>
-          <Button
-            variant={playback.playing ? 'primary' : 'secondary'}
-            isIconOnly
-            icon={playback.playing ? <PauseMark /> : <PlayMark />}
-            label={playback.playing ? 'pause' : 'play'}
-            tooltip={
-              playback.playing ? 'pause' : here >= end ? 'play again from the start' : 'play'
-            }
-            onClick={() => {
-              if (playback.playing) return playback.setPlaying(false)
-              // Play from the end is play from the start: there is nowhere else
-              // for it to mean.
-              if (here >= end) onSeek(0)
-              playback.setPlaying(true)
-            }}
-          />
-          <Button
-            variant="secondary"
-            isIconOnly
-            icon={<Icon icon="chevronsRight" />}
-            label="to the end"
-            tooltip="to the end"
-            onClick={() => seek(end)}
-            isDisabled={here >= end}
-          />
-        </ButtonGroup>
-      }
+      controls={[
+        {
+          mark: 'restart',
+          name: 'restart',
+          key: 'Home',
+          hint: 'back to the first transition',
+          onClick: () => seek(0),
+          isDisabled: here === 0,
+        },
+        {
+          mark: 'backOver',
+          name: 'step back over',
+          key: 'shift+ArrowLeft',
+          hint: 'back to the previous row',
+          onClick: () => seek(previousYield),
+          isDisabled: previousYield < 0,
+        },
+        {
+          mark: 'back',
+          name: 'step back',
+          key: 'ArrowLeft',
+          hint: 'one transition',
+          onClick: () => seek(here - 1),
+          isDisabled: here === 0,
+        },
+        {
+          mark: 'step',
+          name: 'step',
+          key: 'ArrowRight',
+          hint: 'one transition',
+          onClick: () => seek(here + 1),
+          isDisabled: here >= end,
+        },
+        {
+          // **The debugger's own word for it.** A row is what this machine
+          // returns, and the transitions that build one are what a reader
+          // stepping through them is usually not asking about — which is the
+          // whole of what `step over` means anywhere else.
+          mark: 'over',
+          name: 'step over',
+          key: 'shift+ArrowRight',
+          hint: 'on to the next row',
+          onClick: () => seek(nextYield),
+          isDisabled: nextYield < 0,
+        },
+        {
+          mark: playback.playing ? 'pause' : 'play',
+          name: playback.playing ? 'pause' : 'continue',
+          key: ' ',
+          hint: playback.playing
+            ? 'stop where it is'
+            : here >= end
+              ? 'again, from the first transition'
+              : 'until something stops it',
+          isOn: playback.playing,
+          onClick: () => {
+            if (playback.playing) return playback.setPlaying(false)
+            // Continue from the end is continue from the start: there is
+            // nowhere else for it to mean.
+            if (here >= end) onSeek(0)
+            playback.setPlaying(true)
+          },
+        },
+        {
+          mark: 'end',
+          name: 'run to end',
+          key: 'End',
+          hint: 'the last transition, without playing it',
+          onClick: () => seek(end),
+          isDisabled: here >= end,
+        },
+      ]}
       endContent={
         <HStack gap={3} align="center">
           <Slider

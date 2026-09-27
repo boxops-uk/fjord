@@ -32,6 +32,7 @@ import type { PlanView } from './wasm'
 import { fold, inRange, type Moment } from './run'
 import { snippet, type Line } from './highlight'
 import { Painted } from './Snippet'
+import { Mark } from './Stepper'
 
 /** The name the story is about, and the one the cursor comes to rest on. */
 const SUBJECT = 'ByteBuffer'
@@ -245,13 +246,15 @@ export function OneQuery() {
               }}
             />
           ))}
+          {/* The same mark the steppers use. This said `Play` and then `Pause`,
+              which is a third word for a thing the rest of the site draws. */}
           <button
             type="button"
             className="story-play"
             aria-label={playing ? 'Pause the demonstration' : 'Play the demonstration'}
             onClick={() => setPlaying((p) => !p)}
           >
-            {playing ? 'Pause' : 'Play'}
+            <Mark of={playing ? 'pause' : 'play'} />
           </button>
         </div>
       </div>

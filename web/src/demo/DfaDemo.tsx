@@ -1,11 +1,10 @@
 import { useMemo, useState } from 'react'
 import { Banner } from '@astryxdesign/core/Banner'
-import { Button } from '@astryxdesign/core/Button'
-import { ButtonGroup } from '@astryxdesign/core/ButtonGroup'
 import { Card } from '@astryxdesign/core/Card'
 import { HStack, VStack } from '@astryxdesign/core/Stack'
 import { StatusDot } from '@astryxdesign/core/StatusDot'
 import { Table, TableCell, TableHeaderCell, TableRow } from '@astryxdesign/core/Table'
+import { Stepper } from '../Stepper'
 import { Text } from '@astryxdesign/core/Text'
 import { Toolbar } from '@astryxdesign/core/Toolbar'
 import { Spinner } from '@astryxdesign/core/Spinner'
@@ -69,38 +68,47 @@ export function DfaDemo({ source }: { source: string }) {
         }
       />
 
-      <Toolbar
+      {/* **The same bar as the executor's**, because it is the same act. This
+          machine has no rows and no timer, so it shows the four controls that
+          mean something here — and it shows them in the words and the shapes
+          the transport uses, rather than the second vocabulary it had grown. */}
+      <Stepper
         className="dfa-transport"
         label="Walk the candidate"
-        size="sm"
-        startContent={
-          <ButtonGroup label="Move through the candidate">
-            <Button
-              label="|◀ start"
-              variant="secondary"
-              onClick={() => setAt(0)}
-              isDisabled={here === 0}
-            />
-            <Button
-              label="◀ previous"
-              variant="secondary"
-              onClick={() => setAt(here - 1)}
-              isDisabled={here === 0}
-            />
-            <Button
-              label="next ▶"
-              variant="secondary"
-              onClick={() => setAt(here + 1)}
-              isDisabled={here === end}
-            />
-            <Button
-              label="end ▶|"
-              variant="secondary"
-              onClick={() => setAt(end)}
-              isDisabled={here === end}
-            />
-          </ButtonGroup>
-        }
+        controls={[
+          {
+            mark: 'restart',
+            name: 'restart',
+            key: 'Home',
+            hint: 'back to the empty candidate',
+            onClick: () => setAt(0),
+            isDisabled: here === 0,
+          },
+          {
+            mark: 'back',
+            name: 'step back',
+            key: 'ArrowLeft',
+            hint: 'give back one character',
+            onClick: () => setAt(here - 1),
+            isDisabled: here === 0,
+          },
+          {
+            mark: 'step',
+            name: 'step',
+            key: 'ArrowRight',
+            hint: 'read one character',
+            onClick: () => setAt(here + 1),
+            isDisabled: here === end,
+          },
+          {
+            mark: 'end',
+            name: 'run to end',
+            key: 'End',
+            hint: 'read the rest of the candidate',
+            onClick: () => setAt(end),
+            isDisabled: here === end,
+          },
+        ]}
         endContent={
           <Text type="supporting" hasTabularNumbers data-testid="dfa-count">
             state {here + 1}/{walk.steps.length}

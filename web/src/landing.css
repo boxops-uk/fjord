@@ -625,16 +625,21 @@
 
 /* Moving content that plays on its own needs a way to stop it. */
 .story-dots .story-play {
-  width: auto;
-  height: auto;
-  padding: var(--spacing-1) var(--spacing-2);
-  margin-inline-start: var(--spacing-2);
-  border-radius: var(--radius-inner);
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--color-text-secondary);
-  font-family: var(--font-family-body);
-  font-size: var(--font-size-xs);
+  cursor: pointer;
 }
+
+/* The mark is an SVG now, so it takes its size from the box rather than from
+   the type it used to be. */
+.story-dots .story-play svg { width: 0.85rem; height: 0.85rem; }
 
 .story-dots .story-play:hover { color: var(--color-text-primary); }
 

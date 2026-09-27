@@ -466,7 +466,7 @@
 .demo { container-type: inline-size; }
 
 @container (max-width: 32rem) {
-  .transport .astryx-slider { display: none; }
+  .stepper .astryx-slider { display: none; }
 }
 
 /* **It may run out of room; it may not lose a control to the edge.** Seven
@@ -474,25 +474,29 @@
    scrolls — so `end` was drawn outside the bar and could not be reached. A
    scroller is the smallest honest answer: every control stays, and the ones
    past the edge are a swipe away rather than gone. Wrapping was the other
-   option and breaks the group's joined border into two half-pills. */
-.transport {
+   option and breaks the group's joined border into two half-pills.
+
+   On `.stepper` rather than `.transport`, because the automaton's bar is the
+   same component now and the rule is about a row of controls, not about which
+   machine they move. */
+.stepper {
   overflow-x: auto;
   scrollbar-width: none;
 }
 
-.transport::-webkit-scrollbar { display: none; }
+.stepper::-webkit-scrollbar { display: none; }
 
 /* A group that can be scrolled to must not be squeezed on the way. */
-.transport .astryx-button-group { flex: none; }
+.stepper .astryx-button-group { flex: none; }
 
 /* The glyphs are the labels here, so the size of the control is the size of the
    type in it: a step forward should not be as loud as the query it steps. */
-.transport .astryx-button {
+.stepper .astryx-button {
   font-size: var(--font-size-sm);
   padding-inline: var(--spacing-2);
 }
 
-.transport .astryx-slider-thumb {
+.stepper .astryx-slider-thumb {
   width: var(--spacing-4);
   height: var(--spacing-4);
 }
