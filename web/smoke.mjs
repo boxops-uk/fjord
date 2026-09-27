@@ -1294,6 +1294,43 @@ check(
   "the table of contents is the page's own headings",
   (await page.$$('.astryx-outline a')).length > 5,
 )
+// **Code does not wrap, and a tree's stems join up.** Three separate ways a
+// page can look broken while every word on it is correct.
+check(
+  'the editable source scrolls rather than wrapping',
+  await page.$$eval('.editor .paint, .editor .input', (layers) =>
+    layers.length > 0 && layers.every((layer) => getComputedStyle(layer).whiteSpace === 'pre'),
+  ),
+)
+
+// A rail is one row's border and the next row's below it, so any gap between
+// the rows is a gap in the line. It was four pixels everywhere and twenty-four
+// wherever a note wrapped.
+const rails = await page.$$eval('.tree .tree-row .name', (names) => {
+  const boxes = names.map((name) => {
+    const box = name.getBoundingClientRect()
+    return { top: Math.round(box.top), bottom: Math.round(box.bottom) }
+  })
+  return boxes.slice(1).filter((box, at) => box.top - boxes[at].bottom > 1).length
+})
+check("no gap between a tree's rows, because the rails are the rows", rails === 0, `${rails} gaps`)
+
+// It was four words breaking across two lines, left-aligned in its own block,
+// so its second line stopped short of the edge and squeezed the description.
+const opener = await page.$eval('[data-testid="demo-open"]', (link) => {
+  const box = link.getBoundingClientRect()
+  const bar = link.closest('.astryx-toolbar').getBoundingClientRect()
+  return {
+    wraps: getComputedStyle(link).whiteSpace !== 'nowrap',
+    rightGap: Math.round(bar.right - box.right),
+  }
+})
+check(
+  'the playground link is one line, hard against the right',
+  !opener.wraps && opener.rightGap <= 1,
+  JSON.stringify(opener),
+)
+
 check(
   'the pager follows the reading order',
   (await page.$eval('[data-testid="pager-next"]', (el) => el.textContent)).includes('Executor'),

@@ -111,9 +111,13 @@
   font-size: .9rem;
   line-height: 1.65;
   tab-size: 2;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
+  /* **Code does not wrap.** This was `pre-wrap` with two break rules, so a line
+     longer than the box folded — and the indentation a reader uses to see the
+     shape of a schema folded with it. Worse where the source aligns a column
+     with spaces: the fold landed inside the run and drew one line with a hole
+     in the middle of it. `pre` scrolls instead, which the two layers already
+     agree on — the textarea hands its `scrollLeft` to the paint beneath it. */
+  white-space: pre;
   border: 0;
 }
 
@@ -454,6 +458,28 @@
   /* Centred on the line: the region ships pinned to the line's leading edge, so
      half of it lands on one side and none on the other. */
   margin-inline-start: calc(var(--spacing-6) / -2);
+}
+
+/* **The link does not wrap; the description does.** `open in the playground` is
+   four words and was breaking across two lines, left-aligned inside its own
+   block — so its second line ended short of the edge and it read as not being
+   right-aligned at all, while the two lines it took squeezed the description
+   beside it into two of its own. One line for the link, and the room it gives
+   back goes to the words that actually vary. */
+.demo .astryx-toolbar [data-testid='demo-open'] { white-space: nowrap; }
+
+/* Where even that does not fit, the two stack rather than fighting: the
+   description keeps the width it needs and the link sits under it, still hard
+   against the right. */
+@container (max-width: 26rem) {
+  .demo .astryx-toolbar {
+    flex-wrap: wrap;
+    row-gap: var(--spacing-1);
+  }
+
+  /* The wrapper, not the link: the link is content-sized inside a block that is
+     itself content-sized, so pushing the inner one moves nothing. */
+  .demo .astryx-toolbar > :has([data-testid='demo-open']) { margin-inline-start: auto; }
 }
 
 /* ---- the debugger ---- */

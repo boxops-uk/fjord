@@ -299,16 +299,31 @@
 /* **One grid for the tree, not one per row.** A row that is its own grid sizes
    its columns from its own content, so every note started at a different place
    and the column that makes this readable was not a column at all. */
+/* **No gap between the rows, because the rails are the rows.** A vertical rail
+   is drawn as one row's border and the next row's border below it; a row gap
+   puts air between the two and the line comes apart. It was four pixels
+   everywhere and twenty-four wherever a note wrapped to a second line, which is
+   the one place a reader is already working to follow the stem. The rhythm
+   comes from the line height instead, which the rails are inside. */
 .tree {
   display: grid;
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-  gap: var(--spacing-1) var(--spacing-4);
+  column-gap: var(--spacing-4);
   align-items: baseline;
+  line-height: 2;
 }
 
 .tree-row { display: contents; }
 
-.tree-row .name { display: flex; align-items: baseline; white-space: nowrap; }
+/* Stretched, so a row made tall by a wrapped note is a row whose rail is that
+   tall too. Baseline-aligned it took its height from its own one line and left
+   the rest of the row with no stem at all. */
+.tree-row .name {
+  display: flex;
+  align-items: baseline;
+  align-self: stretch;
+  white-space: nowrap;
+}
 
 .tree-row .rail {
   flex: none;
@@ -326,10 +341,14 @@
   position: relative;
 }
 
+/* **Half a line down, which is where the text is.** The offset has to be half
+   the line height or the elbow floats above the name it points at — it was
+   tuned against the old rhythm and the rows are taller now. `1em` is half of
+   `line-height: 2`, and the two move together if either changes. */
 .tree-row .rail.is-elbow::after {
   content: '';
   position: absolute;
-  inset-block-start: 0.55em;
+  inset-block-start: 1em;
   inset-inline-start: 0;
   width: 100%;
   border-block-start: var(--border-width) solid var(--color-border-emphasized);
@@ -343,7 +362,7 @@
   position: absolute;
   inset-block-start: 0;
   inset-inline-start: 0;
-  height: 0.55em;
+  height: 1em;
   border-inline-start: var(--border-width) solid var(--color-border-emphasized);
 }
 
