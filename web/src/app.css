@@ -491,9 +491,6 @@
 .run,
 .demo { container-type: inline-size; }
 
-@container (max-width: 32rem) {
-  .stepper .astryx-slider { display: none; }
-}
 
 /* **It may run out of room; it may not lose a control to the edge.** Seven
    buttons in a row do not fit a phone, and the toolbar neither wraps nor
@@ -525,6 +522,38 @@
 .stepper .astryx-slider-thumb {
   width: var(--spacing-4);
   height: var(--spacing-4);
+}
+
+@container (max-width: 32rem) {
+  /* **The field, not just the slider inside it.** Hiding the slider left its
+     wrapper holding the 200px the slider asked for, so the row was 200px wider
+     than anything in it and the count had nowhere to go but the next line. */
+  .stepper .astryx-field:has(.astryx-slider) { display: none; }
+
+  /* **Centred, and the count beside them rather than under them.** With the
+     scrub bar gone the row is seven controls and a position, and left-aligned
+     they sat against one edge with the count wrapped onto a line of its own —
+     two rows to say what fits in one. The flex box is the toolbar inside, not
+     the element the class is on. */
+  .stepper .astryx-toolbar {
+    justify-content: center;
+    gap: var(--spacing-2);
+    padding-inline: 0;
+    /* **One row, whatever it costs.** Wrapping is what put the position on a
+       line of its own, and no width makes it always fit: a guided run's label
+       is `DFA 2/4 · inside`, not `1/17`. So the row never wraps, it centres
+       while it fits, and the bar scrolls when it does not — which is the rule
+       the bar already has for its controls. */
+    flex-wrap: nowrap;
+  }
+
+  /* `machine 1/13` is one thing, and which machine is the half that matters in
+     a guided run — the tier is the whole point of the label. */
+  .stepper .count { white-space: nowrap; }
+
+  /* The room it needs comes off the controls, which are icons and were carrying
+     a word's worth of padding each. */
+  .stepper .astryx-button { padding-inline: var(--spacing-1); }
 }
 
 .run .event {

@@ -1131,21 +1131,27 @@ check(
 // nothing at this width and would make the question meaningless.
 await page.setViewport({ width: 390, height: 1400 })
 await settle()
-const bar = await page.$eval('.transport', (bar) => {
+// **Reachable, not merely drawn.** The controls and the position share one row
+// now, which at this width is wider than the bar — so the claim is not that
+// everything fits but that nothing is stranded: the bar scrolls, and scrolling
+// it to the end brings the last control into view. Drawn outside a bar that
+// cannot scroll is what it used to do, and that is the failure this catches.
+const reach = await page.$eval('.transport', (bar) => {
+  const last = [...bar.querySelectorAll('button')].pop()
+  bar.scrollLeft = bar.scrollWidth
   const box = bar.getBoundingClientRect()
+  const after = last.getBoundingClientRect()
+  bar.scrollLeft = 0
   return {
-    outside: [...bar.querySelectorAll('button')].filter((button) => {
-      const at = button.getBoundingClientRect()
-      return at.right > box.right + 1 || at.left < box.left - 1
-    }).length,
     scrolls: getComputedStyle(bar).overflowX === 'auto',
+    reached: after.right <= box.right + 1 && after.left >= box.left - 1,
   }
 })
-check('every transport control fits the bar on a phone', bar.outside === 0, `${bar.outside} outside`)
-// It fits at this width because the controls became icons. Narrower than this
-// it does not, and the bar has to be able to scroll or the last of them is
-// drawn outside and cannot be reached — which is what it used to do.
-check('and the bar can scroll when it does not fit', bar.scrolls)
+check(
+  'no transport control is stranded outside the bar on a phone',
+  reach.scrolls && reach.reached,
+  JSON.stringify(reach),
+)
 
 // **Every stepper on the site says the same seven words.** Three of these had
 // grown their own vocabulary and their own glyphs; sharing a component is what
