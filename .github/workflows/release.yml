@@ -564,6 +564,19 @@ jobs:
         run: >-
           cargo build --release --locked --target x86_64-unknown-linux-musl
           -p fjord-cli --bins
+      # **The indexer ships too**, and it is built here rather than in `package` because
+      # this is the job that owns `dist/` — the provenance and the checksums have to be
+      # over the bytes somebody downloads, and a file staged anywhere else would be
+      # covered by neither.
+      #
+      # A **tool** package and not a binary. Buildalyzer runs the design-time build out
+      # of process against MSBuild assemblies that come from the SDK at run time, so a
+      # self-contained publish would still refuse to index anything without one — a
+      # standalone binary that is not standalone. Anyone who can index a .NET checkout
+      # has the SDK already, which is what makes a tool the shape that does not lie.
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: clients/dotnet/global.json
       # **One directory, named as the release names them.** The provenance and the
       # checksums have to be over the bytes somebody actually downloads: an attestation
       # says *this workflow built this file* and a checksum says *this is that file*, and
@@ -573,10 +586,31 @@ jobs:
           mkdir -p dist
           cp target/release/fjord dist/fjord
           cp target/x86_64-unknown-linux-musl/release/fjord dist/fjord-x86_64-linux-musl
+
+          # **The schemas, because a binary alone cannot use them.** `fjord` embeds one
+          # schema — `schemas/demo.sigla`, for the sample — and deliberately not the
+          # shipped set, so `create --schema ./schemas/dotnet.sigla` was a line only a
+          # clone could run. Imports are resolved against the directory, so the whole
+          # set travels or none of it does.
+          #
+          # Sorted, epoch-stamped and owner-stripped: the checksum is published, and a
+          # tarball carrying this runner's mtimes and uids would differ from itself
+          # build to build for reasons that are not about the schemas.
+          tar --sort=name --mtime='1970-01-01 00:00:00Z' --owner=0 --group=0 \
+              --numeric-owner -czf dist/fjord-schemas.tar.gz -C schemas .
+
+          # Only the `.nupkg`. The `.snupkg` beside it is symbols for a registry push,
+          # which is a person's step here and not a file to hand a reader.
+          dotnet pack clients/dotnet/Boxops.Fjord.Indexer -c Release -o /tmp/nupkg
+          cp /tmp/nupkg/Boxops.Fjord.Indexer.*.nupkg dist/
+
           cd dist
           # Named rather than globbed: the redirect creates SHA256SUMS before sha256sum
-          # runs, so `*` would hash the empty file it is writing into.
-          sha256sum fjord fjord-x86_64-linux-musl >SHA256SUMS
+          # runs, so a bare `*` would hash the empty file it is writing into. The one
+          # pattern here cannot match that file, and the nupkg's version is in its name
+          # because a local folder feed resolves `--add-source` by that convention.
+          sha256sum fjord fjord-x86_64-linux-musl fjord-schemas.tar.gz \
+                    Boxops.Fjord.Indexer.*.nupkg >SHA256SUMS
           cat SHA256SUMS
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
@@ -584,6 +618,8 @@ jobs:
           subject-path: |
             dist/fjord
             dist/fjord-x86_64-linux-musl
+            dist/fjord-schemas.tar.gz
+            dist/Boxops.Fjord.Indexer.*.nupkg
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
@@ -591,6 +627,8 @@ jobs:
           path: |
             dist/fjord
             dist/fjord-x86_64-linux-musl
+            dist/fjord-schemas.tar.gz
+            dist/Boxops.Fjord.Indexer.*.nupkg
             dist/SHA256SUMS
           if-no-files-found: error
 
@@ -643,12 +681,43 @@ jobs:
           allocate from the same allocator, but every number the project publishes is
           measured on the one above, so take these only if it will not run.
 
-          Every binary carries SLSA provenance, and \`SHA256SUMS\` covers both:
+          Every file here carries SLSA provenance, and \`SHA256SUMS\` covers all of them:
 
           \`\`\`
           gh attestation verify ./fjord --repo ${GITHUB_REPOSITORY}
           sha256sum --check --ignore-missing SHA256SUMS
           \`\`\`
+
+          ## The schemas
+
+          \`fjord-schemas.tar.gz\` is \`schemas/\` — every \`.sigla\` file this
+          repository ships. The binary embeds only the sample, so this is what
+          \`--schema\` wants for anything real:
+
+          \`\`\`
+          curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/fjord-schemas.tar.gz
+          mkdir -p schemas && tar -xzf fjord-schemas.tar.gz -C schemas
+          ./fjord --schema-path schemas schema compose schemas/dotnet.sigla >dotnet.composed.sigla
+          \`\`\`
+
+          Unpack the whole set rather than one file: an import is resolved against the
+          directory, and \`dotnet.sigla\` reaches five others.
+
+          ## The .NET indexer
+
+          \`Boxops.Fjord.Indexer.<version>.nupkg\` is a \`dotnet\` tool that walks a
+          real checkout with Buildalyzer and Roslyn and writes what
+          \`schemas/dotnet.sigla\` declares:
+
+          \`\`\`
+          curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Boxops.Fjord.Indexer.$version.nupkg
+          dotnet tool install -g Boxops.Fjord.Indexer --version $version --add-source .
+          fjord-indexer --sln /path/to/Some.slnx --schema dotnet.composed.sigla --at /tmp/fjord.sock//code
+          \`\`\`
+
+          A tool and not a binary, deliberately: it runs the design-time build out of
+          process, so it needs a .NET SDK present whatever shape it ships in — and any
+          machine that can index a .NET checkout already has one.
 
           ## The book
 
@@ -657,5 +726,7 @@ jobs:
           way. Serve it from a root: every page in it is a file, and \`404.html\` is
           there for a path nothing knows about." \
             dist/fjord dist/fjord-x86_64-linux-musl \
+            dist/fjord-schemas.tar.gz \
+            dist/Boxops.Fjord.Indexer.*.nupkg \
             dist/SHA256SUMS \
             dist/fjord-docs-site.tar.gz dist/fjord-docs-site.tar.gz.sha256

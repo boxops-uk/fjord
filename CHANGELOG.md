@@ -5,6 +5,45 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## Unreleased
+
+### Added
+
+- **A release carries the schemas and the .NET indexer.** It carried the `fjord` binary
+  and the book, which was everything needed to type nine facts by hand and nothing needed
+  to index a repository. Both gaps were the same gap: the rest of the product was
+  reachable only by cloning this repository.
+
+  `fjord-schemas.tar.gz` is `schemas/` — every `.sigla` file shipped here. The binary
+  embeds one, `schemas/demo.sigla`, for the sample, and deliberately not the set a
+  producer writes against, so `create --schema ./schemas/dotnet.sigla` was a line only a
+  checkout could run. The whole set travels together because an import resolves against
+  the directory it sits in and `dotnet.sigla` reaches five others. Sorted, epoch-stamped
+  and owner-stripped, so the published checksum is a property of the schemas rather than
+  of the runner that packed them.
+
+  `Boxops.Fjord.Indexer.<version>.nupkg` is the indexer as a `dotnet` tool —
+  `dotnet tool install -g Boxops.Fjord.Indexer --add-source .`, then `fjord-indexer`,
+  which is the name its usage text has always printed. **A tool and not a binary**, and
+  that is a fact about the thing rather than a packaging preference: Buildalyzer runs
+  MSBuild's design-time build out of process against assemblies that come from the SDK at
+  run time, so a self-contained publish would still refuse to index anything on a machine
+  without an SDK — an 80 MB binary that looks standalone and is not. Every machine that
+  can index a .NET checkout has an SDK already.
+
+  Both are staged in the job that owns the release directory, so both are covered by the
+  same `SHA256SUMS` and the same SLSA provenance as the binaries. Pushing to nuget.org
+  stays a person's step, for the reason the repository rules already give: a registry
+  upload cannot be undone and a Release can.
+
+### Changed
+
+- **`index-repo.sh` takes a binary it did not build.** It ran `cargo build --release`
+  unconditionally, so the script that demonstrates the product needed a Rust toolchain to
+  show it working. `FJORD=./fjord` uses a downloaded one and `FJORD_SCHEMAS` names an
+  unpacked `fjord-schemas.tar.gz`; with neither set it builds from the checkout exactly
+  as before.
+
 ## 0.6.0 — 2026-09-28
 
 **A sealed database stops carrying its write-ahead journal, and the book is an

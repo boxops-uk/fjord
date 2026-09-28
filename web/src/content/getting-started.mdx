@@ -289,6 +289,66 @@ for row in connection.take(&mut rows, 20)? {
 `take` reads *n* rows and leaves the stream open. Between pages the server holds no
 snapshot or query state.
 
+## Index a real repository
+
+Everything above was nine facts typed by hand. A real index comes from a producer, and the
+one this project ships walks a .NET checkout with Buildalyzer and Roslyn. Two more
+downloads: the schemas it writes against, and the indexer itself.
+
+### The schemas
+
+The binary embeds one schema — the sample — and deliberately not the shipped set. Anything
+real wants the set:
+
+```bash
+curl -LO $base/fjord-schemas.tar.gz
+mkdir -p schemas && tar -xzf fjord-schemas.tar.gz -C schemas
+./fjord --schema-path schemas schema compose schemas/dotnet.sigla >dotnet.composed.sigla
+./fjord schema check dotnet.composed.sigla
+```
+
+```text
+65 predicate(s) in 1 file(s)
+  dotnet.composed.sigla
+fingerprint 0x4471c3f35a45b7da
+```
+
+Unpack the whole set rather than the one file you want: an import resolves against the
+directory it sits in, and `dotnet.sigla` reaches five others. Composing flattens them into
+the single schema a producer sends, and that fingerprint is what the server checks at the
+handshake — a client built against a different one is refused there rather than allowed to
+write something nothing can read back.
+
+### The indexer
+
+`fjord-indexer` is a `dotnet` tool rather than a binary, and that is not a packaging
+shortcut: it runs MSBuild's design-time build **out of process**, so it needs a .NET SDK
+present whatever shape it ships in. Any machine that can index a .NET checkout has one.
+
+```bash
+gh release download --repo boxops-uk/fjord --pattern 'Boxops.Fjord.Indexer.*.nupkg'
+dotnet tool install -g Boxops.Fjord.Indexer --add-source .
+```
+
+```text
+You can invoke the tool using the following command: fjord-indexer
+Tool 'boxops.fjord.indexer' (version '0.6.0') was successfully installed.
+```
+
+Point it at a solution and the socket `serve` printed. It creates the databases it needs
+from `--schema` as it reaches each target framework, so there is no `create` step here:
+
+```bash
+fjord-indexer --sln /path/to/Some.slnx \
+    --schema dotnet.composed.sigla \
+    --at /run/user/1000/fjord.sock//dotnet
+```
+
+`fjord-indexer` with no arguments prints every flag — `--styles` for syntax highlighting,
+`--max-files` to stop early, `--jobs` and `--writers` for how hard to push. [A guided
+tour](walkthrough.html) runs the whole thing against a real repository and asks it
+questions.
+
 ## Next
 
 - [Concepts](concepts.html): facts, predicates, keys, values, lifecycle.
