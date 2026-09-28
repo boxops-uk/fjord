@@ -44,8 +44,22 @@ scratch="${FJORD_INDEX_DIR:-/tmp/fj-index}"
 # finds the same server this indexer wrote to without being told where.
 socket="$scratch/db/fjord.sock"
 
-cargo build --manifest-path "$root/Cargo.toml" --bin fjord --release
-fjord="$root/target/release/fjord"
+# **A downloaded binary is allowed to be the binary.** This built one from source
+# unconditionally, which made a script demonstrating the product require a Rust
+# toolchain to see it work. `FJORD=./fjord ./index-repo.sh …` takes what a release
+# carries; with nothing set it builds, as it always did.
+if [ -n "${FJORD:-}" ]; then
+    fjord="$(cd "$(dirname "$FJORD")" && pwd)/$(basename "$FJORD")"
+    [ -x "$fjord" ] || { echo "FJORD is set to $FJORD, which is not executable" >&2; exit 2; }
+else
+    cargo build --manifest-path "$root/Cargo.toml" --bin fjord --release
+    fjord="$root/target/release/fjord"
+fi
+
+# The schema set, from a checkout by default and from an unpacked `fjord-schemas.tar.gz`
+# when told. Imports resolve against the directory, so this names the directory.
+schemas="${FJORD_SCHEMAS:-$root/schemas}"
+[ -d "$schemas" ] || { echo "no schema directory at $schemas" >&2; exit 2; }
 
 # A fresh database each run: the point of indexing something large is measuring what it
 # costs, and a second run over a database that already holds the answers measures dedup.
@@ -57,7 +71,7 @@ mkdir -p "$scratch"
 # the indexer sends the result. Never checked in: a composed schema is derived from the
 # files beside it, and a copy in the repository is one that goes stale silently.
 baked="$scratch/dotnet.composed.sigla"
-"$fjord" --schema-path "$root/schemas" schema compose "$root/schemas/dotnet.sigla" > "$baked"
+"$fjord" --schema-path "$schemas" schema compose "$schemas/dotnet.sigla" > "$baked"
 
 # **No database is created here, and the framework list is not asked for.** A checkout
 # compiling for two frameworks is two databases named `<database>#<tfm>`, and their names

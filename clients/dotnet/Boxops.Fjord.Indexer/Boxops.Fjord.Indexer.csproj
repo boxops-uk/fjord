@@ -43,6 +43,34 @@
     <!-- MSBuild's own assemblies come from the SDK at run time, and NuGet's advisory
          about a transitive package Buildalyzer pins is not actionable here. -->
     <NoWarn>$(NoWarn);NU1903</NoWarn>
+
+    <!-- **Shipped as a tool, because building it from source was the only way to get
+         it.** A release carried the `fjord` binary and nothing else, so indexing a
+         checkout meant cloning this repository and running it out of the tree.
+
+         A tool package rather than a self-contained binary, and that is not a
+         convenience: Buildalyzer runs the design-time build **out of process**, against
+         MSBuild assemblies that come from the SDK at run time — the `NoWarn` above is
+         about the same fact. A self-contained publish would still refuse to index
+         anything on a machine with no SDK, so it would be a standalone binary that is
+         not one. Every machine that can index a .NET checkout already has the SDK this
+         needs, which is what makes a tool the honest shape.
+
+         `fjord-indexer` is the name its own usage text has always given. -->
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>fjord-indexer</ToolCommandName>
+    <PackageId>Boxops.Fjord.Indexer</PackageId>
+    <Description>
+      Index a .NET solution into a Fjord database — Buildalyzer and Roslyn over a real
+      checkout, writing the predicates schemas/dotnet.sigla declares.
+    </Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <None Include="../../../LICENSE" Pack="true" PackagePath="/" />
+  </ItemGroup>
 
 </Project>

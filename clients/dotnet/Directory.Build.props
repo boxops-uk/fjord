@@ -16,9 +16,15 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
 
-    <!-- Nothing is packable unless it says so. Two of the three projects here are
-         console programs — a demo producer and a real indexer — and a package is the
-         client library for a language and nothing else. -->
+    <!-- Nothing is packable unless it says so, and two things here say so: the client
+         library, and the indexer as a **tool** package. The demo producer and the SCIP
+         reader stay unpackable — they are arguments about the protocol rather than
+         things to install.
+
+         The distinction that matters is library versus tool, not library versus
+         everything: a consumer referencing `Boxops.Fjord.Client` is writing a producer,
+         and a consumer installing `fjord-indexer` is running one. Both are ways of
+         getting something this repository builds without cloning it. -->
     <IsPackable>false</IsPackable>
 
     <!-- One version for the whole repository, matching the Rust workspace's. -->
