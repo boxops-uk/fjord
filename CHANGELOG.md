@@ -5,7 +5,12 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
-## Unreleased
+## 0.6.1 — 2026-09-28
+
+**The rest of the product is a download.** `0.6.0` shipped the binary and the book; the
+schemas a producer writes against and the indexer that writes them were still reachable
+only by cloning. Both are release assets now, attested and checksummed with everything
+else. No code changed: the engine, the protocol and the on-disk format are `0.6.0`'s.
 
 ### Added
 
