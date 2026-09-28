@@ -124,13 +124,24 @@
 /* The heading a cell carries: shown only once the table has become cards. */
 .cell-label { display: none; }
 
+/* **Cards only where a row is a record.** A wide table becomes a list of cards
+   on a phone by giving every cell the heading above it — which works when a row
+   is one thing with named fields, and destroys a table whose meaning is the grid
+   itself. The automaton's state table is a matrix: its rows are candidate
+   prefixes, its columns are term prefixes, and a cell means nothing without both.
+   Stacked, it came out as a bare column of numbers.
+
+   So the switch is tied to the labels rather than to the column count. `mdx.tsx`
+   puts a `.cell-label` in each body cell of a table the *prose* writes; a table a
+   component builds has none, and keeps its shape and scrolls. The rule now applies
+   exactly where the thing that makes it legible exists. */
 @container (max-width: 34rem) {
-  .astryx-table:has(tr > th:nth-child(3)) { display: block; }
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) { display: block; }
 
   /* The header row has handed its words to the cells. */
-  .astryx-table:has(tr > th:nth-child(3)) tr:has(> th) { display: none; }
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) tr:has(> th) { display: none; }
 
-  .astryx-table:has(tr > th:nth-child(3)) tr {
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) tr {
     display: block;
     padding: var(--spacing-3) var(--spacing-4);
     border: var(--border-width) solid var(--color-border);
@@ -138,14 +149,14 @@
     background: var(--color-background-card);
   }
 
-  .astryx-table:has(tr > th:nth-child(3)) tr + tr { margin-block-start: var(--spacing-3); }
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) tr + tr { margin-block-start: var(--spacing-3); }
 
   /* **The width and the clip have to be undone, not just the display.** A cell
      carries `width: 0` and `overflow: hidden` so that a column can shrink and
      truncate; a table's layout treats that as a hint and ignores it, and a
      block treats it as the answer. Left alone, every card came out an empty
      box of the right height. */
-  .astryx-table:has(tr > th:nth-child(3)) td {
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) td {
     display: block;
     width: auto;
     max-width: none;
@@ -155,7 +166,7 @@
     border: 0;
   }
 
-  .astryx-table:has(tr > th:nth-child(3)) .cell-label {
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) .cell-label {
     display: block;
     font-size: var(--font-size-xs);
     font-weight: var(--font-weight-semibold);
@@ -168,17 +179,17 @@
      table in this book leads with what the row *is* — a byte, a code, an
      invariant's number — so it reads as a title with the rest hanging under
      it, and its own heading would only repeat what the value already says. */
-  .astryx-table:has(tr > th:nth-child(3)) td:first-child {
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) td:first-child {
     padding-block-end: var(--spacing-2);
     font-weight: var(--font-weight-semibold);
   }
 
-  .astryx-table:has(tr > th:nth-child(3)) td:first-child .cell-label { display: none; }
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) td:first-child .cell-label { display: none; }
 
   /* A cell the row does not fill carries no label either, so it is empty and
      the card leaves it out. The operational invariants leave most of a Guard
      column blank, which is the case this is for. */
-  .astryx-table:has(tr > th:nth-child(3)) td:empty { display: none; }
+  .astryx-table:has(tr > th:nth-child(3)):has(.cell-label) td:empty { display: none; }
 }
 
 /* Two things put a table outside the column, and both are right for a table that
@@ -222,8 +233,28 @@
   text-wrap: pretty;
 }
 
+/* The markers and the indent, now that these are plain elements again. The
+   browser's own defaults for a `ul` are close, but a book should not be taking
+   its measure from whatever a user agent happens to think. */
 [data-testid='prose'] ul,
-[data-testid='prose'] ol { padding-inline-start: var(--spacing-5); }
+[data-testid='prose'] ol {
+  margin-block: var(--spacing-4);
+  padding-inline-start: var(--spacing-5);
+}
+
+[data-testid='prose'] ul { list-style: disc; }
+[data-testid='prose'] ol { list-style: decimal; }
+
+/* A list inside a list steps in rather than starting again at the margin. */
+[data-testid='prose'] li > ul,
+[data-testid='prose'] li > ol { margin-block: var(--spacing-2); }
+
+[data-testid='prose'] li + li { margin-block-start: var(--spacing-2); }
+
+/* A loose list wraps each item in a paragraph; it should not then inherit a
+   paragraph's margins and space the bullets like sections. */
+[data-testid='prose'] li > p { margin-block: 0; }
+[data-testid='prose'] li > p + p { margin-block-start: var(--spacing-2); }
 
 /* --------------------------------------------------------------- demos ----
 

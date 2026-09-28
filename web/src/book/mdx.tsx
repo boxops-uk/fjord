@@ -25,7 +25,6 @@ import { Heading } from '@astryxdesign/core/Heading'
 import { Text } from '@astryxdesign/core/Text'
 import { Link } from '@astryxdesign/core/Link'
 import { Code as InlineCode } from '@astryxdesign/core/Code'
-import { List, ListItem } from '@astryxdesign/core/List'
 import { Table, TableCell, TableHeaderCell, TableRow } from '@astryxdesign/core/Table'
 import { Banner } from '@astryxdesign/core/Banner'
 import { Blockquote } from '@astryxdesign/core/Blockquote'
@@ -193,7 +192,41 @@ function Pre({ children }: { children?: ReactNode }) {
   const className = code?.props?.className ?? ''
   const lang = /language-([\w-]+)/.exec(className)?.[1] ?? ''
   const source = String(code?.props?.children ?? '').replace(/\n$/, '')
+
+  /**
+   * **A demo whose source is indented has to be a fence.**
+   *
+   * Written as `<Demo>{\`…\`}</Demo>`, MDX takes two spaces off every line of
+   * the literal — a uniform dedent, so a schema indented one stop inside its
+   * braces arrives with no indentation at all and the page shows a flat wall of
+   * declarations. A fence is markdown rather than JSX and keeps its bytes.
+   *
+   * The kind rides in the language, because a fence's meta string does not
+   * reach a component. `demo-run-guided` is the guided variant; a `---` line
+   * splits a schema from the query written against it, which is the shape the
+   * README already documents.
+   */
+  const demo = /^demo-(.+)$/.exec(lang)?.[1]
+  if (demo) {
+    const guided = demo.endsWith('-guided')
+    const kind = guided ? demo.slice(0, -'-guided'.length) : demo
+    const [first, rest] = split(source)
+    return (
+      <Demo kind={kind} guided={guided} schema={rest === null ? '' : first}>
+        {rest ?? first}
+      </Demo>
+    )
+  }
+
   return <Code lang={lang} source={source} />
+}
+
+/** A source split on its own `---` line: the schema, then the query. */
+function split(source: string): [string, string | null] {
+  const at = source.split('\n').findIndex((line) => line.trim() === '---')
+  if (at < 0) return [source, null]
+  const lines = source.split('\n')
+  return [lines.slice(0, at).join('\n').trim(), lines.slice(at + 1).join('\n').trim()]
 }
 
 /**
@@ -236,17 +269,18 @@ export const components = {
   code: ({ children }: ComponentProps<'code'>) => <InlineCode>{children}</InlineCode>,
   pre: Pre,
 
-  ul: ({ children }: ComponentProps<'ul'>) => (
-    <List listStyle="disc" density="compact">
-      {children}
-    </List>
-  ),
-  ol: ({ children }: ComponentProps<'ol'>) => (
-    <List listStyle="decimal" density="compact">
-      {children}
-    </List>
-  ),
-  li: ({ children }: ComponentProps<'li'>) => <ListItem label={children} />,
+  // **A bullet in the book is prose, not a row.** These were `List` and
+  // `ListItem`, whose `label` is the primary text of a *row* and truncates to
+  // one line with an ellipsis — so a bullet longer than its column lost its
+  // ending, silently, on every page that had one. The design system says as
+  // much itself: content that must wrap is a node rather than a label.
+  //
+  // Plain elements, then, styled by `book.css` along with every other paragraph
+  // — which is what it was already doing to them, `line-height`, `hyphens` and
+  // `text-wrap: pretty` and all.
+  ul: ({ children }: ComponentProps<'ul'>) => <ul>{children}</ul>,
+  ol: ({ children }: ComponentProps<'ol'>) => <ol>{children}</ol>,
+  li: ({ children }: ComponentProps<'li'>) => <li>{children}</li>,
 
   table: TableBlock,
   thead: ({ children }: ComponentProps<'thead'>) => <InHead value={true}>{children}</InHead>,

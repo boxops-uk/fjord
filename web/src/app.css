@@ -111,9 +111,13 @@
   font-size: .9rem;
   line-height: 1.65;
   tab-size: 2;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
+  /* **Code does not wrap.** This was `pre-wrap` with two break rules, so a line
+     longer than the box folded — and the indentation a reader uses to see the
+     shape of a schema folded with it. Worse where the source aligns a column
+     with spaces: the fold landed inside the run and drew one line with a hole
+     in the middle of it. `pre` scrolls instead, which the two layers already
+     agree on — the textarea hands its `scrollLeft` to the paint beneath it. */
+  white-space: pre;
   border: 0;
 }
 
@@ -456,6 +460,28 @@
   margin-inline-start: calc(var(--spacing-6) / -2);
 }
 
+/* **The link does not wrap; the description does.** `open in the playground` is
+   four words and was breaking across two lines, left-aligned inside its own
+   block — so its second line ended short of the edge and it read as not being
+   right-aligned at all, while the two lines it took squeezed the description
+   beside it into two of its own. One line for the link, and the room it gives
+   back goes to the words that actually vary. */
+.demo .astryx-toolbar [data-testid='demo-open'] { white-space: nowrap; }
+
+/* Where even that does not fit, the two stack rather than fighting: the
+   description keeps the width it needs and the link sits under it, still hard
+   against the right. */
+@container (max-width: 26rem) {
+  .demo .astryx-toolbar {
+    flex-wrap: wrap;
+    row-gap: var(--spacing-1);
+  }
+
+  /* The wrapper, not the link: the link is content-sized inside a block that is
+     itself content-sized, so pushing the inner one moves nothing. */
+  .demo .astryx-toolbar > :has([data-testid='demo-open']) { margin-inline-start: auto; }
+}
+
 /* ---- the debugger ---- */
 
 /* The transport's buttons are the controls; the scrub bar is a luxury. In a
@@ -465,20 +491,69 @@
 .run,
 .demo { container-type: inline-size; }
 
-@container (max-width: 32rem) {
-  .transport .astryx-slider { display: none; }
+
+/* **It may run out of room; it may not lose a control to the edge.** Seven
+   buttons in a row do not fit a phone, and the toolbar neither wraps nor
+   scrolls — so `end` was drawn outside the bar and could not be reached. A
+   scroller is the smallest honest answer: every control stays, and the ones
+   past the edge are a swipe away rather than gone. Wrapping was the other
+   option and breaks the group's joined border into two half-pills.
+
+   On `.stepper` rather than `.transport`, because the automaton's bar is the
+   same component now and the rule is about a row of controls, not about which
+   machine they move. */
+.stepper {
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+
+.stepper::-webkit-scrollbar { display: none; }
+
+/* A group that can be scrolled to must not be squeezed on the way. */
+.stepper .astryx-button-group { flex: none; }
 
 /* The glyphs are the labels here, so the size of the control is the size of the
    type in it: a step forward should not be as loud as the query it steps. */
-.transport .astryx-button {
+.stepper .astryx-button {
   font-size: var(--font-size-sm);
   padding-inline: var(--spacing-2);
 }
 
-.transport .astryx-slider-thumb {
+.stepper .astryx-slider-thumb {
   width: var(--spacing-4);
   height: var(--spacing-4);
+}
+
+@container (max-width: 32rem) {
+  /* **The field, not just the slider inside it.** Hiding the slider left its
+     wrapper holding the 200px the slider asked for, so the row was 200px wider
+     than anything in it and the count had nowhere to go but the next line. */
+  .stepper .astryx-field:has(.astryx-slider) { display: none; }
+
+  /* **Centred, and the count beside them rather than under them.** With the
+     scrub bar gone the row is seven controls and a position, and left-aligned
+     they sat against one edge with the count wrapped onto a line of its own —
+     two rows to say what fits in one. The flex box is the toolbar inside, not
+     the element the class is on. */
+  .stepper .astryx-toolbar {
+    justify-content: center;
+    gap: var(--spacing-2);
+    padding-inline: 0;
+    /* **One row, whatever it costs.** Wrapping is what put the position on a
+       line of its own, and no width makes it always fit: a guided run's label
+       is `DFA 2/4 · inside`, not `1/17`. So the row never wraps, it centres
+       while it fits, and the bar scrolls when it does not — which is the rule
+       the bar already has for its controls. */
+    flex-wrap: nowrap;
+  }
+
+  /* `machine 1/13` is one thing, and which machine is the half that matters in
+     a guided run — the tier is the whole point of the label. */
+  .stepper .count { white-space: nowrap; }
+
+  /* The room it needs comes off the controls, which are icons and were carrying
+     a word's worth of padding each. */
+  .stepper .astryx-button { padding-inline: var(--spacing-1); }
 }
 
 .run .event {

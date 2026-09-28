@@ -35,29 +35,29 @@ This page is the complete reference. If you are learning the language, start wit
 ## Grammar reference
 
 ```text
-query      ::= pattern 'where' stmt (';' stmt)* [';']
+query   ::= pattern 'where' stmt (';' stmt)* [';']
 
-stmt       ::= '!' pattern                     negation — no such row exists
-             | pattern '=' pattern             bind, constraint, alias or fold
-             | pattern '!=' pattern            denial
-             | pattern ('<'|'<='|'>'|'>=') pattern    comparison
-             | pattern                         a generator (implicit bind)
+stmt    ::= '!' pattern  # negation — no such row exists
+            | pattern '=' pattern  # bind, constraint, alias or fold
+            | pattern '!=' pattern  # denial
+            | pattern ('<'|'<='|'>'|'>=') pattern  # comparison
+            | pattern  # a generator (implicit bind)
 
-pattern    ::= sum ('|' sum)*                  disjunction, flat and n-ary
-sum        ::= branch (('+'|'-') branch)*       arithmetic, flat and left to right
-branch     ::= QualifiedName branch            a fact pattern
-             | primary ('.' field ['?'])*       field access
-primary    ::= '_'                             wildcard
-             | Variable                        an upper-case name
-             | 42 | -42 | 1_000                integers
-             | "text"                          a string
-             | "text"..                        a string prefix — a range, not a value
-             | "text"~2 | "text"~                 a fuzzy match — a set of ranges
-             | "text"~<2 | "text"~<               a fuzzy prefix match
-             | '{' field '=' pattern, … '}'     a record
-             | 'never'                         the empty relation
-             | '(' pattern ')'                  a group
-             | '(' pattern 'where' stmt… ')'    a subquery
+pattern ::= sum ('|' sum)*  # disjunction, flat and n-ary
+sum     ::= branch (('+'|'-') branch)*  # arithmetic, flat and left to right
+branch  ::= QualifiedName branch  # a fact pattern
+            | primary ('.' field ['?'])*  # field access
+primary ::= '_'  # wildcard
+            | Variable  # an upper-case name
+            | 42 | -42 | 1_000  # integers
+            | "text"  # a string
+            | "text"..  # a string prefix — a range, not a value
+            | "text"~2 | "text"~  # a fuzzy match — a set of ranges
+            | "text"~<2 | "text"~<  # a fuzzy prefix match
+            | '{' field '=' pattern, … '}'  # a record
+            | 'never'  # the empty relation
+            | '(' pattern ')'  # a group
+            | '(' pattern 'where' stmt… ')'  # a subquery
 ```
 
 A variable is `UpperCase`, a field is `lowerCase`, a predicate is `namespace.UpperCase`.
@@ -143,10 +143,14 @@ P where test.Ref {of = P}; P = test.Foo {id = 1}             → test.Foo#1
 P where P = test.Foo {id = 1}; test.Ref {of = P}             → test.Foo#1
 ```
 
-<Demo kind="plan" schema={`schema test {
+```demo-plan
+schema test {
   predicate Foo : { id : int, name : string } -> string
   predicate Ref : { of : Foo }
-}`}>{`P where test.Ref {of = P}; P = test.Foo {id = 1}`}</Demo>
+}
+---
+P where test.Ref {of = P}; P = test.Foo {id = 1}
+```
 
 ### A bind means one of four things
 

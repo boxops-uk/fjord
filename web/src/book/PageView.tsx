@@ -4,7 +4,7 @@ import { Text } from '@astryxdesign/core/Text'
 import { Link } from '@astryxdesign/core/Link'
 import { Code as InlineCode } from '@astryxdesign/core/Code'
 import { Divider } from '@astryxdesign/core/Divider'
-import { Card } from '@astryxdesign/core/Card'
+import { ClickableCard } from '@astryxdesign/core/ClickableCard'
 import { Grid } from '@astryxdesign/core/Grid'
 import { Section } from '@astryxdesign/core/Section'
 import { VStack } from '@astryxdesign/core/Stack'
@@ -105,28 +105,40 @@ export function PageView({ slug, hash }: { slug: string; hash: string }) {
 
         <Divider />
 
+        {/* **The whole card is the target.** It was a link inside a card, so the
+            click area was the width of the title and the border around it did
+            nothing — while every other bordered panel on the site takes a click
+            anywhere. `ClickableCard` resolves to a native anchor, which is what
+            keeps the shell's one click listener able to treat it as a
+            navigation rather than a document load. */}
         <Grid columns={2} gap={3}>
           {previous ? (
-            <Card padding={3}>
-              <Link href={route(previous)} data-testid="pager-prev">
-                <VStack gap={0.5}>
-                  <Text type="supporting">Previous</Text>
-                  <Text weight="semibold">{navTitle(previous)}</Text>
-                </VStack>
-              </Link>
-            </Card>
+            <ClickableCard
+              href={route(previous)}
+              label={`Previous: ${navTitle(previous)}`}
+              padding={3}
+              data-testid="pager-prev"
+            >
+              <VStack gap={0.5}>
+                <Text type="supporting">Previous</Text>
+                <Text weight="semibold">{navTitle(previous)}</Text>
+              </VStack>
+            </ClickableCard>
           ) : (
             <span />
           )}
           {next && (
-            <Card padding={3}>
-              <Link href={route(next)} data-testid="pager-next">
-                <VStack gap={0.5} align="end">
-                  <Text type="supporting">Next</Text>
-                  <Text weight="semibold">{navTitle(next)}</Text>
-                </VStack>
-              </Link>
-            </Card>
+            <ClickableCard
+              href={route(next)}
+              label={`Next: ${navTitle(next)}`}
+              padding={3}
+              data-testid="pager-next"
+            >
+              <VStack gap={0.5} align="end">
+                <Text type="supporting">Next</Text>
+                <Text weight="semibold">{navTitle(next)}</Text>
+              </VStack>
+            </ClickableCard>
           )}
         </Grid>
       </VStack>

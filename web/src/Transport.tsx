@@ -1,19 +1,22 @@
-import { Toolbar } from '@astryxdesign/core/Toolbar'
-import { Button } from '@astryxdesign/core/Button'
-import { ButtonGroup } from '@astryxdesign/core/ButtonGroup'
 import { Slider } from '@astryxdesign/core/Slider'
 import { Text } from '@astryxdesign/core/Text'
 import { HStack } from '@astryxdesign/core/Stack'
+import { Stepper } from './Stepper'
 import type { Trace } from './wasm'
 
 /**
- * **The controls that move a run** — start, a row back, a transition either
- * way, on to the next row, play, the end, and a scrub bar over the whole trace.
+ * **The controls that move a run**, in the vocabulary of the debugger this is.
+ *
+ * Restart, step back over, step back, step, step over, continue and run to end
+ * — a reader who has stepped a program in an editor already knows every one of
+ * them, and what they mean here is what they mean there. A row is this
+ * machine's unit of work, so the transitions that build one are what `step
+ * over` steps over.
  *
  * Two traps, both about a hand and a timer wanting the play head at once. Any
  * navigation stops the run, or a reader who steps back watches the machine step
- * forward over them. And the buttons keep their size as they change state: the
- * one being clicked is the one under the pointer.
+ * forward over them. And the controls are square icons, so the one being
+ * clicked is the one under the pointer whatever it says.
  */
 export function Transport({
   trace,
@@ -40,50 +43,81 @@ export function Transport({
   const previousYield = findLast(events, here - 1, (event) => event === 'yield')
 
   return (
-    <Toolbar
+    <Stepper
       className="transport"
       label="Run"
-      size="sm"
-      variant="muted"
-      startContent={
-        // Labels rather than transport glyphs: ⏮ and ⏩ are not in every
-        // monospace font, and a control that renders as a box is worse than a
-        // word.
-        <ButtonGroup label="Move the run">
-          <Button variant="secondary" label="|◀ start" tooltip="to the start" onClick={() => seek(0)} isDisabled={here === 0} />
-          <Button
-            variant="secondary"
-            label="◀ row"
-            tooltip="back to the previous row"
-            onClick={() => seek(previousYield)}
-            isDisabled={previousYield < 0}
-          />
-          <Button variant="secondary" label="◀" tooltip="back one transition" onClick={() => seek(here - 1)} isDisabled={here === 0} />
-          <Button variant="secondary" label="▶" tooltip="one transition" onClick={() => seek(here + 1)} isDisabled={here >= end} />
-          <Button
-            variant="secondary"
-            label="row ▶"
-            tooltip="on to the next row — step over"
-            onClick={() => seek(nextYield)}
-            isDisabled={nextYield < 0}
-          />
-          <Button
-            variant={playback.playing ? 'primary' : 'secondary'}
-            label={playback.playing ? 'pause' : 'play'}
-            tooltip={
-              playback.playing ? 'pause' : here >= end ? 'play again from the start' : 'play'
-            }
-            onClick={() => {
-              if (playback.playing) return playback.setPlaying(false)
-              // Play from the end is play from the start: there is nowhere else
-              // for it to mean.
-              if (here >= end) onSeek(0)
-              playback.setPlaying(true)
-            }}
-          />
-          <Button variant="secondary" label="end ▶|" tooltip="to the end" onClick={() => seek(end)} isDisabled={here >= end} />
-        </ButtonGroup>
-      }
+      controls={[
+        {
+          mark: 'restart',
+          name: 'restart',
+          key: 'Home',
+          hint: 'back to the first transition',
+          onClick: () => seek(0),
+          isDisabled: here === 0,
+        },
+        {
+          mark: 'backOver',
+          name: 'step back over',
+          key: 'shift+ArrowLeft',
+          hint: 'back to the previous row',
+          onClick: () => seek(previousYield),
+          isDisabled: previousYield < 0,
+        },
+        {
+          mark: 'back',
+          name: 'step back',
+          key: 'ArrowLeft',
+          hint: 'one transition',
+          onClick: () => seek(here - 1),
+          isDisabled: here === 0,
+        },
+        {
+          mark: 'step',
+          name: 'step',
+          key: 'ArrowRight',
+          hint: 'one transition',
+          onClick: () => seek(here + 1),
+          isDisabled: here >= end,
+        },
+        {
+          // **The debugger's own word for it.** A row is what this machine
+          // returns, and the transitions that build one are what a reader
+          // stepping through them is usually not asking about — which is the
+          // whole of what `step over` means anywhere else.
+          mark: 'over',
+          name: 'step over',
+          key: 'shift+ArrowRight',
+          hint: 'on to the next row',
+          onClick: () => seek(nextYield),
+          isDisabled: nextYield < 0,
+        },
+        {
+          mark: playback.playing ? 'pause' : 'play',
+          name: playback.playing ? 'pause' : 'continue',
+          key: ' ',
+          hint: playback.playing
+            ? 'stop where it is'
+            : here >= end
+              ? 'again, from the first transition'
+              : 'until something stops it',
+          isOn: playback.playing,
+          onClick: () => {
+            if (playback.playing) return playback.setPlaying(false)
+            // Continue from the end is continue from the start: there is
+            // nowhere else for it to mean.
+            if (here >= end) onSeek(0)
+            playback.setPlaying(true)
+          },
+        },
+        {
+          mark: 'end',
+          name: 'run to end',
+          key: 'End',
+          hint: 'the last transition, without playing it',
+          onClick: () => seek(end),
+          isDisabled: here >= end,
+        },
+      ]}
       endContent={
         <HStack gap={3} align="center">
           <Slider

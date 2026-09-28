@@ -361,9 +361,24 @@ export function Tree({ children, caption }: { children: string; caption?: ReactN
     return { ...row, last, open }
   })
 
+  /**
+   * **How wide the names column has to be**, so every note starts at the same
+   * place while every name still steps with its depth.
+   *
+   * Each row is its own grid — it has to be, or the rails cannot span a name
+   * and the note beneath it on a phone — and per-row grids do not share a
+   * column. So the width is stated: the widest row, where a row is its own
+   * label plus one rail's step per level. The labels are monospaced, so `ch`
+   * measures them exactly, and `max()` lets the two units meet without this
+   * having to know what a rail is worth in pixels.
+   */
+  const head = `max(${rows
+    .map((row) => `calc(${row.depth} * var(--tree-step) + ${row.label.length + 1}ch)`)
+    .join(', ')})`
+
   return (
     <Figure kind="tree" caption={caption}>
-      <div className="tree">
+      <div className="tree" style={{ '--head': head } as CSSProperties}>
         {rows.map((row, i) => (
           <div
             className="tree-row"
@@ -373,17 +388,24 @@ export function Tree({ children, caption }: { children: string; caption?: ReactN
             // up with it, which only the row knows how deep it is.
             style={{ '--depth': row.depth } as CSSProperties}
           >
-            <span className="name">
+            {/* **The rails are their own cell, not part of the name.** Inside
+                it they could only ever be as tall as the name — so on a phone,
+                where the note drops onto its own line, the stem stopped at the
+                end of each name and started again at the next, and the tree
+                came apart into a column of stubs. Out here they can span the
+                whole row in either layout. */}
+            <span className="head">
+            <span className="rails" aria-hidden="true">
               {row.open.map((drawn, d) => (
-                <span key={d} className={`rail${drawn ? '' : ' is-blank'}`} aria-hidden="true" />
+                <span key={d} className={`rail${drawn ? '' : ' is-blank'}`} />
               ))}
               {row.depth > 0 ? (
-                <span
-                  className={`rail is-elbow${row.last ? ' is-last' : ''}`}
-                  aria-hidden="true"
-                />
+                <span className={`rail is-elbow${row.last ? ' is-last' : ''}`} />
               ) : null}
+            </span>
+            <span className="name">
               <span className="label">{row.label}</span>
+            </span>
             </span>
             {row.note ? <span className="note">{row.note}</span> : <span />}
           </div>
