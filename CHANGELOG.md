@@ -5,52 +5,212 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
-## Unreleased
+## 0.6.0 — 2026-09-28
 
-### Changed
+**A sealed database stops carrying its write-ahead journal, and the book is an
+application.** Those are the two halves: an artifact 28% smaller that opens in
+milliseconds rather than seconds, and a documentation site with the engine compiled into
+the page, so a demo is the lexer, the planner and the executor rather than a screenshot of
+them.
 
-- **The design book is MDX, and there is one renderer.** The pages were Markdown read by
-  two parsers — `website/build.py` in Python, and a TypeScript port of the same dialect in
-  `web/` — with a smoke check comparing them page for page, because a dialect that drifts
-  between two parsers is a page that reads differently depending on which copy you found.
-  That bought a copy of the book needing no toolchain, and cost a hand-written parser on
-  each side plus a dialect that could only hold what both had been taught. What publishes
-  is `web/dist` and has been since the bundle took over, so the generated site is deleted
-  and the pages are now one MDX file each under `web/src/content/`, compiled into the
-  application: prose where prose is enough, and a component where it is not.
+**Nothing on disk moved, and no published crate changed an API.** The storage codec, the
+format stamp and the wire protocol are untouched; `fjord-client`, `fjord-db`,
+`fjord-schema` and `fjord-wire` have exactly the surface they had at `0.5.1`; and a
+database written by that version reads here — the smaller artifact is what *sealing* now
+produces, not a new shape. The minor is for the tool and the indexer: `fjord query`'s rows
+have a different default format, `--format table` is gone, and a `.NET` index asks for
+eight write streams rather than one. Each has its own entry below.
 
-  Every anchor in the book is unchanged — `mdx/headings.mjs` computes them the way the
-  Markdown renderer did, and exports each page's list, which the search index reads rather
-  than parsing the pages a second time. `:::demo` and `:::note` are now `<Demo>` and
-  `<Callout>`, which can hold anything a page can. The smoke check keeps its comparison and
-  changes the oracle: every block a page's source writes against the blocks the built page
-  shows, which guards the same silent defect — a component mapping that goes missing
-  renders the children and drops the wrapper, and a table becomes six paragraphs that still
-  read fine — with no second parser to maintain for it.
+### A sealed database drops the write-ahead journal its tables already hold
 
-- **The link gate is asked of fjord.** Whether a link resolves is a question about a graph —
-  does the page it names exist, does that page declare the anchor — and this repository
-  builds the database for that question. `scripts/check-links.py` writes the book as facts
-  against `scripts/docs.sigla` (`doc.Page`, `doc.Anchor`, `doc.Link`) and asks two sigla
-  queries with negation, replacing the two regular expressions that were checks 1 and 2 of
-  the drift gate.
+A `Complete` database is immutable, so everything in its journal is also in its tables.
+The journal was left behind anyway, and replayed into a memtable at every open for the
+life of the artifact — costing the open and reporting a length twice the real one.
+Flushing did not reclaim it: journal maintenance collects only *sealed* journals, and the
+active one rotates on a size threshold, so a database small enough never to trip that
+threshold carried its whole write history into every open it would ever serve.
 
-  Two things fell out of it. The facts come from **the site's own MDX parse**, so an anchor
-  the gate accepts is an anchor a reader can land on — the regex it replaced matched
-  `^#{1,6} ` without tracking code fences, so it invented eight anchors no page declares and
-  would have passed any link that named one. And the query does not care *which* page a link
-  names, so every citation of the book anywhere in the tree is checked rather than only the
-  ones spelling `invariants`: that found **twelve dead anchors** live in crate doc comments,
-  all fixed here.
+`FjallDb::checkpoint` rolls the journal on demand and collects what the tables supersede,
+and `finish` calls it after `flush_to_tables` and `compact` — never before, since a
+journal is evicted only once every keyspace's tables have persisted past its last sequence
+number. **And that is why `flush_to_tables` now flushes the metadata keyspace too.** It
+holds the sequence reservations `allocate` writes, so it is very nearly always dirty at
+seal, and one keyspace with a resident memtable and no tables is enough to stop the
+reclaim entirely — a keyspace with no tables has persisted past nothing. Left out, sealing
+rotated the journal and kept both halves. The fjall unit tests did not catch that, because
+they use one keyspace and it is flushed; inspecting a real sealed artifact did.
+
+Measured end to end on a 182,000-fact database: the 29 MB journal is gone and the sealed
+artifact is 75.5 MB rather than 104.5 MB. Guarded by file count rather than by timing,
+since the open-time win only shows at a size a unit test should not build — 3,105 ms
+against 1.7 ms at 550,000 facts, from the investigation this came from.
+
+### The book is one application, and the landing page runs the database
+
+The pages were Markdown read by two parsers — `website/build.py` in Python, and a
+TypeScript port of the same dialect in `web/` — with a smoke check comparing them page for
+page, because a dialect that drifts between two parsers is a page that reads differently
+depending on which copy you found. That bought a copy of the book needing no toolchain,
+and cost a hand-written parser on each side plus a dialect that could only hold what both
+had been taught. What publishes is `web/dist` and has been since the bundle took over, so
+the generated site is deleted and the pages are now one MDX file each under
+`web/src/content/`, compiled into the application: prose where prose is enough, and a
+component where it is not.
+
+Every anchor in the book is unchanged — `mdx/headings.mjs` computes them the way the
+Markdown renderer did, and exports each page's list, which the search index reads rather
+than parsing the pages a second time. `:::demo` and `:::note` are now `<Demo>` and
+`<Callout>`, which can hold anything a page can. The smoke check keeps its comparison and
+changes the oracle: every block a page's source writes against the blocks the built page
+shows, which guards the same silent defect — a component mapping that goes missing renders
+the children and drops the wrapper, and a table becomes six paragraphs that still read fine
+— with no second parser to maintain for it.
+
+**The root is a landing page rather than the Overview.** Its hero is a search box over a
+real index — the C# client walked by Roslyn, sealed, served as a static file — running one
+sigla query per keystroke against `codemarkup.SearchEntry`, whose key leads with the
+lowercased name so a fuzzy pattern seeks rather than scans. Each result carries the kind,
+the summary the source wrote, the use count and the declaration with the lines either side,
+painted by the walker's own semantic runs. Under it, one question end to end: a cursor
+arrives on a name, an editor opens a card, the query slides in, the engine seeks into the
+index. Where there is room the seek splits — the plan beside the keyspace, so
+`seek[target = r0.symbol]` sits next to the bytes that splice is made of. Seventeen rows
+read out of 24,612.
+
+The book itself went from 47,484 words to 18,795 without losing an invariant; those are the
+design record and are preserved verbatim. Every ASCII diagram is HTML or SVG, wide tables
+become cards on a phone, and client/server exchanges are sequence diagrams.
+`crates/fjord-inspect` and `wasm` gain the reads the page needs: a trace and a keyspace
+window over the loaded corpus, and a single-row reader for the window.
+
+### The link gate is asked of fjord
+
+Whether a link resolves is a question about a graph — does the page it names exist, does
+that page declare the anchor — and this repository builds the database for that question.
+`scripts/check-links.py` writes the book as facts against `scripts/docs.sigla`
+(`doc.Page`, `doc.Anchor`, `doc.Link`) and asks two sigla queries with negation, replacing
+the two regular expressions that were checks 1 and 2 of the drift gate.
+
+Two things fell out of it. The facts come from **the site's own MDX parse**, so an anchor
+the gate accepts is an anchor a reader can land on — the regex it replaced matched
+`^#{1,6} ` without tracking code fences, so it invented eight anchors no page declares and
+would have passed any link that named one. And the query does not care *which* page a link
+names, so every citation of the book anywhere in the tree is checked rather than only the
+ones spelling `invariants`: that found **twelve dead anchors** live in crate doc comments,
+all fixed here.
+
+### `fjord fact` spends an id · `fact`, `:id`
+
+A row hands you `code.Decl#1` and there was nothing to spend it on. The protocol has
+carried the question since v4 — `F` out, `f` back — and the client has used it to expand
+references, but no command asked it directly. `fjord fact <db> <id>…` is that command, and
+`:id` is the same question at the shell prompt.
+
+A command rather than sigla syntax, deliberately. A query names a fact by its key, because
+a key is the logical form the content hash is computed over and the one thing that survives
+a rebuild; `ops-I4` calls ids descriptive, never identity. Asking at a prompt is a
+different act from writing it down, and keeping the two apart is what stops an id reaching
+a stored derivation.
+
+### `fjord query`'s rows are sigla, and `--format table` is gone · **check any script that reads its output**
+
+A table could not write a column until it had seen the widest cell in it, so it buffered
+the whole result — a rendering that cannot start until the last row has arrived fails on
+exactly the results worth paging. Every shape streams now. `--format sigla` is the new
+default and writes rows in the language they were asked for in: a record is
+`{field = value}`, a union the one-field record it is written as, bytes `0x…`, and every
+family but a reference is text the lexer takes back (`--expand` closes that one). `json`,
+`jsonl`, `raw` and `count` are unchanged. `fjord list` and `fjord describe` still default
+to `table`, which is a listing rather than a result.
+
+Two smaller surface changes come with it: an empty result writes nothing rather than a
+header over a tally, which lets a query be piped into something that counts lines; and a
+fact id prints as `code.Decl#1` rather than `#4:1`, which had exposed the snowflake's two
+bit-fields in text a person reads.
+
+### The indexer asks for eight write streams rather than one
+
+`Writers` defaulted to 1 on a measurement that issue #31 correctly called confounded: four
+writers cost ~10% and moved nothing because `queueing` was already near zero — but the walk
+could not saturate one writer, so no writer count could have looked good. `0.5.1` answers
+the interning probe from a Bloom filter over the active memtable and releases the journal
+writer before the memtable apply, so those waits are mostly gone. Re-measured on 40
+projects of dotnet/runtime's shared framework, `--jobs 8`, 361k facts: 28,287 facts/s at
+one writer, 38,640 at four, 37,541 at eight — 1.37× where the same shape used to fall away.
+
+**Eight is not chosen for being faster than four.** Medians of three put them 2.9% apart
+against a 10% spread inside the four-writer group, so they are the same number, and eight
+burns ~50% more summed writer time for it. It is chosen because the two ways to be wrong
+are not symmetric: #31 records a denser corpus — 1.56M facts — where four writers left a
+56.6s stall that eight cleared, and a default is for a caller who has measured nothing.
+Not capped at the core count, as `Jobs` is: a writer is a *transport* ceiling and spends
+its life waiting on another process, so how many cores this machine has says nothing about
+how many streams that one absorbs. `--emit` still forces one writer, so the deterministic
+block file is unaffected.
+
+### The storage engine's pin follows the fork's ship branch
+
+fjall `098bd1c` → `85f2ee5` → `953f458`, the last of those being the commit carrying the
+`Database::checkpoint` the seal above needs; lsm-tree `c9aacb9` → `4ba4cfd`. The memtable
+filter was a fixed 1 MiB whatever the memtable's budget — about right at the 64 MiB default
+and wrong in both directions anywhere else; it now takes the budget and sizes from it. At
+the default it
+computes to exactly the blocks it used to hardcode, so nothing measured here moves. The pin
+follows `ship` rather than `experiment/write-path`, and the manifest says why: the
+experiment carries a flat-combining write pipeline that doubles throughput for single-row
+writes and measures to nothing at the commit sizes this database uses — 519,521 facts/s
+against 517,078 at a thousand facts a commit — and it is a lockless ring and a leader lease
+with hours of soak time, so carrying it here would be risk bought with no return.
+
+### The demos are stepped the way a debugger is
+
+Three control bars had grown independently — the executor's transport, the isolated
+automaton's own bar, and the hero's play button — with three sets of words for the same six
+ideas and glyphs that were text in one and absent in another. They are one component, in a
+debugger's vocabulary: `restart` goes to the top, `step` advances one transition, `step
+over` runs the transitions inside a row and stops at the next one, `continue` runs until
+something stops it, and `run to end` does not stop. A row is this machine's unit of work,
+which is what makes it the thing `step over` steps over.
+
+And a debugger's keys, which is most of what the pointer was costing: `→` and `←` step,
+`Shift` with them steps over, `Home` and `End` are the ends, `Space` continues. Bound on
+the panel rather than on the window, so a page carrying several demos arms the one a reader
+is in — a key that moved a machine nobody was looking at would be worse than no key at all.
 
 ### Fixed
 
-- **Twelve citations in the crates named anchors that do not exist** — `storage.html#storage-codec-vs-transport-codec`
-  for `…-versus-…`, `query-language.html#derived-facts` for a section called *Arithmetic*,
+- **`fjord fact` on an id nothing holds printed a different id from the one that was
+  typed.** `Found::Missing` rendered the raw predicate and sequence pair — `#4:999` — three
+  lines above an arm that spells the same thing `code.Decl#999`, so the one message a
+  person reads *because* they mistyped an id showed a form of id no row had ever handed
+  them.
+
+- **Three pages said `fjord write` was not built.** It reads JSONL over the ordinary write
+  protocol and always has; what is missing is a *fast path*, so "bulk ingestion from files"
+  is now "high-throughput file ingestion" and the command list gains `write`, `export` and
+  `fact`. The book follows the binary elsewhere too: Concepts explains `Writable` before
+  `Complete`, the query language reads a first query in three parts before listing every
+  construct, Operations opens with a route for an operator, and Clients gains the read-only
+  example.
+
+- **Twelve citations in the crates named anchors that do not exist** —
+  `storage.html#storage-codec-vs-transport-codec` for `…-versus-…`,
+  `query-language.html#derived-facts` for a section called *Arithmetic*,
   `storage.html#factid-allocation-i11` for *Fact ids are snowflakes (I11)*, and
   `operations.html#6-wire-protocol--the-write-stream` for a section that moved to a page of
   its own three releases ago. Invisible to the old gate, which only ever checked citations
   of the invariant registry.
+
+- **The site did not read on a phone.** Nine fixes, found by driving it at 390×844 rather
+  than by measuring it: an editable schema with no indentation, because MDX takes two spaces
+  off every line of a multi-line JSX template literal and no stylesheet was going to give
+  them back; tree diagrams whose stems did not join, since a rail is one row's border and
+  the next row's below it and a row gap is a gap in the line; bullets longer than their
+  column losing their endings to a component whose label is one line and an ellipsis; code
+  that wrapped and took its indentation with it; and `open in the playground` wrapping into
+  two left-aligned lines that squeezed the description into two of its own. Each is pinned
+  by a check verified to fail against the version it replaces, and `check-docs.py` now
+  refuses an indented JSX literal so the first of them cannot land quietly again.
 
 ## 0.5.1 — 2026-09-19
 
