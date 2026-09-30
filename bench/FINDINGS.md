@@ -1540,6 +1540,35 @@ expire is the shape of each question, which is why they are stated rather than d
   so what is left is running the rung over it — and [§15d](#15d-what-the-glean-run-separates-that-no-fjord-run-could)
   is why that matters: the 3.5× against Glean is pipeline against pipeline, and only the rung
   splits interning from the socket.
+- **Write throughput decayed with index size, and the cause was not the write path — closed.**
+  Asked from outside: a work environment reported ingest falling from ~150k facts/s to ~5k as
+  the index grew. Reproduced in process at 190k → 1.2k over 4M facts, and it is a **cliff**
+  rather than a slope — flat until the first level-1 table exists, then collapsing and never
+  recovering. Attributed: committing is flat throughout, and all of it is the one `keys` probe
+  interning pays per created fact. A filter block is partitioned only from level 3 down and
+  pinned only at level 0, so at levels 1 and 2 it is one multi-megabyte block that must come
+  through a *sharded* block cache whose admission ceiling is `capacity / (cores * 4) * 0.8` —
+  and a block over that ceiling is dropped on insert, so the whole filter was re-read and
+  re-checksummed per probe (89% of the process in `pread` and xxh3; 582 GB read against a
+  639 MB database). **Latent upstream, not ours:** the fork touches none of it, and stock
+  crates.io `fjall` 3.1.8 with no fjord in the picture reproduces the same curve. Fixed by
+  pinning the `keys` trees' filters at every level, guarded by
+  `an_interning_probe_reads_a_filter_block_once_however_small_the_cache`. ✅
+  **Why no instrument here could see it:** every write measurement in this register is either
+  a fresh 9,720-fact database ([§13](#13-the-write-rung-committing-is-41-of-interning-and-the-cache-is-worth-23-of-a-resolve-pass))
+  or an end-to-end run whose figure is one number; and every *read* measurement is on a sealed
+  database, which `finish` major-compacts into the partitioned last level and so is immune by
+  construction. `crates/fjord-ingest/examples/growth_ladder.rs` is the rung that was missing —
+  one database, written long, rate reported per chunk.
+  **It is a create-time property, and that is measured too:** keyspace options are persisted
+  and rebuilt on recovery, and the backend ignores a caller's options for a keyspace it has
+  already recovered — so the fix holds across a reopen (the guard asserts exactly that, because
+  a server reopens what it serves) and does **not** reach an index built by an older binary,
+  which stays at 18,805 bytes of filter read a probe until it is rebuilt.
+  **Left unmeasured, deliberately:** what pinning costs in resident bytes on a server holding
+  many open databases, and whether partitioning the filters at every level (which would bound
+  the block instead of keeping it resident, but also only for keyspaces created afterwards) is
+  the better shape. Neither is a number this fix needed.
 - **The interning lookup cache is measured and closed** —
   [§16a](#16a-the-lookup-cache-watched-rather-than-autopsied): 73.05% of an available 73.12%
   at 18.3M facts, `keys` equal to `misses` exactly, and 45,279 resolves (0.067%) as the whole

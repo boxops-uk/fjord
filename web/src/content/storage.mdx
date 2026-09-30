@@ -167,6 +167,61 @@ until its children have ids.
 This is why a producer keeps no book: an indexer knows the file when it reaches the
 declaration, and emits what it holds.
 
+### What the one probe costs, and why it must stay flat
+
+Dedup means the repeats are cheap — an ingest-time cache answers them from memory, so a
+target named under a thousand parents costs one lookup rather than a thousand. What is
+left is the irreducible half: **every fact this ingest actually creates pays exactly one
+`keys` lookup for a key that is not there.** That lookup is the write path's only read,
+and its cost has to be flat in the size of the index, or ingest slows down as it
+progresses — which is the one shape a growing index has and the one no throughput figure
+taken on a fresh database can see.
+
+A Bloom filter is what makes it flat: the probe asks a filter per table and touches no
+data block. So the filter has to be *resident*, and that is a property of where the
+filter lives rather than of how much memory is spare.
+
+<Callout tone="warn" label={`A filter block is pinned, never left to the block cache`}>
+
+The backend partitions a table's filter only from level 3 down, and pins one only at
+level 0. At levels 1 and 2 — the levels a *growing* index lives in — the filter is one
+block covering the whole table, megabytes of it, and it has to come through the block
+cache on every probe.
+
+It cannot. The cache is sharded, so its admission ceiling is one shard —
+`capacity / (cores * 4) * 0.8` — and a block heavier than that is **dropped on insert
+rather than retained**. So the entire filter is re-read from the file and re-checksummed
+on every probe, for ever. Measured: 190k facts/s falling to 1.2k as soon as the first
+level-1 table appeared, 89% of the process in `pread` and xxh3, and no recovery.
+
+**Sizing the cache up is not the fix.** The ceiling is per shard and shards scale with
+cores, so a filter that fits on an eight-core box is refused on a sixty-four-core one — a
+bigger machine fails sooner and harder. The `keys` trees pin their filters at every level
+instead, which costs the filter bytes of the levels an ingest is writing (~1.25 bytes a
+key) and makes the probe's cost independent of the cache.
+
+**The policy is chosen when a keyspace is created, and it is stored.** A keyspace's
+options are written at create and rebuilt from disk on recovery, and the backend does not
+consult a caller's options for a keyspace it has already recovered — so this is settled at
+`create`, for the life of the database, and **upgrading the binary does not fix an index
+built by an older one**. Such an index has to be rebuilt. What *does* help it is sealing:
+`finish` major-compacts into the last level, whose filters are partitioned, so an old
+database that is sealed reads correctly even though it could never have been written to
+quickly.
+
+Two more consequences worth holding on to. A **sealed** database never had this problem at
+all, for that same reason — so every read-path measurement ever taken here was immune, and
+only ingest was not. And the `entities` tree is deliberately left alone: it is read by fact
+id, always for a row that is there, so a resident filter there would be paid on every
+insert and collected never.
+
+The guard is
+`an_interning_probe_reads_a_filter_block_once_however_small_the_cache`, and it runs
+against a cache far too small to hold anything — because a guard with a roomy cache would
+assert that today's filters happen to fit, which is not a property.
+
+</Callout>
+
 ## The atomic two-map write ([I12](invariants.html#i12))
 
 `keys` and `entities` are written in one batch. A key with no entity would make a

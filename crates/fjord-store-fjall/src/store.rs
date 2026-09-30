@@ -47,7 +47,7 @@ use std::{
 
 use byteview::ByteView;
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot, config::PinningPolicy};
 
 use crate::lookup_cache::{Hit, LookupCache};
 use crate::world::VisibleSeqno;
@@ -489,9 +489,33 @@ fn index_key_for(predicate: PredicateId, key_fields: &[u8]) -> Vec<u8> {
 impl FjallDb {
     /// Open (creating if absent) the database at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let db = Database::builder(path)
-            .open()
-            .map_err(StoreError::backend)?;
+        Self::open_sized(path, None)
+    }
+
+    /// [`open`](Self::open), with the backend's block cache sized by the caller.
+    ///
+    /// **A witness, not a dial**, and the size it exists to pass is a *small* one.
+    /// `an_interning_probe_reads_a_filter_block_once_however_small_the_cache` has to
+    /// show that the interning probe's filter cost is independent of the cache, and
+    /// the only way to show independence is to take the cache away. Sizing it up is
+    /// not the other half of this: it does not fix anything, because the cache's
+    /// admission ceiling is one shard — `capacity / (cores * 4) * 0.8` — so the
+    /// ceiling *falls* as a machine gets bigger and a filter block that fits on eight
+    /// cores is refused on sixty-four.
+    #[cfg(any(test, feature = "proptest"))]
+    pub fn open_with_cache_bytes(
+        path: impl AsRef<Path>,
+        cache_bytes: u64,
+    ) -> Result<Self, StoreError> {
+        Self::open_sized(path, Some(cache_bytes))
+    }
+
+    fn open_sized(path: impl AsRef<Path>, cache_bytes: Option<u64>) -> Result<Self, StoreError> {
+        let mut builder = Database::builder(path);
+        if let Some(bytes) = cache_bytes {
+            builder = builder.cache_size(bytes);
+        }
+        let db = builder.open().map_err(StoreError::backend)?;
 
         // Recover the per-predicate handles a previous session created. Reads
         // route through this map, so a predicate missing from it reads as "no
@@ -753,7 +777,29 @@ impl FjallDb {
             // would be paid on every insert and collected never.
             keys: db
                 .keyspace(&format!("{KEYS_KEYSPACE_PREFIX}{}", predicate.0), || {
-                    KeyspaceCreateOptions::default().memtable_filter(true)
+                    KeyspaceCreateOptions::default()
+                        .memtable_filter(true)
+                        // **And the sealed tables' filters stay resident, which the
+                        // backend's default does not do for the two levels an ingest
+                        // lives in.** A filter block is partitioned only from level 3
+                        // down and pinned only at level 0, so at levels 1 and 2 it is
+                        // one block covering the whole table — megabytes — that has to
+                        // come through the block cache on every probe. It cannot: a
+                        // block heavier than one cache *shard* is dropped on insert
+                        // rather than retained, so the whole filter is re-read and
+                        // re-checksummed per probe, which is the one read interning
+                        // does per created fact. Unpinned, that measured 190k facts/s
+                        // collapsing to 1.2k as soon as the first level-1 table
+                        // appeared, and never recovering. Sizing the cache up is not
+                        // the alternative — see `open_with_cache_bytes`.
+                        //
+                        // **Settled here for the life of the database.** These options
+                        // are persisted and rebuilt on recovery, and the backend does
+                        // not call this closure for a keyspace it has already
+                        // recovered — so this holds across a reopen, and an index
+                        // built before it was added has to be rebuilt rather than
+                        // upgraded into the fix.
+                        .filter_block_pinning_policy(PinningPolicy::all(true))
                 })
                 .map_err(StoreError::backend)?,
             entities: db
@@ -1397,6 +1443,26 @@ impl FjallDb {
                 ]
             })
             .collect()
+    }
+
+    /// Bytes of **filter block** the backend has read from a file, summed over the
+    /// `keys` trees — the trees the interning probe consults.
+    ///
+    /// The witness for the filter-block pinning policy a `keys` tree is created with.
+    /// A resident filter answers from memory and moves this not at all; an evicted one
+    /// is re-read in full, and at levels 1 and 2 "in full" is the whole table's filter.
+    /// So this number *per probe* is the read amplification the write path pays, and it
+    /// is the difference between a cost that is flat in database size and one that is
+    /// not. Counted rather than timed: a stopwatch here would be measuring the host.
+    #[cfg(any(test, feature = "proptest"))]
+    #[must_use]
+    pub fn filter_block_io_bytes(&self) -> u64 {
+        let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
+
+        predicates
+            .values()
+            .map(|predicate| predicate.trees.keys.metrics().filter_block_io())
+            .sum()
     }
 
     /// How many journal files the backend is holding, and what they cost on disk.
@@ -2746,6 +2812,88 @@ mod tests {
         // And the claim keeps growing rather than being rewritten from the data.
         let third = db.put_fact(predicate, &[3], &[]).expect("put");
         assert_eq!(third.sequence(), RESERVATION_CHUNK + 3);
+    }
+
+    /// **The interning probe's filter cost does not depend on the block cache.**
+    ///
+    /// Interning reads the `keys` tree once per created fact, for a key that is not
+    /// there, and a Bloom filter is what answers that. The backend partitions a filter
+    /// only from level 3 down and pins one only at level 0 — so at the two levels a
+    /// growing index actually lives in, the filter is a single block covering the whole
+    /// table. Left to the cache, that block is not merely evicted: anything heavier than
+    /// one cache *shard* (`capacity / (cores * 4) * 0.8`) is dropped on insert, so it is
+    /// re-read and re-checksummed on **every** probe, for ever.
+    ///
+    /// The cache is deliberately far too small here, and that is the claim rather than a
+    /// shortcut: a guard run against a roomy cache would be asserting that today's
+    /// filters happen to fit, which is not a property — the shard ceiling falls as a
+    /// machine gets bigger, so the same filter that fits on eight cores is refused on
+    /// sixty-four.
+    #[test]
+    fn an_interning_probe_reads_a_filter_block_once_however_small_the_cache() {
+        // Small enough that no filter block this test writes can be admitted on any core
+        // count: the ceiling is a shard's `capacity / (cores * 4) * 0.8`, which is 6.5 KiB
+        // even on a single core, against the ~22 KiB filter 18,000 keys carry.
+        const CACHE_BYTES: u64 = 32 * 1024;
+        const ROUNDS: u32 = 6;
+        const PER_ROUND: u32 = 3_000;
+        const PROBES: u32 = 2_000;
+        // One partition's worth, so this still holds if filters are partitioned later.
+        const ALLOWED_PER_PROBE: u64 = 1_024;
+
+        let dir = TempDir::new().expect("tempdir");
+        let db = FjallDb::open_with_cache_bytes(dir.path(), CACHE_BYTES).expect("open");
+        let predicate = PredicateId(0);
+        db.create_predicates([predicate]).expect("the trees");
+
+        // Rotating a memtable per round builds up level-0 tables until the strategy's
+        // threshold of four trips and they are merged into level 1 — which is the level
+        // under test, and the one a major compaction (what sealing does) would skip
+        // straight past.
+        for round in 0..ROUNDS {
+            for n in 0..PER_ROUND {
+                let key = format!("module{}/file{round}_{n}.rs", n % 64);
+                db.intern(predicate, key.as_bytes(), &[], true)
+                    .expect("a well-formed intern");
+            }
+            db.flush_to_tables().expect("rotate");
+        }
+
+        let tables = db.table_counts()[0];
+        assert!(
+            tables < ROUNDS as usize,
+            "no level-0 merge happened — {tables} tables for {ROUNDS} rotations, so this \
+             guard is probing level 0, whose filter is pinned by default and proves nothing"
+        );
+
+        // **Reopened, because that is the path a server takes.** A keyspace's options are
+        // persisted at create and rebuilt from disk on recovery, and
+        // `Database::keyspace`'s closure is not called for a keyspace that is already
+        // recovered — so a policy that only held in the process that created the trees
+        // would be a policy `serve` never has.
+        drop(db);
+        let db = FjallDb::open_with_cache_bytes(dir.path(), CACHE_BYTES).expect("reopen");
+
+        // **In range, and that is load-bearing.** A table's key range is checked before
+        // its filter, so an absent key sorting outside the range never reaches the
+        // filter and the probe would cost nothing however broken the caching is.
+        let before = db.filter_block_io_bytes();
+        for n in 0..PROBES {
+            let key = format!("module{}/file0_{}.rs", n % 64, 900_000 + n);
+            let found = db
+                .intern(predicate, key.as_bytes(), &[], true)
+                .expect("intern");
+            assert!(found.created, "the probe keys must be absent");
+        }
+        let read = db.filter_block_io_bytes() - before;
+
+        assert!(
+            read < u64::from(PROBES) * ALLOWED_PER_PROBE,
+            "{PROBES} probes read {read} bytes of filter block ({} a probe). A resident \
+             filter reads none; this is the whole table's filter being fetched per probe, \
+             which is what turned 190k facts/s into 1.2k as an index grew.",
+            read / u64::from(PROBES),
+        );
     }
 
     /// One durable write per chunk, not one per fact — otherwise the reservation costs
