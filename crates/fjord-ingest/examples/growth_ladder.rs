@@ -12,8 +12,13 @@
 //! before it: the lookup cache's hits, the live LSM reads interning did, and what fjall
 //! holds.
 //!
+//! `FROM` starts the key numbering above an existing database's, which is how this
+//! measures a *reopened* one — the state a server is almost always in, and the one a
+//! runtime-only keyspace option can silently be missing from.
+//!
 //! ```sh
 //! TOTAL=4000000 CHUNK=250000 cargo run --release -p fjord-ingest --example growth_ladder
+//! SCRATCH=/tmp/db FROM=1000000 TOTAL=1000000 cargo run --release … --example growth_ladder
 //! ```
 
 use fjord_ingest::fused::{Scratch, fuse_block};
@@ -58,6 +63,7 @@ fn main() {
     let total: usize = var("TOTAL", 4_000_000);
     let chunk: usize = var("CHUNK", 250_000);
     let block_size: usize = var("BLOCK", 1_000);
+    let from: usize = var("FROM", 0);
 
     let schema = schema();
     let dir = std::env::var("SCRATCH").map_or_else(
@@ -92,11 +98,12 @@ fn main() {
 
     let mut scratch = Scratch::new();
     let mut bytes = Vec::new();
-    let mut at = 0;
+    let mut at = from;
+    let last = from + total;
     let (mut reads_before, mut hits_before, mut misses_before) = (0, 0, 0);
 
-    while at < total {
-        let end = (at + chunk).min(total);
+    while at < last {
+        let end = (at + chunk).min(last);
         let started = Instant::now();
 
         let mut cursor = at;
