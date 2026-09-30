@@ -318,6 +318,12 @@ gh attestation verify ./fjord --repo boxops-uk/fjord
 ```
 
 Registry uploads are deliberately manual: a Release can be deleted, a registry version
-cannot, so publishing is a person's decision and not a tag's. Review is not enforced — GitHub
+cannot, so publishing is a person's decision and not a tag's. The decision is a person's;
+the typing is not — [`scripts/publish.sh`](scripts/publish.sh) takes the four crates in
+dependency order and the two NuGet packages, rehearses by default, skips what is already
+live so a half-finished run is resumed rather than restarted, and reads its keys from
+`CRATES_API_KEY` and `NUGET_API_KEY`. It exists because the sequence otherwise lived in
+shell history, which is where a live NuGet key was found sitting in plaintext. Review is
+not enforced — GitHub
 cannot require approvals without deadlocking a sole maintainer; the rule is written and
 parked disabled until a second account has write access.
