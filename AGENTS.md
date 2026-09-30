@@ -12,6 +12,7 @@ book, not here.
 |---|---|
 | **The design book** (for humans — architecture, rationale, reference) | [`web/src/content/`](web/src/content/) — one MDX page each, compiled into the interactive site [`web/`](web/README.md), which **publishes** at <https://boxops-uk.github.io/fjord/> on every push to main. The reading order is [`web/src/content/nav.json`](web/src/content/nav.json) |
 | **The invariant registry** (statement · why · guard · status) | [`web/src/content/invariants.mdx`](web/src/content/invariants.mdx) — know these by number |
+| **The design system** — before writing or changing any UI in `web/` | [`web/ASTRYX.md`](web/ASTRYX.md), and **run the CLI**: `npx astryx search "<thing>"`, `astryx component <Name>`, `astryx build "<idea>"`. It answers what exists, with props and examples. Reading `node_modules/**/*.d.ts` to find out is the slow way to a wrong answer |
 | **The roadmap** — what is unbuilt, its acceptance criteria, the settled decisions | [`PLAN.md`](PLAN.md) |
 | What a code-intelligence product could ship on this — read **before claiming a question is or is not answerable** | [`docs/gitnexus.md`](docs/gitnexus.md) |
 | What was measured, and the method — the register is **closed until a 1.0 pass**; cite it for a lesson, never for a current figure | [`bench/FINDINGS.md`](bench/FINDINGS.md) · [performance](web/src/content/performance.mdx) |
@@ -60,9 +61,20 @@ every block the source writes against the blocks the page shows. It is the
 bundle CI publishes, and a page here
 is a *path*, so the base it is served from is compiled in — `SITE_BASE`, which
 the `site` job sets from the repository's name for the Pages copy and leaves at
-`/` for the tarball a release carries. Its components are Astryx
-(`@astryxdesign/core`) — the contract for using them is `web/ASTRYX.md`, and the
-book's palette is an Astryx theme in `web/src/theme.ts`.
+`/` for the tarball a release carries.
+
+Its components are Astryx (`@astryxdesign/core`), and the book's palette is an
+Astryx theme in `web/src/theme.ts`. **Discover, don't guess**, which is the rule
+`web/ASTRYX.md` opens with and the one worth repeating here because the failure
+mode is quiet: `npx astryx search "<thing>"` finds the component, the hook, the
+doc page or the template; `astryx component <Name>` gives its props and worked
+examples; `astryx build "<idea>"` returns a kit of the closest page, blocks and
+components; `astryx docs <topic>` covers layout, tokens, motion and the rest.
+158 components ship, several of which are the thing being hand-rolled — a
+`CollapsibleGroup` was found by `astryx search` *after* an afternoon of reading
+type definitions that do not carry the examples or the composition rules. Values
+come from tokens (`astryx docs tokens`), never raw hex or pixels, and the accent
+belongs to the theme rather than to a `:root` override.
 
 **A non-Rust client is part of the test surface.** `clients/dotnet` implements the protocol
 from outside — no shared constants, no shared enums — and is a checked-in golden:
@@ -306,6 +318,12 @@ gh attestation verify ./fjord --repo boxops-uk/fjord
 ```
 
 Registry uploads are deliberately manual: a Release can be deleted, a registry version
-cannot, so publishing is a person's decision and not a tag's. Review is not enforced — GitHub
+cannot, so publishing is a person's decision and not a tag's. The decision is a person's;
+the typing is not — [`scripts/publish.sh`](scripts/publish.sh) takes the four crates in
+dependency order and the two NuGet packages, rehearses by default, skips what is already
+live so a half-finished run is resumed rather than restarted, and reads its keys from
+`CRATES_API_KEY` and `NUGET_API_KEY`. It exists because the sequence otherwise lived in
+shell history, which is where a live NuGet key was found sitting in plaintext. Review is
+not enforced — GitHub
 cannot require approvals without deadlocking a sole maintainer; the rule is written and
 parked disabled until a second account has write access.

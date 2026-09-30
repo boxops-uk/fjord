@@ -25,6 +25,7 @@ decomposition is always wrong — each ending green, ordered by dependency and d
 | [Authentication](#authentication) | design of record below; nothing built | wanting it |
 | [The engine in a browser](#the-engine-in-a-browser--webassembly) | **the store split, `fjord-inspect`, `wasm/` and the lexer segment are built**; the remaining views are not | nothing |
 | [Recursion](#recursion--query-local-relations-magic-sets-stratified-negation) | designed, then **amended after adversarial review** — the shape survived, its boundaries did not. [Movement 0](#movement-0--semantics-and-seams) is green through 0e | nothing — [Movement 1](#movement-1--the-relation-store-and-the-overlay) is next, and unblocked |
+| [A database as a static site](#a-database-as-a-static-site--the-artifact-read-over-http) | measured and costed; **nothing built**. No new codec — the sealed artifact is the format | a Rust indexer for the whole checkout; otherwise nothing |
 | [Operational gaps](#operational-gaps) | each named with the seam that keeps it cheap | — |
 | [Language backlog](#language-backlog) | additive; none reshapes the machine | — |
 
@@ -748,6 +749,149 @@ Three things this turned up:
   the view structs instead of stated a second time.
 - **Ingest stays impossible in a browser**, and that is not a gap: interning
   needs a real backend and durable id claims.
+
+
+## A database as a static site — the artifact read over HTTP
+
+**Goal.** A sealed database is queryable from a static host, with no server. The browser
+fetches the blocks a query touches instead of the whole index. This is the endpoint the
+lifecycle was already built for — immutable at `finish`, frozen schema, content identity,
+"a paused query costs a handful of bytes" — and the one place the product does not yet
+honour it, because `web/`'s corpus loader fetches a whole JSONL export and parses it into a
+`MemStore` up front.
+
+**Why it matters beyond the site.** It turns Fjord from a service into a format: anyone can
+publish a browsable, queryable index to any static host at no cost and no ops. Today sharing
+an index means running a process next to it.
+
+### What was measured
+
+Two corpora built with `scripts/build-corpus.sh` — index with `--styles`, seal, export JSONL.
+
+| | source lines | facts | raw | gzip -9 |
+|---|---|---|---|---|
+| One C# project (what ships) | 3,595 | 24,612 | 3.4 MB | 334 KB (9.7%) |
+| The whole .NET solution | 26,540 | 207,408 | 29.7 MB | 2.67 MB (9.0%) |
+
+Unit cost is stable across the two: **13.0 bytes gzipped per fact**, ~101–113 bytes gzipped
+per line of source. The sealed database is 42.6 MB for the second. Compressing each layer
+separately, as a share of the gzipped whole: source text 37.3%, **syntax highlighting 9.4%**,
+the semantic layer (xrefs, symbols, definitions) 51.1%, files and build graph 2.1% —
+highlighting is not the cost, go-to-definition is.
+
+Projected over the repository's real source (151,917 lines — Rust 118,729, C# 23,705,
+TS/TSX 7,762, Python 1,721): **~1.3 M facts, ~190 MB raw, ~17 MB gzipped.**
+
+**The wall is memory, not transfer.** Loading the 207,408-fact corpus in Chrome sat at
+**~520 MB of renderer RSS and never became usable** — three minutes in, the main thread was
+still blocked hard enough that the debugger protocol timed out. That is ~2.5 KB of RSS per
+fact; 1.3 M facts projects to ~3.3 GB, past what wasm32 can address. Eager loading is not a
+size problem to be compressed away, it is the wrong architecture.
+
+**The split is favourable.** The facts needed before a reader clicks anything — file tree,
+project graph, name-to-symbol search — are **64 KB gzipped here, ~409 KB projected for the
+whole repository**. That is the first paint, against the 334 KB already shipped for one
+project. Everything else is per-file and on demand.
+
+### Settled: no new codec, and no new format
+
+**The sealed artifact is the format.** `lsm-tree` already gives sorted blocks, a block index,
+block size configurable *per level*, per-block LZ4, and bloom filters — SQLite's page
+structure with better ergonomics for this job. `sql.js-httpvfs` did not invent a format
+either; it wrote a VFS under the existing engine. The equivalent here is a reader under
+[`FactStore`](crates/fjord-store/src/fact_store.rs), which is two methods — `scan(lo, hi)`
+and `point(id)` — and nothing above that trait changes.
+
+The three codec invariants are what make a remote seek possible at all, and they were written
+for other reasons: order-preserving (I1) means a range is a byte range, self-delimiting (I2)
+means a block can be read without its neighbours, frozen on disk (I3) means the reader cannot
+drift from the writer.
+
+**JSONL is demoted, not deleted.** It stays the portable interchange format because
+`build-corpus.sh` round-trips it and asserts content identity — that is the correctness gate
+for any new reader, already built and already running in CI. What changes is what the site
+*serves*.
+
+**Compression lives in the blocks, never in the transport.** Verified: a range request to
+GitHub Pages carrying `Accept-Encoding: gzip` answers `content-range` over the *compressed*
+representation, and the fragment does not decode. A real browser gets identity and the
+correct bytes — but a design that depends on which variant a CDN chose is one that breaks on
+the next host. LZ4 per block is already in `lsm-tree` and costs nothing to turn on.
+
+### What the precedent already paid for
+
+From [`sql.js-httpvfs`](https://phiresky.github.io/blog/2021/hosting-sqlite-databases-on-github-pages/),
+whose footguns are not worth rediscovering:
+
+- **Pages of 1 KiB, not the 4 KiB default** — per-request waste dominates. `BlockSizePolicy`
+  is already per-level here, which SQLite cannot do: hot levels small, cold levels large.
+- **Three virtual read heads, request size growing exponentially on sequential reads**, which
+  makes a scan cost requests *logarithmic* in its byte length. The single highest-value piece,
+  and about a hundred lines. It took a complex query from ~270 requests to 10–20.
+- **Numbers to beat**: an index lookup cost 7 pages; a complex query 10–20 requests for
+  130–270 KiB over eight million rows; a full-text search ~70 KiB.
+- **"Everything only works well when the indices match the queries."** Already doctrine here —
+  I6, keys designed so a question is a seek, `--expand` priced at a point read — and better
+  placed than SQLite, because a scan is a visible line in the plan. A query that misses its
+  index downloads the database.
+- **Bloom filters**, which SQLite has no equivalent of: an absent key costs zero requests.
+
+### The async boundary is the real cost
+
+WASM has no I/O; every byte comes from the host. Two cases, and they are not equally hard —
+the difference is *where the await sits*.
+
+- **A client talking to a server**: the boundary is at the top of the stack. `query()` returns
+  a promise, and framing and decoding run synchronously between awaits. This is how `wasm/`
+  already works. The protocol helps — frame-based, multiplexed, resumable, one round trip per
+  `take` — so it maps onto promises nearly 1:1. What a browser client actually lacks is a
+  **transport**: a tab cannot open a Unix or TCP socket, and `fjord-client` is written against
+  `UnixStream`/`TcpStream`, so it does not compile for `wasm32` at all. A WebSocket transport
+  is additive to protocol v4, not a change to it.
+- **A store under the executor**: the boundary is at the *bottom*, inside a synchronous
+  `Iterator::next()` several frames deep in a query loop.
+
+Order of attack for the second: **prefetch first** — the planner knows its seek ranges before
+it executes, so resolve them to blocks, fetch, then run the existing synchronous path over a
+warm cache. No executor change, no platform dependency. Then JSPI (standardised April 2025,
+Chrome 137 and Firefox 139; Safari dropped its objection but has not committed), with Asyncify
+as the portable-but-fat fallback and `Atomics.wait` in a worker where COOP/COEP is acceptable.
+
+### Hosting, priced
+
+GitHub Pages honours `Range` — verified, `206` with `accept-ranges: bytes` through Fastly —
+so the constraint that prompted this never required a server. Its limits are 25 MiB per file
+and 20,000 files, and Pages deploys from an uploaded artifact rather than a branch, so nothing
+large is committed. Chunking to stay under the file cap is what `sql.js-httpvfs` does anyway,
+for per-chunk CDN caching.
+
+Cloudflare is the fallback if a single large object is wanted: Pages has unlimited bandwidth
+and requests for static assets on the free plan; R2 has **no egress charge ever**, 10 GB of
+storage and 10 M Class B reads free per month. A ~270 MB artifact and half a million file
+opens a month both sit inside the free tier.
+
+### Not built, and in the way
+
+- **There is no Rust indexer**, and Rust is 78% of this repository's lines. `Boxops.Fjord.Scip`
+  ingests SCIP and rust-analyzer emits it, so the path exists and is unbuilt work rather than
+  a flag. The reader and the producer are independent; neither alone makes this checkout
+  browsable.
+- **The agent worktrees pollute an index of this checkout** — `.claude/worktrees/` is inside
+  the repository, so a walk finds three copies of the solution. An ignore rule before anyone
+  indexes it for real.
+
+### Where to start
+
+Implement `FactStore` over HTTP against the **existing** sealed artifact, behind a flag, and
+measure requests and bytes for one file open against the baseline above. No new format, no
+packaging, no executor change. If the numbers land, the format question is answered and the
+rest is productisation:
+
+- **`@fjord/client`** — the TS-wrapped WASM engine and codec, with the transport pluggable:
+  HTTP-range for a static host, WebSocket for a live server, in-memory for tests and the
+  playground. The static-site story is then a transport rather than a second product.
+- **`@fjord/react`** — the viewer primitives, which are currently welded to this site as
+  `Browse.tsx`, `Code.tsx`, `highlight.ts` and the xref card.
 
 
 ## Gates worth extending
