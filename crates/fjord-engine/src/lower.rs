@@ -27,6 +27,7 @@ use crate::{
         ArithOp, Ast, CompareOp, ExprKind, FieldRef, Literal, NodeId, Query, QueryStmt, SyntaxTree,
         narrow_offset,
     },
+    tagged,
 };
 use fjord_schema::schema::{LocalInterner, Schema, Symbol};
 
@@ -262,6 +263,11 @@ impl Lowering<'_> {
                 Out::Pattern(id)
             }
 
+            Rule::TaggedPrimary => {
+                let id = self.tagged_literal(&children, &span);
+                Out::Pattern(id)
+            }
+
             Rule::StringPrimary => {
                 let id = match self.string_literal(&children, &span) {
                     Ok(symbol) => self.push(ExprKind::Lit(Literal::Str(symbol)), &span),
@@ -485,6 +491,45 @@ impl Lowering<'_> {
 
         match lexer::parse_hex(text) {
             Ok(payload) => self.push(ExprKind::Lit(Literal::Bytes(payload.into())), span),
+            Err(err) => self.literal_error(span, err),
+        }
+    }
+
+    /// `tag "body"` — a tagged literal, resolved against the scalar families.
+    ///
+    /// **Three failures, three different places, and that is the design.** A body that
+    /// will not decode as a string is the string literal's own error; a tag no family
+    /// claims is this function's; a body a family refuses is that family's. None of
+    /// them is a parse error, because the *shape* is always meaningful — which is what
+    /// lets the grammar stay closed while the type vocabulary grows.
+    fn tagged_literal(&mut self, children: &[(CstNode<'_>, Out)], span: &Span) -> NodeId {
+        let (Some(tag), Some(text)) = (
+            token_text(children, Token::LId),
+            token_text(children, Token::String),
+        ) else {
+            return self.hole(span);
+        };
+
+        // Decoded as an ordinary string **first**, so there is one escaping discipline
+        // and not one per family: a family's parser sees the text a reader meant.
+        let body = match lexer::unescape_str(text) {
+            Ok(body) => body,
+            Err(err) => return self.literal_error(span, err),
+        };
+
+        let Some(parse) = tagged::family(tag) else {
+            let message = match tagged::nearest(tag) {
+                Some(near) => format!("no literal tag `{tag}` — did you mean `{near}`?"),
+                None => format!(
+                    "no literal tag `{tag}`; the tags are {}",
+                    tagged::claimed().collect::<Vec<_>>().join(", ")
+                ),
+            };
+            return self.error_node(span, Code::LitUnknownTag, message);
+        };
+
+        match parse(&body) {
+            Ok(literal) => self.push(ExprKind::Lit(literal), span),
             Err(err) => self.literal_error(span, err),
         }
     }
@@ -722,6 +767,102 @@ mod tests {
 
     fn codes(diags: &Diagnostics) -> Vec<&str> {
         diags.codes().collect()
+    }
+
+    /// The message of the first diagnostic, for the one assertion that is about
+    /// wording rather than a code — a suggestion is only worth having if it names
+    /// something.
+    fn first_message(diags: &Diagnostics) -> String {
+        diags
+            .iter()
+            .next()
+            .map(|diagnostic| diagnostic.message.clone())
+            .unwrap_or_default()
+    }
+
+    // ---- tagged literals ----------------------------------------------------
+    //
+    // `tag "body"` is one grammar alternative for every scalar family that has a
+    // canonical text form, added once so the next family — semver, a date — brings a
+    // parser and not a token. The tag is resolved against the families at lowering,
+    // which is what keeps the grammar closed.
+
+    /// **A tagged literal is the value it names, not a wrapper around it.** The tag is
+    /// consumed at lowering, so nothing downstream — the typechecker, the plan, the
+    /// printer — learns that a second spelling exists.
+    #[test]
+    fn a_tagged_literal_lowers_to_the_family_it_names() {
+        assert_eq!(stmt_shape(r#"X where X = bytes "00ff""#), "0x00ff");
+    }
+
+    /// The same value by two spellings is **one** lowered form. If this fails, the
+    /// tagged form has become a distinct node and every later stage has two cases
+    /// where it should have one.
+    #[test]
+    fn a_tagged_literal_and_its_native_spelling_are_one_value() {
+        assert_eq!(
+            stmt_shape(r#"X where X = bytes "80c0""#),
+            stmt_shape("X where X = 0x80c0"),
+        );
+    }
+
+    /// **An unknown tag is a named diagnostic, not a parse error** — the grammar is
+    /// permissive and lowering narrows, which is the whole reason a tag is an ordinary
+    /// identifier rather than a keyword. The suggestion is what makes the diagnostic
+    /// worth having when the tag is a typo.
+    #[test]
+    fn an_unknown_tag_is_diagnosed_by_name_with_a_suggestion() {
+        let (_, diags, _) = lower_source(r#"X where X = bytez "00ff""#);
+
+        assert_eq!(codes(&diags), vec!["lit/unknown-tag"]);
+        assert!(
+            first_message(&diags).contains("bytes"),
+            "a tag one edit from a family must suggest it; got {:?}",
+            first_message(&diags),
+        );
+    }
+
+    /// A tag no family claims **yet** draws the same diagnostic without an invented
+    /// suggestion. `semver` is deliberate: it is the next family, and until it lands
+    /// this is what its spelling does.
+    #[test]
+    fn a_tag_no_family_claims_is_diagnosed_without_inventing_a_suggestion() {
+        let (_, diags, _) = lower_source(r#"X where X = semver "1.2.3""#);
+
+        assert_eq!(codes(&diags), vec!["lit/unknown-tag"]);
+        assert!(
+            !first_message(&diags).contains("did you mean"),
+            "nothing is within an edit of `semver`, so nothing may be offered as a \
+             correction — listing what the tags *are* is a different thing; got {:?}",
+            first_message(&diags),
+        );
+    }
+
+    /// **A malformed body draws the family's own code**, not a generic one. The tag has
+    /// done its job by the time the body is parsed, so a family's diagnostics do not
+    /// depend on which spelling reached them.
+    #[test]
+    fn a_malformed_body_draws_the_familys_own_code() {
+        let cases: [(&str, &str); 3] = [
+            (r#"X where X = bytes "zz""#, "lit/bytes-digit"),
+            (r#"X where X = bytes "fff""#, "lit/bytes-odd-digits"),
+            (r#"X where X = bytes """#, "lit/bytes-empty"),
+        ];
+
+        for (source, code) in cases {
+            let (_, diags, _) = lower_source(source);
+            assert_eq!(codes(&diags), vec![code], "for {source}");
+        }
+    }
+
+    /// **The tag is not a keyword.** It is an ordinary lowercase identifier, so a
+    /// field, a predicate segment or a string spelled `bytes` is unaffected — which is
+    /// what stops the language growing a reserved word every time a family is added.
+    #[test]
+    fn a_tag_name_is_still_usable_as_an_ordinary_name() {
+        let (_, diags, _) = lower_source(r#"X where test.Foo {name = X}; X = "bytes""#);
+
+        assert_eq!(codes(&diags), Vec::<&str>::new());
     }
 
     /// Render a node as `kind(child …)`, so a test states the shape it means.

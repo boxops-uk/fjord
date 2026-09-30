@@ -181,6 +181,7 @@ const fn rule_name(rule: Rule) -> &'static str {
         Rule::StringPrefixPrimary => "StringPrefixPrimary",
         Rule::StringPrimary => "StringPrimary",
         Rule::SubqueryPrimary => "SubqueryPrimary",
+        Rule::TaggedPrimary => "TaggedPrimary",
         Rule::Sum => "Sum",
         Rule::VarPrimary => "VarPrimary",
         Rule::WildcardPrimary => "WildcardPrimary",
