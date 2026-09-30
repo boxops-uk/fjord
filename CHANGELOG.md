@@ -5,6 +5,91 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## 0.6.2 — 2026-09-30
+
+**Ingest stopped decaying as the index grew.** Write throughput fell from 190k facts/s to
+1.2k over 4M facts — a cliff rather than a slope, and it never recovered. Two Bloom filters
+answer the one read the write path does per created fact, and neither was where it needed to
+be: one was being re-read from disk in full on every probe, the other silently vanished on
+the first reopen. Both fixed, both guarded, and the instrument that could have seen either
+one now exists.
+
+**Nothing on disk moved and no published crate changed an API.** The storage codec, the
+format stamp and the wire protocol are `0.6.1`'s; a database written by that version reads
+here, and `fjord-client`, `fjord-db`, `fjord-schema` and `fjord-wire` have exactly the
+surface they had. A patch for that reason. What it does carry is one upgrade action, below.
+
+### ⚠️ Rebuild an index built by an older version
+
+The first of the two fixes is a **keyspace property, chosen when a keyspace is created and
+stored with it**, and the backend does not consult a caller's options for a keyspace it has
+already recovered. So upgrading the binary does not fix an index an older one built: it keeps
+working and keeps being slow. Measured, on a database created before the fix and reopened by
+a fixed binary: **18,805 bytes of filter block read per probe**, unchanged.
+
+Rebuilding is the fix. Sealing an old index still helps *reads* — `finish` major-compacts
+into the last level, whose filters are partitioned and were never affected.
+
+The second fix needs nothing: it is the opener's choice on every open, so it reaches an
+existing database as soon as this version runs.
+
+### A table's filter block stays resident, instead of being re-read on every probe
+
+Interning reads the `keys` tree once per created fact, for a key that is not there, and a
+Bloom filter is what answers that. A filter block is partitioned only from level 3 down and
+pinned only at level 0 — so at levels 1 and 2, the levels a *growing* index lives in, the
+filter is one block covering the whole table, megabytes of it, that has to come through the
+block cache on every probe.
+
+It could not. The cache is sharded, so its admission ceiling is one shard —
+`capacity / (cores * 4) * 0.8` — and a block heavier than that is **dropped on insert rather
+than retained**. The whole filter was re-read and re-checksummed per probe: 89% of the
+process in `pread` and xxh3, and 582 GB read against a 639 MB database.
+
+Sizing the cache up is not the alternative, and this is the part worth keeping: the ceiling
+is per shard and shards scale with cores, so a filter that fits on eight cores is refused on
+sixty-four. A **bigger machine fails sooner and harder**, which is why this was reported from
+a work environment and never seen on the bench box. The `keys` trees pin their filters at
+every level instead. `entities` trees are left alone — read by fact id, always for a row that
+is there, so a filter there would be paid on every insert and collected never.
+
+**Latent upstream, not our fork.** Stock crates.io `fjall` 3.1.8, with neither our fork nor
+Fjord in the picture, reproduces the same curve: 317k facts/s to 1,151.
+
+At 4M facts: **1,218 facts/s before, 81,621 after.** Flat to 6M.
+
+### The memtable filter is asked for on every open, rather than only at create
+
+The other half of the same probe. A filter over the *active* memtable is worth ~11% on a
+fresh database and **1.55×** on a reopened one — 139–151k facts/s against 90–96k, writing a
+million facts into a million-fact database.
+
+It is a runtime-only option, absent from the stored configuration on purpose, because it says
+what a process does with a keyspace rather than what the keyspace is. That made it silently
+losable: asking for it per keyspace held only in the process that *created* the trees, and
+`serve` almost never creates the database it serves. Every open after the first ran without
+it, for the life of the database, with nothing reporting the absence — so the normal path was
+the slow one.
+
+It is asked for at the database now, by keyspace name, on both the create and the recovery
+path. The storage engine's pin moves to `967035d` for `Builder::memtable_filter_for`, which
+mirrors the compaction-filter assigner already there for the same reason, and for
+`Keyspace::memtable_filter_enabled` — an option this easy to lose silently is one a dependant
+should be able to assert rather than assume.
+
+### The write rung that measures a database being written *to*
+
+Every write measurement this project had was either a fresh nine-thousand-fact database or a
+single end-to-end figure, and every read measurement was on a sealed database — which is
+immune to both of these by construction. So the one shape a real ingest has, the index
+growing under the writer, was measured by nothing.
+
+`cargo run --release -p fjord-ingest --example growth_ladder` writes one long stream into one
+database and reports the rate per chunk, with the counters that say why a chunk was slower
+than the one before it. `FROM` starts the key numbering above an existing database's, which
+is the only way to measure a *reopened* one — and not being able to is why an option that
+worked only at create looked like it worked.
+
 ## 0.6.1 — 2026-09-28
 
 **The rest of the product is a download.** `0.6.0` shipped the binary and the book; the
