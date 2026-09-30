@@ -511,7 +511,26 @@ impl FjallDb {
     }
 
     fn open_sized(path: impl AsRef<Path>, cache_bytes: Option<u64>) -> Result<Self, StoreError> {
-        let mut builder = Database::builder(path);
+        let mut builder = Database::builder(path)
+            // **A memtable filter on the `keys` trees, and deliberately not on the other
+            // ones.** Interning asks a `keys` tree "is this key present?" once per fact,
+            // and while an index is being built the answer is no — which the memtable
+            // could only establish by descending its skiplist, since a filter covers the
+            // sealed tables and not the live one. An `entities` tree is the opposite: it
+            // is read by fact id, always for a row that is there, so a filter there would
+            // be paid on every insert and collected never.
+            //
+            // **Asked for here, at the database, rather than in the keyspace's create
+            // options — because the option is runtime-only and the create options are not
+            // consulted for a keyspace that already exists.** Set per keyspace it held in
+            // the process that created the trees and silently vanished on every later
+            // open, so a `serve` of an existing database never had it. Worth ~11% on a
+            // fresh database and **1.55×** on a reopened one — 139–151k facts/s against
+            // 90–96k, writing 1M facts into a 1M-fact database — and the reopened path is
+            // exactly the one that was running without it. Nothing reported its absence.
+            .memtable_filter_for(Arc::new(|name: &str| {
+                name.starts_with(KEYS_KEYSPACE_PREFIX)
+            }));
         if let Some(bytes) = cache_bytes {
             builder = builder.cache_size(bytes);
         }
@@ -768,18 +787,13 @@ impl FjallDb {
         predicate: PredicateId,
     ) -> Result<Predicate, StoreError> {
         let trees = Trees {
-            // **A memtable filter on the keys tree, and deliberately not on the other
-            // one.** Interning asks the keys tree "is this key present?" once per fact,
-            // and while an index is being built the answer is no — which the memtable
-            // could only establish by descending its skiplist, since a filter covers the
-            // sealed tables and not the live one. The `entities` tree is the opposite:
-            // it is read by fact id, always for a row that is there, so a filter there
-            // would be paid on every insert and collected never.
+            // The memtable filter these trees want is asked for database-wide in
+            // `open_sized`, not here — see the comment there for why here is the wrong
+            // place for a runtime-only option.
             keys: db
                 .keyspace(&format!("{KEYS_KEYSPACE_PREFIX}{}", predicate.0), || {
                     KeyspaceCreateOptions::default()
-                        .memtable_filter(true)
-                        // **And the sealed tables' filters stay resident, which the
+                        // **The sealed tables' filters stay resident, which the
                         // backend's default does not do for the two levels an ingest
                         // lives in.** A filter block is partitioned only from level 3
                         // down and pinned only at level 0, so at levels 1 and 2 it is
@@ -1463,6 +1477,21 @@ impl FjallDb {
             .values()
             .map(|predicate| predicate.trees.keys.metrics().filter_block_io())
             .sum()
+    }
+
+    /// Whether every `keys` tree carries a filter over its active memtable.
+    ///
+    /// A witness for an option that is **runtime-only**, and so one a reopen can drop
+    /// with nothing saying so — which is exactly what it used to do. Asserting it is the
+    /// only way to know it is there.
+    #[cfg(any(test, feature = "proptest"))]
+    #[must_use]
+    pub fn memtable_filter_on_keys(&self) -> bool {
+        let predicates = Arc::clone(&self.predicates.read().expect("predicate map lock"));
+
+        predicates
+            .values()
+            .all(|predicate| predicate.trees.keys.memtable_filter_enabled())
     }
 
     /// How many journal files the backend is holding, and what they cost on disk.
@@ -2812,6 +2841,41 @@ mod tests {
         // And the claim keeps growing rather than being rewritten from the data.
         let third = db.put_fact(predicate, &[3], &[]).expect("put");
         assert_eq!(third.sequence(), RESERVATION_CHUNK + 3);
+    }
+
+    /// **A `keys` tree still filters its memtable after a reopen.**
+    ///
+    /// The other half of the probe interning pays per created fact: a filter over the
+    /// *active* memtable, which the pinned table filters do not cover. It is a
+    /// runtime-only option — absent from the stored configuration on purpose, since it
+    /// says what this process does with a keyspace rather than what the keyspace is — and
+    /// the backend does not consult a keyspace's create options once that keyspace has
+    /// been recovered. So asking for it per keyspace held only in the process that
+    /// created the trees: every later open silently ran without it. That is worth ~11% on
+    /// a fresh database and 1.55× on a reopened one, and a reopen is the normal case.
+    ///
+    /// A reopen is the whole test. `serve` almost never creates the database it serves.
+    #[test]
+    fn a_keys_tree_still_filters_its_memtable_after_a_reopen() {
+        let dir = TempDir::new().expect("tempdir");
+        let predicate = PredicateId(0);
+
+        {
+            let db = FjallDb::open(dir.path()).expect("open");
+            db.create_predicates([predicate]).expect("the trees");
+            assert!(
+                db.memtable_filter_on_keys(),
+                "the tree this process created must have the filter it asked for"
+            );
+            db.put_fact(predicate, b"a", &[]).expect("put");
+        }
+
+        let db = FjallDb::open(dir.path()).expect("reopen");
+        assert!(
+            db.memtable_filter_on_keys(),
+            "a recovered `keys` tree must still filter its memtable — this is the one \
+             option that is not stored, so a reopen is where it goes missing silently"
+        );
     }
 
     /// **The interning probe's filter cost does not depend on the block cache.**

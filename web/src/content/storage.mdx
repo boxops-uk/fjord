@@ -181,6 +181,33 @@ A Bloom filter is what makes it flat: the probe asks a filter per table and touc
 data block. So the filter has to be *resident*, and that is a property of where the
 filter lives rather than of how much memory is spare.
 
+Two filters answer that probe, and each had its own way of going missing.
+
+<Callout tone="warn" label={`The memtable's filter is asked for on every open`}>
+
+Sealed tables have filters; the **active memtable** does not, unless the tree asks —
+and while an index is being built, the active memtable is where a probe's answer most
+often has to come from. Without a filter the memtable can only say "not here" by
+descending its skiplist. Asking for one is worth ~11% on a fresh database and
+**1.55×** on a reopened one — 139–151k facts/s against 90–96k, writing a million facts
+into a million-fact database.
+
+It is a runtime-only option: it says what *this process* does with a keyspace rather
+than what the keyspace is, so it is deliberately not part of the stored configuration.
+Which made it silently losable. The backend does not consult a keyspace's create options
+once that keyspace has been recovered, so asking per keyspace held only in the process
+that *created* the trees — and `serve` almost never creates the database it serves. Every
+open after the first ran without it, for the life of the database, with nothing reporting
+the absence.
+
+So it is asked for at the **database**, by keyspace name, which is consulted on both the
+create and the recovery path. `entities` trees still get none: they are read by fact id,
+always for a row that is there, so a filter there would be paid on every insert and
+collected never. The guard is `a_keys_tree_still_filters_its_memtable_after_a_reopen`,
+and a reopen is the whole of it.
+
+</Callout>
+
 <Callout tone="warn" label={`A filter block is pinned, never left to the block cache`}>
 
 The backend partitions a table's filter only from level 3 down, and pins one only at

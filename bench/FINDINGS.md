@@ -1565,6 +1565,15 @@ expire is the shape of each question, which is why they are stated rather than d
   already recovered — so the fix holds across a reopen (the guard asserts exactly that, because
   a server reopens what it serves) and does **not** reach an index built by an older binary,
   which stays at 18,805 bytes of filter read a probe until it is rebuilt.
+  **A second filter on the same probe was missing the same way, and is fixed with it.** The
+  *memtable* filter — worth ~11% on a fresh database and **1.55×** on a reopened one (139–151k
+  facts/s against 90–96k, a million facts written into a million-fact database) — is a
+  runtime-only option, so it is absent
+  from the stored configuration by design; asked for per keyspace it held only in the process
+  that created the trees, and every later open silently ran without it, which is every `serve`
+  of an existing database. It is asked for at the database now, on both the create and the
+  recovery path (`fjall` fork, `967035d`), guarded by
+  `a_keys_tree_still_filters_its_memtable_after_a_reopen`. ✅
   **Left unmeasured, deliberately:** what pinning costs in resident bytes on a server holding
   many open databases, and whether partitioning the filters at every level (which would bound
   the block instead of keeping it resident, but also only for keyspaces created afterwards) is
