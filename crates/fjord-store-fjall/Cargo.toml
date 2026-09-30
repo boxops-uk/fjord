@@ -15,7 +15,14 @@ publish = false
 [features]
 # Mirrors the seam's feature: the shared fixture database and the store-shaped
 # probes reach consumers outside this crate's own `cfg(test)`.
-proptest = ["dep:proptest", "fjord-store/proptest"]
+#
+# **`fjall/metrics` rides with it, and only here.** The backend counts its own block
+# loads behind that feature, which is the only witness that can say whether a filter
+# block was *read* or answered from memory — what
+# `an_interning_probe_reads_a_filter_block_once_however_small_the_cache` asserts. Every
+# enabler of `proptest` in this workspace is a dev-dependency, so a release build of the
+# binary turns it off and pays none of its atomics.
+proptest = ["dep:proptest", "fjord-store/proptest", "fjall/metrics"]
 
 [dependencies]
 fjord-encoding = { path = "../fjord-encoding" }
