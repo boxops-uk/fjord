@@ -216,6 +216,16 @@ pub fn parse_hex(text: &str) -> Result<Vec<u8>, LiteralError> {
         .or_else(|| text.strip_prefix("0X"))
         .ok_or(LiteralError::BytesDigit)?;
 
+    parse_hex_digits(digits)
+}
+
+/// The digits of a hex payload, with **no `0x` in front of them**.
+///
+/// The seam a tagged literal enters through: `bytes "00ff"` carries the digits alone,
+/// where `0x00ff` carries a token that has to have its prefix taken off first. One
+/// body for both, so the two spellings cannot come to disagree about what an odd digit
+/// count or a stray separator means.
+pub fn parse_hex_digits(digits: &str) -> Result<Vec<u8>, LiteralError> {
     let mut nibbles: Vec<u8> = Vec::with_capacity(digits.len());
     for c in digits.chars() {
         if c == '_' {

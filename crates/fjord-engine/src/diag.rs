@@ -113,6 +113,14 @@ pub enum Code {
     LitBytesEmpty,
     LitBytesOddDigits,
     LitBytesDigit,
+    /// A tagged literal — `tag "body"` — whose tag no scalar family claims.
+    ///
+    /// **Here and not in the parser**, which is the whole design of the form: the tag
+    /// is an ordinary identifier, so the grammar accepts any tag and lowering decides
+    /// whether one exists. A keyword per family would grow the reserved vocabulary
+    /// every time a family is added, and would make a field named `semver` a parse
+    /// error in a schema that has nothing to do with versions.
+    LitUnknownTag,
 }
 
 impl Code {
@@ -159,6 +167,7 @@ impl Code {
         Code::LitBytesEmpty,
         Code::LitBytesOddDigits,
         Code::LitBytesDigit,
+        Code::LitUnknownTag,
     ];
 
     /// The rendered code — what a reader sees, and what the corpus asserts on.
@@ -204,6 +213,7 @@ impl Code {
             Code::LitBytesEmpty => "lit/bytes-empty",
             Code::LitBytesOddDigits => "lit/bytes-odd-digits",
             Code::LitBytesDigit => "lit/bytes-digit",
+            Code::LitUnknownTag => "lit/unknown-tag",
         }
     }
 
@@ -250,7 +260,8 @@ impl Code {
             | Code::LitStringEscape
             | Code::LitBytesEmpty
             | Code::LitBytesOddDigits
-            | Code::LitBytesDigit => Kind::Literal,
+            | Code::LitBytesDigit
+            | Code::LitUnknownTag => Kind::Literal,
         }
     }
 
@@ -508,7 +519,8 @@ mod tests {
                 | Code::LitStringEscape
                 | Code::LitBytesEmpty
                 | Code::LitBytesOddDigits
-                | Code::LitBytesDigit => 1,
+                | Code::LitBytesDigit
+                | Code::LitUnknownTag => 1,
             }
         }
 

@@ -33,6 +33,7 @@ pub mod print;
 pub mod program;
 pub mod reorder;
 pub mod syntax;
+pub mod tagged;
 pub mod ty;
 pub mod work_bound;
 
