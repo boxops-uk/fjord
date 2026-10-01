@@ -259,6 +259,24 @@ field that ends the seek prefix becomes a range seek: `Ln >= 1000; Ln < 1200` op
 scan at line 1000 instead of reading up to it. Anywhere else it filters. See
 [Query efficiency](query-efficiency.html#an-order-comparison-seek-or-filter).
 
+**Composites compare too, component by component.** A record compares by its fields in
+*declaration order* — which is the schema's, and the same order the key seeks on — and a
+union by *discriminant then payload*, so every alternative clusters above or below the
+others whatever its payload holds:
+
+```sigla
+X where test.Nested {outer = X}; X > {inner = 1}   → {inner = 7}
+```
+
+The rule is that **a composite is comparable exactly when every component is**, and the
+one component that never is, is a **reference**. A reference would compare by which fact
+was written first, which is an order that moves when a database is rebuilt — so a
+reference, or any record or union holding one at any depth, is refused by name.
+
+That is what makes a composite usable as an ordered domain-specific value: a version, for
+instance, is a record whose field order is its precedence order, and a union of
+`num | text` is how "a numeric identifier sorts below an alphanumeric one" is expressed.
+
 ### Arithmetic: `+` `-`
 
 One value per row, in a register of its own. Not a loop level.
