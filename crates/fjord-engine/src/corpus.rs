@@ -812,6 +812,49 @@ pub const CORPUS: &[Entry] = &[
         "not a hex digit. The lexer's regex takes the whole run so the diagnostic has \
          the literal to point at",
     ),
+    // ---- tagged literals: `tag "body"`, one alternative for every family -------
+    entry(
+        "Y where Y = test.Blob {digest = bytes \"00ff\"}",
+        Supported("test.Blob#3"),
+        "**the tagged spelling of a value that already has one.** `tag \"body\"` is a \
+         single `primary` alternative — `LId String`, no new token — added once so \
+         that the next scalar family brings a parser rather than a grammar change. \
+         `bytes` is its first client and the tag is consumed at lowering, so this is \
+         the same literal `0x00ff` is",
+    ),
+    entry(
+        "X where test.Blob {digest = X}; X = bytes \"80c0\"",
+        Supported("0x80c0"),
+        "the tagged form reached by a **bind** rather than spliced into a key, which \
+         is where a second lowering path would show up as a different answer",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = bytez \"00ff\"}",
+        Diagnosed(Code::LitUnknownTag),
+        "a **misspelled tag**. Diagnosed at lowering with a suggestion rather than \
+         refused by the parser — the tag is an ordinary identifier, which is what \
+         keeps it out of the keyword vocabulary and the grammar closed",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = semver \"1.2.3\"}",
+        Diagnosed(Code::LitUnknownTag),
+        "a tag **no family claims yet**, and deliberately the next one: until `semver` \
+         lands this is what its spelling does, and the day it lands this entry moves \
+         to `Supported` rather than being written from scratch",
+    ),
+    entry(
+        "Y where Y = test.Blob {digest = bytes \"zz\"}",
+        Diagnosed(Code::LitBytesDigit),
+        "a malformed **body** draws the family's own code, not a generic one: the tag \
+         has already resolved, so which spelling reached the parser changes nothing",
+    ),
+    entry(
+        "X where test.Foo {name = bytes \"00\"}",
+        Diagnosed(Code::RejectTypeMismatch),
+        "a tag naming a family the field is not. This is a **typecheck** failure and \
+         not a parse one — the shape is meaningful, the use is not, which is the \
+         permissive-grammar rule applied to a tag",
+    ),
     entry(
         "Y where Y = test.Blob {digest = \"00ff\"}",
         Diagnosed(Code::RejectTypeMismatch),
@@ -1541,6 +1584,11 @@ mod tests {
             "04c12d148fe1ff53",
             "d893681e33a2b227",
             "85ed77c455b6e09d",
+            "1fc936d8e6cfee45",
+            "3b926e76df4bcaac",
+            // The tagged spelling of the two above it. **Identical fingerprints, and
+            // that is the assertion**: `bytes "00ff"` and `0x00ff` are one plan, so
+            // the tag is gone by the time anything downstream sees the query.
             "1fc936d8e6cfee45",
             "3b926e76df4bcaac",
             "403111a87c66ed0a",

@@ -454,6 +454,10 @@ mod tests {
             "05",
             "0210",
             "05",
+            // The tagged spelling of the two above it — the same descriptors, because
+            // the tag is consumed at lowering and the wire never learns of it.
+            "0210",
+            "05",
             "unprojectable:a head whose type is still undetermined",
             "01",
             "01",

@@ -68,6 +68,16 @@ primary:
 // `0x…`. Its own alternative, one token of lookahead like every other primary —
 // widening the string rule would make every existing string literal ambiguous.
 | Hex @bytes_primary
+// `tag "body"` — the tagged literal, and the **last literal-shaped alternative this
+// grammar needs**. Every scalar family whose values are text with a grammar reaches
+// sigla through this one rule: the tag is an ordinary `LId`, resolved at lowering
+// against `tagged::FAMILIES`, so a new family brings a parser and not a token.
+//
+// LL(1) on one token, and it is the only alternative here that begins with `LId` —
+// which is what makes it unambiguous against every other primary. A bare `LId` is not
+// a primary in sigla: variables are `UId`, and a lowercase identifier otherwise
+// appears only after a `.` or before a `=`.
+| LId String @tagged_primary
 | String ('..' @string_prefix_primary
          | '~' [Nat] @string_fuzzy_primary
          | '~<' [Nat] @string_fuzzy_prefix_primary

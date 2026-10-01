@@ -1882,6 +1882,26 @@ mod tests {
         );
     }
 
+    /// **A tagged literal prints as its family's canonical spelling, not as it was
+    /// written.** `bytes "00ff"` is an alias; the value it names has one printed form,
+    /// and that form re-parses. This is the property the whole mechanism is shaped
+    /// around — without it `print::literal` would be the one place the printer emits
+    /// text sigla cannot read back — so it is asserted for the first family rather
+    /// than left to the family that will need it most.
+    #[test]
+    fn a_tagged_literal_prints_as_its_familys_canonical_spelling() {
+        assert_eq!(
+            printed(r#"X where X = test.Blob {digest = bytes "00ff"}"#),
+            "X where X = test.Blob {digest = 0x00ff}"
+        );
+        // And what it printed is what the native spelling prints, so the two spellings
+        // converge rather than round-tripping to two different texts.
+        assert_eq!(
+            printed(r#"X where X = test.Blob {digest = bytes "00ff"}"#),
+            printed("X where X = test.Blob {digest = 0x00ff}")
+        );
+    }
+
     #[test]
     fn every_construct_prints() {
         assert_eq!(printed("X where X = never"), "X where X = never");

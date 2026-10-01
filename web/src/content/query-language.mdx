@@ -392,6 +392,46 @@ X where X = test.Name "ann"~1                → test.Name#2; test.Name#3
 
 Underscores separate digits. Malformed literals are rejected by name (`lit/…`).
 
+#### Tagged literals: `tag "body"`
+
+A scalar family whose values are **text with a grammar** reaches sigla through one
+spelling, written `tag "body"` — the tag is the type's own name:
+
+```sigla
+X where X = test.Blob {digest = bytes "00ff"}  → test.Blob#3
+X where X = test.Blob {digest = 0x00ff}        → test.Blob#3
+```
+
+Those two are the **same query**: the tag is resolved when the query is lowered, so
+nothing after that — the typechecker, the plan, the wire, the printer — learns that a
+second spelling exists. Printing either one emits `0x00ff`, the family's canonical form.
+
+The point of the form is that it is written **once**. `bytes` had a literal of its own
+first (`0x…`), and every family after it would have needed the same: a token, a grammar
+alternative, an ambiguity to reason about, and a spelling that can never be withdrawn.
+A tagged literal costs a family none of that — it brings a parser for its body and its
+own `lit/…` codes, and the grammar does not move.
+
+The tag is an ordinary name rather than a keyword, so a field, a predicate or a string
+called `bytes` is unaffected, and the vocabulary does not grow into the language as
+types are added. A tag no family claims is `lit/unknown-tag`, with a suggestion when it
+is close to one that exists; a tag naming the wrong family for the field is an ordinary
+type error, because the shape is meaningful and only the use is wrong.
+
+<Callout tone="note" label={`Three rules, for whoever adds the next family`}>
+
+**The literal is text; the stored value is structure.** Two spellings of one value must
+lower to one value, or the database interns them as two facts.
+
+**The ordering is over the structure, never over the text.** A timestamp is the trap
+worth stating: ISO 8601 sorts chronologically only over a normalised subset, and
+`…+01:00` is an hour *earlier* than `…Z` while sorting *later*.
+
+**Say, per form, whether a spec's "invalid" means reject or normalise** — that decides
+whether decoding what was encoded gives back the input *text* or only the same *value*.
+
+</Callout>
+
 ## References
 
 **Following** a reference compares against an id already bound. It reads nothing:
