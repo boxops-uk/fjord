@@ -1,4 +1,5 @@
 use fjord_ingest::IngestError;
+use fjord_schema::schema::{PredicateId, Schema};
 use fjord_wire::WireError;
 use thiserror::Error;
 
@@ -260,5 +261,39 @@ impl ServerError {
             self,
             ServerError::Io(_) | ServerError::Wire(_) | ServerError::Protocol(_)
         )
+    }
+}
+
+/// A server error **rendered for a client**, with predicate ids resolved to names.
+///
+/// **Why this is not the error's `Display`.** A `PredicateId` is a number the database
+/// assigned; the name it stands for lives in the schema, and the layers that raise these
+/// errors deliberately do not hold one — `FactSink` is a bytes seam and `fjord-store` is
+/// below the schema entirely. The server is the first layer that has both the error and
+/// the schema, and it is also the one talking to somebody who will read the sentence.
+///
+/// The number stays out of the message rather than sitting beside the name: a reader who
+/// has the id and not the name is where [#82] started, and nothing acts on an id that
+/// could not act on a name.
+///
+/// [#82]: https://github.com/boxops-uk/fjord/issues/82
+#[must_use]
+pub fn for_client(error: &ServerError, schema: &Schema) -> String {
+    let named = |predicate: PredicateId| {
+        schema
+            .get(predicate)
+            .and_then(|declared| declared.name())
+            .map_or_else(|| format!("predicate {}", predicate.0), str::to_owned)
+    };
+
+    match error {
+        ServerError::Ingest(IngestError::Conflict {
+            predicate,
+            existing,
+        }) => format!(
+            "{} already holds a different fact under this key, as {existing:?}",
+            named(*predicate)
+        ),
+        other => other.to_string(),
     }
 }

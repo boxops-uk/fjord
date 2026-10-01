@@ -476,13 +476,23 @@ public sealed class FactSink : IDisposable
     /// </remarks>
     private InvalidOperationException Failed()
     {
+        var failure = Volatile.Read(ref _failure);
         var predicate = Volatile.Read(ref _failedOn);
-        var where = predicate >= 0 && predicate < _schema.Predicates.Count
+
+        // **A server's refusal names its own subject, so this must not name a second
+        // one.** `_failedOn` is the predicate the writer was on when it caught the
+        // failure, which is the right answer for a transport fault and the wrong answer
+        // for a rejection: a write is pipelined, so the frame carrying one can be read on
+        // a later call than the one that sent the offending block. Naming the writer's
+        // current predicate then contradicts the server in the same sentence — which is
+        // how #82 came to be investigated against the wrong predicate.
+        var guessing = failure is FjordServerException;
+
+        var where = !guessing && predicate >= 0 && predicate < _schema.Predicates.Count
             ? $" while writing {_schema.NameOf((uint)predicate)}"
             : string.Empty;
 
-        return new InvalidOperationException(
-            $"the fact writer failed{where}", Volatile.Read(ref _failure));
+        return new InvalidOperationException($"the fact writer failed{where}", failure);
     }
 
     public void Dispose()
