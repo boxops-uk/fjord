@@ -92,7 +92,8 @@ be matched to a checkout by inference.
 |---|---|
 | `msbuild.Solution` | the solution this index was built from, where the run resolved one — see below |
 | `msbuild.SolutionToProject` · `msbuild.ProjectToSolution` | its membership, both ways, one edge each per project the solution lists |
-| `msbuild.Project` | a `.csproj`, with what MSBuild evaluated on the value side: SDK, output type, assembly name, root namespace, platform |
+| `msbuild.Project` | a `.csproj`, and nothing else — the identity every observer of the project agrees on |
+| `msbuild.ProjectEvaluated` | what MSBuild resolved for it: target framework, SDK, output type, assembly name, root namespace, platform. Written only by a run that design-time built the project |
 | `msbuild.Assembly` · `msbuild.Compilation` | the assembly a project **produces**, and the crossing of the two per target framework. Only a produced one: an assembly referenced from outside the graph is not named here at all |
 | `msbuild.SourceFileToProject` · `msbuild.ProjectToSourceFile` | both directions, because neither is a seek from the other |
 | `msbuild.ProjectReference` · `msbuild.ProjectReferencedBy` | the project graph, both ways: "what does this need" and "who needs this" |
@@ -280,6 +281,18 @@ contradict `config.Setting {dimension = "language"}`, which says what the semant
 cover; `--no-lines` and `--styles` are switches over that same table, and Roslyn's classifier
 has no document for a file no compilation contains. What makes the fact readable is the two
 edges, through which its `file` joins to exactly what a project's does.
+
+**What MSBuild evaluated is a predicate of its own, because not every observer can see it.**
+A run reaches a project two ways: it design-time builds it, or it discovers it by glob and
+reads the path. Both can key an `msbuild.Project`; only the first can say what SDK the project
+uses. While the evaluated attributes were `msbuild.Project`'s value side, the second kind of
+observer wrote `nothing` for each — which is a *claim* that the project has no SDK, not an
+abstention — and indexing two projects of one solution into one database was refused on the
+second. `src.MaybeString` does not fix that: optionality in the type does not make a producer
+abstain, and **the only abstention is not writing the fact**. So the attributes moved into
+`msbuild.ProjectEvaluated`, keyed on the project, and a run that merely discovered a project
+writes its identity and stops there. The same rule decides `codemarkup.SymbolInfo`'s `doc`:
+see `Indexer`.
 
 **A project the solution lists that this index cannot key gets no edge, and the run says so.**
 Both edges are references to an `msbuild.Project`, and a reference to a fact that does not

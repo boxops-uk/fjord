@@ -63,9 +63,13 @@ public sealed class ObserverAgreementTests
             "{k = {f = P, l = L}, v = X.value} "
             + "where X = src.FileLineStyles {file = src.File P, line = L}"),
 
-        // A project, named by the path of its project file.
-        ("msbuild.Project", Reach.Shared,
-            "{k = P, v = X.value} where X = msbuild.Project {file = src.File P}"),
+        // A project's evaluation, named by the path of its project file. **Disjoint by
+        // nature**: a run evaluates the projects it builds, so two single-project runs
+        // evaluate different ones — and where they do overlap, as a whole-solution run
+        // does with each, the descriptions must agree.
+        ("msbuild.ProjectEvaluated", Reach.Disjoint,
+            "{k = P, v = X.value} where X = msbuild.ProjectEvaluated "
+            + "{project = msbuild.Project {file = src.File P}}"),
         ("msbuild.ProjectCompilation", Reach.Shared,
             "{k = {p = P, f = F}, v = X.value} where X = msbuild.ProjectCompilation "
             + "{project = msbuild.Project {file = src.File P}, framework = F}"),

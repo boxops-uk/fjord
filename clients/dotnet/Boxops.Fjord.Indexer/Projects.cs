@@ -21,26 +21,44 @@ internal sealed class ProjectInfo(string path)
 
     private FjordFact? _fact;
 
+    private FjordFact? _evaluated;
+
     /// <summary>
-    /// This project as an <c>msbuild.Project</c> fact — its file, with everything MSBuild
-    /// evaluated on the value side.
+    /// This project as an <c>msbuild.Project</c> fact — its file, and nothing else.
     /// </summary>
     /// <remarks>
-    /// <b>Built on first read, which must be after refinement.</b> The value side carries
-    /// what a design-time build resolved, so a fact built before <c>Refine</c> would cache
-    /// what the XML could only approximate. Nothing reads it during loading; the walk is
-    /// the first caller.
+    /// Key-only, so nothing about it depends on whether this project was evaluated —
+    /// which is the point. What MSBuild resolved is <see cref="Evaluated"/>.
     /// </remarks>
-    public FjordFact Fact => _fact ??= DotnetIndex.ProjectFact(
-        DotnetIndex.FileFact(Path),
-        platformTarget: PlatformTarget,
-        // One target framework, or none: a multi-targeting project resolves several and
-        // `msbuild.ProjectCompilation` is what carries the crossing per framework.
-        targetFramework: Frameworks.Count == 1 ? Frameworks[0] : null,
-        sdk: Sdk,
-        outputType: OutputType,
-        assemblyName: Assembly,
-        rootNamespace: RootNamespace);
+    public FjordFact Fact => _fact ??= DotnetIndex.ProjectFact(DotnetIndex.FileFact(Path));
+
+    /// <summary>
+    /// What MSBuild resolved for this project, or <c>null</c> if nothing evaluated it.
+    /// </summary>
+    /// <remarks>
+    /// <b>Built on first read, which must be after refinement</b>, because it carries what
+    /// a design-time build resolved and one built before <c>Refine</c> would cache what the
+    /// XML could only approximate. Nothing reads it during loading; the walk is the first
+    /// caller.
+    ///
+    /// <b><c>null</c> when <see cref="Built"/> is false, which is the whole of
+    /// <a href="https://github.com/boxops-uk/fjord/issues/82">#82</a>'s fix for this
+    /// predicate.</b> A project found by a glob and never evaluated has nothing to say
+    /// here, and saying `nothing` for each field instead would be a claim that MSBuild
+    /// resolved nothing — which collides with the answer of a run that evaluated it.
+    /// </remarks>
+    public FjordFact? Evaluated => !Built
+        ? null
+        : _evaluated ??= DotnetIndex.ProjectEvaluatedFact(
+            Fact,
+            platformTarget: PlatformTarget,
+            // One target framework, or none: a multi-targeting project resolves several and
+            // `msbuild.ProjectCompilation` is what carries the crossing per framework.
+            targetFramework: Frameworks.Count == 1 ? Frameworks[0] : null,
+            sdk: Sdk,
+            outputType: OutputType,
+            assemblyName: Assembly,
+            rootNamespace: RootNamespace);
 
     /// <summary>What MSBuild evaluated, where a design-time build answered.</summary>
     public string? PlatformTarget { get; set; }
@@ -303,6 +321,34 @@ internal sealed class ProjectIndex
     }
 
     /// <summary>
+    /// Whether some project in this run produces the assembly called
+    /// <paramref name="assembly"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The authority test for a description.</b> A symbol reached through metadata is
+    /// described by whichever compilation can see it — but if a project *in this run*
+    /// produces its assembly, that project holds the source and its own walk writes the
+    /// full description. A second, narrower description of the same symbol is the
+    /// same key with a different value, which `ops-I5` refuses
+    /// (<a href="https://github.com/boxops-uk/fjord/issues/82">#82</a>).
+    /// </para>
+    /// <para>
+    /// <b>Every project, not every walked project.</b> Asking what has been walked so far
+    /// would make the answer depend on the order projects were handed over, and two runs
+    /// over one solution would then write different facts — which is what `ops-I4` forbids.
+    /// </para>
+    /// <para>
+    /// Every project has an assembly name whether or not it was evaluated, because the
+    /// model defaults it to the project file's own base name — which is what MSBuild
+    /// defaults `AssemblyName` to.
+    /// </para>
+    /// </remarks>
+    public bool Produces(string assembly) =>
+        _byPath.Values.Any(project =>
+            string.Equals(project.Assembly, assembly, StringComparison.Ordinal));
+
+    /// <summary>
     /// Write the build layer itself: the solution where the run resolved one, the
     /// projects, the assemblies, the compilations that pair them, and the two dependency
     /// graphs.
@@ -327,6 +373,12 @@ internal sealed class ProjectIndex
         foreach (var project in _byPath.Values)
         {
             emit(DotnetIndex.Project, project.Fact);
+
+            // Only where something evaluated it — see `Project.Evaluated`.
+            if (project.Evaluated is { } evaluated)
+            {
+                emit(DotnetIndex.ProjectEvaluated, evaluated);
+            }
 
             var assembly = DotnetIndex.AssemblyFact(project.Assembly);
             emit(DotnetIndex.Assembly, assembly);
@@ -495,9 +547,11 @@ internal sealed class ProjectIndex
             project.Assembly = assembly;
         }
 
-        // The rest of `msbuild.Project`'s value side. Each stays null where MSBuild left
-        // it unset, which is a `nothing` rather than an empty string — the schema's six
-        // optionals exist because "unset" and "empty" are different answers.
+        // The rest of `msbuild.ProjectEvaluated`'s value side. Each stays null where
+        // MSBuild left it unset, which is a `nothing` rather than an empty string — the
+        // schema's six optionals exist because "unset" and "empty" are different answers.
+        // They are only ever written for a project a run evaluated, which is why reaching
+        // here at all is what `Evaluated` keys on.
         project.PlatformTarget = Property(result, "PlatformTarget");
         project.Sdk = Property(result, "UsingMicrosoftNETSdk") == "true"
             ? Property(result, "MSBuildProjectSdk") ?? "Microsoft.NET.Sdk"

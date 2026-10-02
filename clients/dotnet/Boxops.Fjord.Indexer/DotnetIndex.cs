@@ -30,7 +30,7 @@ internal static class DotnetIndex
     /// Carried, not computed — the whole schema's, not this partial statement's. A stale
     /// one fails the handshake loudly, which is the assertion it is for.
     /// </remarks>
-    public const ulong SchemaFingerprint = 0x4471c3f35a45b7da;
+    public const ulong SchemaFingerprint = 0x29c029f2f24572e1;
 
     // ---- src: the shared source layer ------------------------------------------------
 
@@ -114,7 +114,21 @@ internal static class DotnetIndex
     public const uint Relation = 63;
     public const uint RelationOf = 64;
 
-    /// <summary>Every predicate id this client holds, in schema order.</summary>
+    /// <summary>
+    /// <c>msbuild.ProjectEvaluated</c> — <b>appended</b>, so every id above keeps its
+    /// number. The ids here are positions in this client's own list and the server's may
+    /// differ, but a test asserting one would still have to be rewritten for no reason a
+    /// reader would see.
+    /// </summary>
+    public const uint ProjectEvaluated = 65;
+
+    /// <summary>Every predicate id this client holds, in id order.</summary>
+    /// <remarks>
+    /// Id order was schema order until a predicate was appended rather than inserted, so
+    /// the two now differ by one row — see <see cref="ProjectEvaluated"/>.
+    /// <c>PredicateCensusTests</c> is what keeps this list and the schema the same set:
+    /// kept by hand beside each other, either can be edited without the other.
+    /// </remarks>
     public static readonly uint[] Predicates =
     [
         File, Symbol, FileLanguage, FileDigest, FileOrigin, FileInfo, FileLine,
@@ -130,6 +144,8 @@ internal static class DotnetIndex
         EntityRef, SymbolOf, DefinitionBySymbol,
         MarkupDefinition, SymbolInfo, FileDefinition, FileXRef, SymbolXRef,
         FileLocalXRef, SearchEntry, SymbolByName, Relation, RelationOf,
+        // Away from its `msbuild` group because its id is appended, not inserted.
+        ProjectEvaluated,
     ];
 
     /// <summary>
@@ -328,6 +344,7 @@ internal static class DotnetIndex
         "codemarkup.SymbolByName",
         "codemarkup.Relation",
         "codemarkup.RelationOf",
+        "msbuild.ProjectEvaluated",
     ];
 
     public static readonly FjordSchema Schema = new([
@@ -385,7 +402,7 @@ internal static class DotnetIndex
         // ---- msbuild -----------------------------------------------------------------
         //
         // **A project is its project file and nothing else.** Everything MSBuild
-        // *evaluated* is on the value side, so re-evaluating one project under a
+        // *evaluated* is `msbuild.ProjectEvaluated`, so re-evaluating one project under a
         // different SDK does not mint a second — which is the defect the old build layer
         // had, and the reason every reverse question below is its own predicate rather
         // than a sort of the forward one.
@@ -394,14 +411,7 @@ internal static class DotnetIndex
             FjordType.Rec(("file", FjordType.Reference(File))), null),
 
         new FjordPredicate("msbuild.Project",
-            FjordType.Rec(("file", FjordType.Reference(File))),
-            FjordType.Rec(
-                ("platformTarget", MaybeString),
-                ("targetFramework", MaybeString),
-                ("sdk", MaybeString),
-                ("outputType", MaybeString),
-                ("assemblyName", MaybeString),
-                ("rootNamespace", MaybeString))),
+            FjordType.Rec(("file", FjordType.Reference(File))), null),
 
         new FjordPredicate("msbuild.Assembly",
             FjordType.Rec(("name", FjordType.String)), null),
@@ -706,6 +716,16 @@ internal static class DotnetIndex
             ("to", FjordType.Reference(Symbol)),
             ("kind", RelationKindUnion),
             ("from", FjordType.Reference(Symbol))), null),
+
+        new FjordPredicate("msbuild.ProjectEvaluated",
+            FjordType.Rec(("project", FjordType.Reference(Project))),
+            FjordType.Rec(
+                ("platformTarget", MaybeString),
+                ("targetFramework", MaybeString),
+                ("sdk", MaybeString),
+                ("outputType", MaybeString),
+                ("assemblyName", MaybeString),
+                ("rootNamespace", MaybeString))),
     ], SchemaFingerprint);
 
     /// <summary>
@@ -1014,19 +1034,37 @@ internal static class DotnetIndex
         new(Solution, FjordValue.Rec(FjordValue.Of(FjordRef.To(file))));
 
     /// <summary>
-    /// <c>msbuild.Project</c>: the project file is the identity, and everything MSBuild
-    /// evaluated is a value.
+    /// <c>msbuild.Project</c>: the project file is the identity, and the whole of it.
     /// </summary>
-    public static FjordFact ProjectFact(
-        FjordFact file,
+    /// <remarks>
+    /// Key-only since <a href="https://github.com/boxops-uk/fjord/issues/82">#82</a>. What
+    /// MSBuild resolved is <see cref="ProjectEvaluatedFact"/>, written only by a run that
+    /// evaluated the project — a value side here obliged every observer to fill one, and a
+    /// run that never asked MSBuild filled it with `nothing`, which collides with the
+    /// answer of a run that did.
+    /// </remarks>
+    public static FjordFact ProjectFact(FjordFact file) =>
+        new(Project, FjordValue.Rec(FjordValue.Of(FjordRef.To(file))));
+
+    /// <summary>
+    /// <c>msbuild.ProjectEvaluated</c>: what MSBuild resolved for a project.
+    /// </summary>
+    /// <remarks>
+    /// <b>Only a run that evaluated the project may write this.</b> Two evaluations of one
+    /// project still meet one key with two values and are still refused — that is
+    /// `ops-I4` and a checkout compiling twice wants two databases — but a run that never
+    /// evaluated it is no longer one of the two.
+    /// </remarks>
+    public static FjordFact ProjectEvaluatedFact(
+        FjordFact project,
         string? platformTarget = null,
         string? targetFramework = null,
         string? sdk = null,
         string? outputType = null,
         string? assemblyName = null,
         string? rootNamespace = null) =>
-        new(Project,
-            FjordValue.Rec(FjordValue.Of(FjordRef.To(file))),
+        new(ProjectEvaluated,
+            FjordValue.Rec(FjordValue.Of(FjordRef.To(project))),
             FjordValue.Rec(
                 Maybe(platformTarget),
                 Maybe(targetFramework),

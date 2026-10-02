@@ -21,14 +21,41 @@ schema msbuild {
   # A `.sln` that exists in the repository.
   predicate Solution : { file : src.File }
 
-  # An evaluated MSBuild project, identified by its project file. The value is what MSBuild
-  # resolved for the configuration this database was built under — `config.Setting
-  # {dimension = "framework"}` and friends record what that was, because a project resolved
-  # *nearest-compatible* records its own target here and not the resolution root.
+  # An MSBuild project, identified by its project file and **nothing else**. Key-only: that
+  # this project file exists is all any observer can say from the path alone, and every
+  # observer says it the same way.
+  #
+  # What MSBuild *resolved* used to be this predicate's value side, and moving it to
+  # `ProjectEvaluated` is the whole of the fix for
+  # [#82](https://github.com/boxops-uk/fjord/issues/82). A value side here forced every
+  # observer to fill one: a run that design-time-built the project answered from MSBuild,
+  # and a run that merely found it by a glob answered `nothing` — which is not "I did not
+  # ask", it is "MSBuild resolved nothing", and the two collide under one key. A producer
+  # cannot abstain from a value side, so the fields had to move rather than become more
+  # optional; they were already optional and that did not help.
+  #
+  # A project discovered but never evaluated therefore still appears — which is what
+  # "the build layer is every project under the source" means — and simply has no
+  # `ProjectEvaluated` beside it.
+  predicate Project : { file : src.File }
+
+  # What MSBuild resolved for a project, under the configuration this database was built
+  # for — `config.Setting {dimension = "framework"}` and friends record what that was,
+  # because a project resolved *nearest-compatible* records its own target here and not the
+  # resolution root.
+  #
+  # **Written only by a run that evaluated the project.** That is the authority rule: a
+  # design-time build is the only thing that knows these, so an observer that did not run
+  # one writes nothing here rather than guessing.
+  #
+  # Two *evaluations* of one project still meet one key with two values and are still
+  # refused, which is `ops-I4`'s rule and not this schema's to soften: a checkout that
+  # compiles twice wants two databases, which is the decision `--framework` already makes.
+  # What changed is only that a run which never evaluated it is no longer one of the two.
   #
   # Every field is optional because MSBuild may leave it unset.
-  predicate Project :
-    { file : src.File }
+  predicate ProjectEvaluated :
+    { project : Project }
     -> { platformTarget  : src.MaybeString
        , targetFramework : src.MaybeString
        , sdk             : src.MaybeString

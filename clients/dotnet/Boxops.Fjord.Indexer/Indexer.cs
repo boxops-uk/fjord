@@ -1069,7 +1069,17 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
             //
             // Written once per id: a run meets `IDisposable` wherever it is used, and
             // every one of those would be the same key offered again.
-            if (outside && _described.TryAdd(scip, true))
+            // **Described only where nobody in this run owns it.** A symbol from metadata
+            // whose assembly a project here produces belongs to that project's walk: that
+            // one has the source, so it has the documentation and the modifiers this view
+            // does not, and writing a narrower description under the same key is the
+            // conflict #82 reports. An assembly nothing here produces — a package, the BCL
+            // — is described by every observer identically, so it dedups and is kept: that
+            // is what `Loader.Document` attaches the XML providers for.
+            var owner = symbol.ContainingAssembly?.Identity.Name;
+            var ownedElsewhere = owner is not null && projects.Produces(owner);
+
+            if (outside && !ownedElsewhere && _described.TryAdd(scip, true))
             {
                 var described = symbol.OriginalDefinition;
 

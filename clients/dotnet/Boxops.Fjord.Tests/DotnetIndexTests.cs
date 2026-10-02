@@ -171,16 +171,20 @@ public sealed class DotnetIndexTests
         var sourceFile = DotnetIndex.FileFact("App/Program.cs");
 
         var solution = DotnetIndex.SolutionFact(solutionFile);
-        var app = DotnetIndex.ProjectFact(
-            appFile,
+        var app = DotnetIndex.ProjectFact(appFile);
+        var lib = DotnetIndex.ProjectFact(libFile);
+
+        // What MSBuild resolved is its own predicate, written only where something
+        // evaluated the project. Every field MSBuild left unset is `nothing`, which is a
+        // different fact from the empty string and the reason it is six `MaybeString`s.
+        var appEvaluated = DotnetIndex.ProjectEvaluatedFact(
+            app,
             targetFramework: "net10.0",
             sdk: "Microsoft.NET.Sdk",
             outputType: "Exe",
             assemblyName: "App",
             rootNamespace: "Boxops.App");
-        // Every field MSBuild left unset is `nothing`, which is a different fact from the
-        // empty string and the reason the value side is six `MaybeString`s.
-        var lib = DotnetIndex.ProjectFact(libFile, targetFramework: "net10.0");
+        var libEvaluated = DotnetIndex.ProjectEvaluatedFact(lib, targetFramework: "net10.0");
         // **One assembly, and it is `App`'s own output.** `msbuild.Assembly` names only
         // what a project in the graph produces, so a framework assembly written here
         // would be a fact the schema no longer means — there is no edge to reach it by.
@@ -190,6 +194,8 @@ public sealed class DotnetIndexTests
         Write(connection, DotnetIndex.Solution, solution);
         Write(connection, DotnetIndex.Project, app);
         Write(connection, DotnetIndex.Project, lib);
+        Write(connection, DotnetIndex.ProjectEvaluated, appEvaluated);
+        Write(connection, DotnetIndex.ProjectEvaluated, libEvaluated);
         Write(connection, DotnetIndex.Assembly, assembly);
         Write(connection, DotnetIndex.Package, package);
         Write(connection, DotnetIndex.SolutionToProject, DotnetIndex.SolutionToProjectFact(solution, app));
@@ -206,7 +212,8 @@ public sealed class DotnetIndexTests
         foreach (var query in new[]
         {
             "S where msbuild.Solution {file = S}",
-            "X.value where X = msbuild.Project {file = F}",
+            "F where msbuild.Project {file = F}",
+            "X.value where X = msbuild.ProjectEvaluated {project = P}",
             "A where msbuild.Assembly {name = A}",
             "{n = N, v = V} where msbuild.Package {name = N, version = V}",
             "{s = S, p = P} where msbuild.SolutionToProject {solution = S, project = P}",
@@ -239,17 +246,18 @@ public sealed class DotnetIndexTests
             [("App/App.csproj", "Lib/Lib.csproj")],
             ProjectPairs(connection, "msbuild.ProjectReferencedBy {from = P, to = Q}"));
 
-        // **One project file, one project.** Two evaluations differing only in what
-        // MSBuild resolved reach the same key, because the key is the file — this is the
-        // defect `msbuild.Project` exists to fix, asserted rather than described.
-        var reEvaluated = DotnetIndex.ProjectFact(
-            libFile,
+        // **One project, one evaluation.** Two evaluations differing only in what MSBuild
+        // resolved reach the same key, because the key is the project — which is the
+        // property `msbuild.Project`'s file-only key bought and `ProjectEvaluated` keeps.
+        // Asserted rather than described.
+        var reEvaluated = DotnetIndex.ProjectEvaluatedFact(
+            lib,
             targetFramework: "net9.0",
             sdk: "Microsoft.NET.Sdk");
 
         // Identical is free — the dedup a producer relies on for keeping no book of what
         // it has written.
-        var again = connection.Write(DotnetIndex.Project, [lib]);
+        var again = connection.Write(DotnetIndex.ProjectEvaluated, [libEvaluated]);
         Assert.Equal(0UL, again.Created);
         Assert.True(again.Deduped >= 1);
 
@@ -258,7 +266,7 @@ public sealed class DotnetIndexTests
         // second SDK from minting a second project — and a genuine disagreement about one
         // project file is loud.
         Assert.Throws<FjordServerException>(() =>
-            connection.Write(DotnetIndex.Project, [reEvaluated]));
+            connection.Write(DotnetIndex.ProjectEvaluated, [reEvaluated]));
     }
 
     /// <summary>

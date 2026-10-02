@@ -555,24 +555,41 @@ pub struct PackageRef {
 ///
 /// If no corpus is loaded, or a query fails.
 pub fn project(path: &str) -> Result<Option<Project>, String> {
-    let rows = crate::corpus::values(
+    // **The identity and the evaluation are two facts, so this is two queries.** Every
+    // observer of a project can read its path; only the run that design-time built it can
+    // read what MSBuild resolved. So `msbuild.ProjectEvaluated` is absent for a project
+    // this index merely discovered, and a viewer should show that project with its
+    // attributes blank rather than report that the path names no project at all.
+    let identified = crate::corpus::values(
         &format!(
-            "{{row = P.value}} where F = src.File {file}; P = msbuild.Project {{file = F}}",
+            "P where F = src.File {file}; P = msbuild.Project {{file = F}}",
             file = literal(path)
         ),
         1,
     )?;
 
-    let Some(row) = rows.first().and_then(|row| field(row, "row")) else {
+    if identified.is_empty() {
         return Ok(None);
-    };
+    }
+
+    let rows = crate::corpus::values(
+        &format!(
+            "{{row = E.value}} where F = src.File {file}; P = msbuild.Project {{file = F}}; \
+             E = msbuild.ProjectEvaluated {{project = P}}",
+            file = literal(path)
+        ),
+        1,
+    )?;
+
+    let row = rows.first().and_then(|row| field(row, "row"));
 
     // Each of these is a `src.MaybeString`, which is a union rather than an empty string:
     // "MSBuild resolved nothing" and "MSBuild resolved the empty string" are different
     // answers, and the schema keeps them apart. A viewer wants one of them, so this is
-    // where they stop being different.
+    // where they stop being different — and so is "nothing evaluated this project", which
+    // is a third answer the viewer renders the same way.
     let said = |name: &str| {
-        field(row, name)
+        row.and_then(|row| field(row, name))
             .and_then(|value| match value {
                 Value::Union { alt, value, .. } if alt == "just" => as_str(value),
                 _ => None,
