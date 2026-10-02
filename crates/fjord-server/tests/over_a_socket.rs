@@ -833,8 +833,22 @@ fn a_conflict_under_its_own_code(over: Over) {
     // socket.
     let (header, payload) = send_blob(StreamId(2), 2);
     assert_eq!(header.kind, FrameKind::ERROR);
-    let (code, _) = protocol::decode_error(&payload).expect("an error frame");
+    let (code, message) = protocol::decode_error(&payload).expect("an error frame");
     assert_eq!(code, ErrorCode::Conflict);
+
+    // **The message names the predicate, not its number.** A client reads this and acts
+    // on it, and a number is only a name to whoever is holding the schema in the same
+    // breath — which a person reading a crash is not. Reported as #82, where a conflict
+    // on `msbuild.Project` was investigated as one on `codemarkup.SymbolInfo` partly
+    // because the message said `PredicateId(47)`.
+    assert!(
+        message.contains("src.Blob"),
+        "a conflict must name the predicate it is about; got {message:?}"
+    );
+    assert!(
+        !message.contains("PredicateId"),
+        "a predicate id is not a name; got {message:?}"
+    );
 }
 
 // ---- what the runtime was for -----------------------------------------------

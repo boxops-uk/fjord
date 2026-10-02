@@ -293,7 +293,15 @@ public sealed class LedgerTests
         // at the same token, because in a positional record that token is where both are
         // written. The fixture has two, one of them used: (2 × 1) + (3 × 1) = 5 created,
         // (4 × 1) + (3 × 1) = 7 deduped. 1303 + 5 = 1308, 9951 + 7 = 9958.
-        Assert.Equal(1308ul, created);
-        Assert.Equal(9958ul, deduped);
+        // **And splitting the evaluated attributes off `msbuild.Project` moved both by a
+        // project each.** The design-time-built attributes now live in
+        // `msbuild.ProjectEvaluated`, keyed on the project, so each built project writes one
+        // more fact: one created key, and two dedupes — the `msbuild.Project` the key
+        // references and the `src.File` inside *it*, both already written by the build layer.
+        // The fixture builds two. 1308 + 2 = 1310 created, 9958 + (2 × 2) = 9962 deduped.
+        // Nothing moved on the `codemarkup.SymbolInfo` side: the authority rule only silences
+        // a symbol another project in the same run owns, and the eight here are all external.
+        Assert.Equal(1310ul, created);
+        Assert.Equal(9962ul, deduped);
     }
 }

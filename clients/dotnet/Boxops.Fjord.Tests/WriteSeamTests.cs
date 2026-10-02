@@ -134,6 +134,53 @@ public sealed class WriteSeamTests
         Assert.Contains("refused a fact", thrown.InnerException!.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <b>A server's refusal names its own subject, and the sink must not guess at a
+    /// second one.</b>
+    /// </summary>
+    /// <remarks>
+    /// The writer records the predicate it was on when it caught a failure, which is the
+    /// right answer for a transport fault — the test above asserts exactly that. It is the
+    /// wrong answer for a refusal the <i>server</i> made: a write is pipelined, so the
+    /// frame carrying a rejection can be read on a later call than the one that sent the
+    /// offending block, and the predicate the writer is on by then is a different one.
+    ///
+    /// Reported as <a href="https://github.com/boxops-uk/fjord/issues/82">#82</a>, where
+    /// the message named <c>msbuild.ProjectReference</c> for a conflict the server raised
+    /// on <c>msbuild.Project</c> — and the investigation went to the wrong predicate
+    /// because of it. The server's own wording is authoritative here, so the sink adds
+    /// nothing to it rather than contradicting it.
+    /// </remarks>
+    [Fact]
+    public void A_server_refusal_is_not_attributed_to_whatever_the_writer_was_on()
+    {
+        var thrown = Assert.Throws<InvalidOperationException>(() =>
+        {
+            using var sink = new FactSink(Schema, [new RefusingAsServer()]);
+            sink.Add(0, new FjordFact(0, FjordValue.Of("src/Only.cs")));
+            sink.Drain();
+        });
+
+        Assert.DoesNotContain("while writing", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "msbuild.Project already holds",
+            thrown.InnerException!.Message,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>A target that refuses as the <i>server</i> does, naming its own subject.</summary>
+    private sealed class RefusingAsServer : IBlockTarget
+    {
+        public BlockWritten Write(uint predicate, IReadOnlyList<FjordFact> facts) =>
+            throw new FjordServerException(
+                FjordErrorCode.Conflict,
+                "predicate msbuild.Project already holds a different fact under this key");
+
+        public void Dispose()
+        {
+        }
+    }
+
     /// <summary>A target that refuses everything, as a server rejecting a fact would.</summary>
     private sealed class Refusing : IBlockTarget
     {

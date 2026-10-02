@@ -120,19 +120,19 @@ fn the_composite_answers_both_of_its_headline_joins() {
     let served = Arc::new(probe.served_schema().expect("the served schema"));
     drop(probe);
 
-    // 136 stored, plus the two virtual `fjord.db.*` predicates the server answers out of
+    // 137 stored, plus the two virtual `fjord.db.*` predicates the server answers out of
     // what it knows — the handshake includes them, because the question it answers is
     // what may be *asked* rather than what the database holds.
     assert_eq!(
         served.len(),
-        138,
+        139,
         "nine files, one schema, plus two virtuals"
     );
     assert_eq!(
         (0..served.len())
             .filter(|index| !served.is_virtual(fjord_schema::schema::PredicateId(*index as u32)))
             .count(),
-        136
+        137
     );
 
     let id = |name: &str| {
@@ -212,25 +212,41 @@ fn the_composite_answers_both_of_its_headline_joins() {
         )
         .expect("the references are written");
 
-    // The project that compiled the C# file — a third producer's facts.
+    // The project that compiled the C# file — a third producer's facts. Key-only: what
+    // MSBuild evaluated is `msbuild.ProjectEvaluated`, which only the run that built the
+    // project writes, and this composite is about the edges rather than the attributes.
     let project = WireFact {
         predicate: id("msbuild.Project"),
         key: WireValue::Record(Box::from([nested(file(CSPROJ))])),
-        value: Some(WireValue::Record(Box::from([
-            tag(0),
-            WireValue::Union {
-                disc: 1,
-                value: Box::new(WireValue::Str("net9.0".to_owned())),
-            },
-            tag(0),
-            tag(0),
-            tag(0),
-            tag(0),
-        ]))),
+        value: None,
     };
     writer
         .write(id("msbuild.Project"), std::slice::from_ref(&project))
         .expect("the project is written");
+
+    // What MSBuild evaluated, keyed on the project — a fact of its own because only the
+    // run that design-time built the project can write it. One producer writes both here,
+    // and they are still two facts.
+    writer
+        .write(
+            id("msbuild.ProjectEvaluated"),
+            &[WireFact {
+                predicate: id("msbuild.ProjectEvaluated"),
+                key: WireValue::Record(Box::from([nested(project.clone())])),
+                value: Some(WireValue::Record(Box::from([
+                    tag(0),
+                    WireValue::Union {
+                        disc: 1,
+                        value: Box::new(WireValue::Str("net9.0".to_owned())),
+                    },
+                    tag(0),
+                    tag(0),
+                    tag(0),
+                    tag(0),
+                ]))),
+            }],
+        )
+        .expect("what MSBuild evaluated is written");
     writer
         .write(
             id("msbuild.SourceFileToProject"),
@@ -268,14 +284,16 @@ fn the_composite_answers_both_of_its_headline_joins() {
 
     // ---- headline join 2 ---------------------------------------------------------
     //
-    // A symbol, its declaration site, and the project that compiled the file it sits in —
-    // across three namespaces filled by three different producers, joined on `src.File`.
+    // A symbol, its declaration site, the project that compiled the file it sits in, and
+    // what MSBuild evaluated for that project — across three namespaces filled by three
+    // different producers, joined on `src.File` and then on the project itself.
     let across = rows(
         &root,
-        "{def = D.value, proj = P.value} where \
+        "{def = D.value, proj = E.value} where \
          S = src.Symbol \"scip-dotnet . Company.Domain . Company/Domain/Order#Total().\"; \
          D = codemarkup.Definition {symbol = S, file = F}; \
-         msbuild.SourceFileToProject {src = F, project = P}",
+         msbuild.SourceFileToProject {src = F, project = P}; \
+         E = msbuild.ProjectEvaluated {project = P}",
     );
 
     assert_eq!(across.len(), 1, "{across:#?}");

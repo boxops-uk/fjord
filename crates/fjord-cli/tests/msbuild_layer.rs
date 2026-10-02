@@ -1,4 +1,4 @@
-//! **`msbuild.Project` is identified by its project file, and that is the whole change.**
+//! **`msbuild.Project` is identified by its project file, and nothing else is in it.**
 //!
 //! `csharp.Project`'s key was all seven fields — the path *and* the target framework, SDK,
 //! output type, assembly name and root namespace MSBuild resolved. Re-evaluating one
@@ -7,11 +7,20 @@
 //! walk reached first. It is the argument the overhaul plan makes about `src.Decl`: an
 //! identity must not carry an evaluation detail.
 //!
-//! Keyed `{ file }` with the evaluated attributes as values, two evaluations reach **one**
-//! key with two different value sets — and the second is refused. That is `ops-I4`'s rule
-//! rather than a choice this schema gets to make: *"a conflict rule that picks a winner …
-//! is the one thing `ops-I4` really forbids"*, and `ops-I5`'s dedup covers only the
-//! identical case.
+//! So the identity is keyed `{ file }` and the evaluated attributes are a predicate of
+//! their own — `msbuild.ProjectEvaluated`, keyed on the project. Two evaluations reach
+//! **one** key with two different value sets, and the second is refused. That is
+//! `ops-I4`'s rule rather than a choice this schema gets to make: *"a conflict rule that
+//! picks a winner … is the one thing `ops-I4` really forbids"*, and `ops-I5`'s dedup
+//! covers only the identical case.
+//!
+//! **The attributes are a predicate of their own because the conflict had a second cause**
+//! (issue #82). Every observer of a project can read its path; only the run that
+//! design-time built it can read its SDK. While both lived in one fact, a project a run
+//! merely discovered by glob wrote `nothing` for what it could not see — which is a
+//! *claim* that this project has no SDK, and conflicts with the authority's. Split, an
+//! uninformed observer writes the identity and abstains from the rest, and the identity is
+//! a fact every observer can agree on.
 
 use std::sync::Arc;
 
@@ -120,6 +129,10 @@ fn one_csproj_is_one_project_however_many_times_it_is_evaluated() {
 
     let file_id = served.find_position("src.File").expect("src.File").0;
     let project_id = served.find_position("msbuild.Project").expect("Project").0;
+    let evaluated_id = served
+        .find_position("msbuild.ProjectEvaluated")
+        .expect("ProjectEvaluated")
+        .0;
 
     let csproj = || WireFact {
         predicate: file_id,
@@ -127,10 +140,18 @@ fn one_csproj_is_one_project_however_many_times_it_is_evaluated() {
         value: None,
     };
 
-    let evaluated = |framework: &str| WireFact {
+    let project = || WireFact {
         predicate: project_id,
         key: WireValue::Record(Box::from([WireValue::Ref(WireRef::Nested(Box::new(
             csproj(),
+        )))])),
+        value: None,
+    };
+
+    let evaluated = |framework: &str| WireFact {
+        predicate: evaluated_id,
+        key: WireValue::Record(Box::from([WireValue::Ref(WireRef::Nested(Box::new(
+            project(),
         )))])),
         value: Some(WireValue::Record(Box::from([
             nothing(),
@@ -145,14 +166,27 @@ fn one_csproj_is_one_project_however_many_times_it_is_evaluated() {
     let mut writer = Connection::open(&endpoint, "b", Arc::clone(&served), Mode::ReadWrite, true)
         .expect("a write connection");
 
+    // **The identity itself is writable by every observer, which is the point of the
+    // split.** A project a run discovered by glob and the same project design-time built
+    // agree on the path and can disagree about everything else, so the path is the only
+    // thing in this fact — and the second observer writing it is `ops-I5` dedup rather
+    // than the conflict issue #82 reported.
     writer
-        .write(project_id, &[evaluated("net9.0")])
+        .write(project_id, &[project()])
+        .expect("one observer writes the identity");
+    let seen_again = writer
+        .write(project_id, &[project()])
+        .expect("a second observer of the same project is not a conflict");
+    assert_eq!(seen_again.created, 0, "{seen_again:?}");
+
+    writer
+        .write(evaluated_id, &[evaluated("net9.0")])
         .expect("the first evaluation is written");
 
     // **Writing the identical fact again is free** — `ops-I5`'s dedup, and the reason a
     // producer needs no book of what it has already sent.
     let again = writer
-        .write(project_id, &[evaluated("net9.0")])
+        .write(evaluated_id, &[evaluated("net9.0")])
         .expect("an identical fact is not a conflict");
     assert_eq!(again.created, 0, "{again:?}");
 
@@ -160,7 +194,7 @@ fn one_csproj_is_one_project_however_many_times_it_is_evaluated() {
     // — and `ops-I4` forbids picking a winner, so this is a rejection rather than a
     // last-write-wins that would make the database depend on walk order.
     let conflict = writer
-        .write(project_id, &[evaluated("netstandard2.0")])
+        .write(evaluated_id, &[evaluated("netstandard2.0")])
         .expect_err("two evaluations of one project must conflict");
     assert!(
         matches!(conflict, ClientError::Server { .. }),
@@ -180,8 +214,11 @@ fn one_csproj_is_one_project_however_many_times_it_is_evaluated() {
          would be here: {projects:#?}"
     );
 
-    // And the one that is there is the *first* evaluation, unchanged by the refusal.
-    let value = rows(&root, "P.value where P = msbuild.Project {file = F}");
+    // And the evaluation that is there is the *first* one, unchanged by the refusal.
+    let value = rows(
+        &root,
+        "P.value where P = msbuild.ProjectEvaluated {project = Q}",
+    );
     assert_eq!(
         value[0]["targetFramework"],
         serde_json::json!({"just": "net9.0"})
@@ -221,13 +258,23 @@ fn which_evaluation_arrives_first_does_not_change_that_the_second_is_refused() {
 
         let file_id = served.find_position("src.File").expect("src.File").0;
         let project_id = served.find_position("msbuild.Project").expect("Project").0;
+        let evaluated_id = served
+            .find_position("msbuild.ProjectEvaluated")
+            .expect("ProjectEvaluated")
+            .0;
 
         let evaluated = |framework: &str| WireFact {
-            predicate: project_id,
+            predicate: evaluated_id,
             key: WireValue::Record(Box::from([WireValue::Ref(WireRef::Nested(Box::new(
                 WireFact {
-                    predicate: file_id,
-                    key: WireValue::Str("src/App/App.csproj".to_owned()),
+                    predicate: project_id,
+                    key: WireValue::Record(Box::from([WireValue::Ref(WireRef::Nested(Box::new(
+                        WireFact {
+                            predicate: file_id,
+                            key: WireValue::Str("src/App/App.csproj".to_owned()),
+                            value: None,
+                        },
+                    )))])),
                     value: None,
                 },
             )))])),
@@ -246,11 +293,11 @@ fn which_evaluation_arrives_first_does_not_change_that_the_second_is_refused() {
                 .expect("a write connection");
 
         writer
-            .write(project_id, &[evaluated(first)])
+            .write(evaluated_id, &[evaluated(first)])
             .unwrap_or_else(|err| panic!("{first} first: {err}"));
 
         writer
-            .write(project_id, &[evaluated(second)])
+            .write(evaluated_id, &[evaluated(second)])
             .expect_err(&format!("{second} after {first} must be refused"));
     }
 }

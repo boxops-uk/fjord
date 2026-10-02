@@ -116,6 +116,7 @@ public sealed class PredicateCensusTests
             + "from a project file and searching for a solution that lists it would be a "
             + "claim the build system does not make"),
         (DotnetIndex.Project, Fill.Written, ""),
+        (DotnetIndex.ProjectEvaluated, Fill.Written, ""),
         (DotnetIndex.Assembly, Fill.Written, ""),
         (DotnetIndex.Package, Fill.Written, ""),
         (DotnetIndex.SolutionToProject, Fill.Conditional,

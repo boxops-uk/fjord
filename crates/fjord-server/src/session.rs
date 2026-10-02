@@ -609,12 +609,22 @@ impl StreamHandle {
 
             while let Some((header, payload)) = receiver.recv().await {
                 if let Err(error) = task.handle(&header, &payload).await {
+                    // **Rendered against the schema this stream is serving**, so a
+                    // predicate reaches the client as its name. A stream always has one —
+                    // a session is bound to a database, and an unbound one is served the
+                    // catalogue's.
+                    let schema = match &task.session.database {
+                        Some(database) => Arc::clone(&database.schema),
+                        None => Arc::clone(task.session.registry.schema()),
+                    };
+                    let message = crate::error::for_client(&error, &schema);
+
                     let _ = task
                         .outbound
                         .send(
                             FrameKind::ERROR,
                             stream,
-                            &protocol::encode_error(error.code(), &error.to_string()),
+                            &protocol::encode_error(error.code(), &message),
                         )
                         .await;
 
