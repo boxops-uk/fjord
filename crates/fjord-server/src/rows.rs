@@ -400,6 +400,12 @@ mod tests {
             "00",
             "01",
             "00",
+            // The three ordered-composite entries. The two record comparisons
+            // project the record itself; the union one projects an `int`, because
+            // what it compares is a field it does not return.
+            "030105696e6e657200",
+            "030105696e6e657200",
+            "00",
             "0205",
             "01",
             "01",

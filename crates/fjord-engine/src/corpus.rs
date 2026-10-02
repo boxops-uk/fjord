@@ -349,6 +349,44 @@ pub const CORPUS: &[Entry] = &[
         Supported("1; 7"),
         "nested record pattern",
     ),
+    // ---- ordered composites: a record and a union may be compared ---------------
+    entry(
+        "X where test.Nested {outer = X}; X > {inner = 1}",
+        Supported("{inner = 7}"),
+        "**a record compared.** The storage codec already orders a record \
+         field-by-field in declaration order — that is what `cmp_typed` asserts as \
+         [I1](invariants.md)'s oracle — so the only thing that used to stop this was \
+         the typechecker declining to believe it. A composite is orderable exactly \
+         when every component is",
+    ),
+    entry(
+        "X where test.Nested {outer = X}; X >= {inner = 1}",
+        Supported("{inner = 1}; {inner = 7}"),
+        "the inclusive edge, so the bound is an edge rather than a strict one — the \
+         same distinction an `int` bound already makes, reached through a record",
+    ),
+    entry(
+        "X where test.Tagged {what = W, id = X}; test.Label {id = 20, what = V}; W > V",
+        Supported("40; 10; 30"),
+        "**a union compared**, which orders by *discriminant then payload*. The \
+         fixture's tags are `text = 0` and `num = 3`, so every `num` row sorts above \
+         every `text` one whatever the payload holds — `num = 1` is above `text = \"a\"` \
+         even though `1` is not above `\"a\"` in any other sense. `test.Label 20` is \
+         `text = \"a\"`, the lowest of the four, so this answers the other three in scan \
+         order. **This is the property that lets a union express a version's \
+         prerelease rules**, where a numeric identifier must sort below an \
+         alphanumeric one. Compared against another *union*, not against a record \
+         literal: a one-field record is how an alternative is *matched*, and it does \
+         not unify with a union as a comparison's operand",
+    ),
+    entry(
+        "X where test.Ref {of = X}; X > X",
+        Diagnosed(Code::RejectTypeMismatch),
+        "**a reference has no order.** It would compare by raw id — which fact was \
+         written first — and that moves when a database is rebuilt, so it is an \
+         order nobody can mean and `ops-I4` is the reason. The one component the \
+         recursive rule excludes",
+    ),
     entry(
         "X where X = test.Name \"abc\"..",
         Supported("test.Name#1"),
@@ -1494,6 +1532,12 @@ mod tests {
             "537febb51776ac0e",
             "bf7f4da079aa8760",
             "9fdd3e823c7f9ad3",
+            // The three ordered-composite entries: a record `>`, the same `>=`, and a
+            // union against a union. Distinct from every plan above them, because a
+            // comparison is a step no other entry here has at these types.
+            "890d9bd7a5b656cb",
+            "917da59c58219da8",
+            "bc63932402d9b993",
             "ac9e84cd6f2470b4",
             "d6db97d05b158f41",
             "5c24b3eb080617e6",

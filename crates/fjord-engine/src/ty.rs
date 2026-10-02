@@ -163,6 +163,35 @@ struct Checker<'a> {
     diagnostics: &'a mut Diagnostics,
 }
 
+/// Whether a comparison over `ty` is an order somebody can mean.
+///
+/// **A composite is orderable exactly when every component is**, and the recursion is
+/// sound because the storage codec orders a composite component-by-component: a record
+/// by its fields in declaration order, a union by discriminant then payload. Those are
+/// `cmp_typed`'s rules, which [I1](../../../web/src/content/invariants.mdx#i1) checks
+/// the encoding against — so this predicate is not deciding an order, it is reporting
+/// which types the codec already has one for.
+///
+/// **A reference is the single exclusion**, and it is not a gap. A `FactId` orders by
+/// its raw number, which is the order facts happened to be written in — so a query
+/// comparing references answers differently after a rebuild, and
+/// [ops-I4](../../../web/src/content/operations.mdx) is what that breaks. Total but
+/// meaningless is worse than refused, because refused is visible.
+///
+/// An unresolved variable is orderable *here* and decided when it resolves, which is
+/// what lets `X < 3` name `X` before anything has bound it. An error type is orderable
+/// so that one fault does not draw a second diagnostic behind it.
+fn orderable(ty: &Ty) -> bool {
+    match ty {
+        Ty::Int | Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error => true,
+        Ty::Fact(_) => false,
+        Ty::Record(fields) => fields.iter().all(|(_name, field)| orderable(field)),
+        Ty::Union(alternatives) => alternatives
+            .iter()
+            .all(|(_name, _disc, payload)| orderable(payload)),
+    }
+}
+
 impl Checker<'_> {
     // ---- the walk -------------------------------------------------------------
 
@@ -220,10 +249,12 @@ impl Checker<'_> {
     /// values and unified with each other, and a variable fresh on either side is
     /// introduced exactly as `deny` introduces one on the left.
     ///
-    /// The result of that unification must be **ordered**, which here means a scalar.
-    /// A record has no order, and two references have one only in the sense that
-    /// their ids were allocated in some sequence — which says nothing about the facts
-    /// and would be a trap to expose. Both are refused by name.
+    /// The result of that unification must be **orderable** — see [`orderable`], which
+    /// is the whole of the rule: a composite is comparable exactly when every
+    /// component is, and the one component that never is, is a reference. Two
+    /// references have an order only in the sense that their ids were allocated in
+    /// some sequence, which says nothing about the facts and moves when a database is
+    /// rebuilt. Refused by name, wherever in a shape it appears.
     fn compare(&mut self, ast: &Ast, lhs: NodeId, rhs: NodeId) {
         // Introduced before inference so that `X < 3` names `X` even where nothing
         // has bound it yet — flatten reports the unbound case, as it does for a
@@ -245,20 +276,18 @@ impl Checker<'_> {
             return;
         }
 
-        match self.zonk(&left) {
-            // `bytes` belongs here and a record and a union do not: the storage
-            // codec's escape scheme makes the encoded order `memcmp` over the
-            // payload, which is an order somebody can mean.
-            Ty::Int | Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error => {}
-            other => {
-                let rendered = self.render(&other);
-                self.reject(
-                    ast,
-                    lhs,
-                    Code::RejectTypeMismatch,
-                    format!("{rendered} has no order — compare integers or strings"),
-                );
-            }
+        let ty = self.zonk(&left);
+        if !orderable(&ty) {
+            let rendered = self.render(&ty);
+            self.reject(
+                ast,
+                lhs,
+                Code::RejectTypeMismatch,
+                format!(
+                    "{rendered} has no order — it holds a reference, and a \
+                         reference compares by which fact was written first"
+                ),
+            );
         }
     }
 
@@ -1399,6 +1428,7 @@ mod tests {
     use crate::{corpus, cst::CstNode, lower::lower, parse::parse};
     use fjord_schema::schema::{Alternative, Predicate, PredicateId};
     use lasso::Rodeo;
+    use proptest::prelude::*;
 
     struct Checked {
         typed: Typed,
@@ -1517,6 +1547,7 @@ mod tests {
 
     /// Annotations are resolved before the table is handed over — the point of the
     /// final zonk. Without it every one of these would read `?`.
+
     #[test]
     fn the_side_table_holds_resolved_types() {
         assert_eq!(head_ty("X where X = test.Foo _"), "fact(0)");
@@ -2786,6 +2817,217 @@ mod tests {
         assert_eq!(
             checked.typed.ty(checked.head),
             Some(&Ty::Fact(PredicateId(7)))
+        );
+    }
+
+    // ---- orderability ------------------------------------------------------
+    //
+    // A composite is comparable iff every component is, and the only component that
+    // is not is a **reference**. These tests are the rule; `compare`'s match is
+    // supposed to be a restatement of them.
+
+    /// A shape a `Ty` can have, without the symbols — built into a real `Ty` with
+    /// names minted from a throwaway interner, so the property is about structure
+    /// and nothing else.
+    #[derive(Debug, Clone)]
+    enum TyShape {
+        Int,
+        Str,
+        Bytes,
+        Fact,
+        Var,
+        Record(Vec<TyShape>),
+        Union(Vec<TyShape>),
+    }
+
+    impl TyShape {
+        fn build(&self, interner: &mut LocalInterner) -> Ty {
+            match self {
+                TyShape::Int => Ty::Int,
+                TyShape::Str => Ty::String,
+                TyShape::Bytes => Ty::Bytes,
+                TyShape::Fact => Ty::Fact(PredicateId(0)),
+                TyShape::Var => Ty::Var(TyVarId::new(0)),
+                TyShape::Record(fields) => Ty::Record(
+                    fields
+                        .iter()
+                        .enumerate()
+                        .map(|(at, field)| {
+                            let name = interner.get_or_intern(&format!("f{at}"));
+                            (name, field.build(interner))
+                        })
+                        .collect(),
+                ),
+                TyShape::Union(payloads) => Ty::Union(
+                    payloads
+                        .iter()
+                        .enumerate()
+                        .map(|(at, payload)| {
+                            let name = interner.get_or_intern(&format!("a{at}"));
+                            #[expect(clippy::cast_possible_truncation, reason = "at most 3")]
+                            let disc = at as u32;
+                            (name, disc, payload.build(interner))
+                        })
+                        .collect(),
+                ),
+            }
+        }
+
+        /// **The independent oracle.** Written as the one-line claim the rule makes —
+        /// "somewhere in here there is a reference" — rather than by calling the
+        /// function under test, so a missing recursive case in `orderable` shows up as
+        /// a disagreement rather than as two copies of the same bug.
+        fn mentions_a_reference(&self) -> bool {
+            match self {
+                TyShape::Int | TyShape::Str | TyShape::Bytes | TyShape::Var => false,
+                TyShape::Fact => true,
+                TyShape::Record(parts) | TyShape::Union(parts) => {
+                    parts.iter().any(TyShape::mentions_a_reference)
+                }
+            }
+        }
+    }
+
+    /// An interner to mint the shapes' field and alternative names into. Any one does
+    /// — a structural property does not care what anything is called.
+    fn shape_interner() -> LocalInterner {
+        LocalInterner::new(corpus::schema().interner().clone())
+    }
+
+    fn arb_ty_shape() -> impl Strategy<Value = TyShape> {
+        let leaf = prop_oneof![
+            Just(TyShape::Int),
+            Just(TyShape::Str),
+            Just(TyShape::Bytes),
+            Just(TyShape::Var),
+            // Weighted the same as the others: a reference is the whole point of the
+            // property, and a generator that draws one rarely proves little.
+            Just(TyShape::Fact),
+        ];
+
+        // Depth 3 and up to 3 components. A composite inside a composite inside a
+        // composite is what a missing recursion survives; wider adds nothing.
+        leaf.prop_recursive(3, 12, 3, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 1..=3).prop_map(TyShape::Record),
+                prop::collection::vec(inner, 1..=3).prop_map(TyShape::Union),
+            ]
+        })
+    }
+
+    proptest! {
+        /// **Orderable is exactly the absence of a reference**, at any depth.
+        ///
+        /// A reference orders by raw id, which is "whichever fact was written first" —
+        /// an order that moves when a database is rebuilt, so it is one nobody can
+        /// mean. Everything else the codec orders, and it orders composites
+        /// component-by-component, which is what makes the recursion sound.
+        #[test]
+        fn orderable_is_exactly_the_absence_of_a_reference(shape in arb_ty_shape()) {
+            let mut interner = shape_interner();
+            let ty = shape.build(&mut interner);
+
+            prop_assert_eq!(orderable(&ty), !shape.mentions_a_reference());
+        }
+
+        /// A composite of orderable components is orderable — stated separately from
+        /// the property above because that one would also pass if `orderable` simply
+        /// returned `false` for every composite.
+        #[test]
+        fn a_composite_of_orderable_components_is_orderable(
+            parts in prop::collection::vec(
+                prop_oneof![Just(TyShape::Int), Just(TyShape::Str), Just(TyShape::Bytes)],
+                1..=3,
+            )
+        ) {
+            let mut interner = shape_interner();
+            prop_assert!(orderable(&TyShape::Record(parts.clone()).build(&mut interner)));
+            prop_assert!(orderable(&TyShape::Union(parts).build(&mut interner)));
+        }
+    }
+
+    /// The boundary cases by hand, so a reader can see the rule without running the
+    /// generator — and so the nesting depth that matters is named rather than drawn.
+    #[test]
+    fn orderability_of_the_shapes_that_decide_the_rule() {
+        let mut interner = shape_interner();
+        let build = |shape: TyShape, interner: &mut LocalInterner| shape.build(interner);
+
+        // Scalars, and a reference.
+        assert!(orderable(&Ty::Int));
+        assert!(orderable(&Ty::String));
+        assert!(orderable(&Ty::Bytes));
+        assert!(!orderable(&Ty::Fact(PredicateId(0))));
+
+        // An unresolved type is accepted here and decided once it resolves, which is
+        // what lets `X < 3` name `X` before anything has bound it.
+        assert!(orderable(&Ty::Var(TyVarId::new(0))));
+        assert!(orderable(&Ty::Error));
+
+        // A record, one level and two.
+        assert!(orderable(&build(
+            TyShape::Record(vec![TyShape::Int]),
+            &mut interner
+        )));
+        assert!(!orderable(&build(
+            TyShape::Record(vec![TyShape::Int, TyShape::Fact]),
+            &mut interner
+        )));
+        assert!(!orderable(&build(
+            TyShape::Record(vec![TyShape::Record(vec![TyShape::Fact])]),
+            &mut interner
+        )));
+
+        // A union orders by discriminant then payload, so it is orderable exactly
+        // when every payload is. This is the case that makes `none | num | text`
+        // express a version's prerelease rules.
+        assert!(orderable(&build(
+            TyShape::Union(vec![TyShape::Int, TyShape::Str]),
+            &mut interner
+        )));
+        assert!(!orderable(&build(
+            TyShape::Union(vec![TyShape::Int, TyShape::Fact]),
+            &mut interner
+        )));
+    }
+
+    /// **A record comparison typechecks**, which is the whole change. Through the real
+    /// front end rather than by calling `orderable`, because the thing that used to
+    /// refuse this was `compare`'s match and not the predicate.
+    #[test]
+    fn a_record_field_may_be_compared() {
+        let checked = compile("X where test.Nested {outer = X}; X > {inner = 1}");
+        assert!(
+            checked.diagnostics.is_empty(),
+            "{:?}",
+            checked
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// And a reference still cannot be, with the diagnostic naming the type rather
+    /// than the shape — a reader who wrote this wants to know *why* it has no order.
+    #[test]
+    fn a_reference_field_may_not_be_compared() {
+        let checked = compile("X where test.Ref {of = X}; X > X");
+        assert_eq!(
+            checked.diagnostics.codes().collect::<Vec<_>>(),
+            vec!["reject/type-mismatch"]
+        );
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("no order")),
+            "{:?}",
+            checked
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 }
