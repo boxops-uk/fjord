@@ -68,6 +68,50 @@ public sealed class LoaderTests
     }
 
     /// <summary>
+    /// <b>A walked project is named by its assembly name, not by its file.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the identity every SCIP symbol the walk mints is built on.</b>
+    /// <c>ScipSymbols.Package</c> reads <c>symbol.ContainingAssembly.Identity.Name</c>, so
+    /// a compilation named after its project file names every symbol in it after the
+    /// project file — while the same entity seen through a *referenced* assembly is named
+    /// after the real <c>AssemblyName</c>. Two names for one method, nothing refused, and
+    /// a cross-project <c>find references</c> that resolves to nothing
+    /// (<a href="https://github.com/boxops-uk/fjord/issues/84">#84</a>).
+    /// </para>
+    /// <para>
+    /// Buildalyzer's <c>AddToWorkspace</c> defaults both the project name and the assembly
+    /// name to the file's base name, and the build result carries the resolved one — which
+    /// is where <c>msbuild.ProjectEvaluated</c> already reads it from, which is why the
+    /// build layer was right about this while the symbols were wrong.
+    /// </para>
+    /// <para>
+    /// Asserted on the <i>identity</i> rather than on <c>Project.AssemblyName</c>, because
+    /// what a symbol is called comes from the compilation: a fix that set the property and
+    /// did not reach the compilation would satisfy the narrower claim and change nothing.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_walked_project_is_named_by_its_assembly_name()
+    {
+        using var fixture = Fixture.Copy("graph");
+
+        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var projects = Only(solution).Projects;
+
+        // The Roslyn project keeps the name a reader recognises — it is what the run
+        // prints per project — so this is the assembly identity moving and nothing else.
+        Assert.Equal(
+            [("A", "Fixture.A"), ("B", "Fixture.B")],
+            projects
+                .Select(project => (
+                    Project: project.Name,
+                    Assembly: project.Compile()!.Assembly.Identity.Name))
+                .OrderBy(pair => pair.Project, StringComparer.Ordinal));
+    }
+
+    /// <summary>
     /// <b>A reference to a project outside the set resolves to that project's assembly.</b>
     /// </summary>
     /// <remarks>

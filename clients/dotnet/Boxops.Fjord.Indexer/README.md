@@ -541,6 +541,16 @@ runtime, neither carrying `ReferenceAssemblyAttribute`. The symbols collide iden
 the coordinate is the assembly identity and theirs is one string — so a run reaching both
 dies on `codemarkup.SymbolInfo` exactly as a `ref/` pair did.
 
+**One assembly from two projects has two spellings, and both are detected on the name
+MSBuild resolved.** Two project files of one name in two directories is how
+`dotnet/runtime` spells it; two differently-named project files that both set
+`<AssemblyName>` is the other, and it only became detectable when the loader started
+naming a compilation after its assembly rather than after its file
+([#84](https://github.com/boxops-uk/fjord/issues/84)). Before that the second pair looked
+like two assemblies, was walked twice, and had every symbol in it named after a project —
+so the collision below was not absent, only hidden. The `identity` and `renamed` fixtures
+are the two spellings.
+
 **Dropping one silently would be wrong here, because what is dropped is source somebody
 wrote.** So the second project producing an assembly already walked is left out, named,
 and counted:

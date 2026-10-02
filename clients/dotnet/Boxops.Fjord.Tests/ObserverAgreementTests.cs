@@ -78,8 +78,13 @@ public sealed class ObserverAgreementTests
             + "{project = msbuild.Project {file = src.File P}, "
             + "package = msbuild.Package {name = N, version = V}}"),
 
-        // A symbol, named by its SCIP string.
-        ("codemarkup.SymbolInfo", Reach.PendingIssue84,
+        // A symbol, named by its SCIP string. **Disjoint because of the authority rule**:
+        // since #82 a symbol is described by exactly the run that holds its source, so two
+        // single-project runs describe disjoint sets and overlap only on the external
+        // symbols they happen to share. Where they do overlap it is compared as everywhere
+        // else — a whole-solution run overlaps each single-project one on that project's
+        // own symbols, which is the comparison that matters here.
+        ("codemarkup.SymbolInfo", Reach.Disjoint,
             "{k = S, v = X.value} where X = codemarkup.SymbolInfo {symbol = src.Symbol S}"),
         ("codemarkup.Definition", Reach.Disjoint,
             "{k = {s = S, f = P}, v = X.value} where X = codemarkup.Definition "
@@ -109,26 +114,6 @@ public sealed class ObserverAgreementTests
         /// </summary>
         Disjoint,
 
-        /// <summary>
-        /// Expected to share, and does not — because of
-        /// <a href="https://github.com/boxops-uk/fjord/issues/84">#84</a>, where a symbol
-        /// defined in one project and referenced from another gets two names.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// <b>Only zero overlap is excused, and only for this predicate.</b> Where two views
-        /// do share a key the comparison runs as it does everywhere else — within one run
-        /// symbols are named consistently, so a whole-solution view overlaps a single-project
-        /// one on that project's own symbols and those are compared normally. Excusing the
-        /// predicate outright would have thrown that away.
-        /// </para>
-        /// <para>
-        /// Nothing here asserts the defect <i>persists</i>: once #84 is fixed the two views
-        /// simply start sharing keys and the comparison begins running, which is the
-        /// behaviour wanted and needs no flag day. #84 carries the note to flip this row.
-        /// </para>
-        /// </remarks>
-        PendingIssue84,
     }
 
     /// <summary>Value-side predicates deliberately outside the comparison, and why.</summary>
@@ -259,6 +244,96 @@ public sealed class ObserverAgreementTests
 
         AssertAgreement(("whole", whole), ("a", left), ("b", right));
     }
+
+    /// <summary>
+    /// <b>A symbol one run names is a symbol the run that holds its source names too.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A different claim from the agreement above, and the one
+    /// <a href="https://github.com/boxops-uk/fjord/issues/84">#84</a> is about.</b>
+    /// <c>AssertAgreement</c> asks whether two runs that describe the same key describe it
+    /// the same way. This asks whether they arrive at the same key *at all* — which is what
+    /// <c>src.Symbol</c> is for: "exactly a key for joining across databases". A run that
+    /// names an entity differently from the run holding its source does not conflict and
+    /// does not fail; the join silently returns nothing, and a cross-project
+    /// <c>find references</c> is quietly incomplete.
+    /// </para>
+    /// <para>
+    /// <b>The whole-solution run is the oracle, and a subset is the right relation.</b> It
+    /// walks every project, so it holds the most names; a single-project run sees the
+    /// others through their assemblies and must land on the same strings. It will hold
+    /// <i>fewer</i> symbols — it cannot see another project's internals — so this is
+    /// containment rather than equality, and equality would fail for a reason that is not
+    /// a defect.
+    /// </para>
+    /// <para>
+    /// <b>Why the agreement guard cannot see this.</b> Since #82 a symbol is described by
+    /// exactly one run, so two runs' <c>codemarkup.SymbolInfo</c> sets are disjoint by
+    /// design and there is no shared key left to disagree about. #84 moved out of the
+    /// predicate that has a value side and into the one that does not, where only a test
+    /// shaped like this one can reach it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_symbol_named_apart_is_a_symbol_named_together()
+    {
+        using var fixture = Fixture.Copy("graph");
+        fixture.Build("src/A/A.csproj");
+        fixture.Build("src/B/B.csproj");
+
+        using var server = FjordServer.ServingAll("dotnet.sigla", "whole", "a", "b");
+
+        Assert.Equal(0, Program.Main([
+            "--sln", fixture.Path("Graph.slnx"),
+            "--root", fixture.Root,
+            "--at", $"{server.Socket}//whole",
+            "--no-smoke",
+        ]));
+
+        foreach (var (project, database) in Apart)
+        {
+            Assert.Equal(0, Program.Main([
+                "--project", fixture.Path(project),
+                "--root", fixture.Root,
+                "--at", $"{server.Socket}//{database}",
+                "--no-smoke",
+            ]));
+        }
+
+        using var whole = FjordConnection.Connect(server.Socket, "whole", DotnetIndex.Schema);
+
+        var together = Symbols(whole);
+
+        // Asserted non-empty first: an oracle that holds nothing makes every containment
+        // below true, and the test would pass by describing nothing at all.
+        Assert.NotEmpty(together);
+
+        var stranded = new List<string>();
+
+        foreach (var (_, database) in Apart)
+        {
+            using var apart = FjordConnection.Connect(server.Socket, database, DotnetIndex.Schema);
+
+            stranded.AddRange(Symbols(apart)
+                .Except(together, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(symbol => $"{database}  {symbol}"));
+        }
+
+        Assert.True(
+            stranded.Count == 0,
+            $"{stranded.Count} symbol(s) named by a single-project run that the "
+            + $"whole-solution run never names, so the join across them finds "
+            + $"nothing:\n    {string.Join("\n    ", stranded)}");
+    }
+
+    /// <summary>Every <c>src.Symbol</c> a database holds.</summary>
+    private static HashSet<string> Symbols(FjordConnection connection) =>
+        connection.Query("S where src.Symbol S")
+            .Rows
+            .Select(row => Assert.IsType<FjordValue.Str>(row).Value)
+            .ToHashSet(StringComparer.Ordinal);
 
     /// <summary>The project-by-project runs, as (project, database).</summary>
     private static readonly (string Project, string Database)[] Apart =

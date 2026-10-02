@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- **The point of the fixture.** The project file says one thing and MSBuild
+         resolves another, so a loader that names a compilation after its file sees
+         two assemblies where there is one. -->
+    <AssemblyName>Engine</AssemblyName>
+  </PropertyGroup>
+</Project>
