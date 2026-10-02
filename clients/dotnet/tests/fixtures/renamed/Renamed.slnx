@@ -1,0 +1,6 @@
+<Solution>
+  <!-- Two projects whose *files* are named differently and whose assemblies are not,
+       which is the other way a checkout arrives at one assembly from two projects. -->
+  <Project Path="Fast/Fast.csproj" />
+  <Project Path="Portable/Portable.csproj" />
+</Solution>

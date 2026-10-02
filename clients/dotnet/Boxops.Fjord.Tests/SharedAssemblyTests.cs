@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using Boxops.Fjord.Client;
 using Boxops.Fjord.Indexer;
@@ -56,6 +57,63 @@ public sealed class SharedAssemblyTests
             .Rows;
 
         Assert.Single(docs);
+    }
+
+    /// <summary>
+    /// <b>And the same when the collision is a rename rather than two files of one name.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The other spelling of this subject, and the one that used to slip through.</b>
+    /// <c>identity</c>'s two projects are both <c>Engine.csproj</c>; <c>renamed</c>'s are
+    /// <c>Fast.csproj</c> and <c>Portable.csproj</c>, both setting
+    /// <c>&lt;AssemblyName&gt;Engine&lt;/AssemblyName&gt;</c>. The checkout arrives at one
+    /// assembly from two projects either way, and the test above only ever exercised the
+    /// first.
+    /// </para>
+    /// <para>
+    /// <b>It slipped through because the loader named a compilation after its file</b>
+    /// (<a href="https://github.com/boxops-uk/fjord/issues/84">#84</a>). This pair
+    /// therefore looked like assemblies <c>Fast</c> and <c>Portable</c> — two identities,
+    /// no collision to detect, both walked, and every symbol named after a project rather
+    /// than after the assembly it compiles into. Nothing failed, which is why a fixture
+    /// was the only thing that would have found it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Two_projects_renamed_to_one_assembly_index_to_completion()
+    {
+        using var fixture = Fixture.Copy("renamed");
+        using var server = FjordServer.Serving("renamed", "dotnet.sigla");
+
+        Assert.Equal(0, Program.Main([
+            "--sln", fixture.Path("Renamed.slnx"),
+            "--root", fixture.Root,
+            "--at", $"{server.Socket}//renamed",
+            "--no-smoke",
+        ]));
+
+        using var connection = FjordConnection.Connect(server.Socket, "renamed", DotnetIndex.Schema);
+
+        // Named `Engine`, which is the assembly — not `Fast` or `Portable`, which are the
+        // files. One fact, because the second implementation was left out rather than
+        // writing a second description of the same symbol.
+        var docs = connection.Query(
+            "{info = I.value} where I = codemarkup.SymbolInfo {symbol = S}; "
+            + $"S = src.Symbol \"{ScipSymbols.Scheme} nuget Engine 1.0.0.0 Engine/Rotor#Spin().\"")
+            .Rows;
+
+        Assert.Single(docs);
+
+        // And nothing is named after a project file, which is the defect itself.
+        var stale = connection.Query("S where src.Symbol S")
+            .Rows
+            .Select(row => Assert.IsType<FjordValue.Str>(row).Value)
+            .Where(symbol => symbol.Contains("nuget Fast ", StringComparison.Ordinal)
+                || symbol.Contains("nuget Portable ", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Empty(stale);
     }
 
     /// <summary>
