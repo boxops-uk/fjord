@@ -45,7 +45,7 @@ public sealed class FanOutTests
     {
         using var fixture = Fixture.Copy("targets");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         Assert.Equal(
             ["net10.0", "net8.0"],
@@ -67,7 +67,7 @@ public sealed class FanOutTests
     {
         using var fixture = Fixture.Copy("targets");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         var newest = Assert.Single(solution.Targets, target => target.Framework == "net10.0");
         var older = Assert.Single(solution.Targets, target => target.Framework == "net8.0");
@@ -90,7 +90,7 @@ public sealed class FanOutTests
     {
         using var fixture = Fixture.Copy("targets");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         string[] Members(string framework) =>
         [
@@ -115,6 +115,8 @@ public sealed class FanOutTests
     /// A project silently absent from an index is the failure mode this run exists to
     /// remove. <c>Old</c> compiles for none of the frameworks being indexed — it is not
     /// broken and not indexed, and only the run can say so.
+    /// <c>strict: false</c> is deliberate: this run names what it leaves out on purpose,
+    /// and the name is the subject rather than a failure to tolerate.
     /// </remarks>
     [Fact]
     public void A_framework_selects_one_target_and_the_run_names_what_it_leaves_out()
@@ -122,10 +124,10 @@ public sealed class FanOutTests
         using var fixture = Fixture.Copy("targets");
         var log = new StringWriter();
 
-        var solution = Loader.Load(
+        var solution = fixture.Load(
             Over(fixture) with { Framework = "net10.0" },
-            fixture.Root,
-            log);
+            log,
+            strict: false);
 
         var only = Assert.Single(solution.Targets);
         Assert.Equal("net10.0", only.Framework);

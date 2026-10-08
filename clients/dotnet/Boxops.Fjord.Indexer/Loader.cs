@@ -212,9 +212,16 @@ internal static class Loader
         // between a coffee and a lunch, and the results are independent.
         var results = new IReadOnlyList<IAnalyzerResult>[analyzers.Count];
 
+        // **A project that built can still have lost a target**, and that loss reaches no
+        // other variable here — `Usable` only sees the frameworks that compiled, so a
+        // multi-targeting project with one broken inner build looks, to everything below,
+        // like a project that was never asked for the missing one. Collected across every
+        // parallel `BuildOne` so it can be folded into `skipped` once, below.
+        var droppedTargets = new List<string>();
+
         Parallel.For(0, analyzers.Count, new ParallelOptions { MaxDegreeOfParallelism = options.Jobs }, index =>
         {
-            results[index] = BuildOne(analyzers[index], options, log, build, ref retried);
+            results[index] = BuildOne(analyzers[index], options, log, build, ref retried, droppedTargets);
         });
 
         // Flattened in the order the solution lists them, so two runs over one checkout
@@ -286,7 +293,19 @@ internal static class Loader
             log.WriteLine($"  ! {name}: compiles for none of {string.Join(", ", wanted)}, skipping it");
         }
 
+        // **Appended rather than folded into the loop above.** A dropped target already
+        // said its own reason inside `BuildOne` — what it lacked was somewhere for
+        // `--strict` to see it, not a second "compiles for none of" claim that would be
+        // false: the project it belongs to does compile, for whichever targets built.
+        skipped = [.. skipped, .. droppedTargets.OrderBy(entry => entry, StringComparer.Ordinal)];
+
         var targets = new List<LoadedTarget>();
+
+        // **The one remaining way in to stay out.** A project the workspace refuses never
+        // reaches `every`'s build results — it is a Roslyn failure, not an MSBuild one —
+        // so nothing above this loop could have named it; `Target` is where it is first
+        // seen, once per framework.
+        var refused = new List<string>();
 
         foreach (var framework in wanted)
         {
@@ -297,11 +316,30 @@ internal static class Loader
                 options,
                 root,
                 resolved,
-                log));
+                log,
+                refused));
         }
+
+        skipped = [.. skipped, .. refused.OrderBy(entry => entry, StringComparer.Ordinal)];
 
         return new LoadedSolution(targets, retried, skipped);
     }
+
+    /// <summary>
+    /// Why <c>--strict</c> would fail this run, or <see langword="null"/> if it would not.
+    /// </summary>
+    /// <remarks>
+    /// One function, so the CLI's exit path and a test's fail-fast path agree on what
+    /// "left out" means — and on the word for it. <see cref="LoadedSolution.Skipped"/>
+    /// names a lone target dropped from a project that otherwise built beside a project
+    /// absent altogether, so "project(s) were left out" alone is false for the first
+    /// shape.
+    /// </remarks>
+    internal static string? StrictFailure(Options options, LoadedSolution solution) =>
+        options.Strict && solution.Skipped.Count > 0
+            ? $"{solution.Skipped.Count} project(s) or target(s) were left out of this index — "
+                + string.Join(", ", solution.Skipped)
+            : null;
 
     /// <summary>One framework's workspace and build layer, from that framework's results.</summary>
     /// <remarks>
@@ -317,7 +355,8 @@ internal static class Loader
         Options options,
         string root,
         IReadOnlyList<ResolvedSolution> solutions,
-        TextWriter log)
+        TextWriter log,
+        ICollection<string> refused)
     {
         var workspace = new IndexWorkspace();
         var added = new List<(IAnalyzerResult Result, ProjectId Id)>();
@@ -340,13 +379,16 @@ internal static class Loader
                 // already on the compiler's reference list.
                 added.Add((result, result.AddToWorkspace(workspace, addProjectReferences: false).Id));
             }
-            catch (InvalidOperationException refused)
+            catch (InvalidOperationException rejected)
             {
                 // One project the workspace will not take is not worth the other four
-                // hundred.
+                // hundred — but it is still a project this index does not have, which is
+                // exactly what `Skipped`/`--strict` exist to say rather than let an exit
+                // code of 0 imply.
                 log.WriteLine($"  ! {Path.GetFileName(result.ProjectFilePath)}: "
-                    + $"the workspace refused it — {refused.Message}");
+                    + $"the workspace refused it — {rejected.Message}");
                 failed++;
+                refused.Add($"{Path.GetFileName(result.ProjectFilePath)} ({framework})");
             }
         }
 
@@ -685,7 +727,8 @@ internal static class Loader
         Options options,
         TextWriter log,
         DesignTimeBuild build,
-        ref int retried)
+        ref int retried,
+        ICollection<string> droppedTargets)
     {
         var name = Path.GetFileName(analyzer.ProjectFile.Path);
         var started = DateTime.UtcNow;
@@ -717,6 +760,26 @@ internal static class Loader
                     var elapsed = (DateTime.UtcNow - started).TotalSeconds;
                     Say($"  built {name} ({string.Join(", ", usable.Select(one => one.TargetFramework))}, "
                         + $"{usable[0].SourceFiles.Length} files, {elapsed:F1}s)");
+
+                    // **A multi-targeting project is several inner builds, and this branch
+                    // only ever sees the ones that compiled.** A framework this project
+                    // declares and did not reach here never makes `Usable(results)` empty
+                    // below — the project *built*, just not for every target — so without
+                    // this it is absent from the index and silent everywhere: `Usable`'s
+                    // own doc comment names absent as the policy, not unreported.
+                    var achieved = usable.Select(one => one.TargetFramework!);
+
+                    foreach (var missing in Declared(usable, analyzer)
+                        .Except(achieved, StringComparer.OrdinalIgnoreCase))
+                    {
+                        Say($"  ! {name} ({missing}): the design-time build failed, skipping it — "
+                            + $"{Because(analyzer, plain, results)}");
+
+                        lock (droppedTargets)
+                        {
+                            droppedTargets.Add($"{name} ({missing})");
+                        }
+                    }
 
                     return usable;
                 }
@@ -818,6 +881,30 @@ internal static class Loader
         [.. (analyzer.ProjectFile.TargetFrameworks ?? [])
             .Where(framework => !string.IsNullOrEmpty(framework))
             .Distinct()];
+
+    /// <summary>
+    /// What this project actually targets, evaluated — never the raw
+    /// <c>&lt;TargetFrameworks&gt;</c> text.
+    /// </summary>
+    /// <remarks>
+    /// <b>The XML lies two ways and a build's own evaluated property lies neither.</b> A
+    /// <c>$(Prop)</c>-valued <c>TargetFrameworks</c> makes <see cref="Frameworks"/> return
+    /// the literal property reference, which is never in <c>achieved</c> — so a project
+    /// that dropped nothing gets accused of dropping everything. A list set only in an
+    /// imported <c>Directory.Build.props</c> makes it return nothing at all — so a project
+    /// that really did drop a target says nothing about it. MSBuild has already resolved
+    /// both by the time any inner build finishes, and <c>GetProperty("TargetFrameworks")</c>
+    /// on that result reads the answer rather than re-deriving it from a file. The XML read
+    /// is kept only as the backstop for a project with nothing usable to ask — which does
+    /// not reach here, since this runs under <c>Usable(results).Count &gt; 0</c>.
+    /// </remarks>
+    private static IReadOnlyList<string> Declared(
+        IReadOnlyList<IAnalyzerResult> usable, IProjectAnalyzer analyzer) =>
+        usable.Count > 0 && usable[0].GetProperty("TargetFrameworks") is { Length: > 0 } evaluated
+            ? [.. evaluated
+                .Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)]
+            : Frameworks(analyzer);
 
     /// <summary>Every project the entry point names.</summary>
     private static IReadOnlyList<IProjectAnalyzer> Analyzers(string entry, Options options, TextWriter log)

@@ -134,10 +134,8 @@ public sealed class LedgerTests
     {
         using var fixture = Fixture.Copy("ledger");
 
-        var solution = Loader.Load(
-            new Options { Solutions = [fixture.Path("Ledger.slnx")], Jobs = 2 },
-            fixture.Root,
-            TextWriter.Null);
+        var solution = fixture.Load(
+            new Options { Solutions = [fixture.Path("Ledger.slnx")], Jobs = 2 });
 
         var target = Assert.Single(solution.Targets);
         var recorder = new SourceWalkTests.Recorder();
@@ -229,10 +227,8 @@ public sealed class LedgerTests
         using var fixture = Fixture.Copy("ledger");
         using var server = FjordServer.Serving("interning", "dotnet.sigla");
 
-        var solution = Loader.Load(
-            new Options { Solutions = [fixture.Path("Ledger.slnx")], Jobs = 2 },
-            fixture.Root,
-            TextWriter.Null);
+        var solution = fixture.Load(
+            new Options { Solutions = [fixture.Path("Ledger.slnx")], Jobs = 2 });
 
         var target = Assert.Single(solution.Targets);
         var options = new Options { Solutions = [fixture.Path("Ledger.slnx")] };
