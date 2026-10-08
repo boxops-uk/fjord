@@ -62,7 +62,7 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy("graph");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         Assert.Equal(["A", "B"], Only(solution).Projects.Select(project => project.Name).Order());
     }
@@ -97,7 +97,7 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy("graph");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
         var projects = Only(solution).Projects;
 
         // The Roslyn project keeps the name a reader recognises — it is what the run
@@ -129,7 +129,7 @@ public sealed class LoaderTests
         // degrades to its assembly, and there is no assembly until something builds one.
         fixture.Build("external/C/C.csproj");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         var b = Assert.Single(Only(solution).Projects, project => project.Name == "B");
         var compilation = b.Compile()!;
@@ -176,7 +176,7 @@ public sealed class LoaderTests
         // somebody has worked in, and the state this is about.
         fixture.Build("src/A/A.csproj");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         var a = Assert.Single(Only(solution).Projects, project => project.Name == "A");
         var compilation = a.Compile()!;
@@ -241,7 +241,7 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy("graph");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         var walked = Only(solution).Projects
             .SelectMany(project => project.Compile()!.SyntaxTrees)
@@ -278,7 +278,7 @@ public sealed class LoaderTests
         // then both up to date, which is the state this is about.
         fixture.Build("src/A/A.csproj");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         Assert.Equal(["A", "B"], Only(solution).Projects.Select(project => project.Name).Order());
 
@@ -302,7 +302,7 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy("graph");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
 
         Assert.Equal(
             ["external/C/C.csproj", "src/A/A.csproj", "src/B/B.csproj"],
@@ -327,11 +327,9 @@ public sealed class LoaderTests
 
         var calls = 0;
 
-        var solution = Loader.Load(
+        var solution = fixture.Load(
             Over(fixture) with { Jobs = 1 },
-            fixture.Root,
-            TextWriter.Null,
-            (analyzer, environment) => Interlocked.Increment(ref calls) == 1
+            design: (analyzer, environment) => Interlocked.Increment(ref calls) == 1
                 ? throw new IOException("the pipe went away")
                 : analyzer.Build(environment));
 
@@ -386,6 +384,8 @@ public sealed class LoaderTests
     /// single-targeted project has no <c>DispatchToInnerBuilds</c> — so reporting the last
     /// error tells every reader the wrong thing about why their project was skipped, and
     /// sends them looking for a target rather than for the import that is missing.
+    /// <c>strict: false</c> is deliberate: this fixture never builds in full, on purpose,
+    /// and the reason it was skipped is the subject rather than a failure to tolerate.
     /// </remarks>
     [Fact]
     public void The_reason_a_project_was_skipped_is_its_own_and_not_the_wrong_attempts()
@@ -393,13 +393,107 @@ public sealed class LoaderTests
         using var fixture = Fixture.Copy("broken");
         var log = new StringWriter();
 
-        var solution = Loader.Load(Over(fixture, "Broken.slnx"), fixture.Root, log);
+        var solution = fixture.Load(Over(fixture, "Broken.slnx"), log, strict: false);
 
         Assert.Equal(["Good"], Only(solution).Projects.Select(project => project.Name));
 
         var said = log.ToString();
         Assert.Contains("Missing.props", said, StringComparison.Ordinal);
         Assert.DoesNotContain("DispatchToInnerBuilds", said, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>A dropped target says so — which project, which framework, and MSBuild's own
+    /// reason — and reaches <c>--strict</c>.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Shaky</c> targets <c>net8.0</c> and <c>net10.0</c>; only <c>net8.0</c>'s inner
+    /// build is broken. <c>Usable(results).Count &gt; 0</c> because <c>net10.0</c> alone
+    /// already satisfies it, so without the fix this project reads as built and
+    /// <c>net8.0</c>'s loss reaches nothing: not the log, not
+    /// <see cref="LoadedSolution.Skipped"/>, not <c>--strict</c>.
+    /// </para>
+    /// <para>
+    /// Loaded twice: once with <c>strict: false</c> so the test can read
+    /// <see cref="LoadedSolution.Skipped"/> for itself, and once at the default — strict —
+    /// to provoke the failure <c>--strict</c> exists for, rather than merely asking
+    /// <see cref="Loader.StrictFailure"/> what it would have said.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_dropped_target_names_the_project_the_framework_and_why()
+    {
+        using var fixture = Fixture.Copy("halfbuilt");
+        var log = new StringWriter();
+
+        var options = Over(fixture, "Halfbuilt.slnx");
+        var solution = fixture.Load(options, log, strict: false);
+
+        // The project built — net10.0's compilation is real — so this is a target lost,
+        // not a project lost.
+        Assert.Equal("net10.0", Only(solution).Framework);
+        Assert.Equal(["Shaky"], Only(solution).Projects.Select(project => project.Name));
+
+        Assert.Equal(["Shaky.csproj (net8.0)"], solution.Skipped);
+
+        var said = log.ToString();
+        Assert.Contains("Shaky.csproj (net8.0)", said, StringComparison.Ordinal);
+        Assert.Contains("Missing.props", said, StringComparison.Ordinal);
+
+        var refused = Assert.Throws<InvalidOperationException>(
+            () => fixture.Load(options, log));
+
+        Assert.Contains("Shaky.csproj (net8.0)", refused.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>A property-valued <c>TargetFrameworks</c> drops nothing it did not drop.</b>
+    /// </summary>
+    /// <remarks>
+    /// <c>Prop</c> writes <c>TargetFrameworks</c> as <c>$(MyTargets)</c>, a property it
+    /// defines itself, and both frameworks build clean. Read as unevaluated XML text, that
+    /// element is the literal string <c>$(MyTargets)</c> — never among the frameworks that
+    /// actually built — so a declared-vs-achieved comparison that trusted the raw XML
+    /// reported two targets dropped from a project that dropped nothing, and
+    /// <c>--strict</c> would fail a run with nothing wrong in it.
+    /// </remarks>
+    [Fact]
+    public void A_property_valued_target_list_is_not_mistaken_for_a_drop()
+    {
+        using var fixture = Fixture.Copy("propvar");
+
+        var solution = fixture.Load(Over(fixture, "Propvar.slnx"));
+
+        Assert.Empty(solution.Skipped);
+        Assert.Equal(
+            ["net10.0", "net8.0"],
+            solution.Targets.Select(target => target.Framework).Order());
+    }
+
+    /// <summary>
+    /// <b>A target list set only by an imported <c>Directory.Build.props</c> still
+    /// catches a dropped target.</b>
+    /// </summary>
+    /// <remarks>
+    /// <c>Hidden.csproj</c> names no target framework of its own — <c>net8.0;net10.0</c>
+    /// lives in <c>Hidden/Directory.Build.props</c> instead, an ordinary layout for a
+    /// repository that factors its target set out of individual project files. Read from
+    /// the project's own XML, the declared list is empty, so a comparison that trusted it
+    /// had nothing to compare against and the dropped <c>net8.0</c> target — broken the
+    /// same way <c>halfbuilt</c>'s is — reached neither the log nor <c>Skipped</c> nor
+    /// <c>--strict</c>.
+    /// </remarks>
+    [Fact]
+    public void An_inherited_target_list_still_catches_a_dropped_target()
+    {
+        using var fixture = Fixture.Copy("propsbroken");
+
+        var solution = fixture.Load(
+            Over(fixture, "Propsbroken.slnx"), strict: false);
+
+        Assert.Equal("net10.0", Only(solution).Framework);
+        Assert.Equal(["Hidden.csproj (net8.0)"], solution.Skipped);
     }
 
     /// <summary>
@@ -418,10 +512,8 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy("rescue");
 
-        var solution = Loader.Load(
-            new Options { Solutions = [fixture.Path("app", "App.slnx")], Jobs = 2 },
-            fixture.Root,
-            TextWriter.Null);
+        var solution = fixture.Load(
+            new Options { Solutions = [fixture.Path("app", "App.slnx")], Jobs = 2 });
 
         Assert.Equal(
             ["app/Main/Main.csproj", "lib/Lib.csproj"],
@@ -453,10 +545,8 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy(name);
 
-        var solution = Loader.Load(
-            new Options { Solutions = [fixture.Path(solutionFile.Split('/'))], Jobs = 2 },
-            fixture.Root,
-            TextWriter.Null);
+        var solution = fixture.Load(
+            new Options { Solutions = [fixture.Path(solutionFile.Split('/'))], Jobs = 2 });
 
         Assert.NotEmpty(Only(solution).Projects);
         Assert.Equal(Only(solution).Projects.Count, Only(solution).Build.Built);
@@ -522,7 +612,7 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy("graph");
 
-        var solution = Loader.Load(Over(fixture), fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(Over(fixture));
         var emitted = Emitted(Only(solution));
 
         Assert.Equal("Graph.slnx", Keyed(Assert.Single(emitted[DotnetIndex.Solution])));
@@ -564,7 +654,7 @@ public sealed class LoaderTests
             Jobs = 2,
         };
 
-        var solution = Loader.Load(options, fixture.Root, TextWriter.Null);
+        var solution = fixture.Load(options);
         var emitted = Emitted(Only(solution));
 
         Assert.Equal(
@@ -606,10 +696,8 @@ public sealed class LoaderTests
     {
         using var fixture = Fixture.Copy("graph");
 
-        var solution = Loader.Load(
-            new Options { Projects = [fixture.Path("src", "A", "A.csproj")], Jobs = 2 },
-            fixture.Root,
-            TextWriter.Null);
+        var solution = fixture.Load(
+            new Options { Projects = [fixture.Path("src", "A", "A.csproj")], Jobs = 2 });
 
         var emitted = Emitted(Only(solution));
 
@@ -647,10 +735,10 @@ public sealed class LoaderTests
         using var fixture = Fixture.Copy("rescue");
         var log = new StringWriter();
 
-        var solution = Loader.Load(
+        var solution = fixture.Load(
             new Options { Solutions = [fixture.Path("app", "App.slnx")], Jobs = 2 },
-            fixture.Path("app"),
-            log);
+            log,
+            fixture.Path("app"));
 
         var emitted = Emitted(Only(solution));
 

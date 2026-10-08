@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+  </PropertyGroup>
+
+  <!-- Broken for net8.0 only, and broken for a reason MSBuild names: the import is not
+       there. Guarded by $(TargetFramework) so net10.0's inner build evaluates clean —
+       the shape that proves a target can be dropped while its project still builds. -->
+  <Import Project="Missing.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+</Project>

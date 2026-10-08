@@ -93,11 +93,9 @@ internal static class Program
         // than a line somebody reads.** A developer indexing a repository with one
         // unbuildable project wants the other four hundred, so this is off by default and
         // the run says what it left out either way.
-        if (options.Strict && solution.Skipped.Count > 0)
+        if (Loader.StrictFailure(options, solution) is { } reason)
         {
-            Console.Error.WriteLine(
-                $"--strict: {solution.Skipped.Count} project(s) were left out of this index — "
-                + string.Join(", ", solution.Skipped));
+            Console.Error.WriteLine($"--strict: {reason}");
             return 1;
         }
 

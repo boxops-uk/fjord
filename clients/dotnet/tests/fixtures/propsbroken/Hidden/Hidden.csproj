@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Broken for net8.0 only, and broken for a reason MSBuild names: the import is not
+       there. Guarded by $(TargetFramework) so net10.0's inner build evaluates clean —
+       the same shape `halfbuilt` uses, over a project that declares no target of its
+       own in this file. -->
+  <Import Project="Missing.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+</Project>

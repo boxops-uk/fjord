@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Linq;
 
+using Boxops.Fjord.Indexer;
+
 namespace Boxops.Fjord.Tests;
 
 /// <summary>
@@ -27,6 +29,35 @@ internal sealed class Fixture : IDisposable
 
     public string Path(params string[] parts) =>
         System.IO.Path.Combine([Root, .. parts]);
+
+    /// <summary>
+    /// Load this fixture — strict by default, so a design-time build the suite did not
+    /// expect to lose a project or target fails here, as a build failure naming what it
+    /// lost, rather than three assertions later as a result that is quietly short a
+    /// member.
+    /// </summary>
+    /// <remarks>
+    /// The default lives here, not in <paramref name="options"/> — <see cref="Options"/>'s
+    /// own <see cref="Options.Strict"/> defaults to <see langword="false"/>, which is the
+    /// right default for the CLI and the wrong one for a test that would otherwise have to
+    /// remember to opt in at every call site, silently, with nothing failing when it
+    /// forgets. A test over a fixture that deliberately will not build in full opts out
+    /// with <c>strict: false</c> and says so in its own remarks — strict is the default
+    /// precisely so that opting out is the visible, deliberate thing.
+    /// </remarks>
+    public LoadedSolution Load(
+        Options options,
+        TextWriter? log = null,
+        string? root = null,
+        DesignTimeBuild? design = null,
+        bool strict = true)
+    {
+        var solution = Loader.Load(options, root ?? Root, log ?? TextWriter.Null, design);
+
+        return Loader.StrictFailure(options with { Strict = strict }, solution) is { } reason
+            ? throw new InvalidOperationException(reason)
+            : solution;
+    }
 
     /// <summary>Copy the named fixture out of <c>clients/dotnet/tests/fixtures</c>.</summary>
     public static Fixture Copy(string name)
