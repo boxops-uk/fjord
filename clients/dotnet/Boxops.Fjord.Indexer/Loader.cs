@@ -5,6 +5,7 @@ using Buildalyzer.Workspaces;
 
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Host.Mef;
 
 namespace Boxops.Fjord.Indexer;
 
@@ -24,6 +25,34 @@ namespace Boxops.Fjord.Indexer;
 /// overload is obsolete, and its supported form takes a document.
 /// </param>
 internal sealed record LoadedProject(string Name, Func<Compilation?> Compile, Project? Roslyn = null);
+
+/// <summary>
+/// A workspace that will say what a project's assembly is called.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Its own type because <c>TryApplyChanges</c> will not do this and
+/// <see cref="AdhocWorkspace"/> is sealed.</b> Roslyn's apply path is a closed set of
+/// change kinds and an assembly name is not one of them — a solution carrying
+/// <c>WithProjectAssemblyName</c> applies, returns <c>true</c>, and arrives with the name
+/// it had. <c>Workspace.OnAssemblyNameChanged</c> is the supported route and is protected,
+/// so exposing it is the whole of this type.
+/// </para>
+/// <para>
+/// <b>Otherwise an <c>AdhocWorkspace</c>.</b> It is that class's two lines: the default
+/// MEF host, and every change kind allowed — which is what lets Buildalyzer's
+/// <c>AddToWorkspace</c> add a project through it, since that takes a
+/// <see cref="Workspace"/> rather than the sealed class.
+/// </para>
+/// </remarks>
+internal sealed class IndexWorkspace() : Workspace(MefHostServices.DefaultHost, WorkspaceKind.Host)
+{
+    public override bool CanApplyChange(ApplyChangesKind feature) => true;
+
+    /// <summary>Rename the assembly <paramref name="project"/> compiles to.</summary>
+    public void SetAssemblyName(ProjectId project, string assembly) =>
+        OnAssemblyNameChanged(project, assembly);
+}
 
 /// <summary>What there is to walk, and what compiled it.</summary>
 /// <remarks>
@@ -290,7 +319,7 @@ internal static class Loader
         IReadOnlyList<ResolvedSolution> solutions,
         TextWriter log)
     {
-        var workspace = new AdhocWorkspace();
+        var workspace = new IndexWorkspace();
         var added = new List<(IAnalyzerResult Result, ProjectId Id)>();
         var failed = 0;
 
@@ -326,6 +355,7 @@ internal static class Loader
             log.WriteLine($"  {failed} project(s) refused for {framework}, {added.Count} added");
         }
 
+        Name(workspace, added, log);
         Wire(workspace, added, log);
         Document(workspace, log);
 
@@ -411,7 +441,7 @@ internal static class Loader
     /// ships no documentation.
     /// </para>
     /// </remarks>
-    private static void Document(AdhocWorkspace workspace, TextWriter log)
+    private static void Document(Workspace workspace, TextWriter log)
     {
         var solution = workspace.CurrentSolution;
         var documented = 0;
@@ -456,8 +486,80 @@ internal static class Loader
         log.WriteLine($"  {documented} reference(s) carry their documentation");
     }
 
+    /// <summary>
+    /// Give every project the assembly name MSBuild resolved for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Buildalyzer names a project after its file, and a symbol is named after its
+    /// assembly.</b> <c>AddToWorkspace</c> defaults both <c>Project.Name</c> and
+    /// <c>Project.AssemblyName</c> to the <c>.csproj</c>'s base name, so a project that
+    /// sets <c>&lt;AssemblyName&gt;</c> compiled to an assembly called one thing and had
+    /// its symbols named after another: <c>ScipSymbols.Package</c> reads
+    /// <c>symbol.ContainingAssembly.Identity.Name</c>, and that is the compilation's.
+    /// </para>
+    /// <para>
+    /// <b>The bug this closes is a silent one</b>
+    /// (<a href="https://github.com/boxops-uk/fjord/issues/84">#84</a>). The same entity
+    /// seen through a <i>referenced</i> assembly is named from the real
+    /// <c>AssemblyName</c>, so one method had two names depending on which side of a
+    /// project reference the walk stood on. Nothing conflicts and nothing errors — the
+    /// cross-database join <c>src.Symbol</c> exists for just returns nothing.
+    /// </para>
+    /// <para>
+    /// <b>Read from the build result, which is where the build layer already reads it.</b>
+    /// <c>ProjectIndex.Refine</c> takes <c>AssemblyName</c> off the same
+    /// <c>IAnalyzerResult</c> for <c>msbuild.ProjectEvaluated</c> — which is why those
+    /// facts were right about this while the symbols were wrong. One source, so the two
+    /// cannot drift apart again.
+    /// </para>
+    /// <para>
+    /// <b>Applied through <see cref="IndexWorkspace.SetAssemblyName"/> and not through
+    /// <c>TryApplyChanges</c></b>, which accepts a solution carrying the new name and
+    /// discards it — see that type. A fix that set the property and did not reach the
+    /// compilation is exactly what the test asserts against.
+    /// </para>
+    /// <para>
+    /// <b><c>Project.Name</c> is deliberately left alone.</b> It is what the run prints
+    /// per project and what <c>--max-projects</c> counts; the defect is the assembly
+    /// identity, and moving the display name with it would change output that is not
+    /// wrong.
+    /// </para>
+    /// </remarks>
+    private static void Name(
+        IndexWorkspace workspace,
+        IReadOnlyList<(IAnalyzerResult Result, ProjectId Id)> added,
+        TextWriter log)
+    {
+        var renamed = 0;
+
+        foreach (var (result, id) in added)
+        {
+            if (result.Properties is not { } properties
+                || !properties.TryGetValue("AssemblyName", out var assembly)
+                || assembly.Length == 0)
+            {
+                continue;
+            }
+
+            // Only where it differs, so the count means "projects whose assembly name is
+            // not their file name" rather than "projects".
+            if (workspace.CurrentSolution.GetProject(id) is { } project
+                && !string.Equals(project.AssemblyName, assembly, StringComparison.Ordinal))
+            {
+                workspace.SetAssemblyName(id, assembly);
+                renamed++;
+            }
+        }
+
+        if (renamed > 0)
+        {
+            log.WriteLine($"  {renamed} project(s) named by their assembly rather than their file");
+        }
+    }
+
     private static void Wire(
-        AdhocWorkspace workspace,
+        Workspace workspace,
         IReadOnlyList<(IAnalyzerResult Result, ProjectId Id)> added,
         TextWriter log)
     {
