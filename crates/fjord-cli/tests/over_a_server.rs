@@ -550,21 +550,74 @@ fn a_stopped_server_leaves_no_socket_and_no_ready_file() {
     let ready = root.join("ready");
     let socket = root.join("fjord.sock");
 
-    let mut serving = serve(&root);
-    assert!(
-        ready.exists() && socket.exists(),
-        "the server announced itself"
-    );
+    // Not the shared `serve` helper: its 20ms poll is a wait, and the race this test
+    // proves lives in the window right after the file appears — a wait that returns
+    // only after detecting it can let that whole window close before this test sends
+    // its first signal.
+    let child = Command::new(env!("CARGO_BIN_EXE_fjord"))
+        .arg("--data-dir")
+        .arg(&root)
+        .arg("serve")
+        .arg("--ready-file")
+        .arg(&ready)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("the server starts");
+    let mut serving = Serving { child };
+
+    let pid = serving.child.id().to_string();
+    // The same 30s the `serve` helper allows for readiness — this phase is no
+    // different, and sharing one budget with the stop phase below previously made a
+    // startup hang and a stop hang indistinguishable by their panic message.
+    let start_deadline = Instant::now() + Duration::from_secs(30);
+    let mut stop_deadline = None;
+    let mut announced = false;
+    let mut saw_socket = false;
 
     // `kill(1)` rather than a crate: `Child::kill` is `SIGKILL`, which is the one
     // signal this cannot be made to survive and so the one that proves nothing.
-    let signalled = Command::new("kill")
-        .args(["-TERM", &serving.child.id().to_string()])
-        .status()
-        .expect("kill runs");
-    assert!(signalled.success());
+    //
+    // **Sent on every spin of the readiness poll, not once after it returns.** The
+    // race here is a window between the readiness file appearing and the signal
+    // handler being armed; the window can be no wider than spinning up a few runtime
+    // worker threads, so a single signal sent after a separate wait already returned
+    // routinely lands after it closes. A signal is harmless once the handler is armed
+    // or the process has exited, so nothing is lost by sending it again every spin
+    // until the child is gone.
+    let status = loop {
+        if let Some(status) = serving.child.try_wait().expect("try_wait does not fail") {
+            break status;
+        }
 
-    let status = serving.child.wait().expect("the server exits");
+        match stop_deadline {
+            None => assert!(
+                Instant::now() < start_deadline,
+                "the server never announced itself"
+            ),
+            Some(deadline) => assert!(Instant::now() < deadline, "the server never stopped"),
+        }
+
+        if ready.exists() {
+            if !announced {
+                announced = true;
+                stop_deadline = Some(Instant::now() + Duration::from_secs(10));
+            }
+            // The child is a live process or, at worst, an unreaped zombie holding
+            // its pid until the `try_wait` above next observes its exit — `kill`
+            // cannot legitimately fail here, so a failure is this test's own bug
+            // and not the server's.
+            saw_socket |= socket.exists();
+            let signalled = Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .expect("kill runs");
+            assert!(signalled.success(), "the signal was delivered");
+        }
+    };
+
+    assert!(announced, "the server never announced itself");
+    assert!(saw_socket, "the socket was never created");
     assert!(status.success(), "a stop is not a crash: {status}");
 
     assert!(!socket.exists(), "the socket outlived the server");

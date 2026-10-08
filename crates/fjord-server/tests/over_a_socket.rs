@@ -304,6 +304,32 @@ fn start() -> Serving {
     }
 }
 
+/// **`Shutdown::Never` leaves the process's own `SIGINT`/`SIGTERM` disposition alone.**
+///
+/// Every battery in this file runs its server through `start`, above, specifically
+/// `Shutdown::Never` — so that this binary's own `Ctrl-C` keeps working while a server
+/// is leaked on a background thread. That promise is carried by one match arm in
+/// `ShutdownSignals::arm` with nothing mechanical behind it, so a stray registration
+/// on that arm would pass every other test here unnoticed.
+#[test]
+fn a_never_shutdown_server_leaves_the_process_signal_disposition_alone() {
+    let _serving = start();
+
+    // `/proc/<pid>/status`'s `SigCgt` is a bitmask of the signals this *process* has
+    // installed a handler for, one bit per signal numbered from 1 — bit 0 is SIGHUP,
+    // so SIGINT (2) is bit 1 and SIGTERM (15) is bit 14.
+    let status = std::fs::read_to_string("/proc/self/status").expect("this process's status");
+    let caught = status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigCgt:"))
+        .map(str::trim)
+        .and_then(|mask| u64::from_str_radix(mask, 16).ok())
+        .expect("a SigCgt mask");
+
+    assert_eq!(caught & (1 << 1), 0, "SIGINT is handled: {caught:#x}");
+    assert_eq!(caught & (1 << 14), 0, "SIGTERM is handled: {caught:#x}");
+}
+
 /// The whole of what this client needs of a transport: blocking, byte-oriented I/O.
 trait Duplex: Read + Write {}
 impl<T: Read + Write> Duplex for T {}
