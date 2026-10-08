@@ -27,12 +27,23 @@
          getting something this repository builds without cloning it. -->
     <IsPackable>false</IsPackable>
 
-    <!-- One version for the whole repository, matching the Rust workspace's. -->
-    <!-- **A moved schema fingerprint is a client release.** The client carries one
-         whole-schema constant and the server checks it for equality, so an un-upgraded
-         client is refused at the handshake — which means the version bumps in the same
-         commit that re-pastes the constant, never later. README.md's flag-day section
-         names the guard that checks each of the remaining steps. -->
+    <!-- **A default, not a lockstep.** This is the version a package gets when its own
+         project does not state one, and it tracks the Rust workspace's so that the
+         ordinary case needs no decision. A project may override it, and one does.
+
+         Lockstep was the arrangement until it was measured: of the six artifacts this
+         repository publishes, exactly **one** embeds a schema fingerprint. `fjord-client`
+         computes it from the schema its caller supplies and `Boxops.Fjord.Client` takes it
+         from the schema object and reads the server's back at the handshake, so neither is
+         coupled to a schema moving — and making five schema-agnostic packages re-release
+         because the sixth had to is a cost with nothing on the other side.
+
+         What a moved fingerprint *does* force is a **minor** bump on the package that
+         states it, because an installed client carrying the old number is refused at the
+         handshake and under `0.x` the minor is the breaking slot.
+         `scripts/check-versions.py` enforces exactly that, against
+         `clients/dotnet/PUBLISHED.tsv`; README.md's flag-day section is the surrounding
+         procedure. -->
     <Version>0.6.2</Version>
     <Company>Boxops</Company>
     <Authors>Boxops</Authors>

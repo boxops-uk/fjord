@@ -248,6 +248,23 @@ jobs:
       # retired-name sweep is the one four hand sweeps missed.
       - name: Documentation is consistent
         run: python3 scripts/check-docs.py
+      # **The version gate.** A package that states a whole-schema fingerprint is refused
+      # at the handshake the moment that schema moves, so shipping the new fingerprint
+      # under the version already on the registry puts two different artifacts under one
+      # number — and `publish.sh` skips what is already live, so it would never reach
+      # nuget.org at all. This is the one claim no other gate can make, because the thing
+      # it compares against is published rather than in the tree:
+      # `clients/dotnet/PUBLISHED.tsv` records what is live and the gate requires a minor
+      # bump where the fingerprint moved. Recorded rather than queried, so a registry
+      # being down cannot redden a required check.
+      - name: A published package never claims a fingerprint it was not built with
+        run: python3 scripts/check-versions.py
+      # One violation per check against a throwaway tree, because the quiet failure of a
+      # gate like that is to stop firing. It caught a real one while being written: the
+      # constant pattern accepted `0x` and not `0X`, so an uppercase literal read as "this
+      # package states no fingerprint" and passed.
+      - name: The version gate's mutation controls
+        run: python3 -m unittest scripts/test_check_versions.py
       # **The link gate, asked of the product.** Whether a link resolves is a question
       # about a graph — does the page exist, does it declare the anchor — so it is two
       # sigla queries against a fjord database of the book rather than a regular
@@ -308,8 +325,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps -p fjord-schema -p fjord-wire -p fjord-client -p fjord-db
-      # The .NET half of the same question. `Boxops.Fjord.Client` is the only packable project
-      # here — the demo producer and the real indexer are console programs — and it
+      # The .NET half of the same question. `Boxops.Fjord.Client` is the packable *library*
+      # — the demo producer is a console program, and the indexer is packed as a tool by the
+      # release job so that the attested asset is the artifact that gets published — and it
       # multi-targets, so this is also what says the library still builds on the LTS.
       - uses: actions/setup-dotnet@v4
         with:
@@ -661,6 +679,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          # **The indexer's version is its own, and the notes have to say its number.**
+          # It states a schema fingerprint, so a moved schema forces a minor bump on that
+          # package and on nothing else — see `clients/dotnet/Directory.Build.props`. The
+          # asset is named by `dotnet pack` from the project, so deriving the install
+          # command from the tag instead would hand a reader a URL that 404s.
+          indexer=$(grep -oP '(?<=<Version>)[^<]+' \
+            clients/dotnet/Boxops.Fjord.Indexer/Boxops.Fjord.Indexer.csproj | tail -1)
+          indexer=${indexer:-$(grep -oP '(?<=<Version>)[^<]+' \
+            clients/dotnet/Directory.Build.props | tail -1)}
+          indexer=${indexer// /}
+          test -f "dist/Boxops.Fjord.Indexer.$indexer.nupkg" || {
+            echo "the notes would name Boxops.Fjord.Indexer.$indexer.nupkg, which is not here:"
+            ls dist/Boxops.Fjord.Indexer.*.nupkg
+            exit 1
+          }
           gh release create "$GITHUB_REF_NAME" \
             --title "Fjord DB $version" \
             --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md).
@@ -705,13 +738,13 @@ jobs:
 
           ## The .NET indexer
 
-          \`Boxops.Fjord.Indexer.<version>.nupkg\` is a \`dotnet\` tool that walks a
+          \`Boxops.Fjord.Indexer.$indexer.nupkg\` is a \`dotnet\` tool that walks a
           real checkout with Buildalyzer and Roslyn and writes what
           \`schemas/dotnet.sigla\` declares:
 
           \`\`\`
-          curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Boxops.Fjord.Indexer.$version.nupkg
-          dotnet tool install -g Boxops.Fjord.Indexer --version $version --add-source .
+          curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Boxops.Fjord.Indexer.$indexer.nupkg
+          dotnet tool install -g Boxops.Fjord.Indexer --version $indexer --add-source .
           fjord-indexer --sln /path/to/Some.slnx --schema dotnet.composed.sigla --at /tmp/fjord.sock//code
           \`\`\`
 

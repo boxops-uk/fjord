@@ -119,6 +119,26 @@ nuget_is_live() {
         grep -q "\"$2\""
 }
 
+# **The .NET packages version independently of the workspace, and of each other.**
+# Lockstep was the arrangement until it was measured: one of the six published
+# artifacts embeds a schema fingerprint, so a schema move is breaking for that one
+# and invisible to the other five. Forcing them to re-release together is a cost
+# with nothing on the other side — see `clients/dotnet/Directory.Build.props`.
+#
+# So a version is read per project: its own `<Version>` where it states one, and
+# `Directory.Build.props`' default where it does not. The last match wins, which is
+# how MSBuild resolves a property too.
+dotnet_version() {
+    local project=$1
+    local own
+    own=$(grep -oP '(?<=<Version>)[^<]+' "clients/dotnet/$project/$project.csproj" 2>/dev/null | tail -1)
+    if [[ -n "$own" ]]; then
+        echo "${own// /}"
+        return
+    fi
+    grep -oP '(?<=<Version>)[^<]+' clients/dotnet/Directory.Build.props | tail -1 | tr -d ' '
+}
+
 publish_crates() {
     echo "── crates.io ──"
     if [[ $execute == 1 && -z "${CRATES_API_KEY:-}" ]]; then
@@ -180,14 +200,26 @@ push_nuget() {
         exit 1
     fi
 
-    local indexer="Boxops.Fjord.Indexer.$version.nupkg"
-    local client="Boxops.Fjord.Client.$version.nupkg"
+    # Each package's own number, which is what `dotnet pack` stamps into the file
+    # name — so the release asset is named after the package version and not after
+    # the tag, and the two are deliberately allowed to differ.
+    local indexer_version client_version
+    indexer_version=$(dotnet_version Boxops.Fjord.Indexer)
+    client_version=$(dotnet_version Boxops.Fjord.Client)
 
-    if nuget_is_live "Boxops.Fjord.Indexer" "$version"; then
-        echo "  Boxops.Fjord.Indexer $version — already published, skipping"
+    [[ -n "$indexer_version" && -n "$client_version" ]] || {
+        echo "publish: could not resolve a version for the .NET packages" >&2
+        exit 1
+    }
+
+    local indexer="Boxops.Fjord.Indexer.$indexer_version.nupkg"
+    local client="Boxops.Fjord.Client.$client_version.nupkg"
+
+    if nuget_is_live "Boxops.Fjord.Indexer" "$indexer_version"; then
+        echo "  Boxops.Fjord.Indexer $indexer_version — already published, skipping"
         indexer=
     else
-        echo "  Boxops.Fjord.Indexer $version — taking the attested release asset"
+        echo "  Boxops.Fjord.Indexer $indexer_version — taking the attested release asset"
         gh release download "$tag" --pattern "$indexer" --pattern SHA256SUMS --dir "$staging"
         # The checksum is checked here rather than trusted, because this is the
         # one point where a release artifact becomes a permanent registry version.
@@ -197,11 +229,11 @@ push_nuget() {
         }
     fi
 
-    if nuget_is_live "Boxops.Fjord.Client" "$version"; then
-        echo "  Boxops.Fjord.Client $version — already published, skipping"
+    if nuget_is_live "Boxops.Fjord.Client" "$client_version"; then
+        echo "  Boxops.Fjord.Client $client_version — already published, skipping"
         client=
     else
-        echo "  Boxops.Fjord.Client $version — packing from this checkout"
+        echo "  Boxops.Fjord.Client $client_version — packing from this checkout"
         dotnet pack clients/dotnet/Boxops.Fjord.Client -c Release -o "$staging" \
             --nologo -v quiet
         [[ -f "$staging/$client" ]] || {
@@ -233,7 +265,11 @@ push_nuget() {
 [[ "$only" == "nuget" || "$only" == "both" ]] && push_nuget
 
 if [[ $execute == 1 ]]; then
-    echo "published $version. Registry versions cannot be withdrawn; yank with"
+    # The crates share the workspace version; the .NET packages were reported with
+    # their own above, so this names the set rather than claiming one number for all
+    # six artifacts.
+    echo "published the crates at $version, and the .NET packages at the versions above."
+    echo "Registry versions cannot be withdrawn; yank with"
     echo "  cargo yank --version $version -p <crate>    (which hides, it does not delete)"
 else
     echo "rehearsal only — nothing was uploaded. Re-run with --execute."
