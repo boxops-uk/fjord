@@ -1,0 +1,20 @@
+# What each packable .NET project last published, and the schema fingerprint it carried.
+#
+# **The point of the file.** A package that states a whole-schema fingerprint is refused at
+# the handshake the moment that schema moves, so a moved fingerprint is a breaking change
+# for whoever installed it — and under `0.x` the breaking slot is the minor. This records
+# what is live so `scripts/check-versions.py` can say "the fingerprint moved and the
+# version did not", which is the one thing nothing else in the tree can see: the live
+# artifact is on nuget.org, not here.
+#
+# **Recorded rather than queried.** A required check that asks nuget.org can go red because
+# a registry is down, which AGENTS.md rules out for the same reason the suite runs on a
+# pinned toolchain. The cost is that this file is maintained by hand, in the release commit
+# that publishes the version it names — which is the commit that already moves versions.
+#
+# Packages with no fingerprint constant are deliberately absent: they are not coupled to a
+# schema, and the gate's census asserts the two sets agree, so one that grows a constant
+# cannot quietly escape by having no row.
+#
+# package	version	fingerprint
+Boxops.Fjord.Indexer	0.6.2	0x4471c3f35a45b7da

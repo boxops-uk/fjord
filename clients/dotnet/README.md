@@ -133,11 +133,13 @@ a required check rather than a thing somebody remembers to run:
 | the Rust side agrees byte for byte | `byte_identical_with_the_dotnet_client` |
 | the fixture reader's counts and key order | `sample_schema`'s four tests |
 | the suite and the lint gate | the ordinary gate |
+| a package shipping a new fingerprint under a used version | `scripts/check-versions.py`, against `PUBLISHED.tsv` |
 
 What went with it is one nudge rather than one guarantee: it noticed goldens that had
 been regenerated and not committed, which is a `git status` away.
 
-So the order below is for a person, and nothing enforces it:
+So the order below is for a person. Nothing enforces the *order* — step 7 is the one step
+that is itself a required check, and it fires wherever in the sequence you reach it:
 
 1. **Edit the schema** — `schemas/demo.sigla` for the demo and the fixture,
    `schemas/dotnet.sigla` for what the indexer writes. **A shared layer moves more than
@@ -161,12 +163,29 @@ So the order below is for a person, and nothing enforces it:
    here by count before it fails by bytes.
 6. **Update `crates/fjord-cli/src/sample_schema.rs`** if the fixture moved: the predicate
    count, `KEY_ORDER`, `VALUE_ORDER` and the name lookups.
-7. **Bump the .NET package version** in the same commit that re-pastes the constant. A
-   moved fingerprint *is* a client release, and an un-upgraded client's refusal is the
-   designed failure — `a_schema_mismatch_is_refused_at_the_handshake` asserts it names
-   both numbers, so an operator can tell a stale client from one pointed at the wrong
-   database.
+7. **Bump the minor of the package that states the fingerprint** — and of nothing else.
+   `python3 scripts/check-versions.py` is what requires this, so it is a red check rather
+   than a step to remember, and it names the package and the file.
+
+   Today that is `Boxops.Fjord.Indexer` alone. **Of the six artifacts this repository
+   publishes, one embeds a fingerprint**: `fjord-client` computes it from the schema its
+   caller supplies, and `Boxops.Fjord.Client` takes it from the schema object and reads the
+   server's back at the handshake, so neither is coupled to a schema moving. The others
+   version on their own cadence, and a patch bump needs nothing from this list.
+
+   **The minor rather than the patch**, because an installed client carrying the old number
+   is refused at the handshake and that is breaking — `a_schema_mismatch_is_refused_at_the_handshake`
+   asserts the refusal names both numbers, so an operator can tell a stale client from one
+   pointed at the wrong database. Under `0.x` the minor is the breaking slot, which
+   `CHANGELOG.md` states outright.
 8. **`cargo test` and the pinned lint gate.**
+
+**When the release actually goes out, record it.** `clients/dotnet/PUBLISHED.tsv` names the
+version each coupled package last published and the fingerprint it carried, and the gate in
+step 7 compares against it — so the release commit that publishes a version updates that row
+in the same breath. Leave it stale and the gate goes on demanding a bump that already
+happened; there is no way to ask the registry instead, because a required check that depends
+on nuget.org being up is a check that fails for reasons nobody in this repository caused.
 
 A schema *re-keying* — changing a predicate's key rather than adding one — is a bigger
 job than this: every query and every producer that reads the predicate moves with it, and
