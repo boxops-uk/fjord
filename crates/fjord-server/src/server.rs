@@ -220,22 +220,60 @@ pub enum Shutdown {
     Never,
 }
 
-/// The signals that mean **stop**, as one future.
+/// `SIGINT` and `SIGTERM`, registered by [`arm`](Self::arm) and waited on by
+/// [`wait`](Self::wait).
 ///
-/// `SIGINT` and `SIGTERM`, because those are what a terminal and an init system send.
-/// Handled rather than left to the default action for one reason: the default action
-/// is to die, and a process that dies leaves [`Listener`]'s socket and readiness file
-/// standing. A readiness file that outlives the listener it announced is believed by
-/// exactly the code it was written for.
-async fn shutdown_signal() -> std::io::Result<()> {
-    use tokio::signal::unix::{SignalKind, signal};
+/// Split in two on purpose. `tokio::signal::unix::signal` is an ordinary function —
+/// but calling it from inside an `async fn`'s body only runs it when that future is
+/// **first polled**, not when it is called, because none of an `async fn`'s body runs
+/// before that. A caller that built the future and then did other work before polling
+/// it — building a runtime, binding a second listener — would leave the default
+/// disposition in place for all of it. `arm` is a plain function, so it registers the
+/// instant it is called.
+struct ShutdownSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
 
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
+impl ShutdownSignals {
+    /// Register the handlers for [`Shutdown::OnSignal`]; register nothing for
+    /// [`Shutdown::Never`].
+    ///
+    /// **Registering a signal replaces the default disposition for the whole
+    /// process.** [`Shutdown::Never`] is a promise to leave `SIGTERM` and `SIGINT`
+    /// alone, so arming here on that arm would not merely do nothing extra — it would
+    /// take the signal away from whatever embeds this server and answer it with
+    /// nothing, breaking the one thing that variant guarantees.
+    ///
+    /// # Errors
+    ///
+    /// [`ServerError::Io`] if either signal cannot be registered.
+    fn arm(shutdown: Shutdown) -> Result<Option<ShutdownSignals>, ServerError> {
+        use tokio::signal::unix::{SignalKind, signal};
 
-    tokio::select! {
-        _ = interrupt.recv() => Ok(()),
-        _ = terminate.recv() => Ok(()),
+        match shutdown {
+            Shutdown::OnSignal => Ok(Some(ShutdownSignals {
+                interrupt: signal(SignalKind::interrupt()).map_err(ServerError::Io)?,
+                terminate: signal(SignalKind::terminate()).map_err(ServerError::Io)?,
+            })),
+            Shutdown::Never => Ok(None),
+        }
+    }
+
+    /// Wait for whichever of the two arrives first.
+    ///
+    /// The default action for either is to die, and a process that dies leaves
+    /// [`Listener`]'s socket and readiness file standing — a readiness file that
+    /// outlives the listener it announced is believed by exactly the code it was
+    /// written for.
+    ///
+    /// Infallible by construction: both `recv` arms always produce a signal, never
+    /// an error, so there is no `Result` here for a caller to forward.
+    async fn wait(&mut self) {
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
+        }
     }
 }
 
@@ -501,8 +539,8 @@ pub fn serve_unix(
 ///
 /// # Errors
 ///
-/// [`ServerError::Io`] if either listener cannot be bound, or the readiness file cannot
-/// be written.
+/// [`ServerError::Io`] if either listener cannot be bound, a shutdown signal cannot be
+/// registered, or the readiness file cannot be written.
 pub fn serve_on(
     socket: impl AsRef<Path>,
     listen: Option<&str>,
@@ -511,26 +549,38 @@ pub fn serve_on(
     registry: Arc<Registry>,
     shutdown: Shutdown,
 ) -> Result<(), ServerError> {
-    let mut listener = Listener::bind(socket)?;
-
-    if let Some(max) = max_connections {
-        listener = listener.with_max_connections(max);
-    }
-
-    if let Some(at) = ready_file {
-        listener.announce(at)?;
-    }
-
     let address = listen.map(ToOwned::to_owned);
-    let examined_ceiling = listener.examined_ceiling;
-    // **One cap over both doors.** Descriptors are the process's, so two listeners
-    // admitting `max` each would reserve nothing at all.
-    let admission = Arc::clone(listener.admission());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
     runtime.block_on(async move {
+        // **Armed before the socket even exists.** Registering a handler is what
+        // takes the default disposition away; a socket or a readiness file created
+        // first is a claim a `SIGTERM` landing anywhere before this point can still
+        // falsify by killing the process outright, leaving both standing.
+        // `Listener::bind` is an ordinary synchronous call — nothing here needs it
+        // to happen before a runtime exists, and `serve_on` always builds one — so it
+        // waits for `arm` rather than racing it.
+        let mut signals = ShutdownSignals::arm(shutdown)?;
+
+        let mut listener = Listener::bind(socket)?;
+
+        if let Some(max) = max_connections {
+            listener = listener.with_max_connections(max);
+        }
+        let examined_ceiling = listener.examined_ceiling;
+        // **One cap over both doors.** Descriptors are the process's, so two listeners
+        // admitting `max` each would reserve nothing at all.
+        let admission = Arc::clone(listener.admission());
+
+        // A borrowed `Option<&Path>` is fine to carry into this block: `block_on`
+        // drives the future to completion on the calling thread before returning, so
+        // nothing here needs to outlive the call the way a `tokio::spawn`ed task would.
+        if let Some(at) = ready_file {
+            listener.announce(at)?;
+        }
+
         // Bound before either is served, so a bad address fails the command rather than
         // leaving a half-open server that answers on one door and not the other.
         let tcp = match &address {
@@ -557,9 +607,12 @@ pub fn serve_on(
         tokio::pin!(opted_in);
 
         let stopped = async move {
-            match shutdown {
-                Shutdown::OnSignal => shutdown_signal().await.map_err(ServerError::Io),
-                Shutdown::Never => std::future::pending::<Result<(), ServerError>>().await,
+            match &mut signals {
+                Some(signals) => {
+                    signals.wait().await;
+                    Ok(())
+                }
+                None => std::future::pending::<Result<(), ServerError>>().await,
             }
         };
         tokio::pin!(stopped);

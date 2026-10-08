@@ -54,19 +54,21 @@ internal sealed class IndexWorkspace() : Workspace(MefHostServices.DefaultHost, 
         OnAssemblyNameChanged(project, assembly);
 }
 
-/// <summary>What there is to walk, and what compiled it.</summary>
-/// <remarks>
-/// The two travel together because they are answered by the same pass: the design-time
-/// build that produces a compilation is also the only thing that knows the project's
-/// resolved framework, its assembly name and its real source list.
-/// </remarks>
 /// <summary>One target framework's worth of a checkout: what to walk, and what compiled it.</summary>
 /// <remarks>
+/// <para>
 /// <b>One of these becomes one database.</b> A project compiled for two frameworks is two
 /// compilations with different preprocessor symbols, different references and, often,
 /// different members — so the facts belong to the target rather than to the project, and
 /// there is no key in the schema that could hold both. Fanning out is the only shape that
 /// does not quietly index one of the two and call it the project.
+/// </para>
+/// <para>
+/// <see cref="Projects"/> and <see cref="Build"/> travel together because they are answered
+/// by the same pass: the design-time build that produces a compilation is also the only
+/// thing that knows the project's resolved framework, its assembly name and its real source
+/// list.
+/// </para>
 /// </remarks>
 internal sealed record LoadedTarget(
     string Framework,
@@ -168,8 +170,6 @@ internal static class Loader
 
             log.WriteLine($"  entry point {entry}");
         }
-
-        var workspace = new AdhocWorkspace();
 
         // **Unioned, and deduplicated by project path.** Two solutions naming one project
         // is ordinary — a `Directory.Build.props` tree with a core solution and a tools one

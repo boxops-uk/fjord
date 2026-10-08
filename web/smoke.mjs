@@ -104,19 +104,24 @@ const openSection = async (name) => {
   await settle()
 }
 
-/** Press one of the transport's buttons, by the word on it. */
 /** A transport control, by its accessible name — the controls are icons now,
- *  so their text is no longer the thing that identifies them. */
-const transport = (label) =>
+ *  so their text is no longer the thing that identifies them. Reads the step
+ *  counter in the same evaluate as the click: nothing, not even usePlayback's
+ *  220ms tick, may land between the two, or a caller that samples the count
+ *  separately races it. */
+const press = (label) =>
   page.evaluate((label) => {
     const button = [...document.querySelectorAll('.transport button')].find(
       (button) => (button.getAttribute('aria-label') ?? button.textContent)?.trim() === label,
     )
     if (!button) throw new Error(`no transport button called ${label}`)
-    if (button.disabled) return 'disabled'
+    const at = Number(document.querySelector('.transport .count').textContent.split('/')[0])
+    if (button.disabled) return { at, clicked: false }
     button.click()
-    return 'clicked'
+    return { at, clicked: true }
   }, label)
+const transport = async (label) => ((await press(label)).clicked ? 'clicked' : 'disabled')
+const transportSampling = async (label) => (await press(label)).at
 
 /** Unfold every predicate in the database table, whatever the run folded. */
 const openEveryPredicate = async () => {
@@ -317,20 +322,38 @@ await new Promise((resolve) => setTimeout(resolve, 700))
 const playedTo = await stepNow()
 check('continue advances the run on its own', playedTo > 1 && (await playLabel()) === 'pause')
 
-await transport('step back')
+// The read and the click have to be one evaluate: two separate round trips
+// here would leave a window the 220ms tick can land in, and a sample taken
+// before the click would then be stale by the time the click lands.
+const backFrom = await transportSampling('step back')
 await new Promise((resolve) => setTimeout(resolve, 600))
+const labelAfterBack = await playLabel()
+const stepAfterBack = await stepNow()
 check(
   'navigating while playing stops the run',
-  (await playLabel()) === 'continue' && (await stepNow()) === playedTo - 1,
+  labelAfterBack === 'continue' && stepAfterBack === backFrom - 1,
+  `label was ${labelAfterBack} (want continue) · count was ${stepAfterBack} ` +
+    `(want ${backFrom - 1}, sampled ${backFrom} atomically with the click)`,
 )
 
 await transport('run to end')
 await settle()
 check('the end of the run stops the run', (await playLabel()) === 'continue')
+// Pause immediately, before usePlayback's 220ms tick can land: reading the
+// count after a settle() here raced the same tick #72 was about, just with
+// more headroom (one tick flips `< 3` from true to false either way).
 await transport('continue')
-await settle()
-check('continue from the end starts again from the start', (await stepNow()) < 3)
 await transport('pause')
+const [stepAfterContinue, totalSteps] = (
+  await page.$eval('.transport .count', (el) => el.textContent)
+)
+  .split('/')
+  .map(Number)
+check(
+  'continue from the end starts again from the start',
+  stepAfterContinue < totalSteps,
+  `count was ${stepAfterContinue}/${totalSteps}`,
+)
 
 // **The play control is a shape, and the same shape's worth of room either
 // way.** It was the word `play` becoming the word `pause`, so the one control
