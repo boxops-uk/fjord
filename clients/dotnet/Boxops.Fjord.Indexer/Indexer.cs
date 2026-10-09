@@ -732,7 +732,8 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// <c>FileDefinition</c> is documented as "what a symbol outline or a sticky header
     /// needs", and no outline lists the parameters of every method — nor does a search
     /// over names want five more rows per signature, which is <c>SearchEntry</c> and
-    /// <c>SymbolByName</c>.
+    /// <c>SymbolByName</c>. Of the relations only <c>annotates</c> applies, and it does:
+    /// a parameter is where <c>[FromBody]</c> and <c>[CallerMemberName]</c> live.
     /// </para>
     /// <para>
     /// <b>Not routed through <see cref="Declare"/>, because a parameter has no
@@ -805,6 +806,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 qualified,
                 Package(symbol),
                 CodeMarkup.Kind(symbol)));
+        Annotate(symbol, named);
 
         // **A positional record declares two things with one name.** `record
         // WriteSummary(ulong Created, …)` writes a primary-constructor parameter *and* a
@@ -864,6 +866,10 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                         property.ToDisplayString(),
                         Package(property),
                         CodeMarkup.Kind(property)));
+
+                // `[property: X]` on the parameter lands here, and nowhere a syntax walk
+                // can see: the property has no declaration of its own to carry it.
+                Annotate(property, asProperty);
             }
         }
     }
@@ -1059,41 +1065,7 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 DotnetIndex.SymbolXRef,
                 DotnetIndex.SymbolXRefFact(target, file, start, length));
 
-            // **What a hover card needs for something this index does not declare.**
-            // `codemarkup.SymbolInfo` is keyed `{symbol}` and nothing else — there is no
-            // file in that key — so it is answerable for a target with no declaration
-            // site here, which is the whole difference between it and `Definition`. The
-            // compiler already has the signature and, where the reference assembly ships
-            // its XML beside it, the documentation comment too; without this the facts
-            // exist in the compiler and nowhere in the index.
-            //
-            // Written once per id: a run meets `IDisposable` wherever it is used, and
-            // every one of those would be the same key offered again.
-            // **Described only where nobody in this run owns it.** A symbol from metadata
-            // whose assembly a project here produces belongs to that project's walk: that
-            // one has the source, so it has the documentation and the modifiers this view
-            // does not, and writing a narrower description under the same key is the
-            // conflict #82 reports. An assembly nothing here produces — a package, the BCL
-            // — is described by every observer identically, so it dedups and is kept: that
-            // is what `Loader.Document` attaches the XML providers for.
-            var owner = symbol.ContainingAssembly?.Identity.Name;
-            var ownedElsewhere = owner is not null && projects.Produces(owner);
-
-            if (outside && !ownedElsewhere && _described.TryAdd(scip, true))
-            {
-                var described = symbol.OriginalDefinition;
-
-                sink.Add(
-                    DotnetIndex.SymbolInfo,
-                    DotnetIndex.SymbolInfoFact(
-                        target,
-                        CodeMarkup.Signature(described),
-                        options.Docs ? DocComment(described) : string.Empty,
-                        CodeMarkup.Modifiers(described),
-                        described.ToDisplayString(),
-                        Package(described),
-                        CodeMarkup.Kind(described)));
-            }
+            Describe(symbol, scip);
         }
         else if (local is { } declared)
         {
@@ -1286,6 +1258,55 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
         && name.Identifier.Text is "notnull" or "unmanaged";
 
     /// <summary>
+    /// What a hover card needs for something this index does not declare: one
+    /// <c>codemarkup.SymbolInfo</c> for a symbol from metadata, written once per id.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>codemarkup.SymbolInfo</c> is keyed <c>{symbol}</c> and nothing else — there is
+    /// no file in that key — so it is answerable for a target with no declaration site
+    /// here, which is the whole difference between it and <c>Definition</c>. The compiler
+    /// already has the signature and, where the reference assembly ships its XML beside
+    /// it, the documentation comment too; without this the facts exist in the compiler
+    /// and nowhere in the index. Once per id, because a run meets <c>IDisposable</c>
+    /// wherever it is used, and every one of those would be the same key offered again.
+    /// </para>
+    /// <para>
+    /// <b>Described only where nobody in this run owns it.</b> A symbol from metadata
+    /// whose assembly a project here produces belongs to that project's walk: that one
+    /// has the source, so it has the documentation and the modifiers this view does not,
+    /// and writing a narrower description under the same key is the conflict #82 reports.
+    /// An assembly nothing here produces — a package, the BCL — is described by every
+    /// observer identically, so it dedups and is kept: that is what
+    /// <c>Loader.Document</c> attaches the XML providers for.
+    /// </para>
+    /// </remarks>
+    private void Describe(ISymbol symbol, string scip)
+    {
+        var outside = !symbol.Locations.Any(location => location.IsInSource);
+        var owner = symbol.ContainingAssembly?.Identity.Name;
+        var ownedElsewhere = owner is not null && projects.Produces(owner);
+
+        if (!outside || ownedElsewhere || !_described.TryAdd(scip, true))
+        {
+            return;
+        }
+
+        var described = symbol.OriginalDefinition;
+
+        sink.Add(
+            DotnetIndex.SymbolInfo,
+            DotnetIndex.SymbolInfoFact(
+                DotnetIndex.SymbolFact(scip),
+                CodeMarkup.Signature(described),
+                options.Docs ? DocComment(described) : string.Empty,
+                CodeMarkup.Modifiers(described),
+                described.ToDisplayString(),
+                Package(described),
+                CodeMarkup.Kind(described)));
+    }
+
+    /// <summary>
     /// The <c>codemarkup</c> projection of one declaration: the same facts, re-keyed for
     /// the questions a UI asks.
     /// </summary>
@@ -1363,61 +1384,25 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
     /// </remarks>
     private void Relate(ISymbol symbol, FjordFact named)
     {
-        // **`fromOther` is the direction, and getting it wrong is silent.**
-        // `codemarkup.sigla` reads `Relation` as "`from` <kind> `to`", and `RelationOf`
-        // carries the same edge reversed — so a transposed pair still answers both
-        // queries with every symbol resolving, and says "Base extends Derived".
-        void Edge(ISymbol? other, uint kind, bool fromOther)
-        {
-            if (other is null)
-            {
-                return;
-            }
-
-            // **The flagged overload here too, because a dropped edge is invisible.** A
-            // `Relation` row is a pair of symbols and half of one is no edge, so an
-            // unspellable target loses the whole edge — a larger loss than a declaration's
-            // and the one with nothing else in the database pointing at it. The `as` casts
-            // below mean every `other` reaching this line is a named type, which always
-            // spells; the flag says so rather than assuming it.
-            if (ScipSymbols.Of(other, out var unspellable) is not { } text)
-            {
-                if (unspellable)
-                {
-                    Interlocked.Increment(ref _unspellable);
-                }
-
-                return;
-            }
-
-            var target = DotnetIndex.SymbolFact(text);
-            var value = DotnetIndex.Tagged(kind);
-            var from = fromOther ? target : named;
-            var to = fromOther ? named : target;
-
-            sink.Add(DotnetIndex.Symbol, target);
-            sink.Add(DotnetIndex.Relation, DotnetIndex.RelationFact(from, value, to));
-            sink.Add(DotnetIndex.RelationOf, DotnetIndex.RelationOfFact(to, value, from));
-        }
-
-        Edge(symbol.ContainingSymbol as INamedTypeSymbol, 1u, fromOther: true);
+        Edge(named, symbol.ContainingSymbol as INamedTypeSymbol, 1u, fromOther: true);
 
         if (symbol is INamedTypeSymbol type)
         {
             if (type.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
             {
-                Edge(baseType, 2u, fromOther: false);
+                Edge(named, baseType, 2u, fromOther: false);
             }
 
             foreach (var iface in type.Interfaces)
             {
-                Edge(iface, 3u, fromOther: false);
+                Edge(named, iface, 3u, fromOther: false);
             }
         }
 
         if (symbol.IsOverride)
         {
             Edge(
+                named,
                 symbol switch
                 {
                     IMethodSymbol method => method.OverriddenMethod,
@@ -1428,6 +1413,87 @@ internal sealed class Indexer(Options options, FactSink sink, string root, Proje
                 4u,
                 fromOther: false);
         }
+
+        Annotate(symbol, named);
+    }
+
+    /// <summary>
+    /// <c>annotates</c>: from each attribute class applied to a declaration, to the
+    /// declaration.
+    /// </summary>
+    /// <remarks>
+    /// <b>The class, not the constructor the application's name binds to.</b>
+    /// <see cref="Reference"/> writes the application's span against that constructor, so
+    /// the class has no incoming reference anywhere in the index, and nothing but this
+    /// edge says a declaration carries <c>[X]</c>. For the same reason an attribute class
+    /// from a package is described here: no name in the source ever binds to it, so the
+    /// <c>from</c> side of every such edge would otherwise be a symbol with no card. An
+    /// attribute class the compiler rejected — unresolved, ambiguous, not an attribute
+    /// type — is an error type, which <see cref="ScipSymbols.Of"/> refuses to spell, so
+    /// it gets no edge; the application site is already a cross-reference or an
+    /// unresolved name.
+    /// </remarks>
+    private void Annotate(ISymbol symbol, FjordFact named)
+    {
+        foreach (var attribute in symbol.GetAttributes())
+        {
+            if (attribute.AttributeClass is not { } annotation)
+            {
+                continue;
+            }
+
+            var annotating = annotation.OriginalDefinition;
+
+            if (Edge(named, annotating, 8u, fromOther: true) is { } scip)
+            {
+                Describe(annotating, scip);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One relation edge between <paramref name="named"/> and another symbol, in both
+    /// predicates. Answers the other symbol's spelling when the edge was written.
+    /// </summary>
+    /// <remarks>
+    /// <b><paramref name="fromOther"/> is the direction, and getting it wrong is silent.</b>
+    /// <c>codemarkup.sigla</c> reads <c>Relation</c> as "<c>from</c> &lt;kind&gt; <c>to</c>",
+    /// and <c>RelationOf</c> carries the same edge reversed — so a transposed pair still
+    /// answers both queries with every symbol resolving, and says "Base extends Derived".
+    /// </remarks>
+    private string? Edge(FjordFact named, ISymbol? other, uint kind, bool fromOther)
+    {
+        if (other is null)
+        {
+            return null;
+        }
+
+        // **The flagged overload here too, because a dropped edge is invisible.** A
+        // `Relation` row is a pair of symbols and half of one is no edge, so an
+        // unspellable target loses the whole edge — a larger loss than a declaration's
+        // and the one with nothing else in the database pointing at it. The flag is
+        // counted rather than argued away: an overridden member reaches this line too,
+        // and "it always spells" has been wrong before (`ScipSymbols.Of`).
+        if (ScipSymbols.Of(other, out var unspellable) is not { } text)
+        {
+            if (unspellable)
+            {
+                Interlocked.Increment(ref _unspellable);
+            }
+
+            return null;
+        }
+
+        var target = DotnetIndex.SymbolFact(text);
+        var value = DotnetIndex.Tagged(kind);
+        var from = fromOther ? target : named;
+        var to = fromOther ? named : target;
+
+        sink.Add(DotnetIndex.Symbol, target);
+        sink.Add(DotnetIndex.Relation, DotnetIndex.RelationFact(from, value, to));
+        sink.Add(DotnetIndex.RelationOf, DotnetIndex.RelationOfFact(to, value, from));
+
+        return text;
     }
 
     /// <summary>

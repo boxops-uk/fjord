@@ -5,6 +5,23 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
+## Unreleased
+
+### The .NET indexer says which declarations carry an attribute · `codemarkup.Relation {kind = annotates}`
+
+An attribute application's name binds to the attribute's *constructor*, and that is what
+the span's cross-reference has always targeted — so `FactAttribute` had no incoming fact
+anywhere in an index, and "everything marked `[Fact]`" was not a question it could answer.
+The indexer now writes `codemarkup.Relation {from = <attribute class>, kind = annotates,
+to = <declaration>}` and its `RelationOf` mirror for every attribute on every declaration
+it writes — types, members, enum members, parameters, and the property a positional record
+parameter synthesises — and gives an attribute class from a package the
+`codemarkup.SymbolInfo` card a hover needs, since no name in the source binds to it. No
+schema moved: the kind has been in `codemarkup.sigla` since the vocabulary was written.
+An event, a type parameter, a return value, an auto-property's backing field and the two
+global targets have no declaration row here, so an attribute on one is still a
+cross-reference and nothing more.
+
 ## 0.6.2 — 2026-09-30
 
 **Ingest stopped decaying as the index grew.** Write throughput fell from 190k facts/s to

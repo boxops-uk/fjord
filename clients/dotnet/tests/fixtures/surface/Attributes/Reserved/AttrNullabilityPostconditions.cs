@@ -6,10 +6,10 @@
 // distinct hazards run through them.
 //
 // The first is the target. MaybeNull, NotNull and NotNullIfNotNull are applied through the
-// `return:` target to a return value that no source construct declares, and MaybeNullWhen,
-// NotNullWhen and NotNull are applied to `out` parameters — so a query for "which
-// declarations does MaybeNullAttribute annotate" has to answer with something other than a
-// named symbol at four sites below.
+// `return:` target to a return value that no source construct declares — so a query for
+// "which declarations does MaybeNullAttribute annotate" has no named symbol to answer with
+// at those sites — while MaybeNullWhen, NotNullWhen and NotNull are applied to `out`
+// parameters, which are declared and answer with the parameter's own symbol.
 //
 // The second is sharper, and it is why MemberNotNull, MemberNotNullWhen and
 // NotNullIfNotNull sit in one file with the rest. Their arguments are *names of other

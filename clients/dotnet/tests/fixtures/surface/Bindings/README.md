@@ -63,7 +63,12 @@ reference names.
 - **M8's bindings, measured**: `[BindMark(Topic = "audit")]` → `BindMarkAttribute()`,
   `[BindMark("because")]` → `BindMarkAttribute(string)`, `[BindMark]` → `BindMarkAttribute()`,
   `[BindMarkAttribute]` → `BindMarkAttribute()`. The named argument `Topic` → the property.
-  Not one of the four binds to the class.
+  Not one of the four binds to the class, so the class's reference fan-out is empty at four
+  application sites. What reaches it is `codemarkup.Relation {from = BindMarkAttribute#,
+  kind = annotates}`, written from each declaration's attribute list rather than from the
+  application's name — measured over this project: four such edges, to `BindAnnotated#`,
+  `#Weight.`, `#Slot.` and `#Run().`, plus one *to* `BindMarkAttribute#` from
+  `System/AttributeUsageAttribute#`; 107 `Relation` rows against 102 without them.
 - **M9's roles, measured** from the syntax shapes `CodeMarkup.Role` consults:
   `holder.Value = 1` write, `maybe?.Value = 1` **read**, `holder.Value++` **read**,
   `holder.Value += 1` write, `Take(ref holder.Slot)` **read**,

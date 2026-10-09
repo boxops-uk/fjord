@@ -216,12 +216,17 @@ public sealed class SourceLayerDatabaseTests
 
     /// <summary>
     /// The heritage fixture. <see cref="Source"/> is one class with no base type, no
-    /// interface and no <c>override</c>, so every relation kind but <c>contains</c> is
-    /// unreachable from it and a transposed edge is invisible to every assertion above.
+    /// interface, no <c>override</c> and no attribute, so every relation kind but
+    /// <c>contains</c> is unreachable from it and a transposed edge is invisible to every
+    /// assertion above.
     /// </summary>
     private const string Hierarchy = """
         namespace Fixture.Aviary
         {
+            public sealed class FlightAttribute : System.Attribute
+            {
+            }
+
             public interface IQuack
             {
                 void Quack();
@@ -234,8 +239,10 @@ public sealed class SourceLayerDatabaseTests
                 }
             }
 
+            [Flight]
             public class Duck : Bird, IQuack
             {
+                [Flight]
                 public override void Fly()
                 {
                 }
@@ -249,18 +256,21 @@ public sealed class SourceLayerDatabaseTests
 
     /// <summary>
     /// <para>
-    /// <b>Heritage edges run from the deriving symbol to the one it derives from.</b>
+    /// <b>Heritage edges run from the deriving symbol to the one it derives from, and an
+    /// annotation from the attribute class to what carries it.</b>
     /// </para>
     /// <para>
     /// <c>codemarkup.sigla</c> fixes the direction — <c>Relation</c> reads "<c>from</c>
     /// &lt;kind&gt; <c>to</c>" — and <c>RelationOf</c> is the same edge reversed. So a
     /// transposed pair answers both queries with every symbol resolving and says "Base
     /// extends Derived": neither direction recovers the truth, and a row count notices
-    /// nothing.
+    /// nothing. The annotation is asserted over the wire for a second reason: the
+    /// application's own cross-reference targets a constructor, so this edge is the only
+    /// row that reaches the attribute class from an application site.
     /// </para>
     /// </summary>
     [Fact]
-    public void Heritage_edges_run_from_the_deriving_symbol_to_the_one_it_derives_from()
+    public void Heritage_edges_run_from_the_deriving_symbol_and_annotations_from_the_attribute_class()
     {
         using var server = FjordServer.Serving("dotnet", "dotnet.sigla");
         var directory = Directory.CreateTempSubdirectory("fjord-heritage-db");
@@ -279,6 +289,8 @@ public sealed class SourceLayerDatabaseTests
                 ("extends", "Fixture/Aviary/Duck#", "Fixture/Aviary/Bird#"),
                 ("implements", "Fixture/Aviary/Duck#", "Fixture/Aviary/IQuack#"),
                 ("overrides", "Fixture/Aviary/Duck#Fly().", "Fixture/Aviary/Bird#Fly()."),
+                ("annotates", "Fixture/Aviary/FlightAttribute#", "Fixture/Aviary/Duck#"),
+                ("annotates", "Fixture/Aviary/FlightAttribute#", "Fixture/Aviary/Duck#Fly()."),
             })
             {
                 var edges = Related(

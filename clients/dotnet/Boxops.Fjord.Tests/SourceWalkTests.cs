@@ -756,4 +756,211 @@ public sealed class SourceWalkTests
             directory.Delete(recursive: true);
         }
     }
+
+    /// <summary>
+    /// <b>An attribute application is a reference to a constructor, so the attribute class
+    /// has no incoming reference of its own — <c>annotates</c> is the one fact that says a
+    /// declaration carries <c>[X]</c>, and it runs from the class.</b>
+    /// </summary>
+    /// <remarks>
+    /// Only a target this index declares gets an edge, and every absence below is
+    /// provoked: an event is reached and dropped, because <c>csharp</c> has no event
+    /// entity, and the run counts it; a type parameter, a local function and its
+    /// parameter, <c>[return:]</c>, <c>[field:]</c> on an auto-property and the assembly
+    /// target are never offered to the walk as declarations and are not counted. An
+    /// attribute class the compiler could not resolve is an error type, which the symbol
+    /// scheme refuses to spell: no edge, no symbol minted for it, and the name is already
+    /// one unresolved reference.
+    /// </remarks>
+    [Fact]
+    public void An_attribute_application_relates_the_attribute_class_to_what_it_annotates()
+    {
+        var (written, indexer) = Walked(
+            """
+            using System;
+
+            [assembly: Fixture.Tag<int>]
+
+            namespace Fixture
+            {
+                [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+                public sealed class MarkAttribute : Attribute
+                {
+                    public MarkAttribute()
+                    {
+                    }
+
+                    public MarkAttribute(string reason)
+                    {
+                    }
+                }
+
+                public sealed class TagAttribute<T> : Attribute
+                {
+                }
+
+                [Mark]
+                public interface IMarked
+                {
+                }
+
+                [Mark]
+                public delegate void Handler([Mark] int value);
+
+                public class Generic<[Tag<int>] TItem>
+                {
+                }
+
+                [Mark]
+                [Tag<int>]
+                public class Thing
+                {
+                    [Mark]
+                    [Mark("twice")]
+                    public int Slot;
+
+                    [Mark]
+                    [field: Tag<int>]
+                    public int Weight { get; set; }
+
+                    [Mark]
+                    public event Action? Changed;
+
+                    [Mark]
+                    public Thing()
+                    {
+                    }
+
+                    [Mark]
+                    public int this[int index] => index;
+
+                    [Mark, Obsolete("old")]
+                    [return: Tag<int>]
+                    public int Run([Mark] int count)
+                    {
+                        [Tag<int>]
+                        int Local([Tag<int>] int inner) => inner;
+
+                        Changed?.Invoke();
+                        return Local(count) + Slot + Weight;
+                    }
+
+                    [NoSuch]
+                    public void Unbound()
+                    {
+                    }
+                }
+
+                [Flags]
+                public enum Kind
+                {
+                    [Mark]
+                    First = 1,
+                }
+
+                public sealed record Entry([property: Mark] string Ledger, [Mark] int Count);
+            }
+            """);
+
+        const string Under = "scip-csharp-2 nuget Walked 0.0.0.0 Fixture/";
+        const string Mark = Under + "MarkAttribute#";
+        const string Tag = Under + "TagAttribute+1#";
+
+        var edges = Annotations(written, DotnetIndex.Relation, from: 0, to: 2);
+        var reversed = Annotations(written, DotnetIndex.RelationOf, from: 2, to: 0);
+
+        // Every kind of declaration the walk reaches, in both predicates.
+        foreach (var expected in new (string From, string To)[]
+        {
+            (Mark, Under + "Thing#"),
+            (Mark, Under + "IMarked#"),
+            (Mark, Under + "Handler#"),
+            (Mark, Under + "Handler#Invoke().(value)"),
+            (Mark, Under + "Thing#Slot."),
+            (Mark, Under + "Thing#Weight."),
+            (Mark, Under + "Thing#`.ctor`()."),
+            (Mark, Under + "Thing#`this[]`."),
+            (Mark, Under + "Thing#Run()."),
+            (Mark, Under + "Thing#Run().(count)"),
+            (Mark, Under + "Kind#First."),
+            (Mark, Under + "Entry#Ledger."),
+        })
+        {
+            Assert.Contains(expected, edges);
+            Assert.Contains(expected, reversed);
+        }
+
+        // A positional parameter with no target keyword annotates the parameter, whose
+        // symbol hangs off whichever `.ctor` ordinal the primary constructor sorts to —
+        // and not the property; `[property:]` annotates the property and not the parameter.
+        Assert.Contains(edges, edge =>
+            edge.From == Mark
+            && edge.To.StartsWith(Under + "Entry#`.ctor`(", StringComparison.Ordinal)
+            && edge.To.EndsWith(".(Count)", StringComparison.Ordinal));
+        Assert.DoesNotContain(edges, edge => edge.To == Under + "Entry#Count.");
+        Assert.DoesNotContain(
+            edges, edge => edge.To.EndsWith(".(Ledger)", StringComparison.Ordinal));
+
+        // A relation is an edge, not an application: applied twice, one row.
+        Assert.Single(edges.Where(edge => edge.To == Under + "Thing#Slot.").Distinct());
+
+        // An attribute class from outside the index is an edge like any other, and gets
+        // the card a hover needs, which nothing else writes for it.
+        Assert.Contains(edges, edge =>
+            edge.From.EndsWith("System/ObsoleteAttribute#", StringComparison.Ordinal)
+            && edge.To == Under + "Thing#Run().");
+        Assert.Contains(edges, edge =>
+            edge.From.EndsWith("System/FlagsAttribute#", StringComparison.Ordinal)
+            && edge.To == Under + "Kind#");
+        Assert.Contains(edges, edge =>
+            edge.From.EndsWith("System/AttributeUsageAttribute#", StringComparison.Ordinal)
+            && edge.To == Mark);
+
+        var described = written.Of(DotnetIndex.SymbolInfo)
+            .Select(fact => Str(Nested(Fields(fact.Key)[0]).Key))
+            .ToList();
+
+        Assert.Contains(
+            described, symbol => symbol.EndsWith("System/ObsoleteAttribute#", StringComparison.Ordinal));
+        Assert.Contains(
+            described, symbol => symbol.EndsWith("System/FlagsAttribute#", StringComparison.Ordinal));
+        Assert.Single(described, symbol => symbol == Mark);
+
+        // The one constructed generic attribute spells as its definition — and that edge
+        // is the only one it has: the assembly target, the return value, the backing
+        // field, the type parameter and the local function all carry it and none is a
+        // declaration here.
+        Assert.Equal([(Tag, Under + "Thing#")], edges.Where(edge => edge.From == Tag).Distinct());
+
+        // An event is the one target reached and dropped, and the run says so.
+        Assert.DoesNotContain(edges, edge => edge.To == Under + "Thing#Changed.");
+        Assert.Equal(1, indexer.InexpressibleKinds);
+
+        // The direction, which a transposed pair would get wrong with every symbol
+        // resolving; and the class rather than the constructor the name bound to.
+        Assert.DoesNotContain(edges, edge => edge.To == Mark && edge.From == Under + "Thing#");
+        Assert.DoesNotContain(
+            edges, edge => edge.From.Contains("`.ctor`", StringComparison.Ordinal));
+
+        // An attribute the compiler could not resolve: one unresolved name, no edge, and
+        // no symbol minted for it.
+        Assert.Equal(1, indexer.Unresolved);
+        Assert.DoesNotContain(edges, edge => edge.To == Under + "Thing#Unbound().");
+        Assert.DoesNotContain(
+            written.Of(DotnetIndex.Symbol).Select(fact => Str(fact.Key)),
+            symbol => symbol.Contains("NoSuch", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The <c>annotates</c> edges of one relation predicate as symbol strings, read in the
+    /// (from, to) order <c>codemarkup.sigla</c> gives the edge — <c>Relation</c> leads with
+    /// <c>from</c> and <c>RelationOf</c> with <c>to</c>, so the caller says which field is
+    /// which. The discriminant is frozen on disk (I10), so the literal is the schema's.
+    /// </summary>
+    private static List<(string From, string To)> Annotations(
+        Recorder written, uint predicate, int from, int to) =>
+        [.. written.Of(predicate)
+            .Select(fact => Fields(fact.Key))
+            .Where(fields => Assert.IsType<FjordValue.Union>(fields[1]).Disc == 8u)
+            .Select(fields => (Str(Nested(fields[from]).Key), Str(Nested(fields[to]).Key)))];
 }
