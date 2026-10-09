@@ -124,7 +124,7 @@ language taken out of them:
 | `codemarkup.SymbolXRef` | "who references this", across every file |
 | `codemarkup.FileLocalXRef` | the same, span to span, for a local that has no global name worth minting |
 | `codemarkup.SearchEntry` · `SymbolByName` | prefix search on a case-folded name, and exact search on the written one |
-| `codemarkup.Relation` · `RelationOf` | contains, extends, implements, overrides — both directions |
+| `codemarkup.Relation` · `RelationOf` | contains, extends, implements, overrides, annotates — both directions |
 | `codemarkup.SymbolInfo` | the signature, the doc comment and the modifiers a hover card shows |
 
 Several of those deserve their reasoning stated.
@@ -347,10 +347,26 @@ already answered all of it, and the walk asks.
 
 What it still does not do, each for a reason:
 
-- **A reference to something outside the index is dropped**, not recorded. A symbol from
-  a NuGet package or the framework has no source location to point at, and inventing a
-  declaration for it would put file facts in the database naming paths that do not exist.
-  The run reports how many: on a typical repository it is a third of all names.
+- **A reference to something outside the index gets no declaration**, but is recorded. A
+  symbol from a NuGet package or the framework has no source location to point at, and
+  inventing a declaration for it would put file facts in the database naming paths that do
+  not exist — so it gets a cross-reference, a `codemarkup.SymbolInfo` card, and no
+  `Definition`. The run reports how many: on a typical repository it is a third of all
+  names.
+- **An attribute application is a reference to a constructor, and the class is reached
+  by a relation.** `[Fact]` binds to `FactAttribute`'s constructor — that is the compiler's
+  answer, and it is what the span's cross-reference targets, with role `decorator`. So the
+  class itself has no incoming reference, and `codemarkup.Relation {from = FactAttribute,
+  kind = annotates, to = <declaration>}` is what says a declaration carries it, with
+  `RelationOf` answering the other way; an attribute class from a package gets its
+  `SymbolInfo` card through this edge, since no name ever binds to it. A relation is an
+  edge, not an application: an `AllowMultiple` attribute applied twice, or once on each
+  part of a partial, is one row. Only a declaration this index writes gets the edge. An
+  event is reached and dropped — `csharp` has no event entity — and the run counts it
+  among the declarations it could not express; a type parameter, an accessor, a local
+  function and its parameters, a lambda's parameters, `[return:]`, `[field:]` on an
+  auto-property and the two global targets are never offered to the walk as declarations,
+  so an attribute on one stays a cross-reference and nothing more.
 - **A partial type or member is one entity, and its `codemarkup.Definition` is at its
   first declaration in each file.** One symbol, one hover card, one search-index name —
   with a `csharp.DefinitionLocation` and a `codemarkup.FileDefinition` for every

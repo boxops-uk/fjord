@@ -18,16 +18,17 @@ namespace Surface.Bindings.Attributes;
 /// </para>
 /// <para>
 /// <b>The attribute class has no incoming reference.</b> <c>BindMarkAttribute</c> is
-/// declared, has a <c>codemarkup.Definition</c>, and its <c>csharp.EntityRef</c> fan-out is
-/// empty however many times it is applied. "Where is this attribute used?" is a question
-/// the index cannot answer.
+/// declared, has a <c>codemarkup.Definition</c>, and its <c>csharp.EntityRef</c> and
+/// <c>codemarkup.SymbolXRef</c> fan-outs are empty however many times it is applied.
+/// "Where is this attribute used?" is not a find-references question here.
 /// </para>
 /// <para>
-/// <b><c>codemarkup.Relation {kind = annotates}</c> is never written.</b> The discriminant
-/// exists — <c>annotates = 8</c> in <c>codemarkup.sigla</c> — and <c>Indexer.Relate</c>
-/// writes only <c>contains</c>, <c>extends</c>, <c>implements</c> and <c>overrides</c>. So
-/// the count of <c>annotates</c> rows over the whole corpus is nought, which is one query
-/// and the cheapest half of this mechanism to gate.
+/// <b><c>codemarkup.Relation {kind = annotates}</c> is the edge that names the class.</b>
+/// <c>Indexer.Annotate</c> writes one from the attribute class to each declaration that
+/// carries it, read off the declaration's <c>GetAttributes()</c> rather than off the
+/// application's name — so it is keyed on the class however the application was spelled
+/// and whichever constructor it selected. Four applications below, four edges from
+/// <c>BindMarkAttribute#</c> (measured), while the class's reference fan-out stays empty.
 /// </para>
 /// <para>
 /// <b>The text does not match the target.</b> The span carries the four or five characters
