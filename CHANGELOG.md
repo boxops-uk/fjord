@@ -5,7 +5,86 @@ not promised to be stable across its minor versions — a database written by on
 version that wrote it. What *is* promised inside a series is the append-only discipline the
 format stamp and the marker table enforce: nothing already written is renumbered.
 
-## Unreleased
+## 0.6.3 — 2026-10-10
+
+**The query language learned two things, the .NET indexer learned four, one schema moved,
+and `fjord serve` no longer leaves a socket behind when it is killed during startup.**
+Nothing on disk, on the wire or in a published crate's API changed: the storage codec, the
+format stamp and the protocol are `0.6.2`'s, and `fjord-schema`, `fjord-wire`,
+`fjord-client` and `fjord-db` are republished at this number with exactly the code they had.
+A patch for that reason. The schema that moved is the indexer's concern, and the indexer now
+carries a number of its own — which is the one action this release asks of anyone.
+
+### ⚠️ The .NET indexer is `0.7.0`, and an index it is to write needs creating again
+
+`schemas/msbuild.sigla` changed shape (below), so three composed schemas carry new
+fingerprints:
+
+| schema | `0.6.2` | `0.6.3` |
+|---|---|---|
+| `dotnet.sigla` | `0x4471c3f35a45b7da` | `0x29c029f2f24572e1` |
+| `index.sigla` | `0x7de1003fb6ef1242` | `0xd248481478a1d45b` |
+| `msbuild.sigla` | `0xfad0dcb5ca7f6cd9` | `0xe790b1b1f0aa7de8` |
+
+`Boxops.Fjord.Indexer` states the first and the server checks it for equality at the
+handshake, so the installed `0.6.2` is refused by a database created from this release's
+schemas, and `0.7.0` is refused by a database that `0.6.2` created. The refusal names both
+fingerprints, so the table above tells a stale client from one pointed at the wrong
+database. An index `0.6.2` wrote still answers every query; what it cannot do is take
+`0.7.0`'s facts, so to re-index a checkout, remove the database and let the new indexer
+create it from this release's schemas:
+
+```
+curl -LO https://github.com/boxops-uk/fjord/releases/download/v0.6.3/Boxops.Fjord.Indexer.0.7.0.nupkg
+dotnet tool install -g Boxops.Fjord.Indexer --version 0.7.0 --add-source .
+./fjord --schema-path schemas schema compose schemas/dotnet.sigla > dotnet.composed.sigla
+./fjord db rm code
+fjord-indexer --sln /path/to/Some.slnx --schema dotnet.composed.sigla --at /tmp/fjord.sock//code
+```
+
+`dotnet tool update -g Boxops.Fjord.Indexer` does the same once `0.7.0` is on nuget.org.
+
+**Only the indexer moves its minor.** It is the one of the six published artifacts that
+embeds a fingerprint; `Boxops.Fjord.Client` takes the schema at run time and the crates read
+it off whatever a caller supplies, so none of them is coupled to a schema moving, and they
+stay with the workspace number. `scripts/check-versions.py` is now a required check: a
+package whose fingerprint differs from the one its last published version carried (recorded
+in `clients/dotnet/PUBLISHED.tsv`) must have moved its minor, and the install sample the book
+prints must name the version that is actually published.
+
+### A project is its file, and what MSBuild resolved lives beside it · `msbuild.ProjectEvaluated`
+
+Indexing the projects of one solution into one database in separate runs could fail with a
+conflict on `msbuild.Project`. The project's evaluated attributes — target framework, SDK,
+output type, assembly name, root namespace, platform — were the value side of
+`msbuild.Project`, so a run that merely discovered a project by glob wrote `nothing` for
+each of them, and that is a claim that MSBuild resolved nothing, which collided with the
+answer of the run that actually built it. `msbuild.Project` is now the project file and
+nothing else; what MSBuild resolved lives in a new `msbuild.ProjectEvaluated`, keyed on the
+project and written only by the run that evaluated it — **a query that read
+`msbuild.Project`'s value joins through `ProjectEvaluated` now.** An uninformed observer
+abstains rather than guessing, and the same rule stops one project describing a symbol in
+`codemarkup.SymbolInfo` when another project in the run owns its source.
+
+Two messages changed with it. A conflict the server refuses now names the predicate rather
+than its numeric id, and the .NET fact writer no longer appends its own "while writing
+<predicate>" clause to a server's refusal — a write is pipelined, so the predicate the
+writer happened to be on was the wrong one. A script that grepped `PredicateId(` out of a
+refusal will not find it.
+
+### A symbol is named by its assembly · **re-index a project that sets `<AssemblyName>`**
+
+Buildalyzer names a workspace project after its file and the symbol scheme names a symbol
+after its compilation's assembly, so one method had two `src.Symbol` strings depending on
+which side of a project reference the walk stood on — `nuget Fixture.B …` from the
+referencing project, `nuget B …` from its own. Nothing failed; the cross-database join the
+symbol exists for simply returned nothing, and a cross-project find-references was quietly
+short. The loader now takes the name off the same MSBuild result `msbuild.ProjectEvaluated`
+is right about, and the duplicate-assembly rule, which keys on that name, now also catches
+two differently named project files compiling to one assembly — the second is left out,
+named and counted, where before both were walked and neither was joinable. No schema moved,
+so this is not a flag day, but an index of a project that sets `<AssemblyName>` carries the
+old spelling until it is built again.
 
 ### The .NET indexer says which declarations carry an attribute · `codemarkup.Relation {kind = annotates}`
 
@@ -21,6 +100,55 @@ schema moved: the kind has been in `codemarkup.sigla` since the vocabulary was w
 An event, a type parameter, a return value, an auto-property's backing field and the two
 global targets have no declaration row here, so an attribute on one is still a
 cross-reference and nothing more.
+
+### A dropped target is found from what actually built · **`--strict` may fail a repository it used to pass**
+
+A `net8.0;net10.0` project whose `net8.0` design-time build failed still counted as built —
+the other half compiled — so the missing framework reached nothing: not the log, not the
+list of what was left out, not `--strict`, and the index was silently short a whole
+compilation. The run now logs the project, the framework and MSBuild's own reason, and lists
+it as `Proj.csproj (net8.0)` among what was left out. The declared target list is read from
+MSBuild's *evaluated* `TargetFrameworks` on a result that built, so a list written as
+`$(SomeProp)`, or inherited from a `Directory.Build.props`, compares correctly, and
+case-insensitively, as MSBuild treats a framework moniker. A project the Roslyn workspace
+refused — the one remaining way out of the index that `--strict` could not see — is reported
+the same way. The loader's `--strict` line now reads "project(s) or target(s) were left out
+of this index"; the exit code is unchanged.
+
+### A literal can name its type · `bytes "00ff"`
+
+Sigla has a tagged literal, `tag "body"`, where the tag is the type's own name: `bytes
+"00ff"` is accepted beside `0x00ff` and means exactly the same thing. The tag is resolved
+when the query is lowered, so the typechecker, the plan, the wire and the printer never learn
+a second spelling exists, and printing either form still emits `0x00ff`; a later scalar
+family adds a parser for its body, not grammar. A tag no family claims is a new
+`lit/unknown-tag` diagnostic, with a suggestion when it is within an edit of one that exists;
+a tag naming the wrong family for a field is an ordinary type error; and a field or a string
+called `bytes` is unaffected, because the tag is an ordinary identifier until a string
+follows it.
+
+### A composite is comparable when every component is
+
+A record or a union can be compared with `<`, `<=`, `>` and `>=`. The typechecker refused
+any comparison not over an `int`, a `string` or `bytes`, on the grounds that a record has no
+order somebody can mean — but the storage codec has always ordered a record field by field
+in declaration order and a union by discriminant and then payload, and that order is the
+one the key seeks on. The rule is now structural: a composite is comparable exactly when
+every component is, and the one component that never is, is a reference, because a reference
+would compare by which fact was written first, which moves on a rebuild. A comparison over a
+composite is a range seek, not a filter. Every query that typechecked before still does;
+the message on the still-refused reference case is reworded under the same
+`reject/type-mismatch` code.
+
+### `fjord serve` leaves nothing behind when it is stopped during startup
+
+The server created its socket and wrote its readiness file before its `SIGINT`/`SIGTERM`
+handlers existed, so a signal landing in the first milliseconds — an init system that gave
+up, a harness that fired early — took the default disposition and killed the process
+outright, leaving a socket nothing listens on and a readiness file announcing it. Measured at
+56 stale sockets in 400 runs. The handlers are armed first, and the socket and the readiness
+file exist only after them; a 60-run sweep across the same window afterwards left neither.
+`Shutdown::Never` still installs no handler at all, and a guard holds it to that.
 
 ## 0.6.2 — 2026-09-30
 

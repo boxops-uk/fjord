@@ -20,7 +20,7 @@ chmod +x fjord
 ```
 
 ```text
-fjord 0.6.2
+fjord 0.6.3
 ```
 
 The rest of this page uses `./fjord`, the binary in the current directory. If you install
@@ -308,9 +308,9 @@ mkdir -p schemas && tar -xzf fjord-schemas.tar.gz -C schemas
 ```
 
 ```text
-65 predicate(s) in 1 file(s)
+66 predicate(s) in 1 file(s)
   dotnet.composed.sigla
-fingerprint 0x4471c3f35a45b7da
+fingerprint 0x29c029f2f24572e1
 ```
 
 Unpack the whole set rather than the one file you want: an import resolves against the
@@ -332,7 +332,7 @@ dotnet tool install -g Boxops.Fjord.Indexer --add-source .
 
 ```text
 You can invoke the tool using the following command: fjord-indexer
-Tool 'boxops.fjord.indexer' (version '0.6.2') was successfully installed.
+Tool 'boxops.fjord.indexer' (version '0.7.0') was successfully installed.
 ```
 
 Point it at a solution and the socket `serve` printed. It creates the databases it needs

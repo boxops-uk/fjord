@@ -44,7 +44,7 @@
          `scripts/check-versions.py` enforces exactly that, against
          `clients/dotnet/PUBLISHED.tsv`; README.md's flag-day section is the surrounding
          procedure. -->
-    <Version>0.6.2</Version>
+    <Version>0.6.3</Version>
     <Company>Boxops</Company>
     <Authors>Boxops</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
