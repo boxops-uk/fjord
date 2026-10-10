@@ -17,9 +17,15 @@
 # settling; a version already live is skipped rather than retried, so re-running
 # finishes the job instead of erroring on what already worked.
 #
-#     CRATES_API_KEY=... NUGET_API_KEY=... scripts/publish.sh            # rehearse
-#     CRATES_API_KEY=... NUGET_API_KEY=... scripts/publish.sh --execute  # upload
+#     scripts/publish.sh                                  # rehearse — needs no key
+#     read -rs CRATES_API_KEY && export CRATES_API_KEY    # typed at a prompt, so the
+#     read -rs NUGET_API_KEY  && export NUGET_API_KEY     # key never enters history
+#     scripts/publish.sh --execute                        # upload
 #     scripts/publish.sh --only nuget --execute
+#
+# **Not `KEY=... scripts/publish.sh`.** A leading assignment is part of the command
+# line, and the shell's history keeps the whole line — which is how a live key came to
+# sit in `~/.bash_history` in the first place.
 #
 # `--allow-dirty` passes through to cargo, for a tree with edits that do not reach
 # any packaged file.
@@ -39,7 +45,7 @@ while [[ $# -gt 0 ]]; do
         --allow-dirty) allow_dirty=1 ;;
         --only) only=${2:?--only needs crates or nuget}; shift ;;
         --version) version=${2:?--version needs X.Y.Z}; shift ;;
-        -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
         *) echo "publish: unknown argument $1" >&2; exit 2 ;;
     esac
     shift
@@ -254,9 +260,16 @@ push_nuget() {
         # alternative — writing it into a NuGet.config — puts it on disk instead.
         # It is passed as a variable so it never reaches shell history; what it
         # does still reach is this process's argv for the length of the upload.
+        #
+        # **`--skip-duplicate`, or a resumed run stops one package short.** nuget.org
+        # lists a version in `index.json` only once it has indexed it, minutes after
+        # accepting the push — so a re-run inside that window reads the package it just
+        # pushed as not live, pushes it again, gets 409, and `set -e` ends the script
+        # before the package that actually failed. With the flag the 409 is a warning.
         dotnet nuget push "$staging/$package" \
             --source https://api.nuget.org/v3/index.json \
-            --api-key "$NUGET_API_KEY"
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate
     done
     echo
 }
