@@ -57,11 +57,11 @@
          needs, which is what makes a tool the honest shape.
 
          `fjord-indexer` is the name its own usage text has always given. -->
-    <!-- **Its own version, ahead of the repository's, because this package states a
+    <!-- **Its own version, apart from the repository's, because this package states a
          schema fingerprint and the others do not.** `DotnetIndex.SchemaFingerprint` is
-         checked for equality at the handshake, so the published `0.6.2` is refused by any
-         server built since `dotnet.sigla` moved — a breaking change for whoever installed
-         it, and the minor is where breaking lives in `0.x`.
+         checked for equality at the handshake, so an installed build carrying the previous
+         fingerprint is refused by any server whose `dotnet.sigla` has moved — a breaking
+         change for whoever installed it, and the minor is where breaking lives in `0.x`.
 
          `scripts/check-versions.py` is what requires this to move, and
          `clients/dotnet/PUBLISHED.tsv` is what it compares against. Nothing else in the
